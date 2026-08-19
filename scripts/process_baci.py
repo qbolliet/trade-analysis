@@ -44,7 +44,7 @@ from macroforecast.datasets.core.download import _schema_name
 
 # Module d'implémentation du traitement BACI
 from macroforecast.trade.processing import required_columns, run_baci
-from macroforecast.trade.processing import BaciConfig, DEFAULT_CONFIG
+from macroforecast.trade.processing import BaciConfig, ComtradeSchema, DEFAULT_CONFIG
 
 
 # Configuration de logging
@@ -58,6 +58,9 @@ logger = logging.getLogger(__name__)
 
 # Nom de la table de faits DuckLake (convention dt_ducklake_manager)
 _FACT_TABLE = "fact_table"
+
+# Clé YAML portant les conventions de schéma des sources (sous-section de PARAMETERS)
+_SCHEMA_KEY = "SCHEMA"
 
 
 # Fonction de chargement de la configuration associée à la base comtrade
@@ -155,7 +158,7 @@ def _fact_table_exists(
 def _write_result(
     conn: duckdb.DuckDBPyConnection,
     catalog_alias: str,
-    result: pd.DataFrame,
+    df_result: pd.DataFrame,
     primary_keys: Sequence[str],
     result_schema: str,
 ) -> bool:
@@ -167,7 +170,7 @@ def _write_result(
     Args:
         conn: Open DuckLake connection (result-schema-bound connector).
         catalog_alias: Alias of the attached catalog.
-        result: Reconciled flows to persist.
+        df_result: Reconciled flows to persist.
         primary_keys: Primary-key columns.
         result_schema: Target schema in the shared catalog.
 
@@ -186,20 +189,20 @@ def _write_result(
         )
         # Application de la mise à jour à la base de données
         success = updater.update_database(
-            result, use_transaction=True, compact_after_update=True
+            df_result, use_transaction=True, compact_after_update=True
         )
         # Vérification de la bonne exécution de l'opération
         if not success:
             raise ValueError("DatabaseUpdater reported failure for result table")
 
         # Logging
-        logger.info("Upserted %d rows into '%s'", len(result), result_schema)
+        logger.info("Upserted %d rows into '%s'", len(df_result), result_schema)
 
         return False
     
     # Première construction : métadonnées + fact table
     builder = DuckLakeTablesBuilder(
-        result,
+        df_result,
         categorical_threshold=None,
         primary_keys=list(primary_keys),
         connection=conn,
@@ -210,9 +213,39 @@ def _write_result(
     # Logging
     logger.info(
         "Created schema '%s' with %d rows (primary keys: %s)",
-        result_schema, len(result), list(primary_keys),
+        result_schema, len(df_result), list(primary_keys),
     )
     return True
+
+
+# Fonction de construction des conventions de schéma des sources
+def comtrade_schema_from_params(params: Optional[Dict]) -> ComtradeSchema:
+    """Build a ``ComtradeSchema`` from the YAML ``PARAMETERS.SCHEMA`` sub-section.
+
+    Generic construction: every key matching a ``ComtradeSchema`` field name
+    overrides the dataclass default; unknown keys are ignored with a warning.
+
+    Args:
+        params: The ``PARAMETERS.SCHEMA`` mapping of ``config/baci.yaml`` (or
+            ``None``, meaning the default COMTRADE/CEPII conventions).
+
+    Returns:
+        A ``ComtradeSchema`` reflecting the configured overrides.
+    """
+    # Aucune surcharge : conventions de schéma par défaut
+    if not params:
+        return DEFAULT_CONFIG.schema
+
+    # Surcharge générique champ à champ (noms de colonnes et codes de flux)
+    valid = {f.name for f in fields(ComtradeSchema)}
+    overrides: Dict[str, object] = {}
+    for key, value in params.items():
+        if key not in valid:
+            logger.warning("Champ de schéma BACI inconnu ignoré : %s", key)
+            continue
+        overrides[key] = value
+
+    return replace(DEFAULT_CONFIG.schema, **overrides)
 
 
 # Fonction de construction de la configuration méthodologique BACI
@@ -222,7 +255,9 @@ def baci_config_from_params(params: Optional[Dict]) -> BaciConfig:
     Generic construction: every key matching a ``BaciConfig`` field name
     overrides the dataclass default; unknown keys are ignored with a warning.
     YAML lists are coerced to the tuple types expected by the frozen dataclass
-    (including nested pairs such as ``excluded_pairs``).
+    (including nested pairs such as ``excluded_pairs``). The nested ``SCHEMA``
+    sub-section carries the source column conventions and is delegated to
+    :func:`comtrade_schema_from_params`.
 
     Args:
         params: The ``parameters`` mapping of ``config/baci.yaml`` (or ``None``).
@@ -234,10 +269,16 @@ def baci_config_from_params(params: Optional[Dict]) -> BaciConfig:
     if not params:
         return DEFAULT_CONFIG
 
+    # Conventions de schéma issues de la sous-section dédiée
+    schema = comtrade_schema_from_params(params.get(_SCHEMA_KEY))
+
     # Surcharge générique champ à champ, avec coercition listes → tuples
-    valid = {f.name for f in fields(BaciConfig)}
+    valid = {f.name for f in fields(BaciConfig)} - {"schema"}
     overrides: Dict[str, object] = {}
     for key, value in params.items():
+        # Sous-section de schéma déjà traitée
+        if key == _SCHEMA_KEY:
+            continue
         if key not in valid:
             logger.warning("Paramètre BACI inconnu ignoré : %s", key)
             continue
@@ -248,7 +289,7 @@ def baci_config_from_params(params: Optional[Dict]) -> BaciConfig:
             )
         overrides[key] = value
 
-    return replace(DEFAULT_CONFIG, **overrides)
+    return replace(DEFAULT_CONFIG, schema=schema, **overrides)
 
 
 # Fonction principale de redressement BACI
@@ -276,11 +317,11 @@ def main() -> None:
 
     # Lecture des fichiers Excel CEPII
     excel_loader = Loader()
-    dist = excel_loader.load(
+    df_dist = excel_loader.load(
         f"s3://{comtrade_config['DOWNLOADS'][DATAFLOW]['BUCKET']}/{baci_config['PATHS']["DIST_CEPII"]}",
         bucket=baci_config['BUCKET']
     )
-    geo = excel_loader.load(
+    df_geo = excel_loader.load(
         f"s3://{comtrade_config['DOWNLOADS'][DATAFLOW]['BUCKET']}/{baci_config['PATHS']["GEO_CEPII"]}", 
         bucket=baci_config['BUCKET']
     )
@@ -306,17 +347,17 @@ def main() -> None:
     conn = connector.connect()
     try:
         # Lecture de la table de faits COMTRADE (schéma source du même catalogue)
-        comtrade = _read_comtrade_fact_table(
-            conn=conn, 
-            source_schema=_schema_name(DATAFLOW),  # re.sub(r"[^a-zA-Z0-9]", "", DATAFLOW), 
+        df_comtrade = _read_comtrade_fact_table(
+            conn=conn,
+            source_schema=_schema_name(DATAFLOW),  # re.sub(r"[^a-zA-Z0-9]", "", DATAFLOW),
             columns=required_columns(baci_parameters_config)
         )
 
         # Application de la méthodologie sur les jeux de données chargés
-        reconciled, report = run_baci(
-            comtrade=comtrade,
-            dist=dist,
-            geo=geo,
+        df_reconciled, report = run_baci(
+            df_comtrade=df_comtrade,
+            df_dist=df_dist,
+            df_geo=df_geo,
             config=baci_parameters_config,
             apply_nes=(len(baci_config['PARAMETERS']["nes_partner_codes"]) > 0)
         )
@@ -325,7 +366,7 @@ def main() -> None:
         report.created = _write_result(
             conn=conn,
             catalog_alias=connector.catalog_alias,
-            result=reconciled,
+            df_result=df_reconciled,
             primary_keys=baci_parameters_config.primary_keys,
             result_schema=_schema_name(baci_config["PATHS"]["RESULT_SCHEMA"]),
         )

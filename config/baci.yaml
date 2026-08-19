@@ -17,8 +17,12 @@ PATHS:
 # BaciConfig surcharge le défaut correspondant (listes YAML → tuples) ;
 # les clés inconnues sont ignorées avec un avertissement.
 PARAMETERS:
-  # Variable de distance pondérée population (dist_cepii)
-  distance_column: "distw"
+  # Conventions de schéma des sources : toute clé portant le nom d'un champ de
+  # ComtradeSchema (noms de colonnes COMTRADE/CEPII, codes de flux) surcharge le
+  # défaut correspondant.
+  SCHEMA:
+    # Variable de distance pondérée population (dist_cepii)
+    distance_column: "distw"
   # Étape de conversion des quantités en tonnes (validation des taux)
   min_mirror_flows: 10
   max_conversion_std: 2.5

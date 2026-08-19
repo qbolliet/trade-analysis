@@ -1,6 +1,7 @@
 # Importation des éléments d'intérêt du sous-module
 # Configuration
 from .baci import (
+    ComtradeSchema,
     BaciConfig,
     DEFAULT_CONFIG,
 )
@@ -30,6 +31,7 @@ from .baci import (
 # Réexport des éléments d'intérêt du sous-module
 __all__ = [
     # Configuration
+    "ComtradeSchema",
     "BaciConfig",
     "DEFAULT_CONFIG",
     # Préparation des données

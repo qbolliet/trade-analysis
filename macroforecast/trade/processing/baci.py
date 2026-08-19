@@ -21,16 +21,25 @@ function and class here consumes eager dataframes, column names and parameter
 values only — all I/O (DuckLake catalogs, CEPII files, YAML configuration)
 belongs to the caller (see ``scripts/process_baci.py``).
 
+Each methodological step takes its parameters as keyword-only arguments with
+explicit defaults, following the scikit-learn convention: ``__init__`` stores every
+argument unchanged under the same name, derivations belong to ``fit`` and fitted
+attributes carry a trailing underscore. :class:`BaciConfig` is only a configuration
+façade, consumed by :func:`run_baci`, which distributes its values step by step.
+
 Notes:
     Unlike the ``vulnerabilities`` module (backend-agnostic via narwhals), this
     module works on eager pandas frames throughout: the econometric backends
     (``statsmodels``, ``linearmodels``) are pandas/numpy bound, so a single native
     backend keeps the estimation code straightforward.
+
+    Every ``pandas.DataFrame`` — argument, attribute or local variable — carries the
+    ``df_`` prefix; ``pandas.Series`` keep a bare name.
 """
 # Importation des modules
 from __future__ import annotations
 # Modules de base
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import logging
 import math
 from typing import Dict, List, Optional, Sequence, Tuple
@@ -49,15 +58,14 @@ logger = logging.getLogger(__name__)
 # Configuration
 # ──────────────────────────────────────────────────────────────────────
 
-# Configuration des conventions de schéma et des paramètres méthodologiques
+# Conventions de schéma des sources (COMTRADE et CEPII)
 @dataclass(frozen=True)
-class BaciConfig:
-    """Schema conventions and methodological parameters for the BACI pipeline.
+class ComtradeSchema:
+    """Column conventions of the COMTRADE fact table and of the CEPII gravity files.
 
-    Centralises every assumption the pipeline makes about the COMTRADE and CEPII
-    schemas, together with the numeric thresholds and country lists of the CEPII
-    methodology, so the same code can be reused on differently named datasets by
-    passing another configuration.
+    Carries naming and encoding assumptions only: switching to a differently named
+    data source touches this dataclass, never the methodology (see
+    :class:`BaciConfig`).
 
     Attributes:
         flow_col: COMTRADE column holding the trade-flow code.
@@ -72,6 +80,52 @@ class BaciConfig:
         qty_col: Column with the declared quantity.
         qty_unit_col: Column with the quantity-unit code.
         netwgt_col: Column with the net weight (kilograms).
+        dist_iso_o_col: CEPII distance column with the origin ISO-3 code.
+        dist_iso_d_col: CEPII distance column with the destination ISO-3 code.
+        distance_column: CEPII distance column to use (population-weighted).
+        contig_col: CEPII contiguity indicator column.
+        geo_iso_col: CEPII geography column with the ISO-3 code.
+        landlocked_col: CEPII geography landlocked indicator column.
+
+    Examples:
+        >>> ComtradeSchema().product_col
+        'cmdCode'
+        >>> ComtradeSchema(product_col="hs6").product_col
+        'hs6'
+    """
+    # Colonnes et codes COMTRADE
+    flow_col: str = "flowCode"
+    import_code: str = "M"
+    export_code: str = "X"
+    reporter_iso_col: str = "reporterISO"
+    partner_iso_col: str = "partnerISO"
+    partner_code_col: str = "partnerCode"
+    product_col: str = "cmdCode"
+    period_col: str = "period"
+    value_col: str = "primaryValue"
+    qty_col: str = "qty"
+    qty_unit_col: str = "qtyUnitCode"
+    netwgt_col: str = "netWgt"
+    # Colonnes CEPII
+    dist_iso_o_col: str = "iso_o"
+    dist_iso_d_col: str = "iso_d"
+    distance_column: str = "distw"
+    contig_col: str = "contig"
+    geo_iso_col: str = "iso3"
+    landlocked_col: str = "landlocked"
+
+
+# Paramètres méthodologiques du redressement BACI
+@dataclass(frozen=True)
+class BaciConfig:
+    """Methodological parameters of the BACI pipeline.
+
+    Configuration façade of the pipeline: :func:`run_baci` reads it and hands the
+    relevant values to each step as explicit keyword arguments. The steps
+    themselves never see this object, so any of them can be reused on its own.
+
+    Attributes:
+        schema: Column conventions of the COMTRADE and CEPII sources.
         weight_unit_codes: Quantity-unit codes already expressed as a weight in
             kilograms (converted to tonnes by ``kg_to_tonne``). Quantities in
             any other unit without a validated conversion rate are abandoned
@@ -83,7 +137,6 @@ class BaciConfig:
             (``std < 2.5``).
         prefer_netwgt: When ``True``, use ``netWgt`` as the primary tonnage source
             and fall back to unit conversion only when it is missing.
-        distance_column: CEPII distance column to use (population-weighted).
         cook_factor: Cook's-distance cutoff factor; observations with
             ``cook > cook_factor / n`` are dropped before the final gravity fit.
         non_cif_countries: Importer ISO-3 codes that do not declare CIF (freight
@@ -97,26 +150,16 @@ class BaciConfig:
             eligible for reallocation.
         nes_skip_codes: Numeric partner codes of aggregates left untouched and
             excluded from the data (e.g. "Other Asia, nes").
-        dist_iso_o_col: CEPII distance column with the origin ISO-3 code.
-        dist_iso_d_col: CEPII distance column with the destination ISO-3 code.
-        contig_col: CEPII contiguity indicator column.
-        geo_iso_col: CEPII geography column with the ISO-3 code.
-        landlocked_col: CEPII geography landlocked indicator column.
         primary_keys: Primary-key columns of the reconciled result table.
+
+    Examples:
+        >>> BaciConfig().schema.value_col
+        'primaryValue'
+        >>> BaciConfig(cook_factor=3.0).cook_factor
+        3.0
     """
-    # Colonnes COMTRADE
-    flow_col: str = "flowCode"
-    import_code: str = "M"
-    export_code: str = "X"
-    reporter_iso_col: str = "reporterISO"
-    partner_iso_col: str = "partnerISO"
-    partner_code_col: str = "partnerCode"
-    product_col: str = "cmdCode"
-    period_col: str = "period"
-    value_col: str = "primaryValue"
-    qty_col: str = "qty"
-    qty_unit_col: str = "qtyUnitCode"
-    netwgt_col: str = "netWgt"
+    # Conventions de schéma des sources
+    schema: ComtradeSchema = field(default_factory=ComtradeSchema)
     # Conversion des quantités en tonnes
     weight_unit_codes: Tuple[int, ...] = (8,)  # 8 = poids en kilogrammes (COMTRADE)
     kg_to_tonne: float = 1e-3
@@ -124,7 +167,6 @@ class BaciConfig:
     max_conversion_std: float = 2.5
     prefer_netwgt: bool = True
     # Équation de gravité
-    distance_column: str = "distw"
     cook_factor: float = 4.0
     # Listes de pays (ISO-3)
     non_cif_countries: Tuple[str, ...] = (
@@ -136,12 +178,6 @@ class BaciConfig:
     world_partner_code: int = 0
     nes_partner_codes: Tuple[int, ...] = (899,)  # 899 = "Areas, nes"
     nes_skip_codes: Tuple[int, ...] = (490,)  # 490 = "Other Asia, nes"
-    # Colonnes CEPII
-    dist_iso_o_col: str = "iso_o"
-    dist_iso_d_col: str = "iso_d"
-    contig_col: str = "contig"
-    geo_iso_col: str = "iso3"
-    landlocked_col: str = "landlocked"
     # Clés primaires du résultat
     primary_keys: Tuple[str, ...] = ("exporter", "importer", "product", "year")
 
@@ -152,7 +188,6 @@ DEFAULT_CONFIG = BaciConfig()
 # Noms de colonnes canoniques de la table de flux miroirs
 _EXP, _IMP, _PROD, _YEAR = "exporter", "importer", "product", "year"
 
-# /!\ Plutôt que de passer la config en argument de chaque étape, on pourrait ne la mettre en argument que dans run_baci et passer un à un les valeurs pertinentes à chaque étape à travers des arguments distincts
 
 # ──────────────────────────────────────────────────────────────────────
 # Chargement des données (gravité CEPII)
@@ -160,21 +195,34 @@ _EXP, _IMP, _PROD, _YEAR = "exporter", "importer", "product", "year"
 
 # Fonction de chargement des variables de gravité CEPII
 def build_gravity_data(
-    dist: pd.DataFrame,
-    geo: pd.DataFrame,
-    config: BaciConfig = DEFAULT_CONFIG,
+    df_dist: pd.DataFrame,
+    df_geo: pd.DataFrame,
+    *,
+    dist_iso_o_col: str = "iso_o",
+    dist_iso_d_col: str = "iso_d",
+    distance_column: str = "distw",
+    contig_col: str = "contig",
+    geo_iso_col: str = "iso3",
+    landlocked_col: str = "landlocked",
 ) -> pd.DataFrame:
     """Assemble the bilateral CEPII gravity variables.
 
     Joins the ``dist_cepii`` bilateral table (distance, contiguity) with the
     per-country ``geo_cepii`` landlocked indicator (merged twice, for the origin
-    and the destination).
+    and the destination). Whatever the source column names, the returned frame
+    always carries the canonical names ``iso_o``, ``iso_d``, ``distw`` and
+    ``contig``.
 
     Args:
-        dist: Raw ``dist_cepii`` table, already loaded (e.g. via
+        df_dist: Raw ``dist_cepii`` table, already loaded (e.g. via
             :class:`macroforecast.storage2.Loader`).
-        geo: Raw ``geo_cepii`` table, already loaded.
-        config: Column conventions.
+        df_geo: Raw ``geo_cepii`` table, already loaded.
+        dist_iso_o_col: Distance-table column with the origin ISO-3 code.
+        dist_iso_d_col: Distance-table column with the destination ISO-3 code.
+        distance_column: Distance-table column to use (population-weighted).
+        contig_col: Distance-table contiguity indicator column.
+        geo_iso_col: Geography-table column with the ISO-3 code.
+        landlocked_col: Geography-table landlocked indicator column.
 
     Returns:
         A bilateral gravity frame with columns ``iso_o``, ``iso_d``, ``distw``,
@@ -182,40 +230,48 @@ def build_gravity_data(
 
     Raises:
         KeyError: If an expected CEPII column is absent.
+
+    Examples:
+        >>> df_dist = pd.DataFrame(
+        ...     {"iso_o": ["FRA"], "iso_d": ["DEU"], "distw": [500.0], "contig": [1]}
+        ... )
+        >>> df_geo = pd.DataFrame({"iso3": ["FRA", "DEU"], "landlocked": [0, 0]})
+        >>> build_gravity_data(df_dist, df_geo).columns.tolist()
+        ['iso_o', 'iso_d', 'distw', 'contig', 'landlocked_o', 'landlocked_d']
     """
     # Distance bilatérale + contiguïté
     dist_cols = [
-        config.dist_iso_o_col,
-        config.dist_iso_d_col,
-        config.distance_column,
-        config.contig_col,
+        dist_iso_o_col,
+        dist_iso_d_col,
+        distance_column,
+        contig_col,
     ]
-    dist = dist[dist_cols].copy()
+    df_dist = df_dist[dist_cols].copy()
 
     # Enclavement par pays : géographie dédupliquée (une ligne par ISO-3, la
     # table CEPII listant plusieurs villes par pays)
-    geo_unique = (
-        geo[[config.geo_iso_col, config.landlocked_col]]
-        .drop_duplicates(subset=[config.geo_iso_col])
-        .rename(columns={config.geo_iso_col: "iso"})
+    df_geo_unique = (
+        df_geo[[geo_iso_col, landlocked_col]]
+        .drop_duplicates(subset=[geo_iso_col])
+        .rename(columns={geo_iso_col: "iso"})
     )
 
     # Jointure de l'enclavement de l'origine puis de la destination
-    merged = dist.rename(
+    df_merged = df_dist.rename(
         columns={
-            config.dist_iso_o_col: "iso_o",
-            config.dist_iso_d_col: "iso_d",
-            config.distance_column: "distw",
-            config.contig_col: "contig",
+            dist_iso_o_col: "iso_o",
+            dist_iso_d_col: "iso_d",
+            distance_column: "distw",
+            contig_col: "contig",
         }
     )
-    merged = merged.merge(
-        geo_unique.rename(columns={"iso": "iso_o", config.landlocked_col: "landlocked_o"}),
+    df_merged = df_merged.merge(
+        df_geo_unique.rename(columns={"iso": "iso_o", landlocked_col: "landlocked_o"}),
         on="iso_o",
         how="left",
     )
-    merged = merged.merge(
-        geo_unique.rename(columns={"iso": "iso_d", config.landlocked_col: "landlocked_d"}),
+    df_merged = df_merged.merge(
+        df_geo_unique.rename(columns={"iso": "iso_d", landlocked_col: "landlocked_d"}),
         on="iso_d",
         how="left",
     )
@@ -223,8 +279,8 @@ def build_gravity_data(
     # Coercition numérique : les fichiers CEPII notent les manquants par un "."
     # (colonnes alors de type object) — conversion en flottant, manquants → NaN.
     for col in ("distw", "contig", "landlocked_o", "landlocked_d"):
-        merged[col] = pd.to_numeric(merged[col], errors="coerce")
-    return merged
+        df_merged[col] = pd.to_numeric(df_merged[col], errors="coerce")
+    return df_merged
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -233,11 +289,16 @@ def build_gravity_data(
 
 # Fonction d'agrégation d'un côté de déclaration à la maille du flux
 def _aggregate_side(
-    df: pd.DataFrame,
-    config: BaciConfig,
+    df_side: pd.DataFrame,
+    *,
     exporter_col: str,
     importer_col: str,
     suffix: str,
+    product_col: str = "cmdCode",
+    value_col: str = "primaryValue",
+    qty_col: str = "qty",
+    qty_unit_col: str = "qtyUnitCode",
+    netwgt_col: str = "netWgt",
 ) -> pd.DataFrame:
     """Aggregate one declaration side to the ``(i, j, k, t)`` grain.
 
@@ -245,48 +306,52 @@ def _aggregate_side(
     the quantity, the unit code carrying the largest summed quantity.
 
     Args:
-        df: Declarations of a single flow direction (export or import).
-        config: Column conventions.
+        df_side: Declarations of a single flow direction (export or import).
         exporter_col: Column to use as the exporter identity.
         importer_col: Column to use as the importer identity.
         suffix: Suffix appended to the produced value columns (``"x"`` or ``"m"``).
+        product_col: Column with the product (HS6) code.
+        value_col: Column with the primary trade value.
+        qty_col: Column with the declared quantity.
+        qty_unit_col: Column with the quantity-unit code.
+        netwgt_col: Column with the net weight (kilograms).
 
     Returns:
         One row per ``(exporter, importer, product, year)`` with value, quantity,
         unit code and net weight columns suffixed by ``suffix``.
     """
-    keys = [exporter_col, importer_col, config.product_col, "_year"]
+    keys = [exporter_col, importer_col, product_col, "_year"]
 
     # Agrégation valeur + poids net par flux
-    base = (
-        df.groupby(keys, dropna=True)
+    df_base = (
+        df_side.groupby(keys, dropna=True)
         .agg(
             **{
-                f"v_{suffix}": (config.value_col, "sum"),
-                f"nw_{suffix}": (config.netwgt_col, "sum"),
+                f"v_{suffix}": (value_col, "sum"),
+                f"nw_{suffix}": (netwgt_col, "sum"),
             }
         )
         .reset_index()
     )
 
     # Quantité : unité portant la plus grande quantité cumulée par flux
-    qty = (
-        df.groupby(keys + [config.qty_unit_col], dropna=True)[config.qty_col]
+    df_qty = (
+        df_side.groupby(keys + [qty_unit_col], dropna=True)[qty_col]
         .sum()
         .reset_index()
     )
-    qty = qty.sort_values(config.qty_col, ascending=False).drop_duplicates(subset=keys)
-    qty = qty.rename(
-        columns={config.qty_col: f"q_{suffix}", config.qty_unit_col: f"unit_{suffix}"}
+    df_qty = df_qty.sort_values(qty_col, ascending=False).drop_duplicates(subset=keys)
+    df_qty = df_qty.rename(
+        columns={qty_col: f"q_{suffix}", qty_unit_col: f"unit_{suffix}"}
     )
 
-    merged = base.merge(qty, on=keys, how="left")
+    df_merged = df_base.merge(df_qty, on=keys, how="left")
     # Renommage des identités vers les colonnes canoniques
-    return merged.rename(
+    return df_merged.rename(
         columns={
             exporter_col: _EXP,
             importer_col: _IMP,
-            config.product_col: _PROD,
+            product_col: _PROD,
             "_year": _YEAR,
         }
     )
@@ -296,7 +361,23 @@ def _aggregate_side(
 def build_mirror_flows(
     df_comtrade: pd.DataFrame,
     valid_iso: Sequence[str],
-    config: BaciConfig = DEFAULT_CONFIG,
+    *,
+    flow_col: str = "flowCode",
+    import_code: str = "M",
+    export_code: str = "X",
+    reporter_iso_col: str = "reporterISO",
+    partner_iso_col: str = "partnerISO",
+    partner_code_col: str = "partnerCode",
+    product_col: str = "cmdCode",
+    period_col: str = "period",
+    value_col: str = "primaryValue",
+    qty_col: str = "qty",
+    qty_unit_col: str = "qtyUnitCode",
+    netwgt_col: str = "netWgt",
+    world_partner_code: int = 0,
+    nes_partner_codes: Tuple[int, ...] = (899,),
+    nes_skip_codes: Tuple[int, ...] = (490,),
+    excluded_pairs: Tuple[Tuple[str, str], ...] = (("BEL", "LUX"),),
 ) -> Tuple[pd.DataFrame, pd.DataFrame]:
     """Reshape COMTRADE declarations into a mirror-flow table.
 
@@ -313,61 +394,92 @@ def build_mirror_flows(
         df_comtrade: Raw COMTRADE fact-table rows.
         valid_iso: ISO-3 codes of individual countries (from ``geo_cepii``);
             partners outside this set are treated as aggregates.
-        config: Column conventions.
+        flow_col: Column holding the trade-flow code.
+        import_code: Flow code identifying import declarations (CIF).
+        export_code: Flow code identifying export declarations (FOB).
+        reporter_iso_col: Column with the reporter ISO-3 code.
+        partner_iso_col: Column with the partner ISO-3 code.
+        partner_code_col: Column with the numeric (M49) partner code.
+        product_col: Column with the product (HS6) code.
+        period_col: Column with the period (year as text).
+        value_col: Column with the primary trade value.
+        qty_col: Column with the declared quantity.
+        qty_unit_col: Column with the quantity-unit code.
+        netwgt_col: Column with the net weight (kilograms).
+        world_partner_code: Numeric partner code of the *World* aggregate.
+        nes_partner_codes: Numeric partner codes of the "Areas NES" aggregates
+            eligible for reallocation.
+        nes_skip_codes: Numeric partner codes of aggregates dropped upfront.
+        excluded_pairs: Country pairs whose internal flows are dropped.
 
     Returns:
-        A tuple ``(mirror, nes)``:
+        A tuple ``(df_mirror, df_nes)``:
 
-        * ``mirror``: one row per ``(exporter, importer, product, year)`` with
+        * ``df_mirror``: one row per ``(exporter, importer, product, year)`` with
           columns ``v_x, q_x, unit_x, nw_x`` (export/FOB side) and
           ``v_m, q_m, unit_m, nw_m`` (import/CIF side), outer-joined.
-        * ``nes``: import/export declarations whose partner is an "Areas NES"
-          aggregate (:attr:`BaciConfig.nes_partner_codes`), kept aside for the
-          reallocation step.
+        * ``df_nes``: import/export declarations whose partner is an "Areas NES"
+          aggregate (``nes_partner_codes``), kept aside for the reallocation step.
     """
     # Copiée indépendante du jeu de données
-    df = df_comtrade.copy()
+    df_data = df_comtrade.copy()
     # Année entière dérivée de la période (chaîne "YYYY")
-    df["_year"] = df[config.period_col].astype(str).str[:4].astype(int)
+    df_data["_year"] = df_data[period_col].astype(str).str[:4].astype(int)
 
     # Exclusion explicite des agrégats non traités : (ex. Monde, « Other Asia, nes », ni réallouées ni pays)
-    df = df[df[config.partner_code_col] != config.world_partner_code]
-    if config.nes_skip_codes:
-        df = df[~df[config.partner_code_col].isin(list(config.nes_skip_codes))]
+    df_data = df_data[df_data[partner_code_col] != world_partner_code]
+    if nes_skip_codes:
+        df_data = df_data[~df_data[partner_code_col].isin(list(nes_skip_codes))]
 
     # Séparation des déclarations d'export et d'import
-    is_export = df[config.flow_col] == config.export_code
-    is_import = df[config.flow_col] == config.import_code
+    is_export = df_data[flow_col] == export_code
+    is_import = df_data[flow_col] == import_code
 
     valid = set(valid_iso)
 
     # Flux NES : partenaire agrégé « Areas nes » (avant filtre pays individuels)
-    nes_mask = df[config.partner_code_col].isin(list(config.nes_partner_codes))
-    df_nes = df[(is_export | is_import) & nes_mask].copy()
+    nes_mask = df_data[partner_code_col].isin(list(nes_partner_codes))
+    df_nes = df_data[(is_export | is_import) & nes_mask].copy()
 
     # Restriction aux pays individuels (reporter et partenaire valides ISO-3)
     individual = (
-        df[config.reporter_iso_col].isin(valid)
-        & df[config.partner_iso_col].isin(valid)
+        df_data[reporter_iso_col].isin(valid)
+        & df_data[partner_iso_col].isin(valid)
     )
-    df_exports = df[is_export & individual].copy()
-    df_imports = df[is_import & individual].copy()
+    df_exports = df_data[is_export & individual].copy()
+    df_imports = df_data[is_import & individual].copy()
 
     # Agrégation de chaque côté à la maille du flux
     # Export : exportateur = reporter, importateur = partenaire
     df_x_side = _aggregate_side(
-        df_exports, config, config.reporter_iso_col, config.partner_iso_col, "x"
+        df_exports,
+        exporter_col=reporter_iso_col,
+        importer_col=partner_iso_col,
+        suffix="x",
+        product_col=product_col,
+        value_col=value_col,
+        qty_col=qty_col,
+        qty_unit_col=qty_unit_col,
+        netwgt_col=netwgt_col,
     )
     # Import : importateur = reporter, exportateur = partenaire
     df_m_side = _aggregate_side(
-        df_imports, config, config.partner_iso_col, config.reporter_iso_col, "m"
+        df_imports,
+        exporter_col=partner_iso_col,
+        importer_col=reporter_iso_col,
+        suffix="m",
+        product_col=product_col,
+        value_col=value_col,
+        qty_col=qty_col,
+        qty_unit_col=qty_unit_col,
+        netwgt_col=netwgt_col,
     )
 
     # Jointure externe des deux côtés sur la maille du flux
     df_mirror = df_x_side.merge(df_m_side, on=[_EXP, _IMP, _PROD, _YEAR], how="outer")
 
     # Retrait des paires exclues (flux internes instables, ex. BEL-LUX)
-    for a, b in config.excluded_pairs:
+    for a, b in excluded_pairs:
         drop = (
             ((df_mirror[_EXP] == a) & (df_mirror[_IMP] == b))
             | ((df_mirror[_EXP] == b) & (df_mirror[_IMP] == a))
@@ -390,12 +502,19 @@ class TonnageConverter:
 
     Estimates, per ``(product, source unit)``, an implicit conversion rate from
     mirror flows where one partner declares in tonnes and the other in the source
-    unit. A rate is validated only when at least :attr:`BaciConfig.min_mirror_flows`
-    observations are available and their std is below
-    :attr:`BaciConfig.max_conversion_std`.
+    unit. A rate is validated only when at least ``min_mirror_flows``
+    observations are available and their std is below ``max_conversion_std``.
 
     Args:
-        config: Column and threshold conventions.
+        weight_unit_codes: Quantity-unit codes already expressed as a weight in
+            kilograms (converted to tonnes by ``kg_to_tonne``).
+        kg_to_tonne: Multiplicative factor from kilograms to tonnes.
+        min_mirror_flows: Minimum mirror observations to validate a conversion
+            rate (``n >= 10``).
+        max_conversion_std: Maximum std of the ratios to validate a rate
+            (``std < 2.5``).
+        prefer_netwgt: When ``True``, use ``netWgt`` as the primary tonnage source
+            and fall back to unit conversion only when it is missing.
 
     Attributes:
         conversion_rates_: Mapping ``(product, unit) -> rate`` (tonnes per unit),
@@ -403,12 +522,21 @@ class TonnageConverter:
     """
 
     # Initialisation
-    def __init__(self, config: BaciConfig = DEFAULT_CONFIG) -> None:
-        # Intialisation des attributs
-        # Stockage de la config
-        self.config = config
-        # Dictionnaire des taux de conversion
-        self.conversion_rates_: Dict[Tuple[str, int], float] = {}
+    def __init__(
+        self,
+        *,
+        weight_unit_codes: Tuple[int, ...] = (8,),
+        kg_to_tonne: float = 1e-3,
+        min_mirror_flows: int = 10,
+        max_conversion_std: float = 2.5,
+        prefer_netwgt: bool = True,
+    ) -> None:
+        # Initialisation des attributs (stockage tel quel, convention sklearn)
+        self.weight_unit_codes = weight_unit_codes
+        self.kg_to_tonne = kg_to_tonne
+        self.min_mirror_flows = min_mirror_flows
+        self.max_conversion_std = max_conversion_std
+        self.prefer_netwgt = prefer_netwgt
 
     # Méthode auxiliaire : quantité en tonnes déjà connue (poids)
     def _tonnes_from_weight(self, qty: pd.Series, unit: pd.Series, nw: pd.Series) -> pd.Series:
@@ -423,56 +551,66 @@ class TonnageConverter:
             Tonnage from net weight (preferred) or from weight-unit quantities;
             ``NaN`` where neither is available.
         """
-        # Extraction de la config
-        cfg = self.config
         # Initialisation de la série des valeurs en tonnes
         tonnes = pd.Series(np.nan, index=qty.index, dtype="float64")
         # Repli/priorité sur le poids net (kg → tonnes)
-        if cfg.prefer_netwgt:
-            tonnes = tonnes.where(~(nw > 0), nw * cfg.kg_to_tonne)
+        if self.prefer_netwgt:
+            tonnes = tonnes.where(~(nw > 0), nw * self.kg_to_tonne)
         # Quantités déjà exprimées en unité de poids (kg → tonnes)
-        weight_unit = unit.isin(list(cfg.weight_unit_codes))
-        tonnes = tonnes.where(~(tonnes.isna() & weight_unit), qty * cfg.kg_to_tonne)
+        weight_unit = unit.isin(list(self.weight_unit_codes))
+        tonnes = tonnes.where(~(tonnes.isna() & weight_unit), qty * self.kg_to_tonne)
         return tonnes
 
     # Estimation des taux de conversion
-    def fit(self, mirror: pd.DataFrame) -> "TonnageConverter":
+    def fit(self, df_mirror: pd.DataFrame) -> "TonnageConverter":
         """Estimate per-``(product, unit)`` conversion rates from mirror flows.
 
         Args:
-            mirror: Mirror-flow table from :func:`build_mirror_flows`.
+            df_mirror: Mirror-flow table from :func:`build_mirror_flows`.
 
         Returns:
             The fitted converter (``self``).
         """
-        # Extraction de la configuration
-        cfg = self.config
         # Initialisation du dictionnaire des taux de conversion
         rates: Dict[Tuple[str, int], float] = {}
 
         # Tonnage connu (poids) de chaque côté, sans taux estimé
-        t_x = self._tonnes_from_weight(mirror["q_x"], mirror["unit_x"], mirror["nw_x"])
-        t_m = self._tonnes_from_weight(mirror["q_m"], mirror["unit_m"], mirror["nw_m"])
+        t_x = self._tonnes_from_weight(df_mirror["q_x"], df_mirror["unit_x"], df_mirror["nw_x"])
+        t_m = self._tonnes_from_weight(df_mirror["q_m"], df_mirror["unit_m"], df_mirror["nw_m"])
 
         # Observations du taux : un côté connu en tonnes, l'autre en unité source
         records: List[Tuple[str, int, float]] = []
         # Côté export en tonnes, import en unité source
-        _collect_ratio(records, mirror["q_m"], mirror["unit_m"], t_x, mirror[_PROD], cfg)
+        _collect_ratio(
+            records,
+            df_mirror["q_m"],
+            df_mirror["unit_m"],
+            t_x,
+            df_mirror[_PROD],
+            weight_unit_codes=self.weight_unit_codes,
+        )
         # Côté import en tonnes, export en unité source
-        _collect_ratio(records, mirror["q_x"], mirror["unit_x"], t_m, mirror[_PROD], cfg)
+        _collect_ratio(
+            records,
+            df_mirror["q_x"],
+            df_mirror["unit_x"],
+            t_m,
+            df_mirror[_PROD],
+            weight_unit_codes=self.weight_unit_codes,
+        )
 
         if records:
-            ratios = pd.DataFrame(records, columns=[_PROD, "unit", "ratio"])
+            df_ratios = pd.DataFrame(records, columns=[_PROD, "unit", "ratio"])
             # Filtres de validité : n ≥ 10 et écart-type < 2,5
-            grouped = ratios.groupby([_PROD, "unit"])["ratio"]
-            stats = grouped.agg(["mean", "std", "count"]).reset_index()
-            valid = stats[
-                (stats["count"] >= cfg.min_mirror_flows)
-                & (stats["std"] < cfg.max_conversion_std)
+            grouped = df_ratios.groupby([_PROD, "unit"])["ratio"]
+            df_stats = grouped.agg(["mean", "std", "count"]).reset_index()
+            df_valid = df_stats[
+                (df_stats["count"] >= self.min_mirror_flows)
+                & (df_stats["std"] < self.max_conversion_std)
             ]
             rates = {
                 (row[_PROD], int(row["unit"])): row["mean"]
-                for _, row in valid.iterrows()
+                for _, row in df_valid.iterrows()
             }
 
         # Mise à jour des taux de conversion
@@ -484,23 +622,30 @@ class TonnageConverter:
         return self
 
     # Application des taux : ajout des quantités en tonnes
-    def transform(self, mirror: pd.DataFrame) -> pd.DataFrame:
+    def transform(self, df_mirror: pd.DataFrame) -> pd.DataFrame:
         """Add tonne-denominated quantities ``q_x_t`` and ``q_m_t``.
 
         Args:
-            mirror: Mirror-flow table.
+            df_mirror: Mirror-flow table.
 
         Returns:
             The frame with two added columns ``q_x_t`` and ``q_m_t`` (tonnes),
             ``NaN`` when no source (weight or validated rate) is available.
+
+        Raises:
+            AttributeError: If called before :meth:`fit`.
         """
         # Copie indépendante du jeu de données
-        out = mirror.copy()
+        df_out = df_mirror.copy()
         # Ajout de colonnes exprimant les quantités en tonnes (à l'import et à l'export)
-        out["q_x_t"] = self._to_tonnes(out["q_x"], out["unit_x"], out["nw_x"], out[_PROD])
-        out["q_m_t"] = self._to_tonnes(out["q_m"], out["unit_m"], out["nw_m"], out[_PROD])
+        df_out["q_x_t"] = self._to_tonnes(
+            df_out["q_x"], df_out["unit_x"], df_out["nw_x"], df_out[_PROD]
+        )
+        df_out["q_m_t"] = self._to_tonnes(
+            df_out["q_m"], df_out["unit_m"], df_out["nw_m"], df_out[_PROD]
+        )
 
-        return out
+        return df_out
 
     # Méthode auxiliaire : conversion complète d'un côté vers la tonne
     def _to_tonnes(
@@ -540,7 +685,8 @@ def _collect_ratio(
     unit_unit: pd.Series,
     tonnes_other: pd.Series,
     product: pd.Series,
-    config: BaciConfig,
+    *,
+    weight_unit_codes: Tuple[int, ...] = (8,),
 ) -> None:
     """Append ``(product, unit, ratio)`` observations to ``records`` in place.
 
@@ -553,10 +699,11 @@ def _collect_ratio(
         unit_unit: Unit codes of ``qty_unit``.
         tonnes_other: Tonnage of the mirror partner (the tonnes side).
         product: Product codes.
-        config: Column conventions.
+        weight_unit_codes: Quantity-unit codes already expressed as a weight
+            (excluded from the ratio collection).
     """
     # Côté source non exprimé en poids et quantité strictement positive
-    is_source = (~unit_unit.isin(list(config.weight_unit_codes))) & (qty_unit > 0)
+    is_source = (~unit_unit.isin(list(weight_unit_codes))) & (qty_unit > 0)
     mask = is_source & (tonnes_other > 0)
     if not mask.any():
         return
@@ -579,7 +726,7 @@ def world_median_unit_values(df_mirror: pd.DataFrame) -> pd.Series:
     the product's transportability.
 
     Args:
-        mirror: Mirror-flow table with tonne quantities (``q_x_t``).
+        df_mirror: Mirror-flow table with tonne quantities (``q_x_t``).
 
     Returns:
         Series of median unit values indexed by product.
@@ -587,10 +734,10 @@ def world_median_unit_values(df_mirror: pd.DataFrame) -> pd.Series:
     # Valeur unitaire export sur flux exploitables
     uv = df_mirror["v_x"] / df_mirror["q_x_t"]
     # Extraction des valeurs unitaires valides non nulles
-    valid = df_mirror.loc[(df_mirror["v_x"] > 0) & (df_mirror["q_x_t"] > 0), [_PROD]].copy()
-    valid["uv"] = uv[valid.index]
+    df_valid = df_mirror.loc[(df_mirror["v_x"] > 0) & (df_mirror["q_x_t"] > 0), [_PROD]].copy()
+    df_valid["uv"] = uv[df_valid.index]
     # Calcul de la médiane par produit
-    return valid.groupby(_PROD)["uv"].median()
+    return df_valid.groupby(_PROD)["uv"].median()
 
 
 # Estimateur de l'équation de gravité des taux CAF
@@ -607,7 +754,8 @@ class CifGravityModel:
     value ``exp(X β̂)`` estimates ``1 + τ`` (see :meth:`predict`).
 
     Args:
-        config: Column and threshold conventions.
+        cook_factor: Cook's-distance cutoff factor; observations with
+            ``cook > cook_factor / n`` are dropped before the final fit.
 
     Attributes:
         result_: Fitted ``statsmodels`` WLS results.
@@ -616,56 +764,53 @@ class CifGravityModel:
     """
 
     # Initialisation
-    def __init__(self, config: BaciConfig = DEFAULT_CONFIG) -> None:
-        # Initialisation des attributs
-        # Initialisation de la configuration
-        self.config = config
-        # Initialisation des attributs résultats
-        self.result_ = None
-        self.design_columns_: List[str] = []
-        self.uv_world_: Optional[pd.Series] = None
+    def __init__(self, *, cook_factor: float = 4.0) -> None:
+        # Initialisation des attributs (stockage tel quel, convention sklearn)
+        self.cook_factor = cook_factor
 
     # Construction de la matrice de design (variables explicatives)
-    def _design(self, df: pd.DataFrame, gravity: pd.DataFrame) -> pd.DataFrame:
+    def _design(self, df_flows: pd.DataFrame, df_gravity: pd.DataFrame) -> pd.DataFrame:
         """Build the gravity design frame (regressors only).
 
         Args:
-            df: Flows with tonne quantities and the mirror identities.
-            gravity: Bilateral gravity frame from :func:`build_gravity_data`.
+            df_flows: Flows with tonne quantities and the mirror identities.
+            df_gravity: Bilateral gravity frame from :func:`build_gravity_data`.
 
         Returns:
-            A design frame indexed like ``df`` with the gravity regressors and
-            year dummies; rows with missing distance are dropped.
+            A design frame indexed like ``df_flows`` with the gravity regressors
+            and year dummies; rows with missing distance are dropped.
         """
         # Jointure des variables de gravité (exportateur = origine, importateur = destination)
-        merged = df.merge(
-            gravity.rename(columns={"iso_o": _EXP, "iso_d": _IMP}),
+        df_merged = df_flows.merge(
+            df_gravity.rename(columns={"iso_o": _EXP, "iso_d": _IMP}),
             on=[_EXP, _IMP],
             how="left",
         )
         # Valeur unitaire médiane mondiale du produit
-        merged["uv_world"] = merged[_PROD].map(self.uv_world_)
+        df_merged["uv_world"] = df_merged[_PROD].map(self.uv_world_)
 
         # Variables transformées (logarithmes protégés)
-        design = pd.DataFrame(index=merged.index)
-        design["ln_dist"] = np.log(merged["distw"])
-        design["ln_dist2"] = design["ln_dist"] ** 2
-        design["contig"] = merged["contig"].astype("float64")
-        design["landlocked_i"] = merged["landlocked_o"].astype("float64")
-        design["landlocked_j"] = merged["landlocked_d"].astype("float64")
-        design["ln_uv"] = np.log(merged["uv_world"])
+        df_design = pd.DataFrame(index=df_merged.index)
+        df_design["ln_dist"] = np.log(df_merged["distw"])
+        df_design["ln_dist2"] = df_design["ln_dist"] ** 2
+        df_design["contig"] = df_merged["contig"].astype("float64")
+        df_design["landlocked_i"] = df_merged["landlocked_o"].astype("float64")
+        df_design["landlocked_j"] = df_merged["landlocked_d"].astype("float64")
+        df_design["ln_uv"] = np.log(df_merged["uv_world"])
         # Indicatrices d'année (référence = première année)
-        year_dummies = pd.get_dummies(merged[_YEAR], prefix="year", drop_first=True).astype("float64")
-        design = pd.concat([design, year_dummies], axis=1)
-        return design
+        df_year_dummies = pd.get_dummies(
+            df_merged[_YEAR], prefix="year", drop_first=True
+        ).astype("float64")
+        df_design = pd.concat([df_design, df_year_dummies], axis=1)
+        return df_design
 
     # Estimation du modèle
-    def fit(self, mirror: pd.DataFrame, gravity: pd.DataFrame) -> "CifGravityModel":
+    def fit(self, df_mirror: pd.DataFrame, df_gravity: pd.DataFrame) -> "CifGravityModel":
         """Estimate the gravity equation on complete mirror flows.
 
         Args:
-            mirror: Mirror-flow table with tonne quantities.
-            gravity: Bilateral gravity frame.
+            df_mirror: Mirror-flow table with tonne quantities.
+            df_gravity: Bilateral gravity frame.
 
         Returns:
             The fitted model (``self``).
@@ -673,74 +818,70 @@ class CifGravityModel:
         Raises:
             ValueError: If no usable observation remains after filtering.
         """
-        # Extraction de la configuration
-        cfg = self.config
         # Valeurs unitaires mondiales calées sur l'échantillon
-        self.uv_world_ = world_median_unit_values(mirror)
+        self.uv_world_ = world_median_unit_values(df_mirror)
 
         # Échantillon d'estimation : flux miroirs complets exploitables
-        m = mirror[
-            (mirror["v_x"] > 0)
-            & (mirror["v_m"] > 0)
-            & (mirror["q_x_t"] > 0)
-            & (mirror["q_m_t"] > 0)
+        df_sample = df_mirror[
+            (df_mirror["v_x"] > 0)
+            & (df_mirror["v_m"] > 0)
+            & (df_mirror["q_x_t"] > 0)
+            & (df_mirror["q_m_t"] > 0)
         ].copy()
 
         # Variable dépendante : log du rapport des valeurs unitaires (CAF/FAB)
-        uv_x = m["v_x"] / m["q_x_t"]
-        uv_m = m["v_m"] / m["q_m_t"]
+        uv_x = df_sample["v_x"] / df_sample["q_x_t"]
+        uv_m = df_sample["v_m"] / df_sample["q_m_t"]
         y = np.log(uv_m / uv_x)
 
         # Pondération : rapport des quantités miroirs min/max ∈ (0, 1]
-        q_min = np.minimum(m["q_x_t"], m["q_m_t"])
-        q_max = np.maximum(m["q_x_t"], m["q_m_t"])
+        q_min = np.minimum(df_sample["q_x_t"], df_sample["q_m_t"])
+        q_max = np.maximum(df_sample["q_x_t"], df_sample["q_m_t"])
         weights = (q_min / q_max).to_numpy()
 
         # Matrice de design
         # Variable explicatives
-        design = self._design(m, gravity)
+        df_design = self._design(df_sample, df_gravity)
         # Ajout de la variable dépendante
-        design["_y"] = y.to_numpy()
+        df_design["_y"] = y.to_numpy()
         # Ajout des poids
-        design["_w"] = weights
+        df_design["_w"] = weights
         # Retrait des lignes non exploitables (gravité/UV manquants, y non fini)
-        design = design.replace([np.inf, -np.inf], np.nan).dropna()
-        if design.empty:
+        df_design = df_design.replace([np.inf, -np.inf], np.nan).dropna()
+        if df_design.empty:
             raise ValueError("No usable observation for the gravity estimation")
 
         # Extraction de la variable dépendante
-        y_fit = design.pop("_y")
+        y_fit = df_design.pop("_y")
         # Extraction des poids
-        w_fit = design.pop("_w")
+        w_fit = df_design.pop("_w")
         # Enumération des colonnes correspondant aux variables explicatives
-        self.design_columns_ = list(design.columns)
+        self.design_columns_ = list(df_design.columns)
         # Ajout d'une constante
-        X = sm.add_constant(design, has_constant="add")
+        df_x = sm.add_constant(df_design, has_constant="add")
 
         # Première estimation WLS
-        model = sm.WLS(y_fit, X, weights=w_fit)
+        model = sm.WLS(y_fit, df_x, weights=w_fit)
         res = model.fit()
 
         # Robustesse : retrait des observations influentes (distance de Cook)
         try:
-            
-
             # Influence calculée sur le modèle blanchi (OLS sur données
             # transformées par √w, équivalent exact du WLS) afin que la
             # distance de Cook tienne compte des poids
             sqrt_w = np.sqrt(np.asarray(w_fit, dtype="float64"))
             whitened = sm.OLS(
                 np.asarray(y_fit, dtype="float64") * sqrt_w,
-                X.to_numpy(dtype="float64") * sqrt_w[:, None],
+                df_x.to_numpy(dtype="float64") * sqrt_w[:, None],
             ).fit()
             # Calcul de a distance de cook
             cook = OLSInfluence(whitened).cooks_distance[0]
             # Détermination du seuil de décision
-            cutoff = cfg.cook_factor / len(cook)
+            cutoff = self.cook_factor / len(cook)
             # Conservation des observations qui satisfont le seuil
             keep = cook < cutoff
-            if keep.sum() > X.shape[1] and (~keep).any():
-                res = sm.WLS(y_fit[keep], X[keep], weights=w_fit[keep]).fit()
+            if keep.sum() > df_x.shape[1] and (~keep).any():
+                res = sm.WLS(y_fit[keep], df_x[keep], weights=w_fit[keep]).fit()
                 # Logging
                 logger.info(
                     "CifGravityModel: %d/%d observations influentes retirées (Cook)",
@@ -760,24 +901,27 @@ class CifGravityModel:
         return self
 
     # Prédiction du taux de fret
-    def predict(self, mirror: pd.DataFrame, gravity: pd.DataFrame) -> pd.Series:
+    def predict(self, df_mirror: pd.DataFrame, df_gravity: pd.DataFrame) -> pd.Series:
         """Predict the freight rate ``exp(X β̂)`` for each flow.
 
         Args:
-            mirror: Mirror-flow table with tonne quantities.
-            gravity: Bilateral gravity frame.
+            df_mirror: Mirror-flow table with tonne quantities.
+            df_gravity: Bilateral gravity frame.
 
         Returns:
-            Series of estimated freight rates ``τ̂`` aligned on ``mirror`` (``NaN``
-            where gravity variables are missing). The dependent variable is
-            ``ln(UVm/UVx) = ln(1 + τ)``, so the freight rate is
+            Series of estimated freight rates ``τ̂`` aligned on ``df_mirror``
+            (``NaN`` where gravity variables are missing). The dependent variable
+            is ``ln(UVm/UVx) = ln(1 + τ)``, so the freight rate is
             ``τ̂ = exp(X β̂) − 1`` and the fobisation divides by ``1 + τ̂``.
+
+        Raises:
+            AttributeError: If called before :meth:`fit`.
         """
         # Construction du design puis alignement sur les colonnes d'estimation
-        design = self._design(mirror, gravity)
-        design = design.reindex(columns=self.design_columns_, fill_value=0.0)
-        X = sm.add_constant(design, has_constant="add")
-        pred = self.result_.predict(X)
+        df_design = self._design(df_mirror, df_gravity)
+        df_design = df_design.reindex(columns=self.design_columns_, fill_value=0.0)
+        df_x = sm.add_constant(df_design, has_constant="add")
+        pred = self.result_.predict(df_x)
         # La régression prédit ln(1 + τ) : le taux de fret est exp(prédiction) − 1
         return np.expm1(pred)
 
@@ -796,57 +940,65 @@ class Fobizer:
     (only when it reduces the mirror gap), and a floor at zero.
 
     Args:
-        config: Country-list conventions.
+        non_cif_countries: Importer ISO-3 codes that do not declare CIF (freight
+            never stripped).
+        fas_countries: Importer ISO-3 codes declaring FAS (freight stripped only
+            when it reduces the mirror gap).
     """
 
     # Initialisation
-    def __init__(self, config: BaciConfig = DEFAULT_CONFIG) -> None:
-        # Initialisation des attributs
-        # Instanciation de la configuration
-        self.config = config
+    def __init__(
+        self,
+        *,
+        non_cif_countries: Tuple[str, ...] = (
+            "DZA", "GEO", "ZAF", "BWA", "LSO", "NAM", "SWZ",
+        ),
+        fas_countries: Tuple[str, ...] = ("CAN",),
+    ) -> None:
+        # Initialisation des attributs (stockage tel quel, convention sklearn)
+        self.non_cif_countries = non_cif_countries
+        self.fas_countries = fas_countries
 
     # Application de la fobisation
-    def transform(self, mirror: pd.DataFrame, cif_rate: pd.Series) -> pd.DataFrame:
+    def transform(self, df_mirror: pd.DataFrame, cif_rate: pd.Series) -> pd.DataFrame:
         """Add the FOB-equivalent import value ``v_m_fob``.
 
         Args:
-            mirror: Mirror-flow table.
+            df_mirror: Mirror-flow table.
             cif_rate: Estimated freight rate per flow (from
                 :meth:`CifGravityModel.predict`).
 
         Returns:
             The frame with an added ``v_m_fob`` column.
         """
-        # Extraction de la configuration
-        cfg = self.config
         # Copie indépendante des données
-        out = mirror.copy()
+        df_out = df_mirror.copy()
         # Extraction de la valeur CIF (qui correspond généralement aux données d'importation)
-        v_m = out["v_m"]
+        v_m = df_out["v_m"]
 
         # Valeur fobisée candidate (plancher à zéro), taux manquant → pas de correction
-        rate = cif_rate.reindex(out.index)
+        rate = cif_rate.reindex(df_out.index)
         v_m_fob = np.where(rate.notna(), v_m / (1.0 + rate), v_m)
         v_m_fob = np.clip(v_m_fob, a_min=0.0, a_max=None)
-        candidate = pd.Series(v_m_fob, index=out.index)
+        candidate = pd.Series(v_m_fob, index=df_out.index)
 
         # Importateurs ne déclarant pas en CAF : aucune correction
         # /!\ A déterminer à partir des données et non plus à partir de la configuration
-        non_cif = out[_IMP].isin(list(cfg.non_cif_countries))
+        non_cif = df_out[_IMP].isin(list(self.non_cif_countries))
         candidate = candidate.where(~non_cif, v_m)
 
         # Importateurs FAS : correction conservée seulement si elle réduit l'écart miroir
-        fas = out[_IMP].isin(list(cfg.fas_countries))
+        fas = df_out[_IMP].isin(list(self.fas_countries))
         if fas.any():
-            has_mirror = (out["v_x"] > 0) & (v_m > 0)
-            gap_before = np.abs(np.log(out["v_x"] / v_m))
-            gap_after = np.abs(np.log(out["v_x"] / candidate.replace(0.0, np.nan)))
+            has_mirror = (df_out["v_x"] > 0) & (v_m > 0)
+            gap_before = np.abs(np.log(df_out["v_x"] / v_m))
+            gap_after = np.abs(np.log(df_out["v_x"] / candidate.replace(0.0, np.nan)))
             # Ne garder la correction FAS que lorsqu'elle réduit l'écart
             revert = fas & has_mirror & ~(gap_after < gap_before)
             candidate = candidate.where(~revert, v_m)
 
-        out["v_m_fob"] = candidate
-        return out
+        df_out["v_m_fob"] = candidate
+        return df_out
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -880,22 +1032,16 @@ class ReportingQualityModel:
     declared *values* for both targets, as in the note. Per-country marginal
     means are turned into standard deviations ``σ̂``.
 
-    Args:
-        config: Column conventions.
+    The step works on the canonical mirror-flow columns only, so it carries no
+    methodological parameter.
     """
 
-    # Initialisation
-    def __init__(self, config: BaciConfig = DEFAULT_CONFIG) -> None:
-        # Initialisation des attributs
-        # Instanciation de la configuration
-        self.config = config
-
     # Estimation pour une cible (valeurs ou quantités)
-    def fit(self, mirror: pd.DataFrame, target: str) -> QualityResult:
+    def fit(self, df_mirror: pd.DataFrame, target: str) -> QualityResult:
         """Estimate per-country variances for a target quantity.
 
         Args:
-            mirror: Mirror-flow table with ``v_x``, ``v_m_fob`` (and tonne
+            df_mirror: Mirror-flow table with ``v_x``, ``v_m_fob`` (and tonne
                 quantities ``q_x_t``, ``q_m_t``).
             target: ``"value"`` (uses ``v_x`` vs ``v_m_fob``) or ``"quantity"``
                 (uses ``q_x_t`` vs ``q_m_t``).
@@ -908,25 +1054,27 @@ class ReportingQualityModel:
         """
         # Sélection des colonnes de flux selon la cible
         if target == "value":
-            v_i, v_j = mirror["v_x"], mirror["v_m_fob"]
+            v_i, v_j = df_mirror["v_x"], df_mirror["v_m_fob"]
         elif target == "quantity":
-            v_i, v_j = mirror["q_x_t"], mirror["q_m_t"]
+            v_i, v_j = df_mirror["q_x_t"], df_mirror["q_m_t"]
         else:
             raise ValueError("target must be 'value' or 'quantity'")
 
         # Flux miroirs complets et strictement positifs
-        m = mirror.assign(_vi=v_i, _vj=v_j)
-        m = m[(m["_vi"] > 0) & (m["_vj"] > 0)].copy()
+        df_sample = df_mirror.assign(_vi=v_i, _vj=v_j)
+        df_sample = df_sample[(df_sample["_vi"] > 0) & (df_sample["_vj"] > 0)].copy()
 
         # Distance de déclaration ; pondération par le log de la somme des
         # valeurs déclarées (s = ln(V_i + V_j)), y compris pour la
         # qualité estimée sur les quantités
-        m["_rd"] = np.abs(np.log(m["_vi"] / m["_vj"]))
-        m["_w"] = np.log(m["v_x"].fillna(0.0) + m["v_m_fob"].fillna(0.0))
-        m = m[(m["_w"] > 0) & np.isfinite(m["_rd"])]
+        df_sample["_rd"] = np.abs(np.log(df_sample["_vi"] / df_sample["_vj"]))
+        df_sample["_w"] = np.log(
+            df_sample["v_x"].fillna(0.0) + df_sample["v_m_fob"].fillna(0.0)
+        )
+        df_sample = df_sample[(df_sample["_w"] > 0) & np.isfinite(df_sample["_rd"])]
 
         # Effets exportateur et importateur extraits d'une même ANOVA absorbée
-        effects = _absorbed_anova_effects(m, self.config)
+        effects = _absorbed_anova_effects(df_sample)
         ls_exp, se_exp = effects[_EXP]
         ls_imp, se_imp = effects[_IMP]
 
@@ -938,7 +1086,7 @@ class ReportingQualityModel:
 
 # Fonction d'estimation des effets des dimensions pays par ANOVA absorbée
 def _absorbed_anova_effects(
-    m: pd.DataFrame, config: BaciConfig
+    df_sample: pd.DataFrame,
 ) -> Dict[str, Tuple[pd.Series, pd.Series]]:
     """Estimate exporter and importer effects of ``RD`` via one absorbed ANOVA.
 
@@ -951,9 +1099,8 @@ def _absorbed_anova_effects(
     including a proper (non-zero) standard error for the reference level.
 
     Args:
-        m: Prepared frame with ``_rd`` (dependent), ``_w`` (weight), the entity
-            columns and ``year``/``product``.
-        config: Column conventions.
+        df_sample: Prepared frame with ``_rd`` (dependent), ``_w`` (weight), the
+            entity columns and ``year``/``product``.
 
     Returns:
         Mapping ``{dimension: (effects, std_errors)}`` for the ``exporter`` and
@@ -963,15 +1110,17 @@ def _absorbed_anova_effects(
     # Variables explicatives : indicatrices exportateur + importateur + année.
     # Pas de constante explicite : absorbée par les effets fixes produit (elle
     # deviendrait colinéaire après transformation within).
-    exog = pd.get_dummies(
-        m[[_EXP, _IMP, _YEAR]].astype(str), drop_first=True
+    df_exog = pd.get_dummies(
+        df_sample[[_EXP, _IMP, _YEAR]].astype(str), drop_first=True
     ).astype("float64")
 
     # Dimension produit absorbée (transformation within)
-    absorb = m[[_PROD]].astype("category")
+    df_absorb = df_sample[[_PROD]].astype("category")
 
     # Estimation absorbée pondérée : un seul ajustement pour les deux dimensions
-    res = AbsorbingLS(m["_rd"], exog, absorb=absorb, weights=m["_w"]).fit()
+    res = AbsorbingLS(
+        df_sample["_rd"], df_exog, absorb=df_absorb, weights=df_sample["_w"]
+    ).fit()
     params = res.params
     cov = res.cov
 
@@ -979,7 +1128,7 @@ def _absorbed_anova_effects(
     out: Dict[str, Tuple[pd.Series, pd.Series]] = {}
     # Parcours des colonnes d'importation et d'exportation
     for entity_col in (_EXP, _IMP):
-        levels = sorted(m[entity_col].astype(str).unique())
+        levels = sorted(df_sample[entity_col].astype(str).unique())
         n_levels = len(levels)
         # Coefficients en codage de référence (modalité de référence : zéro)
         coefs = pd.Series(
@@ -1068,25 +1217,21 @@ class MirrorReconciler:
     none exists the flow is absent. Values and quantities are reconciled with
     their respective (value/quantity) quality variances.
 
-    Args:
-        config: Column conventions.
+    The step works on the canonical mirror-flow columns only, so it carries no
+    methodological parameter.
     """
-
-    # Initialisation
-    def __init__(self, config: BaciConfig = DEFAULT_CONFIG) -> None:
-        self.config = config
 
     # Réconciliation des valeurs et des quantités
     def transform(
         self,
-        mirror: pd.DataFrame,
+        df_mirror: pd.DataFrame,
         quality_value: QualityResult,
         quality_qty: QualityResult,
     ) -> pd.DataFrame:
         """Produce the reconciled value and quantity per flow.
 
         Args:
-            mirror: Mirror-flow table with ``v_x``, ``v_m_fob``, ``q_x_t``,
+            df_mirror: Mirror-flow table with ``v_x``, ``v_m_fob``, ``q_x_t``,
                 ``q_m_t``.
             quality_value: Per-country variances estimated on values.
             quality_qty: Per-country variances estimated on quantities.
@@ -1096,30 +1241,30 @@ class MirrorReconciler:
             ``reconciled_value`` and ``reconciled_quantity``.
         """
         # Copie indépendante des données
-        out = mirror.copy()
+        df_out = df_mirror.copy()
 
         # Réconciliation des valeurs (export FAB vs import fobisé)
-        out["reconciled_value"] = _reconcile_pair(
-            out, "v_x", "v_m_fob", quality_value
+        df_out["reconciled_value"] = _reconcile_pair(
+            df_out, "v_x", "v_m_fob", quality_value
         )
         # Réconciliation des quantités (tonnes des deux côtés)
-        out["reconciled_quantity"] = _reconcile_pair(
-            out, "q_x_t", "q_m_t", quality_qty
+        df_out["reconciled_quantity"] = _reconcile_pair(
+            df_out, "q_x_t", "q_m_t", quality_qty
         )
-        
+
         # Restriction aux colonnes d'intérêt
         cols = [_EXP, _IMP, _PROD, _YEAR, "reconciled_value", "reconciled_quantity"]
-        return out[cols]
+        return df_out[cols]
 
 
 # Fonction de réconciliation d'un couple de colonnes miroirs
 def _reconcile_pair(
-    df: pd.DataFrame, col_i: str, col_j: str, quality: QualityResult
+    df_mirror: pd.DataFrame, col_i: str, col_j: str, quality: QualityResult
 ) -> pd.Series:
     """Reconcile one mirror pair (value or quantity) into a single series.
 
     Args:
-        df: Mirror-flow table.
+        df_mirror: Mirror-flow table.
         col_i: Exporter-side column (``V_i``).
         col_j: Importer-side column (``V_j``, already FOB-comparable).
         quality: Per-country variances for the reconciled quantity.
@@ -1129,8 +1274,8 @@ def _reconcile_pair(
         ``NaN`` when neither side exists).
     """
     # Extraction des valeurs d'intérêt des données
-    v_i = df[col_i]
-    v_j = df[col_j]
+    v_i = df_mirror[col_i]
+    v_j = df_mirror[col_j]
     # Extraction d'une indicatrice indiquant les valeurs positives
     has_i = v_i > 0
     has_j = v_j > 0
@@ -1142,14 +1287,18 @@ def _reconcile_pair(
     default_i = float(quality.sigma_export.median()) if len(quality.sigma_export) else 0.0
     default_j = float(quality.sigma_import.median()) if len(quality.sigma_import) else 0.0
     # Calcul des écarts-types
-    sigma_i = df[_EXP].map(quality.sigma_export).astype("float64").fillna(default_i).to_numpy()
-    sigma_j = df[_IMP].map(quality.sigma_import).astype("float64").fillna(default_j).to_numpy()
+    sigma_i = (
+        df_mirror[_EXP].map(quality.sigma_export).astype("float64").fillna(default_i).to_numpy()
+    )
+    sigma_j = (
+        df_mirror[_IMP].map(quality.sigma_import).astype("float64").fillna(default_j).to_numpy()
+    )
     # Calcul du poids
     w = _optimal_weight(sigma_i, sigma_j)
 
     # Combinaison convexe lorsque les deux flux existent
     both = (has_i & has_j).to_numpy()
-    reconciled = pd.Series(np.nan, index=df.index, dtype="float64")
+    reconciled = pd.Series(np.nan, index=df_mirror.index, dtype="float64")
     combo = w * v_i.fillna(0.0).to_numpy() + (1.0 - w) * v_j.fillna(0.0).to_numpy()
     reconciled[both] = combo[both]
     # Un seul flux présent : on le conserve
@@ -1186,18 +1335,39 @@ class AreaNesReallocator:
     The complete list of Areas not elsewhere specified is available at https://uncomtrade.org/docs/areas-not-elsewhere-specified/
 
     Args:
-        config: Column and NES-code conventions.
+        flow_col: Column holding the trade-flow code.
+        export_code: Flow code identifying export declarations (FOB).
+        reporter_iso_col: Column with the reporter ISO-3 code.
+        product_col: Column with the product (HS6) code.
+        period_col: Column with the period (year as text).
+        value_col: Column with the primary trade value.
     """
 
     # Initialisation
-    def __init__(self, config: BaciConfig = DEFAULT_CONFIG) -> None:
-        # Initialisation des attributs
-        # Instanciation de la configuration
-        self.config = config
+    def __init__(
+        self,
+        *,
+        flow_col: str = "flowCode",
+        export_code: str = "X",
+        reporter_iso_col: str = "reporterISO",
+        product_col: str = "cmdCode",
+        period_col: str = "period",
+        value_col: str = "primaryValue",
+    ) -> None:
+        # Initialisation des attributs (stockage tel quel, convention sklearn)
+        self.flow_col = flow_col
+        self.export_code = export_code
+        self.reporter_iso_col = reporter_iso_col
+        self.product_col = product_col
+        self.period_col = period_col
+        self.value_col = value_col
 
     # Réallocation des flux NES sur les partenaires identifiés
     def transform(
-        self, reconciled: pd.DataFrame, mirror: pd.DataFrame, nes: pd.DataFrame
+        self,
+        df_reconciled: pd.DataFrame,
+        df_mirror: pd.DataFrame,
+        df_nes: pd.DataFrame,
     ) -> pd.DataFrame:
         """Add reallocated NES value to the reconciled flows.
 
@@ -1216,150 +1386,157 @@ class AreaNesReallocator:
            identifiable partner, is discarded (logged).
 
         Args:
-            reconciled: Reconciled flows from :meth:`MirrorReconciler.transform`.
-            mirror: Mirror-flow table (for per-partner declared/mirror sums).
-            nes: "Areas NES" declarations kept aside by :func:`build_mirror_flows`.
+            df_reconciled: Reconciled flows from :meth:`MirrorReconciler.transform`.
+            df_mirror: Mirror-flow table (for per-partner declared/mirror sums).
+            df_nes: "Areas NES" declarations kept aside by
+                :func:`build_mirror_flows`.
 
         Returns:
             The reconciled frame with NES value distributed across identified
             partners (unchanged when there is nothing to reallocate; missing
             reconciled values stay missing).
         """
-        # Extraction de la configuration
-        cfg = self.config
         # Initialisation des clés
         keys3 = [_EXP, _PROD, _YEAR]
         keys4 = [_EXP, _IMP, _PROD, _YEAR]
-        if nes.empty:
-            return reconciled
+        if df_nes.empty:
+            return df_reconciled
 
         # Valeur NES exportée par (exportateur, produit, année)
-        nes_exp = nes[nes[cfg.flow_col] == cfg.export_code].copy()
+        df_nes_exp = df_nes[df_nes[self.flow_col] == self.export_code].copy()
 
         # Vérification que le DataFrame est non vide
-        if nes_exp.empty:
-            return reconciled
-        
+        if df_nes_exp.empty:
+            return df_reconciled
+
         # Extraction de la date
-        nes_exp["_year"] = nes_exp[cfg.period_col].astype(str).str[:4].astype(int)
+        df_nes_exp["_year"] = df_nes_exp[self.period_col].astype(str).str[:4].astype(int)
         # Somme par pays, produit et année
-        nes_value = (
-            nes_exp.groupby([cfg.reporter_iso_col, cfg.product_col, "_year"])[cfg.value_col]
+        df_nes_value = (
+            df_nes_exp.groupby(
+                [self.reporter_iso_col, self.product_col, "_year"]
+            )[self.value_col]
             .sum()
             .rename("v_nes")
             .reset_index()
             .rename(
-                columns={cfg.reporter_iso_col: _EXP, cfg.product_col: _PROD, "_year": _YEAR}
+                columns={
+                    self.reporter_iso_col: _EXP,
+                    self.product_col: _PROD,
+                    "_year": _YEAR,
+                }
             )
         )
 
         # Découpage des flux de chaque exportateur : miroirs complets (les deux
         # déclarations existent) vs imports déclarés sans miroir export
-        detail = mirror[keys4 + ["v_x", "v_m_fob"]].copy()
-        has_x = detail["v_x"] > 0
-        has_m = detail["v_m_fob"] > 0
-        complete = detail[has_x & has_m].copy()
+        df_detail = df_mirror[keys4 + ["v_x", "v_m_fob"]].copy()
+        has_x = df_detail["v_x"] > 0
+        has_m = df_detail["v_m_fob"] > 0
+        df_complete = df_detail[has_x & has_m].copy()
 
         # Étape 1 — sous-déclaration mesurée sur les miroirs complets :
         # Σ V_x vs Σ V_m des déclarations miroirs correspondantes
-        sums = (
-            complete.groupby(keys3)
+        df_sums = (
+            df_complete.groupby(keys3)
             .agg(sum_vx=("v_x", "sum"), sum_vm=("v_m_fob", "sum"))
             .reset_index()
         )
-        alloc = nes_value.merge(sums, on=keys3, how="left")
-        alloc[["sum_vx", "sum_vm"]] = alloc[["sum_vx", "sum_vm"]].fillna(0.0)
+        df_alloc = df_nes_value.merge(df_sums, on=keys3, how="left")
+        df_alloc[["sum_vx", "sum_vm"]] = df_alloc[["sum_vx", "sum_vm"]].fillna(0.0)
         # Valeur réallouable : min(V_nes, Σ V_m − Σ V_x) si l'exportateur sous-déclare
-        alloc["shortfall"] = (alloc["sum_vm"] - alloc["sum_vx"]).clip(lower=0.0)
-        alloc["realloc"] = np.minimum(alloc["v_nes"], alloc["shortfall"])
+        df_alloc["shortfall"] = (df_alloc["sum_vm"] - df_alloc["sum_vx"]).clip(lower=0.0)
+        df_alloc["realloc"] = np.minimum(df_alloc["v_nes"], df_alloc["shortfall"])
 
         # Répartition proportionnelle au manque par partenaire (V_m − V_x > 0)
-        complete["missing"] = (complete["v_m_fob"] - complete["v_x"]).clip(lower=0.0)
-        shares = complete.merge(
-            alloc.loc[alloc["realloc"] > 0, keys3 + ["realloc"]],
+        df_complete["missing"] = (df_complete["v_m_fob"] - df_complete["v_x"]).clip(lower=0.0)
+        df_shares = df_complete.merge(
+            df_alloc.loc[df_alloc["realloc"] > 0, keys3 + ["realloc"]],
             on=keys3,
             how="inner",
         )
 
         # Initialisation du jeu de données des valeurs à ajouter
-        add: Optional[pd.DataFrame] = None
-        if not shares.empty:
-            group_missing = shares.groupby(keys3)["missing"].transform("sum")
-            shares["share"] = np.where(
-                group_missing > 0, shares["missing"] / group_missing, 0.0
+        df_add: Optional[pd.DataFrame] = None
+        if not df_shares.empty:
+            group_missing = df_shares.groupby(keys3)["missing"].transform("sum")
+            df_shares["share"] = np.where(
+                group_missing > 0, df_shares["missing"] / group_missing, 0.0
             )
-            shares["add_value"] = shares["realloc"] * shares["share"]
+            df_shares["add_value"] = df_shares["realloc"] * df_shares["share"]
 
             # Étape 2 — garde-fou : réallocation d'un groupe conservée
             # seulement si elle réduit son écart miroir global Σ |ln(V_x/V_m)|
-            shares["_gap_before"] = np.abs(np.log(shares["v_x"] / shares["v_m_fob"]))
-            shares["_gap_after"] = np.abs(
-                np.log((shares["v_x"] + shares["add_value"]) / shares["v_m_fob"])
+            df_shares["_gap_before"] = np.abs(np.log(df_shares["v_x"] / df_shares["v_m_fob"]))
+            df_shares["_gap_after"] = np.abs(
+                np.log((df_shares["v_x"] + df_shares["add_value"]) / df_shares["v_m_fob"])
             )
-            gaps = (
-                shares.groupby(keys3)
+            df_gaps = (
+                df_shares.groupby(keys3)
                 .agg(gap_before=("_gap_before", "sum"), gap_after=("_gap_after", "sum"))
                 .reset_index()
             )
-            improving = gaps.loc[gaps["gap_after"] < gaps["gap_before"], keys3]
-            shares = shares.merge(improving, on=keys3, how="inner")
-            if not shares.empty:
-                add = shares[keys4 + ["add_value"]]
+            df_improving = df_gaps.loc[df_gaps["gap_after"] < df_gaps["gap_before"], keys3]
+            df_shares = df_shares.merge(df_improving, on=keys3, how="inner")
+            if not df_shares.empty:
+                df_add = df_shares[keys4 + ["add_value"]]
 
         # Étape 3 — résidu V_nes' confronté aux imports sans miroir V_m' :
         # inférieur → déjà compté dans V_m' (ramené à zéro, pas de double
         # compte) ; sinon seul l'excédent subsiste et, sans partenaire
         # identifiable, il est écarté
-        if add is not None:
-            allocated = (
-                add.groupby(keys3)["add_value"].sum().rename("allocated").reset_index()
+        if df_add is not None:
+            df_allocated = (
+                df_add.groupby(keys3)["add_value"].sum().rename("allocated").reset_index()
             )
-            residual = alloc.merge(allocated, on=keys3, how="left")
+            df_residual = df_alloc.merge(df_allocated, on=keys3, how="left")
         else:
-            residual = alloc.copy()
-            residual["allocated"] = 0.0
-        residual["allocated"] = residual["allocated"].fillna(0.0)
-        residual["v_nes_prime"] = (residual["v_nes"] - residual["allocated"]).clip(lower=0.0)
-        vm_prime = (
-            detail[has_m & ~has_x]
+            df_residual = df_alloc.copy()
+            df_residual["allocated"] = 0.0
+        df_residual["allocated"] = df_residual["allocated"].fillna(0.0)
+        df_residual["v_nes_prime"] = (
+            df_residual["v_nes"] - df_residual["allocated"]
+        ).clip(lower=0.0)
+        df_vm_prime = (
+            df_detail[has_m & ~has_x]
             .groupby(keys3)["v_m_fob"]
             .sum()
             .rename("vm_prime")
             .reset_index()
         )
-        residual = residual.merge(vm_prime, on=keys3, how="left")
-        residual["vm_prime"] = residual["vm_prime"].fillna(0.0)
-        residual["unallocated"] = np.where(
-            residual["v_nes_prime"] < residual["vm_prime"],
+        df_residual = df_residual.merge(df_vm_prime, on=keys3, how="left")
+        df_residual["vm_prime"] = df_residual["vm_prime"].fillna(0.0)
+        df_residual["unallocated"] = np.where(
+            df_residual["v_nes_prime"] < df_residual["vm_prime"],
             0.0,
-            residual["v_nes_prime"] - residual["vm_prime"],
+            df_residual["v_nes_prime"] - df_residual["vm_prime"],
         )
 
-        if add is None:
+        if df_add is None:
             # Logging
             logger.info(
                 "AreaNesReallocator: aucune réallocation (%.1f de valeur NES, "
                 "%.1f écartés faute de partenaire identifiable)",
-                float(residual["v_nes"].sum()), float(residual["unallocated"].sum()),
+                float(df_residual["v_nes"].sum()), float(df_residual["unallocated"].sum()),
             )
-            return reconciled
+            return df_reconciled
 
         # Ajout de la valeur réallouée aux flux réconciliés ; les flux sans
         # réallocation (dont les valeurs réconciliées manquantes) restent intacts
-        out = reconciled.merge(add, on=keys4, how="left")
-        add_value = out.pop("add_value").fillna(0.0)
-        out["reconciled_value"] = out["reconciled_value"] + add_value
-        
+        df_out = df_reconciled.merge(df_add, on=keys4, how="left")
+        add_value = df_out.pop("add_value").fillna(0.0)
+        df_out["reconciled_value"] = df_out["reconciled_value"] + add_value
+
         # Logging
         logger.info(
             "AreaNesReallocator: %d flux enrichis (%.1f réalloués, %.1f absorbés "
             "par les imports sans miroir, %.1f écartés faute de partenaire)",
             int((add_value > 0).sum()),
-            float(residual["allocated"].sum()),
-            float((residual["v_nes_prime"] - residual["unallocated"]).sum()),
-            float(residual["unallocated"].sum()),
+            float(df_residual["allocated"].sum()),
+            float((df_residual["v_nes_prime"] - df_residual["unallocated"]).sum()),
+            float(df_residual["unallocated"].sum()),
         )
-        return out
+        return df_out
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -1390,24 +1567,29 @@ def required_columns(config: BaciConfig = DEFAULT_CONFIG) -> List[str]:
     fact table before handing it to :func:`run_baci`.
 
     Args:
-        config: Column conventions.
+        config: Column and methodological conventions (only ``config.schema`` is
+            read here).
 
     Returns:
         Ordered, de-duplicated list of source columns to project.
+
+    Examples:
+        >>> required_columns()[:3]
+        ['flowCode', 'reporterISO', 'partnerISO']
     """
     return list(
         dict.fromkeys(
             [
-                config.flow_col,
-                config.reporter_iso_col,
-                config.partner_iso_col,
-                config.partner_code_col,
-                config.product_col,
-                config.period_col,
-                config.value_col,
-                config.qty_col,
-                config.qty_unit_col,
-                config.netwgt_col,
+                config.schema.flow_col,
+                config.schema.reporter_iso_col,
+                config.schema.partner_iso_col,
+                config.schema.partner_code_col,
+                config.schema.product_col,
+                config.schema.period_col,
+                config.schema.value_col,
+                config.schema.qty_col,
+                config.schema.qty_unit_col,
+                config.schema.netwgt_col,
             ]
         )
     )
@@ -1416,11 +1598,10 @@ def required_columns(config: BaciConfig = DEFAULT_CONFIG) -> List[str]:
 # Fonction d'orchestration : flux COMTRADE chargés → flux réconciliés
 # /!\ Soit spécifier dans la documentation de run_baci qu'il faut que df_comtrade contienne le périmètre temporel souhaité, soit ajouter des paramètres dans la config qui spécifient le début et la fin de la période d'intérêt (None pourrait signifier que l'on garde l'ensemble des données).
 # /!\ Spécifier également que l'ensemble des données doivent être dans une même nomenclature (classificationCode contient cette information dans les données comtrade), on vérifiera qu'il y a bien une homogénéité de la classification utilisée, sinon on effectuera la conversion vers la plus ancienne (car c'est le seul sens où il n'y a pas d'ambiguité). Les tables de correspondance peuvent être trouvées ici (https://unstats.un.org/unsd/classifications/econ) et j'en avais déjà téléchargées en utilisant le code dans lookup.py qui utilise les chemins dans un_lookup.json. S'il y a une manière plus élégante de récupérer ces données, je suis preneur de tes suggestions. De plus je souhaite stocker ces tables de correspondances (qui sont invariantes) et je ne souhaite pas les retélécharger à chaque conversion. Je souhaite, comme dans les autres fichiers, que la logique de ne pas télécharger si existe déjà se fasse dans les scripts (ou l'on spécifiera également le chemin) et non dans le package, ainsi que la définition de la classification que l'on utilise. Dans run_baci, on s'assurera seulement que cette dernière est homogène. La logique de conversion pourra être dnas un nouveau fichier dans trade/processing
-# Ajouter "df_" comme préfixe devant les noms de variables pour les pandas.DataFrame (faire de même pour les noms des arguments des classes, fonctions, et méthodes)
 def run_baci(
     df_comtrade: pd.DataFrame,
-    dist: pd.DataFrame,
-    geo: pd.DataFrame,
+    df_dist: pd.DataFrame,
+    df_geo: pd.DataFrame,
     *,
     config: BaciConfig = DEFAULT_CONFIG,
     apply_nes: bool = True,
@@ -1433,16 +1614,19 @@ def run_baci(
     no I/O: reading the COMTRADE fact table and persisting the result belong to
     the caller (see ``scripts/process_baci.py``).
 
+    This is the only place where :class:`BaciConfig` is read: each step receives
+    the values it needs as explicit keyword arguments.
+
     Args:
         df_comtrade: Raw COMTRADE fact-table rows, holding at least the columns
             returned by :func:`required_columns`.
-        dist: Raw ``dist_cepii`` table, already loaded.
-        geo: Raw ``geo_cepii`` table, already loaded.
+        df_dist: Raw ``dist_cepii`` table, already loaded.
+        df_geo: Raw ``geo_cepii`` table, already loaded.
         config: Column and methodological conventions.
         apply_nes: Whether to apply the "Areas NES" reallocation step.
 
     Returns:
-        A tuple ``(reconciled, report)``: the reconciled flows and the
+        A tuple ``(df_reconciled, report)``: the reconciled flows and the
         :class:`BaciReport` of the run (``created`` is left ``False``; the
         caller sets it once the result is persisted).
 
@@ -1450,43 +1634,91 @@ def run_baci(
         ValueError: If the reconciliation produces no flow.
     """
     # Assemblage des données du CEPII servant à estimer les modèles de gravité
-    gravity = build_gravity_data(dist, geo, config)
+    df_gravity = build_gravity_data(
+        df_dist,
+        df_geo,
+        dist_iso_o_col=config.schema.dist_iso_o_col,
+        dist_iso_d_col=config.schema.dist_iso_d_col,
+        distance_column=config.schema.distance_column,
+        contig_col=config.schema.contig_col,
+        geo_iso_col=config.schema.geo_iso_col,
+        landlocked_col=config.schema.landlocked_col,
+    )
     # Extraction des codes pays valides
-    valid_iso = sorted(set(gravity["iso_o"]) | set(gravity["iso_d"]))
+    valid_iso = sorted(set(df_gravity["iso_o"]) | set(df_gravity["iso_d"]))
 
     # Construction des flux miroirs (+ flux NES mis de côté)
-    df_mirror, df_nes = build_mirror_flows(df_comtrade, valid_iso, config)
-    
+    df_mirror, df_nes = build_mirror_flows(
+        df_comtrade,
+        valid_iso,
+        flow_col=config.schema.flow_col,
+        import_code=config.schema.import_code,
+        export_code=config.schema.export_code,
+        reporter_iso_col=config.schema.reporter_iso_col,
+        partner_iso_col=config.schema.partner_iso_col,
+        partner_code_col=config.schema.partner_code_col,
+        product_col=config.schema.product_col,
+        period_col=config.schema.period_col,
+        value_col=config.schema.value_col,
+        qty_col=config.schema.qty_col,
+        qty_unit_col=config.schema.qty_unit_col,
+        netwgt_col=config.schema.netwgt_col,
+        world_partner_code=config.world_partner_code,
+        nes_partner_codes=config.nes_partner_codes,
+        nes_skip_codes=config.nes_skip_codes,
+        excluded_pairs=config.excluded_pairs,
+    )
+
     # Étape 1 — conversion des quantités en tonnes
-    converter = TonnageConverter(config).fit(df_mirror)
+    converter = TonnageConverter(
+        weight_unit_codes=config.weight_unit_codes,
+        kg_to_tonne=config.kg_to_tonne,
+        min_mirror_flows=config.min_mirror_flows,
+        max_conversion_std=config.max_conversion_std,
+        prefer_netwgt=config.prefer_netwgt,
+    ).fit(df_mirror)
     df_mirror = converter.transform(df_mirror)
 
     # Étape 2 — estimation des taux CAF par équation de gravité
-    gravity_model = CifGravityModel(config).fit(df_mirror, gravity)
-    cif_rate = gravity_model.predict(df_mirror, gravity)
+    gravity_model = CifGravityModel(cook_factor=config.cook_factor).fit(
+        df_mirror, df_gravity
+    )
+    cif_rate = gravity_model.predict(df_mirror, df_gravity)
     mean_freight_rate = float(cif_rate.replace([np.inf, -np.inf], np.nan).dropna().mean())
     print(mean_freight_rate)
 
     # Étape 3 — fobisation des importations
-    df_mirror = Fobizer(config).transform(df_mirror, cif_rate)
+    df_mirror = Fobizer(
+        non_cif_countries=config.non_cif_countries,
+        fas_countries=config.fas_countries,
+    ).transform(df_mirror, cif_rate)
 
     # Étape 4 — qualité de déclaration (valeurs puis quantités)
-    quality_model = ReportingQualityModel(config)
+    quality_model = ReportingQualityModel()
     quality_value = quality_model.fit(df_mirror, target="value")
     quality_qty = quality_model.fit(df_mirror, target="quantity")
 
     # Étape 5 — réconciliation des flux miroirs
-    reconciled = MirrorReconciler(config).transform(df_mirror, quality_value, quality_qty)
+    df_reconciled = MirrorReconciler().transform(df_mirror, quality_value, quality_qty)
 
     # Étape 6 — réallocation des zones non spécifiées (optionnelle)
     if apply_nes:
-        reconciled = AreaNesReallocator(config).transform(reconciled, df_mirror, df_nes)
+        df_reconciled = AreaNesReallocator(
+            flow_col=config.schema.flow_col,
+            export_code=config.schema.export_code,
+            reporter_iso_col=config.schema.reporter_iso_col,
+            product_col=config.schema.product_col,
+            period_col=config.schema.period_col,
+            value_col=config.schema.value_col,
+        ).transform(df_reconciled, df_mirror, df_nes)
 
     # Nettoyage : flux réconciliés exploitables (valeur non manquante)
-    reconciled = reconciled[reconciled["reconciled_value"].notna()].reset_index(drop=True)
-    if reconciled.empty:
+    df_reconciled = df_reconciled[
+        df_reconciled["reconciled_value"].notna()
+    ].reset_index(drop=True)
+    if df_reconciled.empty:
         raise ValueError("No reconciled flow produced")
 
-    report = BaciReport(flows=len(reconciled), mean_freight_rate=mean_freight_rate)
+    report = BaciReport(flows=len(df_reconciled), mean_freight_rate=mean_freight_rate)
 
-    return reconciled, report
+    return df_reconciled, report
