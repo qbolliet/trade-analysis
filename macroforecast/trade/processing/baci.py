@@ -1467,27 +1467,26 @@ def run_baci(
     mean_freight_rate = float(cif_rate.replace([np.inf, -np.inf], np.nan).dropna().mean())
     print(mean_freight_rate)
 
-    return df_mirror, df_nes
+    # Étape 3 — fobisation des importations
+    df_mirror = Fobizer(config).transform(df_mirror, cif_rate)
 
-    # # Étape 3 — fobisation des importations
-    # mirror = Fobizer(config).transform(mirror, cif_rate)
+    # Étape 4 — qualité de déclaration (valeurs puis quantités)
+    quality_model = ReportingQualityModel(config)
+    quality_value = quality_model.fit(df_mirror, target="value")
+    quality_qty = quality_model.fit(df_mirror, target="quantity")
 
-    # # Étape 4 — qualité de déclaration (valeurs puis quantités)
-    # quality_model = ReportingQualityModel(config)
-    # quality_value = quality_model.fit(mirror, target="value")
-    # quality_qty = quality_model.fit(mirror, target="quantity")
+    # Étape 5 — réconciliation des flux miroirs
+    reconciled = MirrorReconciler(config).transform(df_mirror, quality_value, quality_qty)
 
-    # # Étape 5 — réconciliation des flux miroirs
-    # reconciled = MirrorReconciler(config).transform(mirror, quality_value, quality_qty)
+    # Étape 6 — réallocation des zones non spécifiées (optionnelle)
+    if apply_nes:
+        reconciled = AreaNesReallocator(config).transform(reconciled, df_mirror, df_nes)
 
-    # # Étape 6 — réallocation des zones non spécifiées (optionnelle)
-    # if apply_nes:
-    #     reconciled = AreaNesReallocator(config).transform(reconciled, mirror, nes)
+    # Nettoyage : flux réconciliés exploitables (valeur non manquante)
+    reconciled = reconciled[reconciled["reconciled_value"].notna()].reset_index(drop=True)
+    if reconciled.empty:
+        raise ValueError("No reconciled flow produced")
 
-    # # Nettoyage : flux réconciliés exploitables (valeur non manquante)
-    # reconciled = reconciled[reconciled["reconciled_value"].notna()].reset_index(drop=True)
-    # if reconciled.empty:
-    #     raise ValueError("No reconciled flow produced")
+    report = BaciReport(flows=len(reconciled), mean_freight_rate=mean_freight_rate)
 
-    # report = BaciReport(flows=len(reconciled), mean_freight_rate=mean_freight_rate)
-    # return reconciled, report
+    return reconciled, report
