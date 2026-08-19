@@ -220,6 +220,9 @@ __marimo__/
 # Claude
 CLAUDE.md
 .claude/
+PROMPTS.md
+ARCHITECTURE.md
+TODO
 
 # Temp trade files
 BACI - Méthodologie détaillée succinte.tex
