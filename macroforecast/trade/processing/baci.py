@@ -35,6 +35,17 @@ Notes:
 
     Every ``pandas.DataFrame`` — argument, attribute or local variable — carries the
     ``df_`` prefix; ``pandas.Series`` keep a bare name.
+
+    :class:`TonnageConverter` re-implements, on the mirror flows, the CEPII BACI
+    approach to heterogeneous quantity units (implicit rates estimated from
+    mirror flows, validated by ``n >= 10`` and ``std < 2.5``). UN Statistics
+    separately documents its own procedures for
+    `quantity estimation and imputation <https://unstats.un.org/wiki/spaces/I2CG/pages/6325204/E.+Estimation+and+imputation+of+quantity+data>`_
+    and for
+    `conversion to standard units of quantity <https://unstats.un.org/wiki/spaces/I2CG/pages/6325197/C.+Factors+with+which+to+convert+from+non-standard+to+standard+units+of+quantity>`_,
+    sometimes already applied **upstream** of COMTRADE publication. The two
+    retreatments can therefore overlap: a quantity converted here may already
+    have been estimated or reconciled by UN Statistics before reaching COMTRADE.
 """
 # Importation des modules
 from __future__ import annotations
@@ -42,7 +53,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 import logging
 import math
-from typing import Dict, List, Optional, Sequence, Tuple
+from typing import Dict, List, Mapping, Optional, Sequence, Tuple
 # Modules de manipulation de données
 import numpy as np
 import pandas as pd
@@ -79,7 +90,11 @@ class ComtradeSchema:
         value_col: Column with the primary trade value (thousands USD).
         qty_col: Column with the declared quantity.
         qty_unit_col: Column with the quantity-unit code.
-        netwgt_col: Column with the net weight (kilograms).
+        netwgt_col: Column with the net weight, expressed in **kilograms** in UN
+            Comtrade (see the
+            `supplementary quantity units <https://uncomtrade.org/docs/supplementary-quantity-units/>`_
+            page and the
+            `WCO standard units of quantity overview <https://unstats.un.org/wiki/spaces/I2CG/pages/6325189/A.+An+overview+of+the+World+Customs+Organization+standard+units+of+quantity>`_).
         dist_iso_o_col: CEPII distance column with the origin ISO-3 code.
         dist_iso_d_col: CEPII distance column with the destination ISO-3 code.
         distance_column: CEPII distance column to use (population-weighted).
@@ -126,11 +141,10 @@ class BaciConfig:
 
     Attributes:
         schema: Column conventions of the COMTRADE and CEPII sources.
-        weight_unit_codes: Quantity-unit codes already expressed as a weight in
-            kilograms (converted to tonnes by ``kg_to_tonne``). Quantities in
-            any other unit without a validated conversion rate are abandoned
-            (tonnage ``NaN``) while their value is kept.
-        kg_to_tonne: Multiplicative factor from kilograms to tonnes.
+        tonne_conversion_factors: Mapping from COMTRADE quantity-unit code to the
+            multiplicative factor converting it to tonnes (e.g. ``{8: 1e-3, 21:
+            1.0}``). Quantities in any other unit without a validated conversion
+            rate are abandoned (tonnage ``NaN``) while their value is kept.
         min_mirror_flows: Minimum mirror observations to validate a conversion
             rate (``n >= 10``).
         max_conversion_std: Maximum std of the ratios to validate a rate
@@ -160,9 +174,8 @@ class BaciConfig:
     """
     # Conventions de schéma des sources
     schema: ComtradeSchema = field(default_factory=ComtradeSchema)
-    # Conversion des quantités en tonnes
-    weight_unit_codes: Tuple[int, ...] = (8,)  # 8 = poids en kilogrammes (COMTRADE)
-    kg_to_tonne: float = 1e-3
+    # Table des facteurs multiplicatifs des unités de poids vers la tonne
+    tonne_conversion_factors: Mapping[int, float] = { 8 : 1e-3, 21 : 1}
     min_mirror_flows: int = 10
     max_conversion_std: float = 2.5
     prefer_netwgt: bool = True
@@ -493,22 +506,31 @@ def build_mirror_flows(
 # Étape 1 — Conversion des quantités en tonnes
 # ──────────────────────────────────────────────────────────────────────
 
+# Code unité COMTRADE de la tonne (annoté 21 dans la documentation publique,
+# qui n'expose que les codes 1 à 13 ; NON CONFIRMÉ contre la codelist vivante
+# ComtradeClient().get_metadata(category="qtyunit"), qui exige une clé
+# d'abonnement — cf. DEC-2 dans ARCHITECTURE.md).
+_TONNE_UNIT_CODE = 21
+
+
+
 # Estimateur des taux de conversion vers la tonne
-# /!\ Dans la nomenclature des codes disponibles sur UN Comtrade Database, il apparait que la 21 correspond aux tonnes, hors je ne vois aucun traitement particulier pour ce code
-# /!\ Spécifier dans la docstring que le netWeight est renseigné en kilogrammes dans UN Comtrade (https://uncomtrade.org/docs/supplementary-quantity-units/ et https://unstats.un.org/wiki/spaces/I2CG/pages/6325189/A.+An+overview+of+the+World+Customs+Organization+standard+units+of+quantity)
-# /!\ Mentionner également quelque part que l'on utilise la méthodologie de traitement et de conversion qui est utilisée par BACI mais que UnStatistics mentionne également https://unstats.un.org/wiki/spaces/I2CG/pages/6325204/E.+Estimation+and+imputation+of+quantity+data et https://unstats.un.org/wiki/spaces/I2CG/pages/6325197/C.+Factors+with+which+to+convert+from+non-standard+to+standard+units+of+quantity qui sont parfois utilisés comme retraitements préalables à la diffusion des données COMTRADE
 class TonnageConverter:
     """Convert heterogeneous declared quantities to tonnes.
 
     Estimates, per ``(product, source unit)``, an implicit conversion rate from
     mirror flows where one partner declares in tonnes and the other in the source
-    unit. A rate is validated only when at least ``min_mirror_flows``
-    observations are available and their std is below ``max_conversion_std``.
+    unit — the CEPII BACI methodology. A rate is validated only when at least
+    ``min_mirror_flows`` observations are available and their std is below
+    ``max_conversion_std``.
 
     Args:
-        weight_unit_codes: Quantity-unit codes already expressed as a weight in
-            kilograms (converted to tonnes by ``kg_to_tonne``).
-        kg_to_tonne: Multiplicative factor from kilograms to tonnes.
+        tonne_conversion_factors: Mapping from COMTRADE quantity-unit code to
+            the multiplicative factor converting it to tonnes (e.g. ``{8: 1e-3,
+            21: 1.0}``). Every code present in
+            this table is excluded from :meth:`fit`'s ratio collection: a
+            quantity already known in a target unit must never serve as the
+            numerator estimating a rate towards that same unit.
         min_mirror_flows: Minimum mirror observations to validate a conversion
             rate (``n >= 10``).
         max_conversion_std: Maximum std of the ratios to validate a rate
@@ -525,20 +547,18 @@ class TonnageConverter:
     def __init__(
         self,
         *,
-        weight_unit_codes: Tuple[int, ...] = (8,),
-        kg_to_tonne: float = 1e-3,
+        tonne_conversion_factors: Optional[Mapping[int, float]] = { 8 : 1e-3 , 21 : 1 },
         min_mirror_flows: int = 10,
         max_conversion_std: float = 2.5,
         prefer_netwgt: bool = True,
     ) -> None:
-        # Initialisation des attributs (stockage tel quel, convention sklearn)
-        self.weight_unit_codes = weight_unit_codes
-        self.kg_to_tonne = kg_to_tonne
+        # Initialisation des attributs
+        self.tonne_conversion_factors = dict(tonne_conversion_factors)
         self.min_mirror_flows = min_mirror_flows
         self.max_conversion_std = max_conversion_std
         self.prefer_netwgt = prefer_netwgt
 
-    # Méthode auxiliaire : quantité en tonnes déjà connue (poids)
+    # Méthode auxiliaire : quantité en tonnes déjà connue (poids ou unité tonne)
     def _tonnes_from_weight(self, qty: pd.Series, unit: pd.Series, nw: pd.Series) -> pd.Series:
         """Return the tonnage known without any estimated rate.
 
@@ -548,17 +568,20 @@ class TonnageConverter:
             nw: Net weights (kilograms).
 
         Returns:
-            Tonnage from net weight (preferred) or from weight-unit quantities;
-            ``NaN`` where neither is available.
+            Tonnage from net weight (preferred) or from quantities already
+            expressed in a unit covered by ``tonne_conversion_factors``
+            (weight units, or the tonne unit itself); ``NaN`` where neither is
+            available.
         """
         # Initialisation de la série des valeurs en tonnes
         tonnes = pd.Series(np.nan, index=qty.index, dtype="float64")
         # Repli/priorité sur le poids net (kg → tonnes)
         if self.prefer_netwgt:
-            tonnes = tonnes.where(~(nw > 0), nw * self.kg_to_tonne)
-        # Quantités déjà exprimées en unité de poids (kg → tonnes)
-        weight_unit = unit.isin(list(self.weight_unit_codes))
-        tonnes = tonnes.where(~(tonnes.isna() & weight_unit), qty * self.kg_to_tonne)
+            tonnes = tonnes.where(~(nw > 0), nw * 1e-3)
+        # Quantités déjà exprimées dans une unité couverte par la table de facteurs
+        # (poids en kg, tonnes elles-mêmes, ou tout autre code y figurant)
+        factor = unit.map(self.tonne_conversion_factors)
+        tonnes = tonnes.where(~(tonnes.isna() & factor.notna()), qty * factor)
         return tonnes
 
     # Estimation des taux de conversion
@@ -587,7 +610,7 @@ class TonnageConverter:
             df_mirror["unit_m"],
             t_x,
             df_mirror[_PROD],
-            weight_unit_codes=self.weight_unit_codes,
+            tonne_conversion_factors=self.tonne_conversion_factors,
         )
         # Côté import en tonnes, export en unité source
         _collect_ratio(
@@ -596,7 +619,7 @@ class TonnageConverter:
             df_mirror["unit_x"],
             t_m,
             df_mirror[_PROD],
-            weight_unit_codes=self.weight_unit_codes,
+            tonne_conversion_factors=self.tonne_conversion_factors,
         )
 
         if records:
@@ -686,12 +709,13 @@ def _collect_ratio(
     tonnes_other: pd.Series,
     product: pd.Series,
     *,
-    weight_unit_codes: Tuple[int, ...] = (8,),
+    tonne_conversion_factors: Mapping[int, float],
 ) -> None:
     """Append ``(product, unit, ratio)`` observations to ``records`` in place.
 
     An observation exists when the *other* side is known in tonnes and the current
-    side is a non-weight unit: ``ratio = tonnes_other / qty_unit``.
+    side is in a unit with no known factor to tonnes: ``ratio = tonnes_other /
+    qty_unit``.
 
     Args:
         records: Accumulator list mutated in place.
@@ -699,11 +723,14 @@ def _collect_ratio(
         unit_unit: Unit codes of ``qty_unit``.
         tonnes_other: Tonnage of the mirror partner (the tonnes side).
         product: Product codes.
-        weight_unit_codes: Quantity-unit codes already expressed as a weight
-            (excluded from the ratio collection).
+        tonne_conversion_factors: Quantity-unit codes with an already-known
+            factor to tonnes (weight units, and the tonne unit itself). All of
+            them are excluded from the ratio collection — a quantity already
+            expressed in (or convertible to) tonnes must never serve as the
+            numerator estimating a rate towards that same target unit.
     """
-    # Côté source non exprimé en poids et quantité strictement positive
-    is_source = (~unit_unit.isin(list(weight_unit_codes))) & (qty_unit > 0)
+    # Côté source dépourvu de facteur connu vers la tonne et quantité strictement positive
+    is_source = (~unit_unit.isin(list(tonne_conversion_factors))) & (qty_unit > 0)
     mask = is_source & (tonnes_other > 0)
     if not mask.any():
         return
@@ -1671,8 +1698,7 @@ def run_baci(
 
     # Étape 1 — conversion des quantités en tonnes
     converter = TonnageConverter(
-        weight_unit_codes=config.weight_unit_codes,
-        kg_to_tonne=config.kg_to_tonne,
+        tonne_conversion_factors=config.tonne_conversion_factors,
         min_mirror_flows=config.min_mirror_flows,
         max_conversion_std=config.max_conversion_std,
         prefer_netwgt=config.prefer_netwgt,

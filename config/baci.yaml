@@ -24,6 +24,11 @@ PARAMETERS:
     # Variable de distance pondérée population (dist_cepii)
     distance_column: "distw"
   # Étape de conversion des quantités en tonnes (validation des taux)
+  # Table des facteurs multiplicatifs vers la tonne, par code unité COMTRADE
+  # (8 = kilogrammes → tonnes ; 21 = tonnes → tonnes, identité)
+  tonne_conversion_factors:
+    8: 0.001
+    21: 1.0
   min_mirror_flows: 10
   max_conversion_std: 2.5
   # Robustesse de l'équation de gravité (seuil de distance de Cook = facteur / n)
