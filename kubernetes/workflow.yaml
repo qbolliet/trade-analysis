@@ -1,0 +1,100 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Workflow
+metadata:
+  name: trade-analysis
+  generateName: trade-analysis-
+spec:
+  # ⏰ Planification : tous les jours à 1h du matin
+  schedule: "0 1 * * *"
+  timezone: "Europe/Paris"  # Ajuste selon ta timezone
+  
+  # Option : démarrer immédiatement à la création (pour tester)
+  startingDeadlineSeconds: 0
+  
+  # Option : nombre d'exécutions réussies à conserver
+  successfulJobsHistoryLimit: 3
+  
+  # Option : nombre d'exécutions échouées à conserver
+  failedJobsHistoryLimit: 3
+  
+  # Option : politique de concurrence
+  # - "Allow" : permet plusieurs exécutions simultanées
+  # - "Forbid" : empêche les exécutions simultanées
+  # - "Replace" : annule l'exécution en cours et lance la nouvelle
+  concurrencyPolicy: "Forbid"
+  
+  # Définition du workflow
+  workflowSpec:
+    entrypoint: trade-workflow
+    # Service Account avec les permissions Argo
+    serviceAccountName: workflow
+
+    # Timeout
+    ttlStrategy:
+      secondsAfterCompletion: 86400  # Suppression après 24 heures
+    
+    # Paramètres du workflow
+    arguments:
+      parameters:
+      - name: docker-registry
+        value: "docker.io"
+      - name: docker-image
+        value: "qbollietdgddi/trade-analysis"
+      - name: image-tag
+        value: "latest"
+    
+    # Définition du volume où la config va être stockée
+    volumes:
+    - name: config-volume
+      configMap:
+        name: trade-config
+    
+    templates:
+    - name: trade-workflow
+      container:
+        # Image paramétrable via les arguments du workflow
+        image: "{{workflow.parameters.docker-registry}}/{{workflow.parameters.docker-image}}:{{workflow.parameters.image-tag}}"
+        # Spécification explicite du script à exécuter
+        args: ["trade-script"]
+        # Ajout du volume
+        volumeMounts:
+        - name: config-volume
+          mountPath: /app/config
+        # Spécification des ressources du pod exécutant le conteneur
+        resources:
+          requests:
+            memory: "3Gi"
+            cpu: "500m"
+          limits:
+            memory: "5Gi"
+            cpu: "1"
+        # Variables d'environnement
+        env:
+        # Variables essentielles pour Python
+        - name: PYTHONUNBUFFERED
+          value: "1"
+        # Mode test (à modifier selon les besoins)
+        - name: TEST_MODE
+          value: "true"
+        # Chemin de la configuration
+        - name: CONFIG_PATH
+          value: "/app/config/trade.yaml"
+        # Accès au S3 Minio
+        - name: AWS_S3_ENDPOINT
+          value: "minio.lab.sspcloud.fr"
+        - name: AWS_ACCESS_KEY_ID
+          valueFrom:
+            secretKeyRef:
+              name: comtrade-credentials
+              key: S3_ACCESS_KEY
+        - name: AWS_SECRET_ACCESS_KEY
+          valueFrom:
+            secretKeyRef:
+              name: comtrade-credentials
+              key: S3_SECRET_KEY
+        # Clé API Comtrade (spécifique au trade-script)
+        - name: COMTRADE_SUBSCRIPTION_KEY
+          valueFrom:
+            secretKeyRef:
+              name: comtrade-credentials
+              key: COMTRADE_SUBSCRIPTION_KEY

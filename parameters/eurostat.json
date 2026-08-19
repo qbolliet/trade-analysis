@@ -1,0 +1,8 @@
+{
+  "RATE_LIMIT": {
+    "requests": 30,
+    "unit": "minutes",
+    "count": 1
+  },
+  "STRUCTURES": []
+}

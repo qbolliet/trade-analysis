@@ -1,0 +1,38 @@
+# Configuration du redressement BACI des flux de commerce international.
+
+# Bucket S3 des fichiers CEPII (null → lecture locale)
+BUCKET: "qbollietdgddi" # null
+
+# Chemins des données (relatifs à la racine du dépôt, résolus par l'appelant)
+PATHS:
+  # Variables de gravité CEPII
+  DIST_CEPII: "trade/datasets/cepii/dist_cepii.xls"
+  GEO_CEPII: "trade/datasets/cepii/geo_cepii.xls"
+  # Résultat (nouvelle base DuckLake créée par run_baci)
+  RESULT_CATALOG: "data/baci.ducklake"
+  RESULT_DATA: "data/baci"
+  RESULT_SCHEMA: "baci"
+
+# Paramètres méthodologiques : toute clé portant le nom d'un champ de
+# BaciConfig surcharge le défaut correspondant (listes YAML → tuples) ;
+# les clés inconnues sont ignorées avec un avertissement.
+PARAMETERS:
+  # Variable de distance pondérée population (dist_cepii)
+  distance_column: "distw"
+  # Étape de conversion des quantités en tonnes (validation des taux)
+  min_mirror_flows: 10
+  max_conversion_std: 2.5
+  # Robustesse de l'équation de gravité (seuil de distance de Cook = facteur / n)
+  cook_factor: 4.0
+  # Pays ne déclarant pas leurs importations en CAF (fret jamais retiré)
+  non_cif_countries: ["DZA", "GEO", "ZAF", "BWA", "LSO", "NAM", "SWZ"]
+  # Pays déclarant en FAS (fret retiré seulement si l'écart miroir diminue)
+  fas_countries: ["CAN"]
+  # Paires dont les flux internes sont écartés
+  excluded_pairs: [["BEL", "LUX"]]
+  # Code partenaire M49 de l'agrégat Monde (lignes écartées en amont)
+  world_partner_code: 0
+  # « Areas, nes » éligibles à la réallocation (codes partenaires M49)
+  nes_partner_codes: [899]
+  # Agrégats laissés de côté et écartés des données (« Other Asia, nes »)
+  nes_skip_codes: [490]

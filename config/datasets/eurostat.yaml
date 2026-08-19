@@ -1,0 +1,86 @@
+# Configuration des dimensions scindées Eurostat
+# Filtres de codes appliqués aux codelists des dimensions itérées pour
+# construire le produit cartésien des requêtes.
+
+# Groupes de codes réutilisables
+code_groups:
+  # 27 États membres de l'Union européenne (codes CXT_FREE_ISO, GR pour la Grèce)
+  eu27: &eu27
+    - AT
+    - BE
+    - BG
+    - HR
+    - CY
+    - CZ
+    - DK
+    - EE
+    - FI
+    - FR
+    - DE
+    - GR
+    - HU
+    - IE
+    - IT
+    - LV
+    - LT
+    - LU
+    - MT
+    - NL
+    - PL
+    - PT
+    - RO
+    - SK
+    - SI
+    - ES
+    - SE
+
+# Dimensions ancrées en dur par dataflow (partagées par toutes les requêtes
+# scindées). Source unique consommée par scripts/download_eurostat_comext.py.
+fixed_dims:
+  # Commerce international Comext
+  DS-045409:
+    freq: "A"
+    partner: "*"
+    flow:                       # Les flux (import, export)
+      - "1"
+      - "2"
+    indicators:                 # Masse et valeur
+      - QUANTITY_IN_100KG
+      - VALUE_IN_EUROS
+
+# Filtres de codes par dataflow et par dimension scindée
+split_filters:
+  # Commerce international Comext
+  DS-045409:
+    reporter:
+      include: *eu27          # ne garder que les 27 pays de l'UE
+      include_regex: null
+      exclude: null           # aucune exclusion supplémentaire
+      exclude_regex: null
+    product:
+      include: null           # partir de tous les codes disponibles
+      include_regex: '^(\d{2}|\d{4}|\d{6}|\d{8})$'   # SH2/SH4/SH6/NC8 valides
+      exclude:                # agrégats confidentiels (vrais chapitres = 01-99)
+        - "00"
+        - "0090"
+        - "009000"
+        - "00900000"
+      exclude_regex: null
+
+DOWNLOADS :
+  DBNAME: "eurostat"
+  CATALOG_ALIAS: "eurostat"
+  # Commerce international Comext
+  DS-045409:
+    BUCKET: "qbollietdgddi" # null
+    PATHS:
+      DATA_PATH: "trade/datasets/comext"
+      STRUCTURES_PATH: "trade/datasets/structures/comext.json"
+      LAST_DOWNLOAD_PATH: "trade/datasets/last_downloads/comext.json"
+    N_LAST_OBSERVATIONS: 10
+    MAX_RUNTIME:
+      WEEKS: 0
+      DAYS: 0
+      HOURS: 23
+      MINUTES: 0
+      SECONDS: 0

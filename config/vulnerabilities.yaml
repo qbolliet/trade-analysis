@@ -1,0 +1,18 @@
+# Configuration du calcul des indicateurs de vulnérabilité commerciale.
+# Fichier volontairement distinct de eurostat.yaml (config du téléchargement) :
+# ce script ne lit que le registre JSON produit par le téléchargement, pas sa
+# configuration.
+
+VULNERABILITIES:
+  DBNAME: "vulnerabilities"
+  CATALOG_ALIAS: "vulnerabilities"
+
+  DS-045409:
+    BUCKET: "qbollietdgddi"
+    RESULT_SCHEMA: "indicators"
+    PATHS:
+      DATA_PATH: "trade/datasets/vulnerabilities/"
+      # Registre des dates de dernier calcul, tenu par ce script (même
+      # principe que LAST_DOWNLOAD_PATH côté téléchargement)
+      LAST_COMPUTATION_PATH: "trade/vulnerabilities/comext/last_computation.json"
+

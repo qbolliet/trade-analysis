@@ -1,0 +1,89 @@
+# Configuration des dimensions scindées UN Comtrade
+# Filtres de codes appliqués aux codelists des dimensions itérées pour
+# construire le produit cartésien des requêtes.
+#
+# Remarque : les codes reporters/partenaires sont les codes M49 numériques
+# renvoyés par l'API Comtrade (colonne `reporterCode`), pas les codes ISO.
+# Les codes produits sont les nomenclatures HS (colonne `id`).
+
+# Groupes de codes réutilisables
+code_groups:
+  # Exemple de sélection de reporters par code M49 (à compléter selon le besoin).
+  # France=251, Allemagne=276, Italie=380, Espagne=724, Pays-Bas=528.
+  majors_m49: &majors_m49
+    - "251"
+    - "276"
+    - "380"
+    - "724"
+    - "528"
+
+# Paramètres
+parameters:
+  # Données annuelles
+  C_A_HS: &params_c_a_hs
+    products_step: 10
+  
+  # Données mensuelles (mêmes paramètres)
+  C_M_HS: *params_c_a_hs
+
+# Paramètres ancrés en dur par dataflow (fréquence, flux, type de commerce,
+# nomenclature, lot de produits, bornes de période). Source unique consommée par
+# scripts/download_comtrade.py ; les flags CLI passés explicitement priment.
+fixed_dims:
+  # Données annuelles, commodities, nomenclature HS
+  C_A_HS: &fixed_dims_c_a_hs
+    frequency: annual
+    flows:
+      - "M"
+      - "X"
+    type_code: "C"
+    classification: "HS"
+    period_start: "2010"
+    period_end: null
+
+  # Données mensuelles, commodities, nomenclature HS
+  C_M_HS:
+    <<: *fixed_dims_c_a_hs
+    frequency: monthly
+
+# Filtres de codes par dataflow et par dimension scindée
+split_filters:
+  # Données annuelles, commodities, nomenclature HS
+  C_A_HS: &c_hs
+    reporters:
+      include: null            # null → tous les reporters (reporters=None à l'appel)
+      include_regex: null
+      exclude: null
+      exclude_regex: null
+    products:
+      include: null            # partir de tous les codes disponibles
+      include_regex: '^(\d{2}|\d{4}|\d{6})$' # SH2/SH4/SH6 valides
+      exclude:                 # agrégats confidentiels / totaux
+        - "00"
+        - "0090"
+        - "009000"
+        - "999999"
+      exclude_regex: null
+
+  # Données mensuelles, commodities, nomenclature HS (mêmes filtres)
+  C_M_HS: *c_hs
+
+# Configuration des téléchargements
+DOWNLOADS:
+  DBNAME: "comtrade"
+  CATALOG_ALIAS: "comtrade"
+  # Données annuelles, commodities, nomenclature HS
+  C_A_HS:
+    BUCKET: "qbollietdgddi"
+    PATHS:
+      DATA_PATH: "trade/datasets/comtrade"
+      STRUCTURES_PATH: "trade/datasets/structures/comtrade.json"
+      LAST_DOWNLOAD_PATH: "trade/datasets/last_downloads/comtrade.json"
+    N_LAST_OBSERVATIONS: 10
+    MAX_RUNTIME:
+      WEEKS: 0
+      DAYS: 0
+      HOURS: 23
+      MINUTES: 0
+      SECONDS: 0
+    categorical_threshold: null

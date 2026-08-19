@@ -1,0 +1,131 @@
+# Configuration des requêtes OECD
+# Ce fichier définit les paramètres pour chaque dataflow à interroger
+
+# Liste des pays communs
+countries_groups:
+  oecd: &oecd
+    - AUS
+    - AUT
+    - BEL
+    - CAN
+    - CHL
+    - COL
+    - CZE
+    - DNK
+    - EST
+    - FIN
+    - FRA
+    - DEU
+    - GRC
+    - HUN
+    - ISL
+    - IRL
+    - ISR
+    - ITA
+    - JPN
+    - KOR
+    - LVA
+    - LTU
+    - LUX
+    - MEX
+    - NLD
+    - NZL
+    - NOR
+    - POL
+    - PRT
+    - SVK
+    - SVN
+    - ESP
+    - SWE
+    - CHE
+    - TUR
+    - GBR
+    - USA
+  
+  aggregates: &aggregates
+    - G-7
+    - OECDE
+    - G-20
+    - OECD
+    - NMEC
+    - EA19
+
+  g7: &g7
+    - CAN
+    - FRA
+    - DEU
+    - ITA
+    - JPN
+    - GBR
+    - USA
+  
+  emerging: &emerging
+    - ARG
+    - BRA
+    - CHN
+    - IND
+    - IDN
+    - RUS
+    - SAU
+    - ZAF
+
+# Définition des requêtes par dataflow
+queries:
+
+  # Query 1: Key Economic Indicators (KEI) pour les pays du G7
+  kei_g7_monthly:
+    description: "Key Economic Indicators for G7 countries - Monthly frequency"
+    agency: "OECD.SDD.STES"
+    dataflow: "DSD_KEI@DF_KEI"
+    version: "+"
+    dimensions:
+      REF_AREA:
+        - *g7
+      FREQ: "M"
+      UNIT_MEASURE: "IX"
+      ACTIVITY: "_T"
+      ADJUSTMENT: "AA"
+      TRANSFORMATION: "_Z"
+    start_period: null
+    end_period: null
+    last_n_observations: null
+    split_dimensions: null
+
+  # Query 2: National Accounts Data (NAD) pour les pays du G7
+  nad_g7_quarterly:
+    description: "Quarterly National Accounts - Expenditure Approach for G7"
+    agency: "OECD.SDD.NAD"
+    dataflow: "DSD_NAMAIN1@DF_QNA_EXPENDITURE_NATIO_CURR"
+    version: "+"
+    dimensions:
+      FREQ: "Q"
+      ADJUSTMENT: "Y"
+      REF_AREA: *g7
+      SECTOR: "S1"
+      COUNTERPART_SECTOR: "S1"
+      TRANSACTION:
+        - B1GQ
+        - P3
+        - P31
+        - P32
+        - P5
+        - P51G
+        - P52
+        - P53
+        - P6
+        - P61
+        - P62
+        - P7
+        - P71
+        - P72
+      INSTR_ASSET: "_Z"
+      ACTIVITY: "_Z"
+      EXPENDITURE: "_Z"
+      UNIT_MEASURE: "XDC"
+      PRICE_BASE: "L"
+      TRANSFORMATION: "N"
+      TABLE_IDENTIFIER: "T0102"
+    start_period: null
+    end_period: null
+    last_n_observations: null
+    split_dimensions: null

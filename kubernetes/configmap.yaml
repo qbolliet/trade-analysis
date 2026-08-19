@@ -1,0 +1,50 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: trade-config
+data:
+  trade.yaml: |-
+    STORAGE :
+      BUCKET : 'qbollietdgddi'
+
+    COMTRADE :
+      - NAME : "ANNUAL_IMPORT_EXPORT"
+        FLOWS : ['M', 'X']
+        PRODUCTS : null
+        PRODUCTS_STEP : 10
+        PERIOD_START : null
+        PERIOD_END : 2024
+        FREQUENCY : 'annual'
+        ID_COLS : ["period", "reporterISO", "flowDesc", "partnerISO", "cmdCode", "classificationCode"]
+        AGGREGATION_COLS : ["netWgt", "primaryValue"]
+        SYMETRIC_FLOW : "import"
+      - NAME : "MONTHLY_IMPORT_EXPORT"
+        FLOWS : ['M', 'X']
+        PRODUCTS : null
+        PRODUCTS_STEP : 10
+        PERIOD_START : null
+        PERIOD_END : 2024
+        FREQUENCY : 'monthly'
+        ID_COLS : ["period", "reporterISO", "flowDesc", "partnerISO", "cmdCode", "classificationCode"]
+        AGGREGATION_COLS : ["netWgt", "primaryValue"]
+        SYMETRIC_FLOW : "import"
+      - NAME : "ANNUAL_RE_EXPORT"
+        FLOWS : ['RX']
+        PRODUCTS : null
+        PRODUCTS_STEP : 10
+        PERIOD_START : null
+        PERIOD_END : 2024
+        FREQUENCY : 'annual'
+        ID_COLS : ["period", "reporterISO", "flowDesc", "partnerISO", "cmdCode", "classificationCode"]
+        AGGREGATION_COLS : ["netWgt", "primaryValue"]
+        SYMETRIC_FLOW : null
+      - NAME : "MONTHLY_RE_EXPORT"
+        FLOWS : ['RX']
+        PRODUCTS : null
+        PRODUCTS_STEP : 10
+        PERIOD_START : null
+        PERIOD_END : 2024
+        FREQUENCY : 'monthly'
+        ID_COLS : ["period", "reporterISO", "flowDesc", "partnerISO", "cmdCode", "classificationCode"]
+        AGGREGATION_COLS : ["netWgt", "primaryValue"]
+        SYMETRIC_FLOW : null

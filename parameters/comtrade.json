@@ -1,0 +1,79 @@
+{
+  "RATE_LIMIT": [
+    { "requests": 1, "unit": "seconds", "count": 1 },
+    { "requests": 500, "unit": "days", "count": 1 }
+  ],
+  "LIMIT": 100000,
+  "STRUCTURES": [
+    {
+      "agency": "COMTRADE",
+      "dataflow": "C_A_HS",
+      "description": "UN Comtrade tariffline data (commodities, annual, HS classification). No structure endpoint exists; dimensions are declared here.",
+      "num_dimensions": 27,
+      "dimensions": [
+        { "name": "typeCode", "position": 0, "description": "Trade type: C (commodities) or S (services)" },
+        { "name": "freqCode", "position": 1, "description": "Frequency: A (annual) or M (monthly)" },
+        { "name" : "refPeriodId", "position" : 2, "description" : "Identification code associated to the reference period"},
+        { "name": "period", "position": 3, "description": "Reference period (YYYY or YYYYMM)" },
+        { "name": "reporterCode", "position": 4, "description": "Reporter country internal code", "codelist": "reporter" },
+        { "name": "reporterDesc", "position": 5, "description": "Reporter country description", "codelist": "reporter" },
+        { "name": "reporterISO", "position": 6, "description": "Reporter country ISO code", "codelist": "reporter" },
+        { "name": "flowCode", "position": 7, "description": "Trade flow code", "codelist": "flow" },
+        { "name": "flowDesc", "position": 8, "description": "Trade flow description", "codelist": "flow" },
+        { "name": "partnerCode", "position": 9, "description": "Partner country internal code", "codelist": "partner" },
+        { "name": "partnerDesc", "position": 10, "description": "Partner country description", "codelist": "partner" },
+        { "name": "partnerISO", "position": 11, "description": "Partner country ISO code", "codelist": "partner" },
+        { "name": "partner2Code", "position": 12, "description": "Second partner / consignment country internal code", "codelist": "partner" },
+        { "name": "partner2Desc", "position": 13, "description": "Second partner / consignment country description", "codelist": "partner" },
+        { "name": "partner2ISO", "position": 14, "description": "Second partner / consignment country ISO code", "codelist": "partner" },
+        { "name": "classificationCode", "position": 15, "description": "IMTS classification code" },
+        { "name": "cmdCode", "position": 16, "description": "Commodity code (HS)", "codelist": "cmd:HS" },
+        { "name": "cmdDesc", "position": 17, "description": "Commodity description", "codelist": "cmd:HS" },
+        { "name": "customsCode", "position": 18, "description": "Customs code" },
+        { "name": "customsDesc", "position": 19, "description": "Customs description" },
+        { "name": "mosCode", "position": 20, "description": "Mode of supply code" },
+        { "name": "motCode", "position": 21, "description": "Mode of transport code" },
+        { "name": "motDesc", "position": 22, "description": "Mode of transport description" },
+        { "name": "qtyUnitCode", "position": 23, "description": "Quantity unit code" },
+        { "name": "qtyUnitAbbr", "position": 24, "description": "Quantity unit (abbreviated)" },
+        { "name": "altQtyUnitCode", "position": 25, "description": "Alternative quantity unit code" },
+        { "name": "altQtyUnitAbbr", "position": 26, "description": "Alternative quantity unit (abbreviated)" }
+      ]
+    },
+    {
+      "agency": "COMTRADE",
+      "dataflow": "C_M_HS",
+      "description": "UN Comtrade tariffline data (commodities, monthly, HS classification). No structure endpoint exists; dimensions are declared here.",
+      "num_dimensions": 27,
+      "dimensions": [
+        { "name": "typeCode", "position": 0, "description": "Trade type: C (commodities) or S (services)" },
+        { "name": "freqCode", "position": 1, "description": "Frequency: A (annual) or M (monthly)" },
+        { "name" : "refPeriodId", "position" : 2, "description" : "Identification code associated to the reference period"},
+        { "name": "period", "position": 3, "description": "Reference period (YYYY or YYYYMM)" },
+        { "name": "reporterCode", "position": 4, "description": "Reporter country internal code", "codelist": "reporter" },
+        { "name": "reporterDesc", "position": 5, "description": "Reporter country description", "codelist": "reporter" },
+        { "name": "reporterISO", "position": 6, "description": "Reporter country ISO code", "codelist": "reporter" },
+        { "name": "flowCode", "position": 7, "description": "Trade flow code", "codelist": "flow" },
+        { "name": "flowDesc", "position": 8, "description": "Trade flow description", "codelist": "flow" },
+        { "name": "partnerCode", "position": 9, "description": "Partner country internal code", "codelist": "partner" },
+        { "name": "partnerDesc", "position": 10, "description": "Partner country description", "codelist": "partner" },
+        { "name": "partnerISO", "position": 11, "description": "Partner country ISO code", "codelist": "partner" },
+        { "name": "partner2Code", "position": 12, "description": "Second partner / consignment country internal code", "codelist": "partner" },
+        { "name": "partner2Desc", "position": 13, "description": "Second partner / consignment country description", "codelist": "partner" },
+        { "name": "partner2ISO", "position": 14, "description": "Second partner / consignment country ISO code", "codelist": "partner" },
+        { "name": "classificationCode", "position": 15, "description": "IMTS classification code" },
+        { "name": "cmdCode", "position": 16, "description": "Commodity code (HS)", "codelist": "cmd:HS" },
+        { "name": "cmdDesc", "position": 17, "description": "Commodity description", "codelist": "cmd:HS" },
+        { "name": "customsCode", "position": 18, "description": "Customs code" },
+        { "name": "customsDesc", "position": 19, "description": "Customs description" },
+        { "name": "mosCode", "position": 20, "description": "Mode of supply code" },
+        { "name": "motCode", "position": 21, "description": "Mode of transport code" },
+        { "name": "motDesc", "position": 22, "description": "Mode of transport description" },
+        { "name": "qtyUnitCode", "position": 23, "description": "Quantity unit code" },
+        { "name": "qtyUnitAbbr", "position": 24, "description": "Quantity unit (abbreviated)" },
+        { "name": "altQtyUnitCode", "position": 25, "description": "Alternative quantity unit code" },
+        { "name": "altQtyUnitAbbr", "position": 26, "description": "Alternative quantity unit (abbreviated)" }
+      ]
+    }
+  ]
+}
