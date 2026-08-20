@@ -100,6 +100,12 @@ class ComtradeSchema:
         fob_value_col: Column with the FOB value, filled on export declarations
             and on import declarations of reporters valuing their imports FOB
             (or FAS) — zero on CIF import declarations.
+        classification_col: Column with the HS classification vintage code
+            (e.g. ``"H5"``, ``"H6"``). Used only by
+            :func:`_assert_homogeneous_classification` to check that
+            ``df_comtrade`` carries a single vintage before any estimation runs
+            — :func:`run_baci` never converts between vintages itself (see
+            :class:`macroforecast.trade.processing.classification.HsHarmonizer`).
         dist_iso_o_col: CEPII distance column with the origin ISO-3 code.
         dist_iso_d_col: CEPII distance column with the destination ISO-3 code.
         distance_column: CEPII distance column to use (population-weighted).
@@ -128,6 +134,7 @@ class ComtradeSchema:
     netwgt_col: str = "netWgt"
     cif_value_col: str = "cifvalue"
     fob_value_col: str = "fobvalue"
+    classification_col: str = "classificationCode"
     # Colonnes CEPII
     dist_iso_o_col: str = "iso_o"
     dist_iso_d_col: str = "iso_d"
@@ -170,6 +177,11 @@ class BaciConfig:
             not distinguishable from FOB in the COMTRADE columns, while the
             methodology reserves it a conditional correction.
         excluded_pairs: Country pairs whose internal flows are dropped.
+        period_start: First year (included) kept from ``df_comtrade``, applied
+            in :func:`build_mirror_flows` before any estimation; ``None`` means
+            no lower bound. See :func:`run_baci` for the filtering rationale.
+        period_end: Last year (included) kept from ``df_comtrade``; ``None``
+            means no upper bound.
         world_partner_code: Numeric partner code of the *World* aggregate
             (rows dropped upfront).
         nes_partner_codes: Numeric partner codes of the "Areas NES" aggregates
@@ -202,6 +214,9 @@ class BaciConfig:
     # Listes de pays (ISO-3)
     fas_countries: Tuple[str, ...] = ("CAN",)
     excluded_pairs: Tuple[Tuple[str, str], ...] = (("BEL", "LUX"),)
+    # Périmètre temporel (années incluses) ; None = pas de borne
+    period_start: Optional[int] = None
+    period_end: Optional[int] = None
     # Zones non spécifiées / agrégats
     world_partner_code: int = 0
     nes_partner_codes: Tuple[int, ...] = (899,)  # 899 = "Areas, nes"
@@ -408,6 +423,8 @@ def build_mirror_flows(
     nes_partner_codes: Tuple[int, ...] = (899,),
     nes_skip_codes: Tuple[int, ...] = (490,),
     excluded_pairs: Tuple[Tuple[str, str], ...] = (("BEL", "LUX"),),
+    period_start: Optional[int] = None,
+    period_end: Optional[int] = None,
 ) -> Tuple[pd.DataFrame, pd.DataFrame]:
     """Reshape COMTRADE declarations into a mirror-flow table.
 
@@ -441,6 +458,10 @@ def build_mirror_flows(
             eligible for reallocation.
         nes_skip_codes: Numeric partner codes of aggregates dropped upfront.
         excluded_pairs: Country pairs whose internal flows are dropped.
+        period_start: First year (included) kept from ``df_comtrade``; ``None``
+            means no lower bound.
+        period_end: Last year (included) kept from ``df_comtrade``; ``None``
+            means no upper bound.
 
     Returns:
         A tuple ``(df_mirror, df_nes)``:
@@ -450,11 +471,29 @@ def build_mirror_flows(
           ``v_m, q_m, unit_m, nw_m`` (import/CIF side), outer-joined.
         * ``df_nes``: import/export declarations whose partner is an "Areas NES"
           aggregate (``nes_partner_codes``), kept aside for the reallocation step.
+
+    Raises:
+        ValueError: If the ``period_start``/``period_end`` filter empties
+            ``df_comtrade``.
     """
     # Copiée indépendante du jeu de données
     df_data = df_comtrade.copy()
     # Année entière dérivée de la période (chaîne "YYYY")
     df_data["_year"] = df_data[period_col].astype(str).str[:4].astype(int)
+
+    # Filtre du périmètre temporel — appliqué avant toute estimation (taux de
+    # conversion, équation de gravité), sans quoi ils seraient calés sur des
+    # années finalement exclues du résultat
+    if period_start is not None:
+        df_data = df_data[df_data["_year"] >= period_start]
+    if period_end is not None:
+        df_data = df_data[df_data["_year"] <= period_end]
+    if (period_start is not None or period_end is not None) and df_data.empty:
+        raise ValueError(
+            f"Temporal filter period_start={period_start!r}, "
+            f"period_end={period_end!r} emptied df_comtrade before any BACI "
+            "estimation could run."
+        )
 
     # Exclusion explicite des agrégats non traités : (ex. Monde, « Other Asia, nes », ni réallouées ni pays)
     df_data = df_data[df_data[partner_code_col] != world_partner_code]
@@ -1812,6 +1851,14 @@ class BaciReport:
         regime_no_information: Number of those pairs carrying no valuation
             information at all (both value columns summing to zero), defaulted to
             CIF.
+        classification_code: HS classification vintage code shared by every
+            observation in the run (``None`` when the classification column was
+            absent from ``df_comtrade``, see
+            :func:`_assert_homogeneous_classification`).
+        period_start: First year (included) kept from ``df_comtrade`` for this
+            run; ``None`` means no lower bound was applied.
+        period_end: Last year (included) kept from ``df_comtrade`` for this
+            run; ``None`` means no upper bound was applied.
         created: Whether the result schema was created (vs. upserted); left
             ``False`` by :func:`run_baci`, set by the caller after persisting.
     """
@@ -1820,6 +1867,9 @@ class BaciReport:
     regime_country_years: int = 0
     regime_fob_country_years: int = 0
     regime_no_information: int = 0
+    classification_code: Optional[str] = None
+    period_start: Optional[int] = None
+    period_end: Optional[int] = None
     created: bool = False
 
 
@@ -1861,9 +1911,53 @@ def required_columns(config: BaciConfig = DEFAULT_CONFIG) -> List[str]:
     )
 
 
+# Fonction de vérification de l'homogénéité de la nomenclature HS
+def _assert_homogeneous_classification(
+    df_comtrade: pd.DataFrame, classification_col: str
+) -> Optional[str]:
+    """Return the single HS classification code present in ``df_comtrade``, or raise.
+
+    :func:`run_baci` only checks homogeneity — it never converts between HS
+    vintages, that conversion belongs to
+    :class:`macroforecast.trade.processing.classification.HsHarmonizer`, run
+    upstream by the caller.
+
+    Args:
+        df_comtrade: Raw COMTRADE fact-table rows.
+        classification_col: Column holding the HS classification vintage code
+            (e.g. ``"H5"``, ``"H6"``).
+
+    Returns:
+        The single classification code found, or ``None`` when
+        ``classification_col`` is absent from ``df_comtrade`` — a warning is
+        emitted in that case, for backward compatibility with extractions that
+        do not project this column.
+
+    Raises:
+        ValueError: If more than one classification code coexists in
+            ``df_comtrade``.
+    """
+    # Rétrocompatibilité : colonne absente des extractions ne la projetant pas
+    if classification_col not in df_comtrade.columns:
+        logger.warning(
+            "Column %r absent from df_comtrade: skipping the HS classification "
+            "homogeneity check.",
+            classification_col,
+        )
+        return None
+
+    codes = sorted(df_comtrade[classification_col].dropna().unique().tolist())
+    if len(codes) > 1:
+        raise ValueError(
+            f"Heterogeneous HS classifications found in df_comtrade: {codes}. "
+            "Run macroforecast.trade.processing.classification.HsHarmonizer "
+            "first to convert every observation to a single vintage (the "
+            "oldest one is unambiguous)."
+        )
+    return codes[0] if codes else None
+
+
 # Fonction d'orchestration : flux COMTRADE chargés → flux réconciliés
-# /!\ Soit spécifier dans la documentation de run_baci qu'il faut que df_comtrade contienne le périmètre temporel souhaité, soit ajouter des paramètres dans la config qui spécifient le début et la fin de la période d'intérêt (None pourrait signifier que l'on garde l'ensemble des données).
-# /!\ Spécifier également que l'ensemble des données doivent être dans une même nomenclature (classificationCode contient cette information dans les données comtrade), on vérifiera qu'il y a bien une homogénéité de la classification utilisée, sinon on effectuera la conversion vers la plus ancienne (car c'est le seul sens où il n'y a pas d'ambiguité). Les tables de correspondance peuvent être trouvées ici (https://unstats.un.org/unsd/classifications/econ) et j'en avais déjà téléchargées en utilisant le code dans lookup.py qui utilise les chemins dans un_lookup.json. S'il y a une manière plus élégante de récupérer ces données, je suis preneur de tes suggestions. De plus je souhaite stocker ces tables de correspondances (qui sont invariantes) et je ne souhaite pas les retélécharger à chaque conversion. Je souhaite, comme dans les autres fichiers, que la logique de ne pas télécharger si existe déjà se fasse dans les scripts (ou l'on spécifiera également le chemin) et non dans le package, ainsi que la définition de la classification que l'on utilise. Dans run_baci, on s'assurera seulement que cette dernière est homogène. La logique de conversion pourra être dnas un nouveau fichier dans trade/processing
 def run_baci(
     df_comtrade: pd.DataFrame,
     df_dist: pd.DataFrame,
@@ -1871,6 +1965,8 @@ def run_baci(
     *,
     config: BaciConfig = DEFAULT_CONFIG,
     apply_nes: bool = True,
+    period_start: Optional[int] = None,
+    period_end: Optional[int] = None,
 ) -> Tuple[pd.DataFrame, BaciReport]:
     """Run the BACI reconstruction end to end on already-loaded data.
 
@@ -1886,13 +1982,28 @@ def run_baci(
     The import valuation regime (CIF or FOB) is inferred from the data by
     :func:`infer_import_valuation_regime` **before** the mirror flows are built.
 
+    The HS classification of ``df_comtrade`` is checked for homogeneity (never
+    converted — see :func:`_assert_homogeneous_classification`), and the
+    temporal scope is filtered in :func:`build_mirror_flows`, right after the
+    year is derived from ``period_col`` and before any estimation runs: the
+    conversion rates and the gravity equation must never be calibrated on years
+    later excluded from the result. Absent ``period_start``/``period_end``
+    bounds, the scope is whatever ``df_comtrade`` already carries — filtering
+    upstream (in SQL, in the caller script) remains preferable for volumetry.
+
     Args:
         df_comtrade: Raw COMTRADE fact-table rows, holding at least the columns
             returned by :func:`required_columns`.
         df_dist: Raw ``dist_cepii`` table, already loaded.
         df_geo: Raw ``geo_cepii`` table, already loaded.
-        config: Column and methodological conventions.
+        config: Column and methodological conventions. Its own
+            ``period_start``/``period_end`` are used whenever the
+            same-named argument below is left ``None``.
         apply_nes: Whether to apply the "Areas NES" reallocation step.
+        period_start: First year (included) kept from ``df_comtrade``; falls
+            back to ``config.period_start`` when ``None``.
+        period_end: Last year (included) kept from ``df_comtrade``; falls back
+            to ``config.period_end`` when ``None``.
 
     Returns:
         A tuple ``(df_reconciled, report)``: the reconciled flows and the
@@ -1900,8 +2011,23 @@ def run_baci(
         caller sets it once the result is persisted).
 
     Raises:
-        ValueError: If the reconciliation produces no flow.
+        ValueError: If the HS classification is heterogeneous, if the temporal
+            filter empties ``df_comtrade``, or if the reconciliation produces no
+            flow.
     """
+    # Périmètre temporel effectif : l'argument explicite prime sur la config
+    effective_period_start = (
+        period_start if period_start is not None else config.period_start
+    )
+    effective_period_end = (
+        period_end if period_end is not None else config.period_end
+    )
+
+    # Vérification de l'homogénéité de la nomenclature HS
+    classification_code = _assert_homogeneous_classification(
+        df_comtrade, config.schema.classification_col
+    )
+
     # Assemblage des données du CEPII servant à estimer les modèles de gravité
     df_gravity = build_gravity_data(
         df_dist,
@@ -1950,6 +2076,8 @@ def run_baci(
         nes_partner_codes=config.nes_partner_codes,
         nes_skip_codes=config.nes_skip_codes,
         excluded_pairs=config.excluded_pairs,
+        period_start=effective_period_start,
+        period_end=effective_period_end,
     )
 
     # Étape 1 — conversion des quantités en tonnes
@@ -2006,6 +2134,9 @@ def run_baci(
         regime_country_years=len(df_regime),
         regime_fob_country_years=int((df_regime["regime"] == _FOB_REGIME).sum()),
         regime_no_information=int(df_regime["cif_share"].isna().sum()),
+        classification_code=classification_code,
+        period_start=effective_period_start,
+        period_end=effective_period_end,
     )
 
     return df_reconciled, report

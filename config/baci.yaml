@@ -47,6 +47,11 @@ PARAMETERS:
   fas_countries: ["CAN"]
   # Paires dont les flux internes sont écartés
   excluded_pairs: [["BEL", "LUX"]]
+  # Périmètre temporel (années incluses) : null = pas de borne.
+  # A défaut de borne ici, le périmètre est celui du jeu COMTRADE lu par le script 
+  # (le filtrage en amont, côté SQL, reste préférable pour la volumétrie)
+  period_start: null
+  period_end: null
   # Code partenaire M49 de l'agrégat Monde (lignes écartées en amont)
   world_partner_code: 0
   # « Areas, nes » éligibles à la réallocation (codes partenaires M49)
