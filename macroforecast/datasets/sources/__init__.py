@@ -24,6 +24,12 @@ from .comtrade import (
     ComtradeQueryRequest,
     ComtradeClient,
 )
+# UNSD
+from .unsd import (
+    UNSDResponseFormat,
+    UNSDCorrespondenceRequest,
+    UNSDClient,
+)
 
 # Réexport des éléments d'intérêt du module
 __all__ = [
@@ -46,4 +52,8 @@ __all__ = [
     'ComtradeResponseFormat',
     'ComtradeQueryRequest',
     'ComtradeClient',
+    # UNSD
+    'UNSDResponseFormat',
+    'UNSDCorrespondenceRequest',
+    'UNSDClient',
 ]

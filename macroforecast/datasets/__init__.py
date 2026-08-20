@@ -35,6 +35,9 @@ from .sources import (
     ComtradeResponseFormat,
     ComtradeQueryRequest,
     ComtradeClient,
+    UNSDResponseFormat,
+    UNSDCorrespondenceRequest,
+    UNSDClient,
 )
 
 # Réexport des éléments d'intérêt du module
@@ -74,4 +77,8 @@ __all__ = [
     'ComtradeResponseFormat',
     'ComtradeQueryRequest',
     'ComtradeClient',
+    # UNSD
+    'UNSDResponseFormat',
+    'UNSDCorrespondenceRequest',
+    'UNSDClient',
 ]

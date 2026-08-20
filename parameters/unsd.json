@@ -1,0 +1,57 @@
+{
+  "BASE_URL": "https://unstats.un.org/unsd/classifications/Econ/tables",
+  "SHEET_PATTERNS": {
+    "conversion": "conversion",
+    "correlation": "correlation"
+  },
+  "CLASSIFICATION_VINTAGES": {
+    "H0": 1992,
+    "H1": 1996,
+    "H2": 2002,
+    "H3": 2007,
+    "H4": 2012,
+    "H5": 2017,
+    "H6": 2022
+  },
+  "VINTAGE_START_YEARS": {
+    "1992": 1992,
+    "1996": 1996,
+    "2002": 2002,
+    "2007": 2007,
+    "2012": 2012,
+    "2017": 2017,
+    "2022": 2022
+  },
+  "TABLES": {
+    "HS2022-HS2017": "HS2022toHS2017ConversionAndCorrelationTables.xlsx",
+    "HS2022-HS2012": "HS2022toHS2012ConversionAndCorrelationTables.xlsx",
+    "HS2022-HS2007": "HS2022toHS2007ConversionAndCorrelationTables.xlsx",
+    "HS2022-HS2002": "HS2022toHS2002ConversionAndCorrelationTables.xlsx",
+    "HS2022-HS1996": "HS2022toHS1996ConversionAndCorrelationTables.xlsx",
+    "HS2022-HS1992": "HS2022toHS1992ConversionAndCorrelationTables.xlsx",
+
+    "HS2017-HS2012": "HS2017toHS2012ConversionAndCorrelationTables.xlsx",
+    "HS2017-HS2007": "HS2017toHS2007ConversionAndCorrelationTables.xlsx",
+    "HS2017-HS2002": "HS2017toHS2002ConversionAndCorrelationTables.xlsx",
+    "HS2017-HS1996": "HS2017toHS1996ConversionAndCorrelationTables.xlsx",
+    "HS2017-HS1992": "HS2017toHS1992ConversionAndCorrelationTables.xlsx",
+
+    "HS2012-HS2007": "HS 2012 to HS 2007 Correlation and conversion tables.xls",
+    "HS2012-HS2002": "HS 2012 to HS 2002 Correlation and conversion tables.xls",
+    "HS2012-HS1996": "HS 2012 to HS 1996 Correlation and conversion tables.xls",
+    "HS2012-HS1992": "HS 2012 to HS 1992 Correlation and conversion tables.xls",
+
+    "HS2007-HS2002": "HS 2007 to HS 2002 Correlation and conversion tables.xls",
+    "HS2007-HS1996": "HS 2007 to HS 1996 Correlation and conversion tables.xls",
+    "HS2007-HS1992": "HS 2007 to HS 1992 Correlation and conversion tables.xls",
+
+    "HS2002-HS1996": "HS2002 to HS1996 - Correlation and conversion tables.xls",
+    "HS2002-HS1992": "HS2002 to HS1992 - Correlation and conversion tables.xls",
+
+    "HS1996-HS1992": "HS1996 to HS1992 - Correlation and conversion tables.xls"
+  },
+  "CLASSIFICATION_TABLES": {
+    "HS2017-CPC21": "CPC/CPCv21_HS2017/CPC21-HS2017.csv",
+    "ISIC4-CPC21": "ISIC/ISIC4_CPCv21/isic4-cpc21.txt"
+  }
+}
