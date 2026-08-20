@@ -33,9 +33,17 @@ PARAMETERS:
   max_conversion_std: 2.5
   # Robustesse de l'équation de gravité (seuil de distance de Cook = facteur / n)
   cook_factor: 4.0
-  # Pays ne déclarant pas leurs importations en CAF (fret jamais retiré)
-  non_cif_countries: ["DZA", "GEO", "ZAF", "BWA", "LSO", "NAM", "SWZ"]
-  # Pays déclarant en FAS (fret retiré seulement si l'écart miroir diminue)
+  # Inférence du régime de valorisation des importations depuis les colonnes
+  # cifvalue / fobvalue des déclarations d'import : part de la valeur déclarée en
+  # CIF au-delà de laquelle l'importateur est réputé déclarer en CIF
+  cif_share_threshold: 0.5
+  # Maille de l'inférence : "country_year" (régime daté, repli sur le régime modal
+  # du pays quand l'année manque) ou "country" (un régime unique par pays)
+  regime_granularity: "country_year"
+  # Pays déclarant en FAS (fret retiré seulement si l'écart miroir diminue).
+  # Conservé en configuration : le régime FAS n'est pas distinguable de FAB dans
+  # les colonnes COMTRADE, alors que la note lui réserve une correction
+  # conditionnelle
   fas_countries: ["CAN"]
   # Paires dont les flux internes sont écartés
   excluded_pairs: [["BEL", "LUX"]]

@@ -9,6 +9,7 @@ from .baci import (
 from .baci import (
     build_gravity_data,
     build_mirror_flows,
+    infer_import_valuation_regime,
     world_median_unit_values,
     required_columns,
 )
@@ -37,6 +38,7 @@ __all__ = [
     # Préparation des données
     "build_gravity_data",
     "build_mirror_flows",
+    "infer_import_valuation_regime",
     "world_median_unit_values",
     "required_columns",
     # Étapes du redressement

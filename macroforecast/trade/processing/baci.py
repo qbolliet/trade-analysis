@@ -53,7 +53,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 import logging
 import math
-from typing import Dict, List, Mapping, Optional, Sequence, Tuple
+from typing import Dict, List, Literal, Mapping, Optional, Sequence, Tuple
 # Modules de manipulation de données
 import numpy as np
 import pandas as pd
@@ -95,6 +95,11 @@ class ComtradeSchema:
             `supplementary quantity units <https://uncomtrade.org/docs/supplementary-quantity-units/>`_
             page and the
             `WCO standard units of quantity overview <https://unstats.un.org/wiki/spaces/I2CG/pages/6325189/A.+An+overview+of+the+World+Customs+Organization+standard+units+of+quantity>`_).
+        cif_value_col: Column with the CIF import value, filled only when the
+            reporter values its imports CIF (zero otherwise).
+        fob_value_col: Column with the FOB value, filled on export declarations
+            and on import declarations of reporters valuing their imports FOB
+            (or FAS) — zero on CIF import declarations.
         dist_iso_o_col: CEPII distance column with the origin ISO-3 code.
         dist_iso_d_col: CEPII distance column with the destination ISO-3 code.
         distance_column: CEPII distance column to use (population-weighted).
@@ -121,6 +126,8 @@ class ComtradeSchema:
     qty_col: str = "qty"
     qty_unit_col: str = "qtyUnitCode"
     netwgt_col: str = "netWgt"
+    cif_value_col: str = "cifvalue"
+    fob_value_col: str = "fobvalue"
     # Colonnes CEPII
     dist_iso_o_col: str = "iso_o"
     dist_iso_d_col: str = "iso_d"
@@ -153,10 +160,15 @@ class BaciConfig:
             and fall back to unit conversion only when it is missing.
         cook_factor: Cook's-distance cutoff factor; observations with
             ``cook > cook_factor / n`` are dropped before the final gravity fit.
-        non_cif_countries: Importer ISO-3 codes that do not declare CIF (freight
-            never stripped).
+        cif_share_threshold: CIF share above which an importer is deemed to
+            value its imports CIF, in :func:`infer_import_valuation_regime`.
+        regime_granularity: Grain of the valuation-regime inference, either
+            ``"country_year"`` (dated regime changes) or ``"country"`` (a single
+            regime per importer over the whole period).
         fas_countries: Importer ISO-3 codes declaring FAS (freight stripped only
-            when it reduces the mirror gap).
+            when it reduces the mirror gap). Kept in configuration because FAS is
+            not distinguishable from FOB in the COMTRADE columns, while the
+            methodology reserves it a conditional correction.
         excluded_pairs: Country pairs whose internal flows are dropped.
         world_partner_code: Numeric partner code of the *World* aggregate
             (rows dropped upfront).
@@ -175,16 +187,19 @@ class BaciConfig:
     # Conventions de schéma des sources
     schema: ComtradeSchema = field(default_factory=ComtradeSchema)
     # Table des facteurs multiplicatifs des unités de poids vers la tonne
-    tonne_conversion_factors: Mapping[int, float] = { 8 : 1e-3, 21 : 1}
+    # Défaut mutable interdit dans une dataclass : fabrique dédiée
+    tonne_conversion_factors: Mapping[int, float] = field(
+        default_factory=lambda: {8: 1e-3, 21: 1.0}
+    )
     min_mirror_flows: int = 10
     max_conversion_std: float = 2.5
     prefer_netwgt: bool = True
     # Équation de gravité
     cook_factor: float = 4.0
+    # Inférence du régime de valorisation des importations (CAF/FAB)
+    cif_share_threshold: float = 0.5
+    regime_granularity: Literal["country", "country_year"] = "country_year"
     # Listes de pays (ISO-3)
-    non_cif_countries: Tuple[str, ...] = (
-        "DZA", "GEO", "ZAF", "BWA", "LSO", "NAM", "SWZ",
-    )
     fas_countries: Tuple[str, ...] = ("CAN",)
     excluded_pairs: Tuple[Tuple[str, str], ...] = (("BEL", "LUX"),)
     # Zones non spécifiées / agrégats
@@ -201,6 +216,8 @@ DEFAULT_CONFIG = BaciConfig()
 # Noms de colonnes canoniques de la table de flux miroirs
 _EXP, _IMP, _PROD, _YEAR = "exporter", "importer", "product", "year"
 
+# Libellés des régimes de valorisation des importations
+_CIF_REGIME, _FOB_REGIME = "CIF", "FOB"
 
 # ──────────────────────────────────────────────────────────────────────
 # Chargement des données (gravité CEPII)
@@ -500,6 +517,199 @@ def build_mirror_flows(
         df_mirror = df_mirror[~drop]
 
     return df_mirror.reset_index(drop=True), df_nes.reset_index(drop=True)
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Inférence du régime de valorisation des importations (CAF / FAB)
+# ──────────────────────────────────────────────────────────────────────
+
+# Détecteur du régime de valorisation des importations
+def infer_import_valuation_regime(
+    df_comtrade: pd.DataFrame,
+    *,
+    flow_col: str = "flowCode",
+    import_code: str = "M",
+    reporter_iso_col: str = "reporterISO",
+    period_col: str = "period",
+    cif_value_col: str = "cifvalue",
+    fob_value_col: str = "fobvalue",
+    cif_share_threshold: float = 0.5,
+    regime_granularity: Literal["country", "country_year"] = "country_year",
+) -> pd.DataFrame:
+    """Infer, per importer and year, whether imports are declared CIF or FOB.
+
+    On an import declaration COMTRADE fills either ``cifvalue`` or ``fobvalue``
+    and leaves the other at zero, so the valuation regime of a reporter is
+    derivable from the data instead of being frozen in a country list. The share
+    is weighted **by value** rather than by a row count, so that a handful of
+    marginal declarations cannot flip the regime of a reporter::
+
+        cif_share = Σ cifvalue / (Σ cifvalue + Σ fobvalue)
+        regime    = "CIF" if cif_share >= cif_share_threshold else "FOB"
+
+    Must be called **before** :func:`build_mirror_flows`, which aggregates the
+    two valuation columns away.
+
+    Args:
+        df_comtrade: Raw COMTRADE fact-table rows (both flow directions).
+        flow_col: Column holding the trade-flow code.
+        import_code: Flow code identifying import declarations.
+        reporter_iso_col: Column with the reporter ISO-3 code.
+        period_col: Column with the period (year as text).
+        cif_value_col: Column with the CIF import value.
+        fob_value_col: Column with the FOB value.
+        cif_share_threshold: CIF share above which the importer is deemed CIF.
+        regime_granularity: ``"country_year"`` for a dated regime, ``"country"``
+            for a single regime per importer (value sums cumulated over the whole
+            period, then broadcast over each observed year).
+
+    Returns:
+        One row per observed ``(importer, year)`` with columns ``importer``,
+        ``year``, ``cif_share``, ``n_declarations`` and ``regime``. When no
+        valuation information is available (``Σ cifvalue + Σ fobvalue == 0``),
+        ``cif_share`` is ``NaN`` and the regime is ``"CIF"``: this is BACI's
+        historical behaviour, and missing information must not silently disable
+        the fobization.
+
+    Raises:
+        KeyError: If one of the expected COMTRADE columns is absent.
+        ValueError: If ``regime_granularity`` is neither ``"country"`` nor
+            ``"country_year"``.
+
+    Examples:
+        >>> df_comtrade = pd.DataFrame(
+        ...     {
+        ...         "flowCode": ["M", "M", "M", "X"],
+        ...         "reporterISO": ["AAA", "BBB", "CCC", "AAA"],
+        ...         "period": ["2020", "2020", "2020", "2020"],
+        ...         "cifvalue": [100.0, 0.0, 0.0, 0.0],
+        ...         "fobvalue": [0.0, 100.0, 0.0, 500.0],
+        ...     }
+        ... )
+        >>> infer_import_valuation_regime(df_comtrade)
+          importer  year  cif_share  n_declarations regime
+        0      AAA  2020        1.0               1    CIF
+        1      BBB  2020        0.0               1    FOB
+        2      CCC  2020        NaN               1    CIF
+    """
+    # Vérification de la présence des colonnes nécessaires
+    needed = list(
+        dict.fromkeys(
+            [flow_col, reporter_iso_col, period_col, cif_value_col, fob_value_col]
+        )
+    )
+    missing = [col for col in needed if col not in df_comtrade.columns]
+    if missing:
+        raise KeyError(
+            "Missing COMTRADE columns for import valuation-regime inference: "
+            f"{missing}"
+        )
+    # Vérification de la granularité demandée
+    if regime_granularity not in ("country", "country_year"):
+        raise ValueError(
+            "regime_granularity must be 'country' or 'country_year', "
+            f"got {regime_granularity!r}"
+        )
+
+    # Restriction aux déclarations d'importation : elles seules portent le régime
+    df_imports = df_comtrade.loc[df_comtrade[flow_col] == import_code, needed].copy()
+
+    # Jeu sans déclaration d'importation : sortie vide au schéma attendu
+    if df_imports.empty:
+        return pd.DataFrame(
+            {
+                _IMP: pd.Series(dtype=object),
+                _YEAR: pd.Series(dtype=int),
+                "cif_share": pd.Series(dtype=float),
+                "n_declarations": pd.Series(dtype=int),
+                "regime": pd.Series(dtype=object),
+            }
+        )
+
+    # Année entière dérivée de la période (chaîne "YYYY"), convention partagée
+    # avec build_mirror_flows
+    df_imports[_YEAR] = df_imports[period_col].astype(str).str[:4].astype(int)
+    # Coercition numérique des valeurs déclarées : manquants comptés pour zéro
+    for col in (cif_value_col, fob_value_col):
+        df_imports[col] = pd.to_numeric(df_imports[col], errors="coerce").fillna(0.0)
+
+    # Agrégation par (importateur, année) : pondération par la valeur déclarée
+    df_regime = (
+        df_imports.groupby([reporter_iso_col, _YEAR], dropna=True)
+        .agg(
+            _cif=(cif_value_col, "sum"),
+            _fob=(fob_value_col, "sum"),
+            n_declarations=(flow_col, "size"),
+        )
+        .reset_index()
+        .rename(columns={reporter_iso_col: _IMP})
+    )
+
+    # Granularité pays : cumul sur l'ensemble des années, puis diffusion des
+    # valeurs pays sur chaque année observée (schéma de sortie inchangé)
+    if regime_granularity == "country":
+        df_country = df_regime.groupby(_IMP, as_index=False)[
+            ["_cif", "_fob", "n_declarations"]
+        ].sum()
+        df_regime = df_regime[[_IMP, _YEAR]].merge(df_country, on=_IMP, how="left")
+
+    # Part CIF de la valeur déclarée ; total nul → aucune information (NaN)
+    total = df_regime["_cif"] + df_regime["_fob"]
+    df_regime["cif_share"] = df_regime["_cif"].div(total.where(total > 0))
+
+    # Régime : CIF au-dessus du seuil, et CIF également en l'absence
+    # d'information (ne pas désactiver silencieusement la fobisation)
+    is_cif = (df_regime["cif_share"] >= cif_share_threshold) | df_regime[
+        "cif_share"
+    ].isna()
+    df_regime["regime"] = np.where(is_cif, _CIF_REGIME, _FOB_REGIME)
+
+    return (
+        df_regime[[_IMP, _YEAR, "cif_share", "n_declarations", "regime"]]
+        .sort_values([_IMP, _YEAR])
+        .reset_index(drop=True)
+    )
+
+
+# Fonction d'alignement du régime inféré sur les flux miroirs
+def _resolve_regimes(df_mirror: pd.DataFrame, df_regime: pd.DataFrame) -> pd.Series:
+    """Align the inferred valuation regime on each mirror flow.
+
+    Falls back, for an ``(importer, year)`` pair absent from the inference, on
+    the importer's modal regime, and on ``"CIF"`` when the importer is unknown
+    altogether — missing information never disables the fobization.
+
+    Args:
+        df_mirror: Mirror-flow table, keyed by ``importer`` and ``year``.
+        df_regime: Inference produced by :func:`infer_import_valuation_regime`.
+
+    Returns:
+        The valuation regime of each mirror flow, indexed like ``df_mirror``.
+    """
+    # Inférence vide : comportement historique de BACI (tous CIF)
+    if df_regime is None or df_regime.empty:
+        return pd.Series(_CIF_REGIME, index=df_mirror.index, dtype=object)
+
+    # Jointure sur (importateur, année) — clés dédupliquées par précaution
+    df_keys = df_regime[[_IMP, _YEAR, "regime"]].drop_duplicates(subset=[_IMP, _YEAR])
+    df_joined = df_mirror[[_IMP, _YEAR]].merge(df_keys, on=[_IMP, _YEAR], how="left")
+    regime = pd.Series(
+        df_joined["regime"].to_numpy(), index=df_mirror.index, dtype=object
+    )
+
+    # Repli sur le régime modal du pays pour les années non renseignées
+    # (égalité tranchée vers CAF, régime par défaut)
+    if regime.isna().any():
+        modal = df_regime.groupby(_IMP)["regime"].agg(
+            lambda regimes: _CIF_REGIME
+            if (regimes == _CIF_REGIME).sum() >= (regimes == _FOB_REGIME).sum()
+            else _FOB_REGIME
+        )
+        regime = regime.where(regime.notna(), df_mirror[_IMP].map(modal))
+
+    # Importateur totalement absent de l'inférence : CAF par défaut
+    return regime.fillna(_CIF_REGIME)
+
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -962,38 +1172,48 @@ class CifGravityModel:
 class Fobizer:
     """Strip the estimated freight from CIF import values.
 
-    Computes ``V_m_fob = V_m / (1 + cif_rate)`` under the note's safeguards: no
-    correction for non-CIF importers, conditional correction for FAS importers
-    (only when it reduces the mirror gap), and a floor at zero.
+    Computes ``V_m_fob = V_m / (1 + cif_rate)`` under the note's safeguards, in
+    strict priority order: conditional correction for FAS importers (kept only
+    when it reduces the mirror gap), no correction for importers whose inferred
+    valuation regime is FOB, unconditional correction floored at zero otherwise.
+
+    The regime itself is no longer a parameter: it is inferred from the data by
+    :func:`infer_import_valuation_regime` and handed to :meth:`transform`.
 
     Args:
-        non_cif_countries: Importer ISO-3 codes that do not declare CIF (freight
-            never stripped).
         fas_countries: Importer ISO-3 codes declaring FAS (freight stripped only
-            when it reduces the mirror gap).
+            when it reduces the mirror gap). FAS is not distinguishable from FOB
+            in the COMTRADE valuation columns — a FAS reporter fills
+            ``fobvalue`` — while the methodology reserves it a *conditional*
+            correction rather than no correction at all, hence this list stays in
+            configuration and takes priority over the inferred regime.
     """
 
     # Initialisation
     def __init__(
         self,
         *,
-        non_cif_countries: Tuple[str, ...] = (
-            "DZA", "GEO", "ZAF", "BWA", "LSO", "NAM", "SWZ",
-        ),
         fas_countries: Tuple[str, ...] = ("CAN",),
     ) -> None:
         # Initialisation des attributs (stockage tel quel, convention sklearn)
-        self.non_cif_countries = non_cif_countries
         self.fas_countries = fas_countries
 
     # Application de la fobisation
-    def transform(self, df_mirror: pd.DataFrame, cif_rate: pd.Series) -> pd.DataFrame:
+    def transform(
+        self,
+        df_mirror: pd.DataFrame,
+        cif_rate: pd.Series,
+        df_regime: pd.DataFrame,
+    ) -> pd.DataFrame:
         """Add the FOB-equivalent import value ``v_m_fob``.
 
         Args:
             df_mirror: Mirror-flow table.
             cif_rate: Estimated freight rate per flow (from
                 :meth:`CifGravityModel.predict`).
+            df_regime: Inferred import valuation regime, as returned by
+                :func:`infer_import_valuation_regime`. An empty frame means no
+                inference is available and every importer is treated as CIF.
 
         Returns:
             The frame with an added ``v_m_fob`` column.
@@ -1009,13 +1229,20 @@ class Fobizer:
         v_m_fob = np.clip(v_m_fob, a_min=0.0, a_max=None)
         candidate = pd.Series(v_m_fob, index=df_out.index)
 
-        # Importateurs ne déclarant pas en CAF : aucune correction
-        # /!\ A déterminer à partir des données et non plus à partir de la configuration
-        non_cif = df_out[_IMP].isin(list(self.non_cif_countries))
-        candidate = candidate.where(~non_cif, v_m)
+        # Régime de valorisation inféré, aligné sur les flux miroirs
+        regime = _resolve_regimes(df_out, df_regime)
 
-        # Importateurs FAS : correction conservée seulement si elle réduit l'écart miroir
+        # Priorité 1 — importateurs FAS : traitement conditionnel appliqué quel
+        # que soit le régime inféré (FAS n'est pas distinguable de FAB dans les
+        # colonnes COMTRADE, alors que la note lui réserve ce traitement)
         fas = df_out[_IMP].isin(list(self.fas_countries))
+
+        # Priorité 2 — régime inféré FAB hors pays FAS : aucune correction
+        # Priorité 3 — régime CAF : correction inconditionnelle (valeur candidate)
+        no_correction = ~fas & (regime == _FOB_REGIME)
+        candidate = candidate.where(~no_correction, v_m)
+
+        # Correction FAS conservée seulement si elle réduit l'écart miroir
         if fas.any():
             has_mirror = (df_out["v_x"] > 0) & (v_m > 0)
             gap_before = np.abs(np.log(df_out["v_x"] / v_m))
@@ -1578,11 +1805,21 @@ class BaciReport:
     Attributes:
         flows: Number of reconciled flows produced.
         mean_freight_rate: Mean estimated freight rate over the mirror flows.
+        regime_country_years: Number of ``(importer, year)`` pairs whose import
+            valuation regime was inferred.
+        regime_fob_country_years: Number of those pairs inferred FOB (imports
+            left uncorrected, save for the FAS importers).
+        regime_no_information: Number of those pairs carrying no valuation
+            information at all (both value columns summing to zero), defaulted to
+            CIF.
         created: Whether the result schema was created (vs. upserted); left
             ``False`` by :func:`run_baci`, set by the caller after persisting.
     """
     flows: int = 0
     mean_freight_rate: float = float("nan")
+    regime_country_years: int = 0
+    regime_fob_country_years: int = 0
+    regime_no_information: int = 0
     created: bool = False
 
 
@@ -1617,6 +1854,8 @@ def required_columns(config: BaciConfig = DEFAULT_CONFIG) -> List[str]:
                 config.schema.qty_col,
                 config.schema.qty_unit_col,
                 config.schema.netwgt_col,
+                config.schema.cif_value_col,
+                config.schema.fob_value_col,
             ]
         )
     )
@@ -1643,6 +1882,9 @@ def run_baci(
 
     This is the only place where :class:`BaciConfig` is read: each step receives
     the values it needs as explicit keyword arguments.
+
+    The import valuation regime (CIF or FOB) is inferred from the data by
+    :func:`infer_import_valuation_regime` **before** the mirror flows are built.
 
     Args:
         df_comtrade: Raw COMTRADE fact-table rows, holding at least the columns
@@ -1673,6 +1915,20 @@ def run_baci(
     )
     # Extraction des codes pays valides
     valid_iso = sorted(set(df_gravity["iso_o"]) | set(df_gravity["iso_d"]))
+
+    # Inférence du régime de valorisation des importations — impérativement avant
+    # la construction des flux miroirs, qui agrège les colonnes de valorisation
+    df_regime = infer_import_valuation_regime(
+        df_comtrade,
+        flow_col=config.schema.flow_col,
+        import_code=config.schema.import_code,
+        reporter_iso_col=config.schema.reporter_iso_col,
+        period_col=config.schema.period_col,
+        cif_value_col=config.schema.cif_value_col,
+        fob_value_col=config.schema.fob_value_col,
+        cif_share_threshold=config.cif_share_threshold,
+        regime_granularity=config.regime_granularity,
+    )
 
     # Construction des flux miroirs (+ flux NES mis de côté)
     df_mirror, df_nes = build_mirror_flows(
@@ -1714,10 +1970,9 @@ def run_baci(
     print(mean_freight_rate)
 
     # Étape 3 — fobisation des importations
-    df_mirror = Fobizer(
-        non_cif_countries=config.non_cif_countries,
-        fas_countries=config.fas_countries,
-    ).transform(df_mirror, cif_rate)
+    df_mirror = Fobizer(fas_countries=config.fas_countries).transform(
+        df_mirror, cif_rate, df_regime
+    )
 
     # Étape 4 — qualité de déclaration (valeurs puis quantités)
     quality_model = ReportingQualityModel()
@@ -1745,6 +2000,12 @@ def run_baci(
     if df_reconciled.empty:
         raise ValueError("No reconciled flow produced")
 
-    report = BaciReport(flows=len(df_reconciled), mean_freight_rate=mean_freight_rate)
+    report = BaciReport(
+        flows=len(df_reconciled),
+        mean_freight_rate=mean_freight_rate,
+        regime_country_years=len(df_regime),
+        regime_fob_country_years=int((df_regime["regime"] == _FOB_REGIME).sum()),
+        regime_no_information=int(df_regime["cif_share"].isna().sum()),
+    )
 
     return df_reconciled, report
