@@ -4,7 +4,7 @@ COMTRADE declarations carry the HS vintage in force at the time of the
 declaration (``H4`` for HS2012, ``H5`` for HS2017, ``H6`` for HS2022), so any
 panel spanning more than a few years mixes several nomenclatures. Comparing a
 2019 flow to a 2023 flow on the same six-digit code is only meaningful once both
-sit on the same vintage: :func:`~macroforecast.trade.processing.baci.run_baci`
+sit on the same vintage classification system : :func:`~macroforecast.trade.processing.baci.run_baci`
 therefore refuses a heterogeneous input (see
 :func:`~macroforecast.trade.processing.baci._assert_homogeneous_classification`)
 and expects the caller to have run :class:`HsHarmonizer` upstream, on the raw
@@ -25,14 +25,6 @@ and weights are additive, quantities are not: they are summed per unit code, and
 the unit carrying the largest cumulated quantity is kept. That rule lives in
 :func:`~macroforecast.trade.processing.aggregation.aggregate_measures`, shared
 with the mirror-flow construction of ``baci.py``.
-
-The module performs **no I/O**: the correspondence tables are downloaded, cached
-and handed over by the caller (see ``scripts/process_baci_hs.py``), following the
-principle that scope decisions and I/O belong to the scripts.
-
-Notes:
-    Every ``pandas.DataFrame`` — argument, attribute or local variable — carries
-    the ``df_`` prefix; ``pandas.Series`` keep a bare name.
 """
 # Importation des modules
 from __future__ import annotations
@@ -66,7 +58,7 @@ _SOURCE_CODE, _TARGET_CODE = "source_code", "target_code"
 _RELATIONSHIP = "relationship"
 
 # Colonnes de travail de la jointure de remappage (préfixées pour ne pas
-# entrer en collision avec une colonne de la table de faits)
+# entrer en collision avec une colonne de la table)
 _JOIN_VINTAGE, _JOIN_SOURCE, _JOIN_TARGET = "_hs_vintage", "_hs_source", "_hs_target"
 
 
@@ -148,6 +140,7 @@ def _index_concordances(
         pair = (resolve_vintage(source), resolve_vintage(target))
         # Doublon de couple : deux étiquettes distinctes du même millésime
         if pair in indexed:
+            # Logging
             logger.warning(
                 f"Concordance pair {pair} declared twice in the mapping "
                 f"(duplicate key {(source, target)!r}): keeping the first table."
@@ -193,6 +186,7 @@ def _map_from_table(df_table: pd.DataFrame, source: str, target: str) -> Dict[st
 
     # Contrôle de fonctionnalité : un seul code cible par code source
     ambiguous = df_pairs.loc[df_pairs[_SOURCE_CODE].duplicated(keep=False), _SOURCE_CODE]
+    # Message d'erreur si présence de duplicats
     if not ambiguous.empty:
         raise ValueError(
             f"Concordance table {source!r} -> {target!r} is not a function: "
@@ -290,6 +284,7 @@ def build_conversion_map(
 
     # Repli : chaînage par millésimes intermédiaires
     path = _find_chain(indexed, source_year=source_year, target_year=target_year)
+    # Message d'erreur si aucun chemin valide
     if not path:
         raise ValueError(
             f"No concordance table connects {source!r} to {target!r}. Available "
@@ -297,6 +292,7 @@ def build_conversion_map(
             f"published by UNSD: a missing pair usually means the caller did "
             f"not load it."
         )
+    # Logging
     logger.warning(
         f"No direct concordance table from {source!r} to {target!r}: falling "
         f"back on the chain {' -> '.join(path)}. Chaining compounds the "
@@ -498,6 +494,7 @@ class HsHarmonizer:
             for col in (self.classification_col, self.product_col)
             if col not in df_data.columns
         ]
+        # message d'erreur si des colonnes sont manquantes
         if missing:
             raise ValueError(
                 f"Columns {missing} are absent from df_data. Available columns: "
@@ -515,6 +512,7 @@ class HsHarmonizer:
 
         # Période : simple avertissement, la colonne n'est qu'une dimension de clé
         if self.period_col not in df_data.columns:
+            # Logging
             logger.warning(
                 f"Column {self.period_col!r} is absent from df_data: the "
                 f"harmonisation runs without it, but the aggregation key then "
@@ -637,6 +635,7 @@ class HsHarmonizer:
                     df_data[self.classification_col] == label, self.period_col
                 ]
                 if not periods.empty:
+                    # Logging
                     logger.info(
                         f"Vintage {label!r}: {len(periods)} rows over periods "
                         f"{periods.min()}-{periods.max()}."
@@ -650,6 +649,7 @@ class HsHarmonizer:
         converted: List[str] = []
         relationships: Counter = Counter()
 
+        # Parcours des millésimes
         for label in self.vintages_present_:
             source_year = resolve_vintage(label)
             # Millésime déjà cible : identité appliquée par règle dans transform
@@ -696,6 +696,7 @@ class HsHarmonizer:
                 f"untouched."
             )
 
+        # Logging
         logger.info(
             f"Harmonisation fitted on {self.target_vintage_!r}: "
             f"{len(converted)} vintages to convert, {len(mapping)} codes mapped, "
@@ -839,6 +840,7 @@ class HsHarmonizer:
             1.0 - len(df_out) / n_retained_rows if n_retained_rows else float("nan")
         )
 
+        # Logging
         logger.info(
             f"Harmonisation towards {self.target_vintage_!r}: {n_input_rows} rows "
             f"in, {len(df_out)} rows out "
