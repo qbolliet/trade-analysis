@@ -61,6 +61,8 @@ import pandas as pd
 import statsmodels.api as sm
 from statsmodels.stats.outliers_influence import OLSInfluence
 from linearmodels.iv import AbsorbingLS
+# Modules du package
+from .aggregation import aggregate_measures
 
 # Initialisation du logger
 logger = logging.getLogger(__name__)
@@ -367,33 +369,25 @@ def _aggregate_side(
     """
     keys = [exporter_col, importer_col, product_col, "_year"]
 
-    # Agrégation valeur + poids net par flux
-    df_base = (
-        df_side.groupby(keys, dropna=True)
-        .agg(
-            **{
-                f"v_{suffix}": (value_col, "sum"),
-                f"nw_{suffix}": (netwgt_col, "sum"),
-            }
-        )
-        .reset_index()
+    # Agrégation par mesure : somme des valeurs et poids, unité dominante pour la
+    # quantité. Règle partagée avec HsHarmonizer (voir aggregation.py) : une clé
+    # incomplète rend la déclaration inexploitable, d'où dropna=True.
+    df_merged = aggregate_measures(
+        df_side,
+        keys,
+        sum_cols=[value_col, netwgt_col],
+        qty_col=qty_col,
+        qty_unit_col=qty_unit_col,
+        dropna=True,
     )
 
-    # Quantité : unité portant la plus grande quantité cumulée par flux
-    df_qty = (
-        df_side.groupby(keys + [qty_unit_col], dropna=True)[qty_col]
-        .sum()
-        .reset_index()
-    )
-    df_qty = df_qty.sort_values(qty_col, ascending=False).drop_duplicates(subset=keys)
-    df_qty = df_qty.rename(
-        columns={qty_col: f"q_{suffix}", qty_unit_col: f"unit_{suffix}"}
-    )
-
-    df_merged = df_base.merge(df_qty, on=keys, how="left")
-    # Renommage des identités vers les colonnes canoniques
+    # Renommage des mesures et des identités vers les colonnes canoniques
     return df_merged.rename(
         columns={
+            value_col: f"v_{suffix}",
+            netwgt_col: f"nw_{suffix}",
+            qty_col: f"q_{suffix}",
+            qty_unit_col: f"unit_{suffix}",
             exporter_col: _EXP,
             importer_col: _IMP,
             product_col: _PROD,

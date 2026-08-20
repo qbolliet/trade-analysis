@@ -23,6 +23,17 @@ from .baci import (
     MirrorReconciler,
     AreaNesReallocator,
 )
+# Ré-agrégation
+from .aggregation import (
+    aggregate_measures,
+)
+# Harmonisation des nomenclatures HS
+from .classification import (
+    HsHarmonizer,
+    HsHarmonizationReport,
+    build_conversion_map,
+    resolve_vintage,
+)
 # Orchestration
 from .baci import (
     BaciReport,
@@ -49,6 +60,13 @@ __all__ = [
     "QualityResult",
     "MirrorReconciler",
     "AreaNesReallocator",
+    # Ré-agrégation partagée
+    "aggregate_measures",
+    # Harmonisation des nomenclatures HS
+    "HsHarmonizer",
+    "HsHarmonizationReport",
+    "build_conversion_map",
+    "resolve_vintage",
     # Orchestration
     "BaciReport",
     "run_baci",
