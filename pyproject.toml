@@ -13,6 +13,7 @@ dependencies = [
     "openpyxl>=3.1.5",
     "pandas>=2.3.3",
     "psycopg2>=2.9.12",
+    "pyarrow>=24.0.0",
     "pyyaml>=6.0.3",
     "requests>=2.32.5",
     "s3fs>=0.4.2",
@@ -24,6 +25,7 @@ dependencies = [
 comtrade-script = "scripts.download_comtrade:main"
 eurostat-script = "scripts.download_eurostat_comext:main"
 baci-script = "scripts.process_baci:main"
+baci-hs-script = "scripts.process_baci_hs:main"
 vulnerabilities-eurostat-script = "scripts.compute_trade_vulnerabilities:main"
 test-baci-script = "scripts.test_baci:main"
 
