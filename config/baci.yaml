@@ -58,3 +58,23 @@ PARAMETERS:
   nes_partner_codes: [899]
   # Agrégats laissés de côté et écartés des données (« Other Asia, nes »)
   nes_skip_codes: [490]
+
+# Configuration du script multi-millésimes :
+# harmonisation des nomenclatures HS puis exécution d'une passe BACI par
+# millésime cible, chacune écrite dans son propre schéma DuckLake.
+CLASSIFICATIONS:
+  # Emplacement de cache des tables de correspondance UNSD normalisées
+  # (Parquet, une table par paire de millésimes) et de leur registre
+  # (registry.json : date de téléchargement, URL source, nombre de lignes,
+  # somme de contrôle). Relatif au bucket ci-dessus (racine du dépôt en local).
+  CONCORDANCE_PATH: "trade/datasets/unsd/concordances"
+  # Les tables de correspondance sont invariantes : force le retéléchargement
+  # de toutes les paires même si elles sont déjà en cache.
+  FORCE_REFRESH: false
+  # Millésimes HS sur lesquels le redressement BACI est exécuté. Pour chacun :
+  # première année incluse (les millésimes plus récents y sont reversés par
+  # les tables de passage UNSD) et schéma DuckLake de destination.
+  TARGETS:
+    HS2022: { START_YEAR: 2022, RESULT_SCHEMA: "baci_hs2022" }
+    HS2017: { START_YEAR: 2017, RESULT_SCHEMA: "baci_hs2017" }
+    HS2012: { START_YEAR: 2012, RESULT_SCHEMA: "baci_hs2012" }
