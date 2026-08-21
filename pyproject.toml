@@ -21,6 +21,11 @@ dependencies = [
     "xlrd>=2.0.2",
 ]
 
+[project.optional-dependencies]
+tracking = [
+    "mlflow>=2.16",
+]
+
 [project.scripts]
 comtrade-script = "scripts.download_comtrade:main"
 eurostat-script = "scripts.download_eurostat_comext:main"
