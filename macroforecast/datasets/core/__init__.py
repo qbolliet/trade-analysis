@@ -3,6 +3,15 @@
 from .client import APIClient, AbstractSDMXClient
 # Rate limiter
 from .rate_limiter import CompositeRateLimiter, RateLimiter, build_rate_limiter
+# Rapports structurés (diagnostics exploitables du téléchargement)
+from .reports import (
+    DownloadReport,
+    QueryReport,
+    FetchReport,
+    HttpStats,
+    RateLimitStats,
+    flatten_metrics,
+)
 # SDMX
 from .sdmx import (
     SDMXVersion,
@@ -21,6 +30,12 @@ from .structures import DimensionInfo, DataflowStructure, DataflowStructureRegis
 __all__ = [
     'APIClient',
     'AbstractSDMXClient',
+    'DownloadReport',
+    'QueryReport',
+    'FetchReport',
+    'HttpStats',
+    'RateLimitStats',
+    'flatten_metrics',
     'RateLimiter',
     'CompositeRateLimiter',
     'build_rate_limiter',

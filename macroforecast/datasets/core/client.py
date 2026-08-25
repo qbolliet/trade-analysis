@@ -16,6 +16,7 @@ import json
 import logging
 import operator
 from pathlib import Path
+import time
 from typing import Any, ClassVar, Dict, List, Optional, Tuple, Union
 from urllib.parse import urljoin
 import warnings
@@ -27,6 +28,7 @@ from urllib3.util.retry import Retry
 
 # Import runtime du rate limiter (rate_limiter.py n'a pas de dépendance interne
 # au package, aucun risque de circularité)
+from .reports import FetchReport, HttpStats
 from .rate_limiter import CompositeRateLimiter, RateLimiter, build_rate_limiter
 
 # Imports internes — éviter les imports circulaires en utilisant TYPE_CHECKING
@@ -78,6 +80,9 @@ class APIClient:
         self.default_headers = {}
         if headers:
             self.default_headers.update(headers)
+
+        # Compteurs HTTP : statuts, durées et volumes
+        self.stats_ = HttpStats()
 
     # Méthode auxiliaire de création de la session 'request'
     def _create_session(self, max_retries: int, backoff_factor: float) -> requests.Session:
@@ -140,6 +145,8 @@ class APIClient:
 
         # Logging
         logger.debug(f"GET request to {url} with params: {params}")
+        # Instant de départ : la durée alimente les compteurs, quelle que soit l'issue
+        started = time.monotonic()
         try:
             # Excution de la requête
             response = self.session.get(
@@ -150,13 +157,26 @@ class APIClient:
             )
             # Statut de la requête
             response.raise_for_status()
+            # Comptabilisation de la réponse (statut, durée, volume)
+            self.stats_.record(
+                response.status_code,
+                time.monotonic() - started,
+                len(response.content or b""),
+            )
             return response
         except requests.exceptions.HTTPError as e:
+            # Comptabilisation de l'échec, statut compris
+            self.stats_.record_failure(
+                e.response.status_code if e.response is not None else None,
+                time.monotonic() - started,
+            )
             # Logging
             logger.error(f"HTTP error: {e}")
             logger.error(f"Response content: {e.response.text[:500]}")
             raise
         except requests.exceptions.RequestException as e:
+            # Comptabilisation de l'échec sans réponse (erreur de connexion)
+            self.stats_.record_failure(None, time.monotonic() - started)
             # Logging
             logger.error(f"Request failed: {e}")
             raise
@@ -266,6 +286,12 @@ class AbstractSDMXClient(ABC):
         self.rate_limiter: Optional[Union[RateLimiter, CompositeRateLimiter]] = (
             rate_limiter
         )
+
+        # Diagnostics de la dernière récupération (convention sklearn du dépôt :
+        # attribut suffixé d'un underscore, renseigné à l'exécution)
+        self.last_fetch_report_: Optional[FetchReport] = None
+        # Nombre de structures effectivement téléchargées (défauts de cache)
+        self.n_structures_fetched_: int = 0
 
     # Méthodes abstraites
     # Méthode abstraite de requête des données
@@ -523,6 +549,10 @@ class AbstractSDMXClient(ABC):
         behaviour through :meth:`_resolve_structure`, :meth:`_prepare_requests`
         and :meth:`_postprocess_dataframe`.
 
+        Every step feeds :attr:`last_fetch_report_`, so that a caller — the
+        download orchestrator, or a consuming project — can read what the run
+        did instead of parsing its logs.
+
         Args:
             params: Parameter dict assembled by the provider ``get_data``
                 method (keys match its signature).
@@ -530,8 +560,19 @@ class AbstractSDMXClient(ABC):
         Returns:
             Retrieved DataFrame.
         """
+        # Rapport de la récupération, renseigné étape par étape
+        report = FetchReport()
+        self.last_fetch_report_ = report
+
+        # Structures déjà téléchargées avant résolution : un compteur inchangé
+        # signe un accès au cache
+        n_fetched_before = self.n_structures_fetched_
         # Résolution de la structure du dataflow (spécifique au provider)
         structure = self._resolve_structure(params)
+        if structure is not None:
+            report.structure_from_cache = (
+                self.n_structures_fetched_ == n_fetched_before
+            )
 
         # Préparation des requêtes : combinaisons, dims normalisées, kwargs d'exécution
         request_combinations, normalized_dims, execute_kwargs = self._prepare_requests(
@@ -539,16 +580,23 @@ class AbstractSDMXClient(ABC):
         )
 
         # Exécution mutualisée des sous-requêtes (rate limiting, concaténation)
-        df = self._execute_split_requests(request_combinations, **execute_kwargs)
+        df = self._execute_split_requests(
+            request_combinations, report=report, **execute_kwargs
+        )
 
         # Vérification des doublons sauf si explicitement désactivée
         on_duplicate = params.get("on_duplicate", "warn")
         default_dimensions = params.get("default_dimensions", [])
         if on_duplicate != "ignore":
-            self._check_duplicates(df, normalized_dims, structure, on_duplicate, default_dimensions)
+            report.n_duplicates = self._check_duplicates(
+                df, normalized_dims, structure, on_duplicate, default_dimensions
+            )
 
         # Post-traitement optionnel (post-filtre de repli côté provider)
-        return self._postprocess_dataframe(df, structure, normalized_dims, params)
+        df = self._postprocess_dataframe(df, structure, normalized_dims, params)
+        # Volumétrie finale, après l'éventuel post-filtre du provider
+        report.rows_after_filter = len(df)
+        return df
 
     # Hook de post-traitement du DataFrame (no-op par défaut)
     def _postprocess_dataframe(
@@ -627,6 +675,9 @@ class AbstractSDMXClient(ABC):
         """
         # Enregistrement de la structure dans le registre
         self.structure_registry.register(structure)
+        # Comptage des structures téléchargées : un accès au cache ne passe
+        # jamais par ici, ce qui en fait le point de mesure des défauts de cache
+        self.n_structures_fetched_ += 1
         # Logging
         logger.info(f"Registered structure for {structure.dataflow}")
 
@@ -661,8 +712,8 @@ class AbstractSDMXClient(ABC):
                 logger.info(f"Fetching structure for {agency}::{dataflow}")
                 # Requête de la structure
                 structure = self._fetch_structure(agency, dataflow, **kwargs)
-                # Enregistrement de la structure dans le registre
-                self.structure_registry.register(structure)
+                # Enregistrement
+                self.register_structure(structure)
                 return structure
             except Exception as e:
                 # Logging
@@ -703,6 +754,8 @@ class AbstractSDMXClient(ABC):
     def _execute_split_requests(
         self,
         request_combinations: List[Tuple[Dict, Dict]],
+        *,
+        report: Optional[FetchReport] = None,
         **request_kwargs,
     ) -> pd.DataFrame:
         """Execute multiple API requests and concatenate the results.
@@ -712,7 +765,13 @@ class AbstractSDMXClient(ABC):
         ``_execute_single_request``, applies post-request dimension filtering,
         and collects the resulting DataFrames.
 
+        Counters are written into ``report`` as the loop goes — the same
+        in-place style as ``SDMXDownloader._process_query`` — so that the
+        sub-request outcomes survive the call instead of being only logged.
+
         Args:
+            report: Fetch report to fill in place. A fresh one is used when
+                ``None``, keeping the method usable on its own.
             request_combinations: List of ``(dims_for_request,
                 dims_for_postfilter)`` tuples produced by
                 ``_generate_request_combinations``.
@@ -737,6 +796,10 @@ class AbstractSDMXClient(ABC):
         # Calcul du nombre de combinaisons
         n = len(request_combinations)
 
+        # Rapport de récupération : rempli en place tout au long de la boucle
+        report = report if report is not None else FetchReport()
+        report.n_requests = n
+
         # Logging
         logger.info(f"Executing {n} split API requests")
 
@@ -754,6 +817,9 @@ class AbstractSDMXClient(ABC):
                 # Exécution de la requête
                 df = self._execute_single_request(dims_for_request, **request_kwargs)
 
+                # Volumétrie brute, avant tout post-filtrage
+                report.rows_fetched += len(df)
+
                 # Post-filtrage par dimensions si nécessaire
                 if not df.empty and dims_for_postfilter:
                     df = self._filter_dataframe_by_dimensions(df, dims_for_postfilter)
@@ -762,6 +828,8 @@ class AbstractSDMXClient(ABC):
                 if not df.empty:
                     all_dataframes.append(df)
                 else:
+                    # Sous-requête sans donnée exploitable après filtrage
+                    report.n_empty_responses += 1
                     # Logging
                     logger.debug(f"Request {i + 1} returned empty after filtering")
 
@@ -769,9 +837,13 @@ class AbstractSDMXClient(ABC):
                 # 404 NoRecordsFound : requête valide sans donnée → résultat vide
                 # (et non une erreur), on poursuit sans alimenter la liste d'erreurs
                 if self._is_no_records_error(e):
+                    # Requête valide sans donnée : comptée à part des erreurs
+                    report.n_no_records += 1
                     # Logging
                     logger.info(f"Request {i + 1}/{n} returned no records (empty result)")
                     continue
+                # Erreur véritable
+                report.n_request_errors += 1
                 # Construction du message d'erreur
                 error_msg = f"Request {i + 1}/{n} failed: {e}"
                 # Logging
@@ -870,7 +942,7 @@ class AbstractSDMXClient(ABC):
         structure: Optional["DataflowStructure"],
         on_duplicate: "DuplicateHandling",
         default_dimensions: List[str] = [],
-    ) -> None:
+    ) -> int:
         """Detect and handle duplicate rows in the result DataFrame.
 
         Identifies the relevant key columns (filtered dimension columns plus
@@ -889,12 +961,16 @@ class AbstractSDMXClient(ABC):
                 (log a warning), or ``"raise"`` (raise ``ValueError``).
             default_dimensions: Default dimensions to check duplicates on
 
+        Returns:
+            Number of duplicate rows found — the count was previously computed
+            and thrown away, leaving it visible only in a warning.
+
         Raises:
             ValueError: If ``on_duplicate="raise"`` and duplicates are found.
         """
         # Vérification que le jeu de données est non vide
         if df.empty:
-            return
+            return 0
 
         # Détermination des colonnes de vérification
         check_columns: List[str] = default_dimensions
@@ -942,6 +1018,8 @@ class AbstractSDMXClient(ABC):
                 warnings.warn(message, UserWarning)
                 # Logging
                 logger.warning(message)
+
+        return num_duplicates
 
     # Méthode de parsing du CSV de réponse
     @staticmethod

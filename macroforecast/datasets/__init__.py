@@ -3,6 +3,11 @@
 from .core import (
     APIClient,
     AbstractSDMXClient,
+    DownloadReport,
+    QueryReport,
+    FetchReport,
+    HttpStats,
+    RateLimitStats,
     RateLimiter,
     CompositeRateLimiter,
     build_rate_limiter,
@@ -45,6 +50,11 @@ __all__ = [
     # Core
     'APIClient',
     'AbstractSDMXClient',
+    'DownloadReport',
+    'QueryReport',
+    'FetchReport',
+    'HttpStats',
+    'RateLimitStats',
     'RateLimiter',
     'CompositeRateLimiter',
     'build_rate_limiter',

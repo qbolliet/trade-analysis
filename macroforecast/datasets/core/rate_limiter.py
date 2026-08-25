@@ -9,6 +9,8 @@ from collections import deque
 import time
 import threading
 import logging
+# Module du package
+from .reports import RateLimitStats
 
 # Initialisation du logger
 logger = logging.getLogger(__name__)
@@ -84,6 +86,12 @@ class RateLimiter:
         # File des timestamps des requêtes
         self._request_times: deque[float] = deque()
 
+        # Compteurs d'exécution : l'attente imposée est le coût caché d'un
+        # téléchargement long
+        self._n_acquisitions: int = 0
+        self._total_wait_seconds: float = 0.0
+        self._max_wait_seconds: float = 0.0
+
         # Lock pour thread-safety
         self._lock = threading.Lock()
 
@@ -123,6 +131,11 @@ class RateLimiter:
 
             # Enregistrement de la nouvelle requête
             self._request_times.append(time.time())
+            # Comptabilisation de l'acquisition et de l'attente subie
+            self._n_acquisitions += 1
+            if wait_seconds > 0:
+                self._total_wait_seconds += wait_seconds
+                self._max_wait_seconds = max(self._max_wait_seconds, wait_seconds)
             # Logging
             logger.debug(
                 f"Request recorded ({len(self._request_times)}/{self.max_requests})"
@@ -216,6 +229,35 @@ class RateLimiter:
             self._request_times.clear()
             # Logging
             logger.debug("RateLimiter reset")
+            # Les compteurs d'exécution suivent la réinitialisation de l'état
+            self._n_acquisitions = 0
+            self._total_wait_seconds = 0.0
+            self._max_wait_seconds = 0.0
+
+    # Méthode d'extraction des compteurs d'exécution
+    def get_stats(self) -> RateLimitStats:
+        """Return the execution counters of the limiter.
+
+        Exposes as data what was previously only logged: how many acquisitions
+        were granted and how much wall-clock time they cost.
+
+        Returns:
+            A :class:`~macroforecast.datasets.core.reports.RateLimitStats`
+            snapshot.
+
+        Example:
+            >>> limiter = RateLimiter(max_requests=10, time_unit="seconds")
+            >>> limiter.acquire()
+            >>> limiter.get_stats().n_acquisitions
+            1
+        """
+        # Instantané détaché : l'appelant peut le conserver dans son rapport
+        return RateLimitStats(
+            n_acquisitions=self._n_acquisitions,
+            total_wait_seconds=self._total_wait_seconds,
+            max_wait_seconds=self._max_wait_seconds,
+            remaining_requests=self.get_remaining_requests(),
+        )
 
     # Méthode d'extraction du nombre de requêtes restantes pouvant être effectuées dans la fenêtre temporelle
     def get_remaining_requests(self) -> int:
@@ -309,6 +351,27 @@ class CompositeRateLimiter:
         # Réinitialisation de chaque limite
         for limiter in self.limiters:
             limiter.reset()
+
+    # Méthode d'agrégation des compteurs d'exécution
+    def get_stats(self) -> RateLimitStats:
+        """Aggregate the execution counters of every wrapped limiter.
+
+        Returns:
+            A :class:`~macroforecast.datasets.core.reports.RateLimitStats` whose
+            acquisitions are the maximum over the limiters — they are acquired in
+            turn, once per request — and whose waits are summed, sequential
+            acquisition making the total wait additive.
+        """
+        # Compteurs individuels
+        stats = [limiter.get_stats() for limiter in self.limiters]
+        return RateLimitStats(
+            n_acquisitions=max((stat.n_acquisitions for stat in stats), default=0),
+            total_wait_seconds=sum(stat.total_wait_seconds for stat in stats),
+            max_wait_seconds=max(
+                (stat.max_wait_seconds for stat in stats), default=0.0
+            ),
+            remaining_requests=self.get_remaining_requests(),
+        )
 
     # Méthode d'extraction du nombre de requêtes restantes (le plus contraignant)
     def get_remaining_requests(self) -> int:

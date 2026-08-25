@@ -18,14 +18,13 @@ delegated to each client through
 from __future__ import annotations
 
 import argparse
-from dataclasses import dataclass, fields
 from datetime import datetime, timedelta, timezone
 from enum import Enum
 import logging
 import os
 from pathlib import Path
 import tempfile
-from typing import Any, Dict, Iterable, List, Optional, Union
+from typing import Any, Callable, Dict, Iterable, List, Optional, Union
 
 from botocore.exceptions import ClientError
 import duckdb
@@ -41,6 +40,7 @@ from dt_ducklake_manager import (
 )
 
 from .client import AbstractSDMXClient
+from .reports import DownloadReport, HttpStats, QueryReport, RateLimitStats
 from .structures import DataflowStructure, DataflowStructureRegistry
 
 # Initialisation du logger
@@ -180,27 +180,125 @@ def _json_safe(value: Any) -> Any:
 
 
 # ──────────────────────────────────────────────────────────────────────
-# Rapport d'exécution
+# Diagnostics d'exécution
 # ──────────────────────────────────────────────────────────────────────
+#
+# `DownloadReport` et `QueryReport` vivent dans `reports.py` : ils constituent
+# le pendant exploitable des journaux, réutilisable par un projet consommateur
+# sans dépendre de l'orchestrateur. Ils sont réexportés ici par compatibilité.
 
-# Structure de données résumant l'exécution d'un téléchargement
-@dataclass
-class DownloadReport:
-    """Summary of a download run.
+# Fonction auxiliaire : sources de compteurs HTTP portées par un client
+def _http_stats_sources(client: Any) -> List[HttpStats]:
+    """Collect every HTTP counter object a client carries.
 
-    Attributes:
-        processed: Number of queries processed.
-        rows_written: Total rows written/upserted into DuckLake.
-        empty: Number of queries that returned no new data.
-        errors: Number of queries that failed.
-        stopped_early: Whether the run stopped on the graceful-shutdown
-            deadline before processing every query.
+    Providers either *are* an ``APIClient`` (Comtrade, UNSD) or *hold* one or
+    more (Eurostat, OECD, plus Eurostat's dedicated Comext client). Discovering
+    them by attribute keeps the orchestrator provider-agnostic.
+
+    Args:
+        client: Provider client.
+
+    Returns:
+        The :class:`HttpStats` instances found, possibly empty.
     """
-    processed: int = 0
-    rows_written: int = 0
-    empty: int = 0
-    errors: int = 0
-    stopped_early: bool = False
+    # Compteurs portés par le client lui-même (héritage d'APIClient)
+    sources: List[HttpStats] = []
+    own = getattr(client, "stats_", None)
+    if isinstance(own, HttpStats):
+        sources.append(own)
+    # Compteurs des clients HTTP détenus par composition
+    for attribute in vars(client).values():
+        stats = getattr(attribute, "stats_", None)
+        if isinstance(stats, HttpStats):
+            sources.append(stats)
+    return sources
+
+
+# Fonction auxiliaire : totalisation de compteurs HTTP
+def _total_http_stats(sources: Iterable[HttpStats]) -> HttpStats:
+    """Sum several HTTP counter objects into one.
+
+    Args:
+        sources: Counter objects to total.
+
+    Returns:
+        A detached :class:`HttpStats` holding the sums.
+    """
+    # Totalisation champ à champ, histogramme de statuts compris
+    total = HttpStats()
+    for stats in sources:
+        total.n_requests += stats.n_requests
+        total.n_failures += stats.n_failures
+        total.total_seconds += stats.total_seconds
+        total.total_bytes += stats.total_bytes
+        for status, count in stats.status_counts.items():
+            total.status_counts[status] = total.status_counts.get(status, 0) + count
+    return total
+
+
+# Fonction auxiliaire : consommation HTTP d'une requête (différence de compteurs)
+def _http_delta(before: HttpStats, after: HttpStats) -> HttpStats:
+    """Difference two HTTP snapshots to isolate one query's cost.
+
+    Args:
+        before: Snapshot taken before the query.
+        after: Snapshot taken after it.
+
+    Returns:
+        A :class:`HttpStats` holding what the query alone consumed.
+    """
+    # Différence champ à champ ; les statuts absents avant valent zéro
+    return HttpStats(
+        n_requests=after.n_requests - before.n_requests,
+        n_failures=after.n_failures - before.n_failures,
+        total_seconds=after.total_seconds - before.total_seconds,
+        total_bytes=after.total_bytes - before.total_bytes,
+        status_counts={
+            status: count - before.status_counts.get(status, 0)
+            for status, count in after.status_counts.items()
+            if count - before.status_counts.get(status, 0) > 0
+        },
+    )
+
+
+# Fonction auxiliaire : consommation du limiteur de débit d'une requête
+def _rate_limit_delta(
+    before: RateLimitStats, after: RateLimitStats
+) -> RateLimitStats:
+    """Difference two rate-limit snapshots to isolate one query's waits.
+
+    Args:
+        before: Snapshot taken before the query.
+        after: Snapshot taken after it.
+
+    Returns:
+        A :class:`RateLimitStats` holding what the query alone incurred.
+    """
+    # Attentes et acquisitions imputables à la requête
+    return RateLimitStats(
+        n_acquisitions=after.n_acquisitions - before.n_acquisitions,
+        total_wait_seconds=after.total_wait_seconds - before.total_wait_seconds,
+        max_wait_seconds=after.max_wait_seconds,
+        remaining_requests=after.remaining_requests,
+    )
+
+
+# Fonction auxiliaire : instantané des compteurs d'un client
+def _client_snapshot(client: Any) -> tuple[HttpStats, RateLimitStats]:
+    """Snapshot the HTTP and rate-limit counters of a client.
+
+    Args:
+        client: Provider client.
+
+    Returns:
+        Tuple ``(http, rate_limit)`` of detached counter objects.
+    """
+    # Compteurs HTTP totalisés sur toutes les sessions du client
+    http = _total_http_stats(_http_stats_sources(client))
+    # Compteurs du limiteur de débit, absent chez certains providers
+    limiter = getattr(client, "rate_limiter", None)
+    rate_limit = limiter.get_stats() if limiter is not None else RateLimitStats()
+    return http, rate_limit
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -246,6 +344,11 @@ class SDMXDownloader:
             ``aws_access_key_id``, ``aws_secret_access_key``, ``verify``). Only
             used when ``bucket`` is set; if omitted, the connection is
             established lazily from the standard AWS environment variables.
+        on_query_complete: Callback invoked with the :class:`QueryReport` of
+            every processed query, successful or not. The seam through which a
+            consuming project streams per-query metrics to its experiment
+            tracker without this package ever knowing about it. A failing
+            callback warns and never interrupts the download.
     """
 
     # Initialisation
@@ -262,6 +365,7 @@ class SDMXDownloader:
         categorical_threshold: Optional[int] = None,
         bucket: Optional[str] = None,
         storage_options: Optional[Dict[str, Any]] = None,
+        on_query_complete: Optional[Callable[[QueryReport], None]] = None,
     ):
         # Dépendances injectées
         self._client = client
@@ -301,6 +405,9 @@ class SDMXDownloader:
                 self._structure_registry.load_from_dict(structures_data)
         self._client.structure_registry = self._structure_registry
 
+        # Rappel de fin de requête (seam d'observabilité côté appelant)
+        self._on_query_complete = on_query_complete
+
         # Instant de démarrage (renseigné dans run())
         self._t0: Optional[datetime] = None
 
@@ -329,7 +436,7 @@ class SDMXDownloader:
         self._t0 = _now()
 
         # Initialisation du rapport de téléchargement
-        report = DownloadReport()
+        report = DownloadReport(n_queries_planned=len(query_list))
 
         # Extraction des structures connues à l'initialisation : tout ajout 
         # (par fetch_updates ou par la résolution explicite) déclenchera 
@@ -340,29 +447,51 @@ class SDMXDownloader:
         conn = self._connector.connect()
         try:
             # Parcours des requêtes
-            for query in query_list:
+            for index, query in enumerate(query_list):
                 # Arrêt anticipé si le délai maximal est atteint
                 if self._deadline_reached():
+                    # Requêtes laissées de côté
+                    report.n_queries_remaining = len(query_list) - index
                     # Logging
                     logger.warning(
                         "Graceful shutdown: max runtime reached, stopping "
-                        f"after {report.processed} queries"
+                        f"after {report.processed} queries, "
+                        f"{report.n_queries_remaining} left"
                     )
                     report.stopped_early = True
                     break
 
+                # Diagnostic de la requête, renseigné qu'elle aboutisse ou non
+                query_report = QueryReport(
+                    identity_key=query.identity_key(),
+                    agency=getattr(query, "agency", ""),
+                    dataflow=getattr(query, "dataflow", ""),
+                )
                 # Traitement d'une requête (les erreurs sont isolées par requête)
                 try:
-                    self._process_query(conn, query, report)
+                    self._process_query(conn, query, report, query_report)
                 # Si échec : la date n'est pas mise à jour → la requête sera retentée
                 except Exception as e:
+                    # L'échec devient une donnée du rapport, pas seulement un log
+                    query_report.error_type = type(e).__name__
+                    query_report.error_message = str(e)[:500]
                     # Logging
                     logger.exception(
                         f"Query {query.identity_key()} failed: {e}"
                     )
                     # Incrément des erreurs
                     report.errors += 1
+                finally:
+                    # Publication du diagnostic de la requête
+                    report.queries.append(query_report)
+                    self._notify(query_report)
         finally:
+            # Structures nouvellement téléchargées pendant le run
+            report.n_structures_fetched = len(
+                set(self._structure_registry.list_structures()) - initial_structure_keys
+            )
+            # Durée totale du run
+            report.duration_seconds = (_now() - self._t0).total_seconds()
             # Export du registre des structures si une structure a été ajoutée
             if set(self._structure_registry.list_structures()) != initial_structure_keys:
                 # Export (routé vers le local ou S3 selon ``bucket``)
@@ -391,6 +520,7 @@ class SDMXDownloader:
         conn: duckdb.DuckDBPyConnection,
         query: Any,
         report: DownloadReport,
+        query_report: QueryReport,
     ) -> None:
         """Process a single query: fetch, write to DuckLake, update registry.
 
@@ -403,6 +533,8 @@ class SDMXDownloader:
             conn: Open DuckLake connection.
             query: Provider query object.
             report: Run report to update in place.
+            query_report: Per-query diagnostics to fill in place — volumetry,
+                sub-request outcomes, HTTP and rate-limit cost, duration.
         """
         # Clé identifiante de la requête
         key = query.identity_key()
@@ -410,18 +542,34 @@ class SDMXDownloader:
         entry = self._registry.get(key)
         # Date du dernier téléchargement (None si jamais téléchargée)
         since = _parse_iso(entry.get("last_download")) if entry else None
+        # Mode de téléchargement : complet ou incrémental
+        query_report.incremental = since is not None
 
         # Instant capturé avant la requête : sert de nouvelle date de référence
         # (évite de manquer des observations publiées pendant le fetch)
         req_started = _now()
+        # Compteurs du client avant la requête : la différence isole son coût
+        http_before, rate_before = _client_snapshot(self._client)
 
-        # Récupération des données (complète ou incrémentale selon ``since``)
-        df = self._client.fetch_updates(query, since, self._n_observations)
+        try:
+            # Récupération des données (complète ou incrémentale selon ``since``)
+            df = self._client.fetch_updates(query, since, self._n_observations)
+        finally:
+            # Coût de la requête, imputé même si la récupération a échoué
+            http_after, rate_after = _client_snapshot(self._client)
+            query_report.http = _http_delta(http_before, http_after)
+            query_report.rate_limit = _rate_limit_delta(rate_before, rate_after)
+            # Diagnostics de récupération tenus par le client
+            fetch_report = getattr(self._client, "last_fetch_report_", None)
+            if fetch_report is not None:
+                query_report.fetch = fetch_report
+            query_report.duration_seconds = (_now() - req_started).total_seconds()
 
         # Incrément des requêtes exécutées
         report.processed += 1
         # Extraction du nom du schéma
         schema = _schema_name(query.dataflow)
+        query_report.schema = schema
 
         # Écriture en base uniquement si des données ont été récupérées
         if df is not None and not df.empty:
@@ -429,12 +577,17 @@ class SDMXDownloader:
             # enregistre aussi la structure dans le registre partagé, dont
             # l'ajout est détecté en fin de run pour déclencher l'export.
             structure = self._client.resolve_query_structure(query)
-            self._write_dataframe(conn, df, structure, schema, query.dataflow)
+            query_report.table_created = self._write_dataframe(
+                conn, df, structure, schema, query.dataflow
+            )
             # Ajout du nombre de lignes écrites
             report.rows_written += len(df)
+            report.n_tables_created += int(query_report.table_created)
+            query_report.rows_written = len(df)
         else:
             # Incrément des requêtes vides
             report.empty += 1
+            query_report.empty = True
             # Logging
             logger.info(f"{query.dataflow}: no new data")
 
@@ -457,7 +610,7 @@ class SDMXDownloader:
         structure: Optional[DataflowStructure],
         schema: str,
         dataflow: str,
-    ) -> None:
+    ) -> bool:
         """Create or update the dataflow's DuckLake table with a DataFrame.
 
         Builds the schema on first encounter (``DuckLakeTablesBuilder``) or
@@ -469,6 +622,10 @@ class SDMXDownloader:
             structure: Resolved dataflow structure (for primary keys).
             schema: Target DuckLake schema (one per dataflow).
             dataflow: Dataflow identifier (for logging).
+
+        Returns:
+            ``True`` if the schema was created, ``False`` if it was upserted —
+            an outcome that used to be readable only in the logs.
 
         Raises:
             ValueError: If no primary-key column can be resolved, or if the
@@ -505,6 +662,7 @@ class SDMXDownloader:
             logger.info(
                 f"{dataflow}: updated {len(df)} rows in schema '{schema}'"
             )
+            return False
         else:
             # Première rencontre : construction du schéma (métadonnées + fact table)
             builder = DuckLakeTablesBuilder(
@@ -520,6 +678,7 @@ class SDMXDownloader:
                 f"{dataflow}: created schema '{schema}' with {len(df)} rows "
                 f"(primary keys: {primary_keys})"
             )
+            return True
 
     # Méthode de détection de l'existence de la fact table d'un schéma
     def _fact_table_exists(
@@ -543,6 +702,25 @@ class SDMXDownloader:
             [self._catalog_alias, schema, _FACT_TABLE],
         ).fetchone()
         return bool(row and row[0] > 0)
+
+    # Méthode de publication du diagnostic d'une requête
+    def _notify(self, query_report: QueryReport) -> None:
+        """Hand a per-query report to the caller's callback.
+
+        No observability failure may interrupt a download: a raising callback
+        is warned about and swallowed, exactly as a tracking failure is.
+
+        Args:
+            query_report: Diagnostics of the query just processed.
+        """
+        # Aucun rappel configuré : rien à faire
+        if self._on_query_complete is None:
+            return
+        try:
+            self._on_query_complete(query_report)
+        except Exception as exc:
+            # Logging
+            logger.warning(f"on_query_complete callback failed: {exc}")
 
     # ──────────────────────────────────────────────────────────────────
     # Priorisation, deadline et registre des dates
@@ -712,6 +890,7 @@ def download_updates(
     categorical_threshold: Optional[int] = None,
     bucket: Optional[str] = None,
     storage_options: Optional[Dict[str, Any]] = None,
+    on_query_complete: Optional[Callable[[QueryReport], None]] = None,
 ) -> DownloadReport:
     """Run an incremental SDMX → DuckLake download.
 
@@ -733,6 +912,7 @@ def download_updates(
         categorical_threshold=categorical_threshold,
         bucket=bucket,
         storage_options=storage_options,
+        on_query_complete=on_query_complete,
     )
     return downloader.run(queries)
 
