@@ -16,3 +16,37 @@ VULNERABILITIES:
       # principe que LAST_DOWNLOAD_PATH côté téléchargement)
       LAST_COMPUTATION_PATH: "trade/vulnerabilities/comext/last_computation.json"
 
+# Suivi d'exécution MLflow. Dépendance optionnelle : installer l'extra
+# « tracking » (uv sync --extra tracking) pour l'activer.
+MLFLOW:
+  # URI du serveur ou du magasin MLflow. null → aucun suivi, exécution
+  # inchangée. Surchargeable par la variable d'environnement
+  # MLFLOW_TRACKING_URI (convention MLflow, pratique en déploiement Kubernetes),
+  # qui prime sur la valeur ci-dessous.
+  TRACKING_URI: null
+  # Expérience de destination, créée à la volée si absente
+  EXPERIMENT: "vulnerabilities"
+  # Publication des artefacts de synthèse (cellules les plus vulnérables,
+  # comptes d'alertes, agrégats manquants, déciles)
+  LOG_ARTIFACTS: true
+  # Relecture du résultat de l'exécution précédente pour mesurer la dérive
+  DRIFT: true
+
+# Paramètres méthodologiques : toute clé portant le nom d'un champ de
+# VulnerabilityConfig surcharge le défaut correspondant (listes YAML → tuples) ;
+# les clés inconnues sont ignorées avec un avertissement.
+PARAMETERS:
+  # Seuils d'interprétation des scores
+  high_score_threshold: 0.5
+  unit_score_threshold: 1.0
+  # Seuils de contrôle de cohérence des agrégats
+  shares_lower_bound: 0.9
+  # Comparaison inter-exécutions
+  drift_relative_change: 0.1
+  psi_n_bins: 10
+  # Artefacts de synthèse
+  metric_alert_thresholds:
+    - ["HHI", 0.5]
+    - ["CDI2", 0.5]
+    - ["CDI3", 1.0]
+  artifact_top_n: 50

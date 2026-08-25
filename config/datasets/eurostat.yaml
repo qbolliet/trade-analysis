@@ -1,3 +1,14 @@
+# Suivi d'exécution MLflow du téléchargement. Dépendance optionnelle :
+# installer l'extra « tracking » (uv sync --extra tracking) pour l'activer.
+MLFLOW:
+  # URI du serveur ou du magasin MLflow. null → aucun suivi, exécution
+  # inchangée. Surchargeable par MLFLOW_TRACKING_URI (convention MLflow).
+  TRACKING_URI: null
+  # Expérience de destination, créée à la volée si absente
+  EXPERIMENT: "eurostat-download"
+  # Publication de la table de diagnostic par requête
+  LOG_ARTIFACTS: true
+
 # Configuration des dimensions scindées Eurostat
 # Filtres de codes appliqués aux codelists des dimensions itérées pour
 # construire le produit cartésien des requêtes.
