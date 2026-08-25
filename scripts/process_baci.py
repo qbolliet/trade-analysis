@@ -25,6 +25,7 @@ import logging
 import os
 import re
 from dataclasses import fields, replace
+from datetime import datetime
 from typing import Dict, Optional, Sequence
 import yaml
 
@@ -45,6 +46,8 @@ from macroforecast.datasets.core.download import _schema_name
 # Module d'implémentation du traitement BACI
 from macroforecast.trade.processing import required_columns, run_baci
 from macroforecast.trade.processing import BaciConfig, ComtradeSchema, DEFAULT_CONFIG
+# Module de suivi d'exécution
+from macroforecast.tracking import get_tracker
 
 
 # Configuration de logging
@@ -307,6 +310,17 @@ def main() -> None:
     # Construction des parmaètres de modélisation
     baci_parameters_config = baci_config_from_params(baci_config.get("PARAMETERS"))
 
+    # Construction du suivi d'exécution : sans URI (ou sans MLflow installé,
+    # ou serveur injoignable), get_tracker retourne un tracker inerte et
+    # l'exécution est strictement inchangée
+    mlflow_config = baci_config.get("MLFLOW") or {}
+    tracker = get_tracker(
+        tracking_uri=mlflow_config.get("TRACKING_URI"),
+        experiment=mlflow_config.get("EXPERIMENT", "baci"),
+        run_name=f"baci-{datetime.now():%Y%m%d-%H%M}",
+    )
+    log_artifacts = bool(mlflow_config.get("LOG_ARTIFACTS", True))
+
     # Spécification du dataflow téléchargé auquel on souhaite appliquer la méthodologie BACI
     DATAFLOW = "C_A_HS"
 
@@ -353,23 +367,36 @@ def main() -> None:
             columns=required_columns(baci_parameters_config)
         )
 
-        # Application de la méthodologie sur les jeux de données chargés
-        df_reconciled, report = run_baci(
-            df_comtrade=df_comtrade,
-            df_dist=df_dist,
-            df_geo=df_geo,
-            config=baci_parameters_config,
-            apply_nes=(len(baci_config['PARAMETERS']["nes_partner_codes"]) > 0)
-        )
+        with tracker:
+            # Application de la méthodologie sur les jeux de données chargés
+            df_reconciled, report = run_baci(
+                df_comtrade=df_comtrade,
+                df_dist=df_dist,
+                df_geo=df_geo,
+                config=baci_parameters_config,
+                apply_nes=(len(baci_config['PARAMETERS']["nes_partner_codes"]) > 0),
+                tracker=tracker,
+                log_artifacts=log_artifacts,
+            )
 
-        # Écriture du résultat dans le schéma résultat du catalogue
-        report.created = _write_result(
-            conn=conn,
-            catalog_alias=connector.catalog_alias,
-            df_result=df_reconciled,
-            primary_keys=baci_parameters_config.primary_keys,
-            result_schema=_schema_name(baci_config["PATHS"]["RESULT_SCHEMA"]),
-        )
+            # Écriture du résultat dans le schéma résultat du catalogue
+            report.created = _write_result(
+                conn=conn,
+                catalog_alias=connector.catalog_alias,
+                df_result=df_reconciled,
+                primary_keys=baci_parameters_config.primary_keys,
+                result_schema=_schema_name(baci_config["PATHS"]["RESULT_SCHEMA"]),
+            )
+
+            # Envoi des métriques : le rapport connaît sa mise en forme
+            tracker.log_metrics(report.to_metrics())
+            tracker.set_tags(
+                {
+                    "result_schema": _schema_name(baci_config["PATHS"]["RESULT_SCHEMA"]),
+                    "classification_code": str(report.classification_code),
+                    "created": str(report.created),
+                }
+            )
     finally:
         conn.close()
 

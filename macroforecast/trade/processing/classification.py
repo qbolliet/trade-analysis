@@ -36,6 +36,7 @@ from typing import Dict, List, Literal, Mapping, Optional, Sequence, Tuple
 # Modules de manipulation de données
 import pandas as pd
 # Modules du package
+from ...tracking import flatten_metrics
 from .aggregation import aggregate_measures
 from ...datasets.sources.unsd.formats import vintage_year
 from ...datasets.sources.unsd.parsing import PARAMETERS, normalise_codes
@@ -359,6 +360,32 @@ class HsHarmonizationReport:
     share_value_unmapped: float = float("nan")
     share_rows_collapsed: float = float("nan")
     relationship_distribution: Dict[str, int] = field(default_factory=dict)
+
+    # Mise en forme des métriques (mêmes conventions que BaciReport.to_metrics)
+    def to_metrics(self, prefix: str = "hs") -> Dict[str, float]:
+        """Flatten the numeric fields into a dotted metric mapping.
+
+        ``relationship_distribution`` is excluded: being a distribution over
+        relationship labels, it belongs to a JSON artifact rather than to the
+        metrics. ``NaN`` and infinite values are dropped, MLflow rejecting them.
+
+        Args:
+            prefix: Prefix prepended to every metric name.
+
+        Returns:
+            Mapping of dotted metric names to finite floats.
+
+        Examples:
+            >>> HsHarmonizationReport(n_input_rows=5).to_metrics()["hs.n_input_rows"]
+            5.0
+        """
+        # Construction des métriques
+        metrics = flatten_metrics(self, prefix=prefix)
+        # Retrait de la distribution des relations, remontée en artefact
+        excluded = f"{prefix}.relationship_distribution." if prefix else "relationship_distribution."
+        return {
+            name: value for name, value in metrics.items() if not name.startswith(excluded)
+        }
 
 
 # ──────────────────────────────────────────────────────────────────────

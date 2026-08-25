@@ -66,6 +66,8 @@ from macroforecast.datasets import UNSDClient
 from macroforecast.trade.processing import required_columns, run_baci
 from macroforecast.trade.processing import BaciConfig, ComtradeSchema, DEFAULT_CONFIG, BaciReport
 from macroforecast.trade.processing import HsHarmonizer, resolve_vintage
+# Module de suivi d'exécution (MLflow optionnel)
+from macroforecast.tracking import get_tracker
 
 
 # Configuration de logging
@@ -519,6 +521,12 @@ def main() -> None:
     baci_parameters_config = baci_config_from_params(baci_config.get("PARAMETERS"))
     schema = baci_parameters_config.schema
 
+    # Configuration du suivi d'exécution : sans URI (ou sans MLflow installé,
+    # ou serveur injoignable), get_tracker retourne un tracker inerte et
+    # l'exécution est strictement inchangée
+    mlflow_config = baci_config.get("MLFLOW") or {}
+    log_artifacts = bool(mlflow_config.get("LOG_ARTIFACTS", True))
+
     # Configuration des millésimes cibles et du cache de correspondance
     classifications_config = baci_config["CLASSIFICATIONS"]
     targets_config: Dict[str, Dict] = classifications_config["TARGETS"]
@@ -622,24 +630,51 @@ def main() -> None:
                 )
                 df_harmonised = harmonizer.fit_transform(slices[label])
 
-                # Application de la méthodologie sur la tranche harmonisée
-                df_reconciled, report = run_baci(
-                    df_comtrade=df_harmonised,
-                    df_dist=df_dist,
-                    df_geo=df_geo,
-                    config=baci_parameters_config,
-                    apply_nes=apply_nes,
+                # Un run par millésime : l'échec de l'un n'emporte pas les autres
+                tracker = get_tracker(
+                    tracking_uri=mlflow_config.get("TRACKING_URI"),
+                    experiment=mlflow_config.get("EXPERIMENT", "baci"),
+                    run_name=f"baci-{label}-{datetime.now():%Y%m%d-%H%M}",
+                    tags={"vintage": label},
                 )
+                with tracker:
+                    # Application de la méthodologie sur la tranche harmonisée
+                    df_reconciled, report = run_baci(
+                        df_comtrade=df_harmonised,
+                        df_dist=df_dist,
+                        df_geo=df_geo,
+                        config=baci_parameters_config,
+                        apply_nes=apply_nes,
+                        tracker=tracker,
+                        log_artifacts=log_artifacts,
+                    )
 
-                # Écriture du résultat dans le schéma dédié au millésime
-                report.created = _write_result(
-                    conn=conn,
-                    catalog_alias=connector.catalog_alias,
-                    df_result=df_reconciled,
-                    primary_keys=baci_parameters_config.primary_keys,
-                    result_schema=_schema_name(target_cfg["RESULT_SCHEMA"]),
-                )
-                reports[label] = report
+                    # Écriture du résultat dans le schéma dédié au millésime
+                    report.created = _write_result(
+                        conn=conn,
+                        catalog_alias=connector.catalog_alias,
+                        df_result=df_reconciled,
+                        primary_keys=baci_parameters_config.primary_keys,
+                        result_schema=_schema_name(target_cfg["RESULT_SCHEMA"]),
+                    )
+                    reports[label] = report
+
+                    # Envoi des métriques du redressement et de l'harmonisation
+                    tracker.log_metrics(report.to_metrics())
+                    tracker.log_metrics(harmonizer.report_.to_metrics())
+                    tracker.set_tags(
+                        {
+                            "result_schema": _schema_name(target_cfg["RESULT_SCHEMA"]),
+                            "created": str(report.created),
+                        }
+                    )
+                    # Répartition des relations de nomenclature : mesure de la
+                    # perte d'information à la conversion
+                    if log_artifacts:
+                        tracker.log_dict(
+                            harmonizer.report_.relationship_distribution,
+                            "classification/relationship_distribution.json",
+                        )
 
                 # Logging
                 logger.info("Redressement BACI terminé pour %s : %s", label, report)

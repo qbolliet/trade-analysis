@@ -13,6 +13,20 @@ PATHS:
   RESULT_DATA: "data/baci"
   RESULT_SCHEMA: "baci"
 
+# Suivi d'exécution MLflow. Dépendance optionnelle : installer l'extra
+# « tracking » (uv sync --extra tracking) pour l'activer.
+MLFLOW:
+  # URI du serveur ou du magasin MLflow. null → aucun suivi, exécution
+  # inchangée. Surchargeable par la variable d'environnement
+  # MLFLOW_TRACKING_URI (convention MLflow, pratique en déploiement Kubernetes),
+  # qui prime sur la valeur ci-dessous.
+  TRACKING_URI: null
+  # Expérience de destination, créée à la volée si absente
+  EXPERIMENT: "baci"
+  # Publication des artefacts d'étape (taux de conversion, coefficients de
+  # gravité, régimes de valorisation inférés, sigma par pays)
+  LOG_ARTIFACTS: true
+
 # Paramètres méthodologiques : toute clé portant le nom d'un champ de
 # BaciConfig surcharge le défaut correspondant (listes YAML → tuples) ;
 # les clés inconnues sont ignorées avec un avertissement.

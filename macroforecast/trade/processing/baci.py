@@ -27,6 +27,13 @@ argument unchanged under the same name, derivations belong to ``fit`` and fitted
 attributes carry a trailing underscore. :class:`BaciConfig` is only a configuration
 façade, consumed by :func:`run_baci`, which distributes its values step by step.
 
+Diagnostics are **data, not logs**: every step produces a report dataclass
+(:class:`TonnageReport`, :class:`GravityReport`, :class:`FobisationReport`,
+:class:`MirrorReport`, :class:`QualityReport`, :class:`NesReport`), returned
+alongside its result or exposed as a fitted ``report_`` attribute, and gathered
+by :func:`run_baci` into the composite :class:`BaciReport`. Logging and
+experiment tracking *consume* those reports; they never compute them.
+
 Notes:
     Unlike the ``vulnerabilities`` module (backend-agnostic via narwhals), this
     module works on eager pandas frames throughout: the econometric backends
@@ -51,6 +58,7 @@ Notes:
 from __future__ import annotations
 # Modules de base
 from dataclasses import dataclass, field
+from importlib import metadata
 import logging
 import math
 from typing import Dict, List, Literal, Mapping, Optional, Sequence, Tuple
@@ -62,6 +70,7 @@ import statsmodels.api as sm
 from statsmodels.stats.outliers_influence import OLSInfluence
 from linearmodels.iv import AbsorbingLS
 # Modules du package
+from ...tracking import NULL_TRACKER, RunTracker, flatten_metrics, flatten_params
 from .aggregation import aggregate_measures
 
 # Initialisation du logger
@@ -396,6 +405,23 @@ def _aggregate_side(
     )
 
 
+# Diagnostics de la construction des flux miroirs
+@dataclass
+class MirrorReport:
+    """Diagnostics of the mirror-flow construction.
+
+    Attributes:
+        n_flows: Number of ``(exporter, importer, product, year)`` flows built.
+        share_both_declarations: Share of flows declared by both partners.
+        share_export_only: Share of flows declared by the exporter only.
+        share_import_only: Share of flows declared by the importer only.
+    """
+    n_flows: int = 0
+    share_both_declarations: float = float("nan")
+    share_export_only: float = float("nan")
+    share_import_only: float = float("nan")
+
+
 # Fonction de construction de la table des flux miroirs
 def build_mirror_flows(
     df_comtrade: pd.DataFrame,
@@ -419,7 +445,7 @@ def build_mirror_flows(
     excluded_pairs: Tuple[Tuple[str, str], ...] = (("BEL", "LUX"),),
     period_start: Optional[int] = None,
     period_end: Optional[int] = None,
-) -> Tuple[pd.DataFrame, pd.DataFrame]:
+) -> Tuple[pd.DataFrame, pd.DataFrame, MirrorReport]:
     """Reshape COMTRADE declarations into a mirror-flow table.
 
     Keeps only import/export declarations between individual countries, applies
@@ -458,13 +484,15 @@ def build_mirror_flows(
             means no upper bound.
 
     Returns:
-        A tuple ``(df_mirror, df_nes)``:
+        A tuple ``(df_mirror, df_nes, report)``:
 
         * ``df_mirror``: one row per ``(exporter, importer, product, year)`` with
           columns ``v_x, q_x, unit_x, nw_x`` (export/FOB side) and
           ``v_m, q_m, unit_m, nw_m`` (import/CIF side), outer-joined.
         * ``df_nes``: import/export declarations whose partner is an "Areas NES"
           aggregate (``nes_partner_codes``), kept aside for the reallocation step.
+        * ``report``: :class:`MirrorReport` describing the double-declaration
+          coverage of the built table.
 
     Raises:
         ValueError: If the ``period_start``/``period_end`` filter empties
@@ -549,7 +577,30 @@ def build_mirror_flows(
         )
         df_mirror = df_mirror[~drop]
 
-    return df_mirror.reset_index(drop=True), df_nes.reset_index(drop=True)
+    df_mirror = df_mirror.reset_index(drop=True)
+
+    # Diagnostics : couverture des deux déclarations, connue dès le pivot et
+    # avant toute estimation
+    has_x = df_mirror["v_x"].notna()
+    has_m = df_mirror["v_m"].notna()
+    n_flows = len(df_mirror)
+    denominator = float(n_flows) if n_flows else float("nan")
+    # COnstruction du rapport associé au traitement
+    report = MirrorReport(
+        n_flows=n_flows,
+        share_both_declarations=float((has_x & has_m).sum()) / denominator,
+        share_export_only=float((has_x & ~has_m).sum()) / denominator,
+        share_import_only=float((~has_x & has_m).sum()) / denominator,
+    )
+
+    # Logging
+    logger.info(
+        "build_mirror_flows: %d flux miroirs, %.1f%% à double déclaration",
+        report.n_flows,
+        100.0 * report.share_both_declarations,
+    )
+
+    return df_mirror, df_nes.reset_index(drop=True), report
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -744,17 +795,79 @@ def _resolve_regimes(df_mirror: pd.DataFrame, df_regime: pd.DataFrame) -> pd.Ser
     return regime.fillna(_CIF_REGIME)
 
 
+# Fonction auxiliaire : décompte des importateurs d'un régime inféré
+def _count_importers(df_regime: pd.DataFrame, regime: Optional[str]) -> int:
+    """Count the distinct importers carrying a given inferred regime.
+
+    Args:
+        df_regime: Inferred regime table from
+            :func:`infer_import_valuation_regime`; may be empty.
+        regime: Regime to count (``"CIF"``/``"FOB"``), or ``None`` to count the
+            importers for which no valuation information was available at all
+            (``cif_share`` missing).
+
+    Returns:
+        Number of distinct importers matching the criterion, ``0`` when the
+        inference produced nothing.
+
+    Examples:
+        >>> df_regime = pd.DataFrame(
+        ...     {"importer": ["ZAF", "ZAF", "FRA"], "year": [2019, 2020, 2019],
+        ...      "cif_share": [0.1, float("nan"), 0.9], "regime": ["FOB", "CIF", "CIF"]}
+        ... )
+        >>> _count_importers(df_regime, "FOB"), _count_importers(df_regime, None)
+        (1, 1)
+    """
+    # Cas où le jeu de données est vide ou non renseigné
+    if df_regime is None or df_regime.empty:
+        return 0
+    # Absence d'information : part CAF non calculable (dénominateur nul)
+    if regime is None:
+        mask = df_regime["cif_share"].isna()
+    # Extraction des lignes associées au régime
+    else:
+        mask = df_regime["regime"] == regime
+    return int(df_regime.loc[mask, _IMP].nunique())
+
+
 
 # ──────────────────────────────────────────────────────────────────────
 # Étape 1 — Conversion des quantités en tonnes
 # ──────────────────────────────────────────────────────────────────────
 
-# Code unité COMTRADE de la tonne (annoté 21 dans la documentation publique,
-# qui n'expose que les codes 1 à 13 ; NON CONFIRMÉ contre la codelist vivante
-# ComtradeClient().get_metadata(category="qtyunit"), qui exige une clé
-# d'abonnement — cf. DEC-2 dans ARCHITECTURE.md).
+# Code unité COMTRADE de la tonne (annoté 21 dans la documentation publique)
 _TONNE_UNIT_CODE = 21
 
+# Origines possibles du tonnage d'une déclaration
+_SOURCE_NETWGT, _SOURCE_FACTOR = "netwgt", "unit_factor"
+_SOURCE_RATE, _SOURCE_MISSING = "rate", "missing"
+
+
+# Diagnostics de la conversion des quantités en tonnes
+@dataclass
+class TonnageReport:
+    """Diagnostics of the tonne conversion step.
+
+    Shares are computed over the *side observations*, i.e. twice the number of
+    mirror flows (export side and import side).
+
+    Attributes:
+        n_validated_rates: Number of ``(product, unit)`` rates that passed the
+            count and dispersion filters.
+        n_candidate_pairs: Number of ``(product, unit)`` pairs observed before
+            those filters.
+        share_converted_from_other_units: Share of side observations whose
+            tonnage comes from an estimated rate, i.e. from a unit other than
+            the tonne or a weight unit.
+        share_tonnage_from_netwgt: Share of side observations whose tonnage
+            comes from the declared net weight.
+        share_tonnage_missing: Share of side observations left without tonnage.
+    """
+    n_validated_rates: int = 0
+    n_candidate_pairs: int = 0
+    share_converted_from_other_units: float = float("nan")
+    share_tonnage_from_netwgt: float = float("nan")
+    share_tonnage_missing: float = float("nan")
 
 
 # Estimateur des taux de conversion vers la tonne
@@ -784,6 +897,8 @@ class TonnageConverter:
     Attributes:
         conversion_rates_: Mapping ``(product, unit) -> rate`` (tonnes per unit),
             populated by :meth:`fit`.
+        report_: :class:`TonnageReport` of the step; counts are populated by
+            :meth:`fit`, shares by :meth:`transform`.
     """
 
     # Initialisation
@@ -802,8 +917,10 @@ class TonnageConverter:
         self.prefer_netwgt = prefer_netwgt
 
     # Méthode auxiliaire : quantité en tonnes déjà connue (poids ou unité tonne)
-    def _tonnes_from_weight(self, qty: pd.Series, unit: pd.Series, nw: pd.Series) -> pd.Series:
-        """Return the tonnage known without any estimated rate.
+    def _tonnes_from_weight(
+        self, qty: pd.Series, unit: pd.Series, nw: pd.Series
+    ) -> Tuple[pd.Series, pd.Series]:
+        """Return the tonnage known without any estimated rate, and its origin.
 
         Args:
             qty: Declared quantities.
@@ -811,21 +928,29 @@ class TonnageConverter:
             nw: Net weights (kilograms).
 
         Returns:
-            Tonnage from net weight (preferred) or from quantities already
-            expressed in a unit covered by ``tonne_conversion_factors``
-            (weight units, or the tonne unit itself); ``NaN`` where neither is
-            available.
+            A tuple ``(tonnes, source)``: the tonnage from net weight
+            (preferred) or from quantities already expressed in a unit covered
+            by ``tonne_conversion_factors`` (weight units, or the tonne unit
+            itself), ``NaN`` where neither is available; and the origin of each
+            value (``"netwgt"``, ``"unit_factor"`` or ``"missing"``).
         """
         # Initialisation de la série des valeurs en tonnes
         tonnes = pd.Series(np.nan, index=qty.index, dtype="float64")
+        # Initialisation de la série des origines du tonnage
+        source = pd.Series(_SOURCE_MISSING, index=qty.index, dtype=object)
         # Repli/priorité sur le poids net (kg → tonnes)
         if self.prefer_netwgt:
-            tonnes = tonnes.where(~(nw > 0), nw * 1e-3)
+            from_netwgt = nw > 0
+            tonnes = tonnes.where(~from_netwgt, nw * 1e-3)
+            source = source.where(~from_netwgt, _SOURCE_NETWGT)
         # Quantités déjà exprimées dans une unité couverte par la table de facteurs
         # (poids en kg, tonnes elles-mêmes, ou tout autre code y figurant)
         factor = unit.map(self.tonne_conversion_factors)
-        tonnes = tonnes.where(~(tonnes.isna() & factor.notna()), qty * factor)
-        return tonnes
+        # Quantité manquante exclue : le produit resterait NaN, l'origine aussi
+        from_factor = tonnes.isna() & factor.notna() & qty.notna()
+        tonnes = tonnes.where(~from_factor, qty * factor)
+        source = source.where(~from_factor, _SOURCE_FACTOR)
+        return tonnes, source
 
     # Estimation des taux de conversion
     def fit(self, df_mirror: pd.DataFrame) -> "TonnageConverter":
@@ -841,8 +966,12 @@ class TonnageConverter:
         rates: Dict[Tuple[str, int], float] = {}
 
         # Tonnage connu (poids) de chaque côté, sans taux estimé
-        t_x = self._tonnes_from_weight(df_mirror["q_x"], df_mirror["unit_x"], df_mirror["nw_x"])
-        t_m = self._tonnes_from_weight(df_mirror["q_m"], df_mirror["unit_m"], df_mirror["nw_m"])
+        t_x, _ = self._tonnes_from_weight(
+            df_mirror["q_x"], df_mirror["unit_x"], df_mirror["nw_x"]
+        )
+        t_m, _ = self._tonnes_from_weight(
+            df_mirror["q_m"], df_mirror["unit_m"], df_mirror["nw_m"]
+        )
 
         # Observations du taux : un côté connu en tonnes, l'autre en unité source
         records: List[Tuple[str, int, float]] = []
@@ -865,11 +994,14 @@ class TonnageConverter:
             tonne_conversion_factors=self.tonne_conversion_factors,
         )
 
+        # Comptage des couples (produit, unité) candidats avant filtres
+        n_candidate_pairs = 0
         if records:
             df_ratios = pd.DataFrame(records, columns=[_PROD, "unit", "ratio"])
             # Filtres de validité : n ≥ 10 et écart-type < 2,5
             grouped = df_ratios.groupby([_PROD, "unit"])["ratio"]
             df_stats = grouped.agg(["mean", "std", "count"]).reset_index()
+            n_candidate_pairs = len(df_stats)
             df_valid = df_stats[
                 (df_stats["count"] >= self.min_mirror_flows)
                 & (df_stats["std"] < self.max_conversion_std)
@@ -881,9 +1013,18 @@ class TonnageConverter:
 
         # Mise à jour des taux de conversion
         self.conversion_rates_ = rates
+        # Diagnostics de l'ajustement, complétés par transform
+        self.report_ = TonnageReport(
+            n_validated_rates=len(rates), n_candidate_pairs=n_candidate_pairs
+        )
 
         # Logging
-        logger.info("TonnageConverter: %d taux de conversion validés", len(rates))
+        logger.info(
+            "TonnageConverter: %d taux de conversion validés sur %d couples "
+            "(produit, unité) candidats",
+            self.report_.n_validated_rates,
+            self.report_.n_candidate_pairs,
+        )
 
         return self
 
@@ -904,11 +1045,34 @@ class TonnageConverter:
         # Copie indépendante du jeu de données
         df_out = df_mirror.copy()
         # Ajout de colonnes exprimant les quantités en tonnes (à l'import et à l'export)
-        df_out["q_x_t"] = self._to_tonnes(
+        df_out["q_x_t"], source_x = self._to_tonnes(
             df_out["q_x"], df_out["unit_x"], df_out["nw_x"], df_out[_PROD]
         )
-        df_out["q_m_t"] = self._to_tonnes(
+        df_out["q_m_t"], source_m = self._to_tonnes(
             df_out["q_m"], df_out["unit_m"], df_out["nw_m"], df_out[_PROD]
+        )
+
+        # Diagnostics : parts par origine du tonnage, sur les observations de
+        # côté (export et import confondus)
+        source = pd.concat([source_x, source_m], ignore_index=True)
+        n_sides = len(source)
+        denominator = float(n_sides) if n_sides else float("nan")
+        self.report_.share_converted_from_other_units = (
+            float((source == _SOURCE_RATE).sum()) / denominator
+        )
+        self.report_.share_tonnage_from_netwgt = (
+            float((source == _SOURCE_NETWGT).sum()) / denominator
+        )
+        self.report_.share_tonnage_missing = (
+            float((source == _SOURCE_MISSING).sum()) / denominator
+        )
+
+        # Logging
+        logger.info(
+            "TonnageConverter: %.1f%% des observations converties depuis une "
+            "autre unité, %.1f%% sans tonnage",
+            100.0 * self.report_.share_converted_from_other_units,
+            100.0 * self.report_.share_tonnage_missing,
         )
 
         return df_out
@@ -916,7 +1080,7 @@ class TonnageConverter:
     # Méthode auxiliaire : conversion complète d'un côté vers la tonne
     def _to_tonnes(
         self, qty: pd.Series, unit: pd.Series, nw: pd.Series, product: pd.Series
-    ) -> pd.Series:
+    ) -> Tuple[pd.Series, pd.Series]:
         """Convert one side to tonnes, using weight then estimated rates.
 
         Args:
@@ -926,13 +1090,14 @@ class TonnageConverter:
             product: Product codes (for the rate lookup).
 
         Returns:
-            Tonnage series (``NaN`` where no source is available).
+            A tuple ``(tonnes, source)``: the tonnage series (``NaN`` where no
+            source is available) and the origin of each value (``"netwgt"``,
+            ``"unit_factor"``, ``"rate"`` or ``"missing"``).
         """
         # Tonnage connu (poids net ou unité de poids)
-        tonnes = self._tonnes_from_weight(qty, unit, nw)
+        tonnes, source = self._tonnes_from_weight(qty, unit, nw)
         # Complément par les taux estimés (product, unit)
         missing = tonnes.isna() & qty.notna() & unit.notna()
-        # /!\ LOG MLFLOW : Logger la proportion totale d'observations converties en tonnes depuis d'autres unités (que la tonne ou le kilogramme)
         if missing.any() and self.conversion_rates_:
             keys = list(zip(product[missing], unit[missing].astype("Int64")))
             rate = np.array(
@@ -941,7 +1106,11 @@ class TonnageConverter:
                 dtype="float64",
             )
             tonnes.loc[missing] = qty[missing].to_numpy() * rate
-        return tonnes
+            # Origine « taux estimé » réservée aux conversions abouties
+            source.loc[missing] = np.where(
+                np.isfinite(rate), _SOURCE_RATE, _SOURCE_MISSING
+            )
+        return tonnes, source
 
 
 # Fonction auxiliaire : collecte des rapports tonnes/unité source
@@ -1010,8 +1179,35 @@ def world_median_unit_values(df_mirror: pd.DataFrame) -> pd.Series:
     return df_valid.groupby(_PROD)["uv"].median()
 
 
+# Diagnostics de l'équation de gravité
+@dataclass
+class GravityReport:
+    """Diagnostics of the CIF gravity estimation.
+
+    Attributes:
+        n_obs: Observations retained by the final weighted estimation.
+        n_cook_dropped: Influential observations removed by Cook's distance.
+        r_squared: ``R²`` of the final estimation.
+        mean_freight_rate: Mean estimated freight rate over the mirror flows.
+        median_freight_rate: Median estimated freight rate.
+        p10_freight_rate: First decile of the estimated freight rate.
+        p90_freight_rate: Last decile of the estimated freight rate.
+        share_flows_without_prediction: Share of mirror flows left without a
+            freight-rate prediction (missing gravity variables).
+        coefficients: Estimated coefficients of the gravity equation.
+    """
+    n_obs: int = 0
+    n_cook_dropped: int = 0
+    r_squared: float = float("nan")
+    mean_freight_rate: float = float("nan")
+    median_freight_rate: float = float("nan")
+    p10_freight_rate: float = float("nan")
+    p90_freight_rate: float = float("nan")
+    share_flows_without_prediction: float = float("nan")
+    coefficients: Dict[str, float] = field(default_factory=dict)
+
+
 # Estimateur de l'équation de gravité des taux CAF
-# /!\ LOG MLFLOW : Logguer le taux de fret moyen ou peut-être faire cela après le retraitement dans "run_baci" et logger "mean_freight_rate". pourquoi cette ligne de retraitement est-t-elle faite hors de cette fonction d'ailleurs ? Ne serait-il pas préférable de l'inclure ici ?
 class CifGravityModel:
     """Estimate CIF (freight) rates by a weighted gravity equation.
 
@@ -1031,6 +1227,10 @@ class CifGravityModel:
         result_: Fitted ``statsmodels`` WLS results.
         design_columns_: Ordered design-matrix columns (excluding the constant).
         uv_world_: World median unit values used at fit time.
+        cif_rate_: Freight rates predicted on the frame passed to :meth:`fit`;
+            callers reuse it instead of calling :meth:`predict` again.
+        report_: :class:`GravityReport` of the estimation, freight-rate
+            distribution included.
     """
 
     # Initialisation
@@ -1135,6 +1335,7 @@ class CifGravityModel:
         res = model.fit()
 
         # Robustesse : retrait des observations influentes (distance de Cook)
+        n_cook_dropped = 0
         try:
             # Influence calculée sur le modèle blanchi (OLS sur données
             # transformées par √w, équivalent exact du WLS) afin que la
@@ -1152,10 +1353,11 @@ class CifGravityModel:
             keep = cook < cutoff
             if keep.sum() > df_x.shape[1] and (~keep).any():
                 res = sm.WLS(y_fit[keep], df_x[keep], weights=w_fit[keep]).fit()
+                n_cook_dropped = int((~keep).sum())
                 # Logging
                 logger.info(
                     "CifGravityModel: %d/%d observations influentes retirées (Cook)",
-                    int((~keep).sum()), len(cook),
+                    n_cook_dropped, len(cook),
                 )
         except Exception as exc:  # pragma: no cover - robustesse numérique
             # Logging
@@ -1163,10 +1365,36 @@ class CifGravityModel:
 
         # Sauvegarde du résultat
         self.result_ = res
+
+        # Taux de fret prédits sur l'ensemble des flux miroirs : le calcul
+        # appartient au modèle, seul détenteur du design et des coefficients
+        # (il était auparavant fait dans run_baci)
+        self.cif_rate_ = self.predict(df_mirror, df_gravity)
+        rate = self.cif_rate_.replace([np.inf, -np.inf], np.nan)
+        finite_rate = rate.dropna()
+        n_flows = len(rate)
+
+        # Diagnostics de l'estimation
+        self.report_ = GravityReport(
+            n_obs=int(res.nobs),
+            n_cook_dropped=n_cook_dropped,
+            r_squared=float(res.rsquared),
+            mean_freight_rate=float(finite_rate.mean()) if len(finite_rate) else float("nan"),
+            median_freight_rate=float(finite_rate.median()) if len(finite_rate) else float("nan"),
+            p10_freight_rate=float(finite_rate.quantile(0.10)) if len(finite_rate) else float("nan"),
+            p90_freight_rate=float(finite_rate.quantile(0.90)) if len(finite_rate) else float("nan"),
+            share_flows_without_prediction=(
+                float(n_flows - len(finite_rate)) / float(n_flows)
+                if n_flows
+                else float("nan")
+            ),
+            coefficients={str(name): float(value) for name, value in res.params.items()},
+        )
+
         # Logging
         logger.info(
             "CifGravityModel: fit sur %d observations, taux de fret moyen %.3f",
-            int(res.nobs), float(np.expm1(res.fittedvalues).clip(lower=0).mean()),
+            self.report_.n_obs, self.report_.mean_freight_rate,
         )
         return self
 
@@ -1200,8 +1428,38 @@ class CifGravityModel:
 # Étape 3 — Retrait du fret des importations (fobisation)
 # ──────────────────────────────────────────────────────────────────────
 
+# Diagnostics de la fobisation
+@dataclass
+class FobisationReport:
+    """Diagnostics of the import fobisation step.
+
+    Attributes:
+        share_flows_corrected: Share of all mirror flows whose import value was
+            actually corrected.
+        share_import_flows_corrected: Share of the flows carrying an import
+            declaration that were corrected.
+        share_skipped_non_cif: Share of flows left untouched because the
+            importer's inferred regime is FOB.
+        share_reverted_fas: Share of flows whose FAS correction was reverted
+            because it widened the mirror gap.
+        share_clipped_to_zero: Share of flows whose corrected value hit the zero
+            floor.
+        mean_correction_ratio: Mean ``v_m_fob / v_m`` over the corrected flows.
+        n_importers_detected_fob: Importer-year cells inferred as FOB.
+        n_importers_regime_unknown: Importer-year cells carrying no valuation
+            information at all.
+    """
+    share_flows_corrected: float = float("nan")
+    share_import_flows_corrected: float = float("nan")
+    share_skipped_non_cif: float = float("nan")
+    share_reverted_fas: float = float("nan")
+    share_clipped_to_zero: float = float("nan")
+    mean_correction_ratio: float = float("nan")
+    n_importers_detected_fob: int = 0
+    n_importers_regime_unknown: int = 0
+
+
 # Transformateur de fobisation des valeurs d'importation
-# LOG MLFLOW : Logger la part du nombre total de flux qui est in fine corrigé ainsi que la part des flux d'importation auxquels est appliquée une correction
 class Fobizer:
     """Strip the estimated freight from CIF import values.
 
@@ -1220,6 +1478,10 @@ class Fobizer:
             ``fobvalue`` — while the methodology reserves it a *conditional*
             correction rather than no correction at all, hence this list stays in
             configuration and takes priority over the inferred regime.
+
+    Attributes:
+        report_: :class:`FobisationReport` of the step, populated by
+            :meth:`transform`.
     """
 
     # Initialisation
@@ -1276,6 +1538,7 @@ class Fobizer:
         candidate = candidate.where(~no_correction, v_m)
 
         # Correction FAS conservée seulement si elle réduit l'écart miroir
+        revert = pd.Series(False, index=df_out.index)
         if fas.any():
             has_mirror = (df_out["v_x"] > 0) & (v_m > 0)
             gap_before = np.abs(np.log(df_out["v_x"] / v_m))
@@ -1285,12 +1548,71 @@ class Fobizer:
             candidate = candidate.where(~revert, v_m)
 
         df_out["v_m_fob"] = candidate
+
+        # Diagnostics : masques de correction, connus de cette étape seule
+        n_flows = len(df_out)
+        has_import = v_m.notna()
+        n_imports = int(has_import.sum())
+        corrected = has_import & candidate.notna() & (candidate != v_m)
+        n_corrected = int(corrected.sum())
+        ratio = (candidate[corrected] / v_m[corrected]).replace([np.inf, -np.inf], np.nan)
+        self.report_ = FobisationReport(
+            share_flows_corrected=(
+                float(n_corrected) / float(n_flows) if n_flows else float("nan")
+            ),
+            share_import_flows_corrected=(
+                float(n_corrected) / float(n_imports) if n_imports else float("nan")
+            ),
+            share_skipped_non_cif=(
+                float(int((no_correction & has_import).sum())) / float(n_flows)
+                if n_flows
+                else float("nan")
+            ),
+            share_reverted_fas=(
+                float(int(revert.sum())) / float(n_flows) if n_flows else float("nan")
+            ),
+            share_clipped_to_zero=(
+                float(int((corrected & (candidate <= 0.0)).sum())) / float(n_flows)
+                if n_flows
+                else float("nan")
+            ),
+            mean_correction_ratio=float(ratio.mean()) if n_corrected else float("nan"),
+            n_importers_detected_fob=_count_importers(df_regime, _FOB_REGIME),
+            n_importers_regime_unknown=_count_importers(df_regime, None),
+        )
+
+        # Logging
+        logger.info(
+            "Fobizer: %.1f%% des flux corrigés, %.1f%% des flux d'importation",
+            100.0 * self.report_.share_flows_corrected,
+            100.0 * self.report_.share_import_flows_corrected,
+        )
+
         return df_out
 
 
 # ──────────────────────────────────────────────────────────────────────
 # Étape 4 — Évaluation de la qualité de déclaration (ANOVA)
 # ──────────────────────────────────────────────────────────────────────
+
+# Diagnostics d'une estimation de qualité de déclaration
+@dataclass
+class QualityReport:
+    """Diagnostics of one reporting-quality estimation.
+
+    Attributes:
+        n_countries_scored: Number of countries carrying a ``σ̂`` estimate.
+        sigma_export_median: Median ``σ̂`` of the exporter dimension.
+        sigma_import_median: Median ``σ̂`` of the importer dimension.
+        sigma_export_max: Largest ``σ̂`` of the exporter dimension.
+        sigma_import_max: Largest ``σ̂`` of the importer dimension.
+    """
+    n_countries_scored: int = 0
+    sigma_export_median: float = float("nan")
+    sigma_import_median: float = float("nan")
+    sigma_export_max: float = float("nan")
+    sigma_import_max: float = float("nan")
+
 
 # Résultat d'une estimation de qualité : variances par pays
 @dataclass
@@ -1301,11 +1623,15 @@ class QualityResult:
         sigma_export: Estimated ``σ̂`` per country acting as exporter (indexed by
             ISO-3 code).
         sigma_import: Estimated ``σ̂`` per country acting as importer.
+        report: Diagnostics of the estimation. It travels with the result rather
+            than as a fitted attribute because a single model instance serves
+            both the value and the quantity targets.
     """
     sigma_export: pd.Series
     sigma_import: pd.Series
+    report: QualityReport = field(default_factory=QualityReport)
 
-# /!\ MLFLOW LOG : Logger la part des observations ayant deux flux miroir (peut-être le logger dans run_baci àau niveau de cette étape ou d'une autre)
+
 # Estimateur de la qualité de déclaration par ANOVA
 class ReportingQualityModel:
     """Estimate reporting quality by a weighted ANOVA.
@@ -1365,9 +1691,35 @@ class ReportingQualityModel:
         ls_exp, se_exp = effects[_EXP]
         ls_imp, se_imp = effects[_IMP]
 
+        # Calcul des métriques de diagnostic
+        sigma_export = _ls_mean_to_sigma(ls_exp, se_exp)
+        sigma_import = _ls_mean_to_sigma(ls_imp, se_imp)
+
+        # Diagnostics : dispersion des σ̂ estimés, déjà portés par le résultat
+        report = QualityReport(
+            n_countries_scored=int(
+                len(set(sigma_export.index) | set(sigma_import.index))
+            ),
+            sigma_export_median=float(sigma_export.median()) if len(sigma_export) else float("nan"),
+            sigma_import_median=float(sigma_import.median()) if len(sigma_import) else float("nan"),
+            sigma_export_max=float(sigma_export.max()) if len(sigma_export) else float("nan"),
+            sigma_import_max=float(sigma_import.max()) if len(sigma_import) else float("nan"),
+        )
+
+        # Logging
+        logger.info(
+            "ReportingQualityModel (%s): %d pays notés, sigma médian export "
+            "%.3f / import %.3f",
+            target,
+            report.n_countries_scored,
+            report.sigma_export_median,
+            report.sigma_import_median,
+        )
+
         return QualityResult(
-            sigma_export=_ls_mean_to_sigma(ls_exp, se_exp),
-            sigma_import=_ls_mean_to_sigma(ls_imp, se_imp),
+            sigma_export=sigma_export,
+            sigma_import=sigma_import,
+            report=report,
         )
 
 
@@ -1600,7 +1952,32 @@ def _reconcile_pair(
 # Étape 6 — Traitement des zones non spécifiées (Areas NES)
 # ──────────────────────────────────────────────────────────────────────
 # /!\ Rétablir le paramètre "apply_nes" dans la configuration
-# /!\ MLFLOW LOG : Logger la part des flux finaux concernés par ce traitement
+
+
+# Diagnostics de la réallocation des zones non spécifiées
+@dataclass
+class NesReport:
+    """Diagnostics of the "Areas NES" reallocation step.
+
+    Attributes:
+        share_final_flows_affected: Share of the final reconciled flows that
+            received reallocated value.
+        n_flows_enriched: Number of flows that received reallocated value.
+        value_reallocated: Total value distributed across identified partners.
+        value_absorbed: NES value considered already counted in the imports
+            declared without an export mirror.
+        value_discarded: NES value left without any identifiable partner.
+        share_nes_value_reallocated: Share of the total NES value that was
+            reallocated.
+    """
+    share_final_flows_affected: float = float("nan")
+    n_flows_enriched: int = 0
+    value_reallocated: float = float("nan")
+    value_absorbed: float = float("nan")
+    value_discarded: float = float("nan")
+    share_nes_value_reallocated: float = float("nan")
+
+
 # Réallocateur des flux « Areas NES »
 class AreaNesReallocator:
     """Reallocate "Areas NES" export flows to identified partners.
@@ -1628,6 +2005,10 @@ class AreaNesReallocator:
         product_col: Column with the product (HS6) code.
         period_col: Column with the period (year as text).
         value_col: Column with the primary trade value.
+
+    Attributes:
+        report_: :class:`NesReport` of the step, populated by :meth:`transform`
+            whichever branch is taken.
     """
 
     # Initialisation
@@ -1686,6 +2067,14 @@ class AreaNesReallocator:
         # Initialisation des clés
         keys3 = [_EXP, _PROD, _YEAR]
         keys4 = [_EXP, _IMP, _PROD, _YEAR]
+        # Diagnostics : rapport neutre, renseigné dans chacune des branches
+        self.report_ = NesReport(
+            share_final_flows_affected=0.0,
+            value_reallocated=0.0,
+            value_absorbed=0.0,
+            value_discarded=0.0,
+            share_nes_value_reallocated=0.0,
+        )
         if df_nes.empty:
             return df_reconciled
 
@@ -1799,12 +2188,26 @@ class AreaNesReallocator:
             df_residual["v_nes_prime"] - df_residual["vm_prime"],
         )
 
+        # Valeur NES totale, dénominateur des parts du rapport
+        total_nes = float(df_residual["v_nes"].sum())
+
         if df_add is None:
+            # Diagnostics : aucune réallocation, seul le résidu est renseigné
+            self.report_ = NesReport(
+                share_final_flows_affected=0.0,
+                n_flows_enriched=0,
+                value_reallocated=0.0,
+                value_absorbed=float(
+                    (df_residual["v_nes_prime"] - df_residual["unallocated"]).sum()
+                ),
+                value_discarded=float(df_residual["unallocated"].sum()),
+                share_nes_value_reallocated=0.0 if total_nes else float("nan"),
+            )
             # Logging
             logger.info(
                 "AreaNesReallocator: aucune réallocation (%.1f de valeur NES, "
                 "%.1f écartés faute de partenaire identifiable)",
-                float(df_residual["v_nes"].sum()), float(df_residual["unallocated"].sum()),
+                total_nes, self.report_.value_discarded,
             )
             return df_reconciled
 
@@ -1814,14 +2217,35 @@ class AreaNesReallocator:
         add_value = df_out.pop("add_value").fillna(0.0)
         df_out["reconciled_value"] = df_out["reconciled_value"] + add_value
 
+        # Diagnostics : ampleur du traitement sur les flux finaux
+        n_enriched = int((add_value > 0).sum())
+        n_flows = len(df_out)
+        value_reallocated = float(df_residual["allocated"].sum())
+        self.report_ = NesReport(
+            share_final_flows_affected=(
+                float(n_enriched) / float(n_flows) if n_flows else float("nan")
+            ),
+            n_flows_enriched=n_enriched,
+            value_reallocated=value_reallocated,
+            value_absorbed=float(
+                (df_residual["v_nes_prime"] - df_residual["unallocated"]).sum()
+            ),
+            value_discarded=float(df_residual["unallocated"].sum()),
+            share_nes_value_reallocated=(
+                value_reallocated / total_nes if total_nes else float("nan")
+            ),
+        )
+
         # Logging
         logger.info(
-            "AreaNesReallocator: %d flux enrichis (%.1f réalloués, %.1f absorbés "
-            "par les imports sans miroir, %.1f écartés faute de partenaire)",
-            int((add_value > 0).sum()),
-            float(df_residual["allocated"].sum()),
-            float((df_residual["v_nes_prime"] - df_residual["unallocated"]).sum()),
-            float(df_residual["unallocated"].sum()),
+            "AreaNesReallocator: %d flux enrichis, soit %.1f%% des flux finaux "
+            "(%.1f réalloués, %.1f absorbés par les imports sans miroir, "
+            "%.1f écartés faute de partenaire)",
+            self.report_.n_flows_enriched,
+            100.0 * self.report_.share_final_flows_affected,
+            self.report_.value_reallocated,
+            self.report_.value_absorbed,
+            self.report_.value_discarded,
         )
         return df_out
 
@@ -1855,6 +2279,16 @@ class BaciReport:
             run; ``None`` means no upper bound was applied.
         created: Whether the result schema was created (vs. upserted); left
             ``False`` by :func:`run_baci`, set by the caller after persisting.
+        n_input_declarations: Number of COMTRADE rows handed to the run.
+        total_reconciled_value: Total reconciled value produced.
+        tonnage: Diagnostics of the tonne conversion step.
+        gravity: Diagnostics of the gravity estimation.
+        fobisation: Diagnostics of the fobisation step.
+        mirror: Diagnostics of the mirror-flow construction.
+        quality_value: Diagnostics of the reporting quality estimated on values.
+        quality_quantity: Diagnostics of the reporting quality estimated on
+            quantities.
+        nes: Diagnostics of the "Areas NES" reallocation.
     """
     flows: int = 0
     mean_freight_rate: float = float("nan")
@@ -1865,6 +2299,41 @@ class BaciReport:
     period_start: Optional[int] = None
     period_end: Optional[int] = None
     created: bool = False
+    # Contexte de l'exécution
+    n_input_declarations: int = 0
+    total_reconciled_value: float = float("nan")
+    # Rapports d'étape (principe P3 : les diagnostics sont des données)
+    tonnage: TonnageReport = field(default_factory=TonnageReport)
+    gravity: GravityReport = field(default_factory=GravityReport)
+    fobisation: FobisationReport = field(default_factory=FobisationReport)
+    mirror: MirrorReport = field(default_factory=MirrorReport)
+    quality_value: QualityReport = field(default_factory=QualityReport)
+    quality_quantity: QualityReport = field(default_factory=QualityReport)
+    nes: NesReport = field(default_factory=NesReport)
+
+    # Mise en forme des métriques (la seule à connaître les contraintes MLflow)
+    def to_metrics(self, prefix: str = "baci") -> Dict[str, float]:
+        """Flatten every numeric field into a dotted metric mapping.
+
+        Walks the step reports recursively, producing keys such as
+        ``baci.tonnage.share_converted_from_other_units``. ``NaN`` and infinite
+        values are dropped, MLflow rejecting them. Keeping this formatting here
+        rather than in :func:`run_baci` leaves the report usable on its own.
+
+        Args:
+            prefix: Prefix prepended to every metric name.
+
+        Returns:
+            Mapping of dotted metric names to finite floats.
+
+        Examples:
+            >>> report = BaciReport(flows=12)
+            >>> report.to_metrics()["baci.flows"]
+            12.0
+            >>> "baci.mean_freight_rate" in report.to_metrics()
+            False
+        """
+        return flatten_metrics(self, prefix=prefix)
 
 
 # Colonnes COMTRADE nécessaires au redressement
@@ -1961,6 +2430,8 @@ def run_baci(
     apply_nes: bool = True,
     period_start: Optional[int] = None,
     period_end: Optional[int] = None,
+    tracker: RunTracker = NULL_TRACKER,
+    log_artifacts: bool = True,
 ) -> Tuple[pd.DataFrame, BaciReport]:
     """Run the BACI reconstruction end to end on already-loaded data.
 
@@ -1998,6 +2469,12 @@ def run_baci(
             back to ``config.period_start`` when ``None``.
         period_end: Last year (included) kept from ``df_comtrade``; falls back
             to ``config.period_end`` when ``None``.
+        tracker: Experiment tracker receiving the run parameters and artifacts.
+            Defaults to the null tracker, so an unconfigured run behaves exactly
+            as before. The *metrics* are left to the caller, which sends
+            ``report.to_metrics()`` once the report is complete.
+        log_artifacts: Whether to build and send the step artifacts (conversion
+            rates, gravity coefficients, inferred regimes, per-country ``σ̂``).
 
     Returns:
         A tuple ``(df_reconciled, report)``: the reconciled flows and the
@@ -2020,6 +2497,18 @@ def run_baci(
     # Vérification de l'homogénéité de la nomenclature HS
     classification_code = _assert_homogeneous_classification(
         df_comtrade, config.schema.classification_col
+    )
+
+    # Paramètres de l'exécution : configuration aplatie et contexte
+    tracker.log_params(
+        _run_params(
+            config,
+            apply_nes=apply_nes,
+            period_start=effective_period_start,
+            period_end=effective_period_end,
+            classification_code=classification_code,
+            n_input_declarations=len(df_comtrade),
+        )
     )
 
     # Assemblage des données du CEPII servant à estimer les modèles de gravité
@@ -2051,7 +2540,7 @@ def run_baci(
     )
 
     # Construction des flux miroirs (+ flux NES mis de côté)
-    df_mirror, df_nes = build_mirror_flows(
+    df_mirror, df_nes, mirror_report = build_mirror_flows(
         df_comtrade,
         valid_iso,
         flow_col=config.schema.flow_col,
@@ -2083,18 +2572,17 @@ def run_baci(
     ).fit(df_mirror)
     df_mirror = converter.transform(df_mirror)
 
-    # Étape 2 — estimation des taux CAF par équation de gravité
+    # Étape 2 — estimation des taux CAF par équation de gravité. Les taux
+    # prédits sont ajustés par le modèle : le recalcul par un second appel à
+    # predict serait redondant.
     gravity_model = CifGravityModel(cook_factor=config.cook_factor).fit(
         df_mirror, df_gravity
     )
-    cif_rate = gravity_model.predict(df_mirror, df_gravity)
-    mean_freight_rate = float(cif_rate.replace([np.inf, -np.inf], np.nan).dropna().mean())
-    print(mean_freight_rate)
+    cif_rate = gravity_model.cif_rate_
 
     # Étape 3 — fobisation des importations
-    df_mirror = Fobizer(fas_countries=config.fas_countries).transform(
-        df_mirror, cif_rate, df_regime
-    )
+    fobizer = Fobizer(fas_countries=config.fas_countries)
+    df_mirror = fobizer.transform(df_mirror, cif_rate, df_regime)
 
     # Étape 4 — qualité de déclaration (valeurs puis quantités)
     quality_model = ReportingQualityModel()
@@ -2105,15 +2593,18 @@ def run_baci(
     df_reconciled = MirrorReconciler().transform(df_mirror, quality_value, quality_qty)
 
     # Étape 6 — réallocation des zones non spécifiées (optionnelle)
+    nes_report = NesReport()
     if apply_nes:
-        df_reconciled = AreaNesReallocator(
+        reallocator = AreaNesReallocator(
             flow_col=config.schema.flow_col,
             export_code=config.schema.export_code,
             reporter_iso_col=config.schema.reporter_iso_col,
             product_col=config.schema.product_col,
             period_col=config.schema.period_col,
             value_col=config.schema.value_col,
-        ).transform(df_reconciled, df_mirror, df_nes)
+        )
+        df_reconciled = reallocator.transform(df_reconciled, df_mirror, df_nes)
+        nes_report = reallocator.report_
 
     # Nettoyage : flux réconciliés exploitables (valeur non manquante)
     df_reconciled = df_reconciled[
@@ -2122,15 +2613,158 @@ def run_baci(
     if df_reconciled.empty:
         raise ValueError("No reconciled flow produced")
 
+    # Rapport composite : contexte de l'exécution et rapports d'étape.
+    # « mean_freight_rate » est recopié depuis GravityReport, où il est
+    # désormais calculé, pour compatibilité avec les appelants existants.
     report = BaciReport(
         flows=len(df_reconciled),
-        mean_freight_rate=mean_freight_rate,
+        mean_freight_rate=gravity_model.report_.mean_freight_rate,
         regime_country_years=len(df_regime),
         regime_fob_country_years=int((df_regime["regime"] == _FOB_REGIME).sum()),
         regime_no_information=int(df_regime["cif_share"].isna().sum()),
         classification_code=classification_code,
         period_start=effective_period_start,
         period_end=effective_period_end,
+        n_input_declarations=len(df_comtrade),
+        total_reconciled_value=float(df_reconciled["reconciled_value"].sum()),
+        tonnage=converter.report_,
+        gravity=gravity_model.report_,
+        fobisation=fobizer.report_,
+        mirror=mirror_report,
+        quality_value=quality_value.report,
+        quality_quantity=quality_qty.report,
+        nes=nes_report,
     )
 
+    # Artefacts d'étape : tables et coefficients réutilisables, auditables
+    if log_artifacts:
+        _log_artifacts(
+            tracker,
+            converter=converter,
+            gravity_model=gravity_model,
+            df_regime=df_regime,
+            quality_value=quality_value,
+            quality_qty=quality_qty,
+        )
+
     return df_reconciled, report
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Alimentation du suivi d'exécution
+# ──────────────────────────────────────────────────────────────────────
+
+# Fonction auxiliaire : paramètres d'une exécution
+def _run_params(
+    config: BaciConfig,
+    *,
+    apply_nes: bool,
+    period_start: Optional[int],
+    period_end: Optional[int],
+    classification_code: Optional[str],
+    n_input_declarations: int,
+) -> Dict[str, str]:
+    """Assemble the parameters describing a BACI run.
+
+    Args:
+        config: Column and methodological conventions of the run.
+        apply_nes: Whether the "Areas NES" reallocation was requested.
+        period_start: Effective first year of the run.
+        period_end: Effective last year of the run.
+        classification_code: HS classification vintage of the run.
+        n_input_declarations: Number of COMTRADE rows handed to the run.
+
+    Returns:
+        Flat mapping of dotted parameter names to their string representation.
+
+    Examples:
+        >>> params = _run_params(
+        ...     DEFAULT_CONFIG, apply_nes=True, period_start=None,
+        ...     period_end=None, classification_code="H5", n_input_declarations=7,
+        ... )
+        >>> params["apply_nes"], params["classification_code"]
+        ('True', 'H5')
+    """
+    # Version du paquet : absente d'une arborescence non installée
+    try:
+        version = metadata.version("macroforecast")
+    except Exception:  # pragma: no cover - dépend de l'installation
+        version = "unknown"
+
+    # Initialisation des parmaètres depuis la config
+    params = flatten_params(config, prefix="config")
+    # Mise à jour avec les arguments
+    params.update(
+        flatten_params(
+            {
+                "apply_nes": apply_nes,
+                "period_start": period_start,
+                "period_end": period_end,
+                "classification_code": classification_code,
+                "n_input_declarations": n_input_declarations,
+                "macroforecast_version": version,
+            }
+        )
+    )
+    return params
+
+
+# Fonction auxiliaire : artefacts d'une exécution
+def _log_artifacts(
+    tracker: RunTracker,
+    *,
+    converter: TonnageConverter,
+    gravity_model: CifGravityModel,
+    df_regime: pd.DataFrame,
+    quality_value: QualityResult,
+    quality_qty: QualityResult,
+) -> None:
+    """Send the five auditable by-products of a run to the tracker.
+
+    Args:
+        tracker: Tracker receiving the artifacts.
+        converter: Fitted tonne converter (validated conversion rates).
+        gravity_model: Fitted gravity model (coefficients and standard errors).
+        df_regime: Inferred import valuation regimes.
+        quality_value: Reporting quality estimated on values.
+        quality_qty: Reporting quality estimated on quantities.
+    """
+    # Taux de conversion validés, réutilisables tels quels
+    df_rates = pd.DataFrame(
+        [
+            {"product": product, "unit": unit, "rate": rate}
+            for (product, unit), rate in converter.conversion_rates_.items()
+        ],
+        columns=["product", "unit", "rate"],
+    )
+    tracker.log_table(df_rates, "tonnage/conversion_rates.csv")
+
+    # Coefficients de gravité et écarts-types : contrôle de signe
+    result = gravity_model.result_
+    tracker.log_dict(
+        {
+            "coefficients": gravity_model.report_.coefficients,
+            "std_errors": {
+                str(name): float(value) for name, value in result.bse.items()
+            },
+            "r_squared": float(result.rsquared),
+            "n_obs": int(result.nobs),
+        },
+        "gravity/coefficients.json",
+    )
+
+    # Régimes de valorisation inférés : validation du chantier C
+    tracker.log_table(df_regime, "fobisation/valuation_regimes.csv")
+
+    # σ̂ par pays et par cible : classement des déclarants
+    df_sigma = pd.concat(
+        [
+            quality_value.sigma_export.rename("sigma_export_value"),
+            quality_value.sigma_import.rename("sigma_import_value"),
+            quality_qty.sigma_export.rename("sigma_export_quantity"),
+            quality_qty.sigma_import.rename("sigma_import_quantity"),
+        ],
+        axis=1,
+    )
+    df_sigma.index.name = "country"
+    tracker.log_table(df_sigma.reset_index(), "quality/sigma_by_country.csv")

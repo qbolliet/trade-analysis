@@ -23,6 +23,15 @@ from .baci import (
     MirrorReconciler,
     AreaNesReallocator,
 )
+# Rapports d'étape (principe P3 : les diagnostics sont des données)
+from .baci import (
+    TonnageReport,
+    GravityReport,
+    FobisationReport,
+    MirrorReport,
+    QualityReport,
+    NesReport,
+)
 # Ré-agrégation
 from .aggregation import (
     aggregate_measures,
@@ -60,6 +69,13 @@ __all__ = [
     "QualityResult",
     "MirrorReconciler",
     "AreaNesReallocator",
+    # Rapports d'étape
+    "TonnageReport",
+    "GravityReport",
+    "FobisationReport",
+    "MirrorReport",
+    "QualityReport",
+    "NesReport",
     # Ré-agrégation partagée
     "aggregate_measures",
     # Harmonisation des nomenclatures HS
