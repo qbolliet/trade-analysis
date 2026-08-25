@@ -43,6 +43,8 @@ class HerfindahlHirschmanIndex(VulnerabilityMetric):
 
     # Nom de la colonne de sortie
     name: ClassVar[str] = "HHI"
+    # 1/HHI se lit comme un nombre effectif de fournisseurs
+    reciprocal_is_effective_count: ClassVar[bool] = True
 
     # Calcul de l'indice
     def compute(self, data: nw.DataFrame) -> nw.DataFrame:

@@ -17,10 +17,18 @@ Source et résultat vivent dans deux schémas du même catalogue Postgres
 Prévu comme étape Argo s'exécutant après le téléchargement (dépendance directe,
 mais couplage faible : ce script ne lit que le registre JSON produit par le
 téléchargement, il ne dépend d'aucun état en mémoire de ce dernier).
+
+Le suivi d'exécution MLflow est piloté par le bloc `MLFLOW` de
+`config/vulnerabilities.yaml` : sans `TRACKING_URI` (ou sans serveur joignable),
+`get_tracker` retourne un objet nul et l'exécution est strictement inchangée. La
+relecture du résultat précédent, qui alimente les diagnostics de dérive, est
+faite ici — jamais par le module de calcul.
 """
 # Importation des modules
 from __future__ import annotations
 # Modules de base
+from dataclasses import fields, replace
+from importlib import metadata
 from datetime import datetime
 import logging
 import os
@@ -39,8 +47,14 @@ from macroforecast.storage2 import DuckLakeConnector
 # Module d'utilitaires de téléchargement
 from macroforecast.datasets.core.download import _now, _parse_iso, _schema_name
 
-# Module du package : calcul des indicateurs (mode incrémental, catalogue Postgres partagé)
-from macroforecast.trade.vulnerabilities.runner import run_vulnerabilities_incremental
+# Module de suivi d'exécution (MLflow optionnel, objet nul par défaut)
+from macroforecast.tracking import flatten_params, get_tracker
+# Module de calcul des indicateurs
+from macroforecast.trade.vulnerabilities import DEFAULT_CONFIG, VulnerabilityConfig
+from macroforecast.trade.vulnerabilities.runner import (
+    read_previous_result,
+    run_vulnerabilities_incremental,
+)
 
 # Configuration de logging
 logging.basicConfig(
@@ -103,6 +117,45 @@ def load_vulnerability_config(config_path: Optional[os.PathLike] = None) -> dict
     # Chargement du fichier
     with open(config_path, "r", encoding="utf-8") as file:
         return yaml.safe_load(file)
+
+
+# Fonction de construction de la configuration méthodologique des vulnérabilités
+def vulnerability_config_from_params(params: Optional[Dict]) -> VulnerabilityConfig:
+    """Build a ``VulnerabilityConfig`` from the YAML ``PARAMETERS`` section.
+
+    Generic construction : every key matching a ``VulnerabilityConfig``
+    field name overrides the dataclass default; unknown keys are ignored with a
+    warning. YAML lists are coerced to the tuple types the frozen dataclass
+    expects, nested pairs included (``metric_alert_thresholds``).
+
+    Args:
+        params: The ``PARAMETERS`` mapping of ``config/vulnerabilities.yaml``
+            (or ``None``, meaning the default Comext conventions).
+
+    Returns:
+        A ``VulnerabilityConfig`` reflecting the configured overrides.
+    """
+    # Aucune surcharge : configuration par défaut
+    if not params:
+        return DEFAULT_CONFIG
+
+    # Surcharge générique champ à champ, avec coercition listes → tuples
+    valid = {field.name for field in fields(VulnerabilityConfig)}
+    overrides: Dict[str, Any] = {}
+    for key, value in params.items():
+        if key not in valid:
+            # Logging
+            logger.warning(f"Paramètre de vulnérabilité inconnu ignoré : {key}")
+            continue
+        default = getattr(DEFAULT_CONFIG, key)
+        if isinstance(default, tuple) and isinstance(value, (list, tuple)):
+            value = tuple(
+                tuple(item) if isinstance(item, (list, tuple)) else item
+                for item in value
+            )
+        overrides[key] = value
+
+    return replace(DEFAULT_CONFIG, **overrides)
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -327,6 +380,55 @@ def pairs_to_recompute(
 
 
 # ──────────────────────────────────────────────────────────────────────
+# Alimentation du suivi d'exécution
+# ──────────────────────────────────────────────────────────────────────
+
+# Fonction auxiliaire : paramètres d'une exécution
+# /!\ Voir si cette logique ne pourrait pas être rapprochée de celle à la fin de baci.py ?
+def _run_params(
+    config: VulnerabilityConfig,
+    *,
+    dataflow: str,
+    source_schema: str,
+    result_schema: str,
+    n_pairs: int,
+) -> Dict[str, str]:
+    """Assemble the parameters describing a vulnerability run.
+
+    Args:
+        config: Column, threshold and artifact conventions of the run.
+        dataflow: Source dataflow identifier.
+        source_schema: Schema holding the source fact table.
+        result_schema: Schema receiving the scores.
+        n_pairs: Number of reporter x product pairs recomputed.
+
+    Returns:
+        Flat mapping of dotted parameter names to their string representation.
+    """
+    # Version du paquet : absente d'une arborescence non installée
+    try:
+        version = metadata.version("macroforecast")
+    except Exception:  # pragma: no cover - dépend de l'installation
+        version = "unknown"
+
+    # Configuration méthodologique aplatie
+    params = flatten_params(config, prefix="config")
+    # Contexte de l'exécution
+    params.update(
+        flatten_params(
+            {
+                "dataflow": dataflow,
+                "source_schema": source_schema,
+                "result_schema": result_schema,
+                "n_reporter_product_pairs": n_pairs,
+                "macroforecast_version": version,
+            }
+        )
+    )
+    return params
+
+
+# ──────────────────────────────────────────────────────────────────────
 # Point d'entrée
 # ──────────────────────────────────────────────────────────────────────
 
@@ -337,6 +439,23 @@ def main() -> None:
     eurostat_config = load_eurostat_config()
     # Chargement de la configuration dédiée au calcul des vulnérabilités
     vulnerability_config = load_vulnerability_config()
+
+    # Construction des paramètres méthodologiques (seuils, conventions de colonnes)
+    vulnerability_parameters = vulnerability_config_from_params(
+        vulnerability_config.get("PARAMETERS")
+    )
+
+    # Construction du suivi d'exécution : sans URI (ou sans MLflow installé,
+    # ou serveur injoignable), get_tracker retourne un tracker inerte et
+    # l'exécution est strictement inchangée
+    mlflow_config = vulnerability_config.get("MLFLOW") or {}
+    tracker = get_tracker(
+        tracking_uri=mlflow_config.get("TRACKING_URI"),
+        experiment=mlflow_config.get("EXPERIMENT", "vulnerabilities"),
+        run_name=f"vulnerabilities-{datetime.now():%Y%m%d-%H%M}",
+    )
+    log_artifacts = bool(mlflow_config.get("LOG_ARTIFACTS", True))
+    measure_drift = bool(mlflow_config.get("DRIFT", True))
 
     # Initialisation du Dataflow sur lequel sont calculées les métriques de vulnérabilité
     DATAFLOW = "DS-045409"
@@ -362,6 +481,8 @@ def main() -> None:
     # Sélection des couples jamais calculés ou périmés (calcul antérieur au
     # dernier téléchargement de la série)
     reporters_products = pairs_to_recompute(last_download, last_computed)
+
+    # Logging
     logger.info(
         f"{len(reporters_products)} couple(s) reporter x produit to recompute"
     )
@@ -414,14 +535,59 @@ def main() -> None:
         s3_session_token=os.environ["AWS_SESSION_TOKEN"],
     )
 
-    # Calcul incrémental et upsert dans le schéma résultat
-    report = run_vulnerabilities_incremental(
-        connector=source_connector,
-        reporters_products=reporters_products,
-        result_connector=result_connector,
-        source_schema=_schema_name(DATAFLOW),
-        result_schema=_schema_name(vulnerability_config['VULNERABILITIES'][DATAFLOW]["RESULT_SCHEMA"]),
+    # Schéma résultat, commun à la relecture et à l'écriture
+    result_schema = _schema_name(
+        vulnerability_config["VULNERABILITIES"][DATAFLOW]["RESULT_SCHEMA"]
     )
+
+    with tracker:
+        # Paramètres de l'exécution : configuration aplatie et contexte
+        tracker.log_params(
+            _run_params(
+                vulnerability_parameters,
+                dataflow=DATAFLOW,
+                source_schema=_schema_name(DATAFLOW),
+                result_schema=result_schema,
+                n_pairs=len(reporters_products),
+            )
+        )
+
+        # Résultat de l'exécution précédente : la lecture appartient au script
+        # (principe P4), et son absence désactive simplement la mesure de dérive
+        df_previous = (
+            read_previous_result(
+                result_connector,
+                result_schema,
+                reporters_products=sorted(reporters_products),
+                config=vulnerability_parameters,
+            )
+            if measure_drift
+            else None
+        )
+
+        # Calcul incrémental et upsert dans le schéma résultat
+        report = run_vulnerabilities_incremental(
+            connector=source_connector,
+            reporters_products=reporters_products,
+            result_connector=result_connector,
+            source_schema=_schema_name(DATAFLOW),
+            result_schema=result_schema,
+            config=vulnerability_parameters,
+            tracker=tracker,
+            log_artifacts=log_artifacts,
+            df_previous=df_previous,
+        )
+
+        # Envoi des métriques : le rapport connaît sa mise en forme
+        tracker.log_metrics(report.to_metrics())
+        tracker.set_tags(
+            {
+                "dataflow": DATAFLOW,
+                "result_schema": result_schema,
+                "created": str(report.created),
+                "n_pairs": str(len(reporters_products)),
+            }
+        )
 
     # Logging
     logger.info(f"Vulnerability computation complete : {report}")

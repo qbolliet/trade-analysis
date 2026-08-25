@@ -13,7 +13,6 @@ upserted with the same ``DuckLakeTablesBuilder`` / ``DatabaseUpdater`` pattern a
 # Importation des modules
 from __future__ import annotations
 # Modules de base
-from dataclasses import dataclass
 import logging
 from pathlib import Path
 from typing import List, Optional, Sequence, Set, Tuple, Union
@@ -28,7 +27,17 @@ from dt_ducklake_manager import (
     DuckLakeTablesBuilder,
 )
 # Modules du package
+from ...tracking import NULL_TRACKER, RunTracker
 from .base import DEFAULT_CONFIG, VulnerabilityConfig, VulnerabilityMetric
+from .diagnostics import (
+    VulnerabilityReport,
+    compute_coverage_report,
+    compute_distribution_reports,
+    compute_drift_report,
+    compute_input_report,
+    compute_quality_report,
+    log_vulnerability_artifacts,
+)
 from .metrics import default_metrics
 
 # Initialisation du logger
@@ -36,25 +45,6 @@ logger = logging.getLogger(__name__)
 
 # Nom de la table de faits DuckLake (convention dt_ducklake_manager)
 _FACT_TABLE = "fact_table"
-
-
-# ──────────────────────────────────────────────────────────────────────
-# Rapport d'exécution
-# ──────────────────────────────────────────────────────────────────────
-
-# Structure résumant l'exécution du calcul des vulnérabilités
-@dataclass
-class VulnerabilityReport:
-    """Summary of a vulnerability run.
-
-    Attributes:
-        cells: Number of output cells (distinct key combinations) scored.
-        metrics: Names of the metrics computed.
-        created: Whether the result schema was created (vs. upserted).
-    """
-    cells: int = 0
-    metrics: Optional[List[str]] = None
-    created: bool = False
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -66,24 +56,50 @@ def compute_vulnerabilities(
     data: nw.DataFrame,
     metrics: Sequence[VulnerabilityMetric],
     config: VulnerabilityConfig = DEFAULT_CONFIG,
-) -> nw.DataFrame:
+    *,
+    df_previous: Optional[nw.DataFrame] = None,
+) -> Tuple[nw.DataFrame, VulnerabilityReport]:
     """Compute every metric and assemble a one-column-per-metric frame.
 
     Builds the canonical grid of distinct cells and left-joins each metric's
     output onto it, so cells a metric does not score (e.g. CDI2/CDI3 on non-import
-    flows) carry a null value.
+    flows) carry a null value. Alongside the scores, the run is diagnosed
+    (volumetry, coverage, aggregate coherence, distributions and — when a
+    previous result is supplied — drift), the diagnostics being data rather than
+    logs.
 
     Args:
         data: Narwhals frame of partner-level observations.
         metrics: Metric instances to apply.
         config: Column conventions (its ``key_columns`` define the grid).
+        df_previous: Result of the previous run, same schema, enabling the
+            run-to-run stability diagnostics. Reading it belongs to the caller
+            (see :func:`read_previous_result`).
 
     Returns:
-        Narwhals frame with ``config.key_columns`` plus one column per metric.
+        Tuple ``(df_result, report)``: the scores — ``config.key_columns`` plus
+        one column per metric — and the :class:`VulnerabilityReport` of the run
+        (``created`` is left ``False``; the caller sets it once the result is
+        persisted).
 
     Raises:
         ValueError: If the input frame is missing any column required by one of
             the metrics (see :meth:`VulnerabilityMetric.required_columns`).
+
+    Examples:
+        >>> import pandas as pd
+        >>> from macroforecast.trade.vulnerabilities import (
+        ...     HerfindahlHirschmanIndex, VulnerabilityConfig)
+        >>> df = pd.DataFrame({
+        ...     "flow": [1, 1, 1], "partner": ["CN", "US", "WORLD"],
+        ...     "OBS_VALUE": [60.0, 40.0, 100.0],
+        ... })
+        >>> config = VulnerabilityConfig(key_columns=("flow",))
+        >>> data = nw.from_native(df, eager_only=True)
+        >>> scores, report = compute_vulnerabilities(
+        ...     data, [HerfindahlHirschmanIndex(config)], config)
+        >>> round(float(scores.to_native()["HHI"][0]), 2), report.cells
+        (0.52, 1)
     """
     # Clés de la grille de sortie
     keys = list(config.key_columns)
@@ -105,12 +121,22 @@ def compute_vulnerabilities(
             f"{culprits}. Available columns: {sorted(available)}."
         )
 
+    # Volumétrie d'entrée, mesurée avant tout filtrage
+    report = VulnerabilityReport(metrics=[metric.name for metric in metrics])
+    report.input = compute_input_report(data, config)
+    n_input = report.input.n_observations
+
     # Suppression des observations inexploitables (partenaire ou valeur nuls) :
     # un partenaire nul fausse les masques booléens du filtre des pays individuels.
     data = data.drop_nulls(subset=[config.partner_col, config.value_col])
+    # Effet du filtrage, rapporté plutôt que silencieux
+    share_rows_dropped_null = (
+        (n_input - len(data)) / n_input if n_input else float("nan")
+    )
 
     # Grille canonique : cellules distinctes de la base
-    result = data.select(*keys).unique()
+    df_grid = data.select(*keys).unique()
+    result = df_grid
 
     # Jointure gauche de la sortie de chaque métrique sur la grille
     for metric in metrics:
@@ -118,7 +144,18 @@ def compute_vulnerabilities(
         scored = metric.compute(data)
         result = result.join(scored, on=keys, how="left")
 
-    return result
+    # Diagnostics de l'exécution
+    report.cells = len(result)
+    report.coverage = compute_coverage_report(result, metrics)
+    report.quality = compute_quality_report(
+        data, df_grid, config, share_rows_dropped_null=share_rows_dropped_null
+    )
+    report.distributions = compute_distribution_reports(result, metrics, config)
+    # Dérive : seulement si l'exécution précédente a été relue par l'appelant
+    if df_previous is not None:
+        report.drift = compute_drift_report(result, df_previous, metrics, config)
+
+    return result, report
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -308,6 +345,9 @@ def run_vulnerabilities(
     metrics: Optional[Sequence[VulnerabilityMetric]] = None,
     config: VulnerabilityConfig = DEFAULT_CONFIG,
     backend: str = "pandas",
+    tracker: RunTracker = NULL_TRACKER,
+    log_artifacts: bool = True,
+    df_previous: Optional[nw.DataFrame] = None,
 ) -> VulnerabilityReport:
     """Compute trade-vulnerability metrics and write them to a result catalog.
 
@@ -327,6 +367,14 @@ def run_vulnerabilities(
         config: Column and partner-code conventions.
         backend: Native eager backend for narwhals computation (``"pandas"`` or,
             when installed, ``"polars"``/``"pyarrow"``).
+        tracker: Experiment tracker receiving the run artifacts. Defaults to the
+            null tracker, so an unconfigured run behaves exactly as before. The
+            *metrics* are left to the caller, which sends ``report.to_metrics()``
+            once the report is complete.
+        log_artifacts: Whether to build and send the business artifacts (top
+            vulnerable cells, alert counts, missing aggregates, deciles).
+        df_previous: Result of the previous run, enabling the drift diagnostics
+            (see :func:`read_previous_result`).
 
     Returns:
         A :class:`VulnerabilityReport` summarising the run.
@@ -360,12 +408,26 @@ def run_vulnerabilities(
 
     # Calcul des métriques via narwhals (agnostique du backend)
     data = nw.from_native(native, eager_only=True)
-    result = compute_vulnerabilities(data, metric_list, config)
+    result, report = compute_vulnerabilities(
+        data, metric_list, config, df_previous=df_previous
+    )
+
+    # Artefacts de synthèse : la grille est la projection du résultat sur les clés
+    if log_artifacts:
+        log_vulnerability_artifacts(
+            tracker,
+            data=data,
+            df_grid=result.select(*config.key_columns),
+            df_result=result,
+            report=report,
+            metrics=metric_list,
+            config=config,
+        )
 
     # Écriture dans le catalogue résultat : le frame narwhals est passé tel quel,
     # builder/updater de dt_ducklake_manager acceptant IntoDataFrame (aucune
     # reconversion pandas nécessaire).
-    created = _write_result(
+    report.created = _write_result(
         result,
         config.key_columns,
         result_catalog,
@@ -373,11 +435,7 @@ def run_vulnerabilities(
         result_schema,
     )
 
-    return VulnerabilityReport(
-        cells=len(result),
-        metrics=[m.name for m in metric_list],
-        created=created,
-    )
+    return report
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -501,6 +559,71 @@ def _write_result_pg(
     return True
 
 
+# Fonction de lecture du résultat de l'exécution précédente (diagnostics de dérive)
+def read_previous_result(
+    connector: DuckLakeConnector,
+    result_schema: str,
+    *,
+    reporters_products: Optional[Sequence[Tuple[str, str]]] = None,
+    config: VulnerabilityConfig = DEFAULT_CONFIG,
+) -> Optional[nw.DataFrame]:
+    """Read the previous run's scores, for the run-to-run drift diagnostics.
+
+    Reading belongs to the caller : the runner never decides on
+    its own to re-read the result table. This helper only spares the scripts the
+    duplication of the SQL, and degrades gracefully — a result table that does
+    not exist yet returns ``None``, which disables the drift diagnostics rather
+    than failing the run.
+
+    Args:
+        connector: DuckLake connector for the result catalog.
+        result_schema: Schema holding the result ``fact_table``.
+        reporters_products: Reporter x product pairs to restrict the read to,
+            mirroring the perimeter of an incremental recomputation. ``None``
+            reads the whole table.
+        config: Column conventions (``reporter_col`` / ``product_col`` name the
+            filtered columns).
+
+    Returns:
+        Narwhals frame of the previous scores, or ``None`` when no result table
+        exists yet.
+    """
+    # Connexion dédiée : la lecture précède l'ouverture de la connexion de calcul
+    conn = connector.connect()
+    try:
+        # Première exécution : aucune table résultat, donc aucune dérive mesurable
+        if not _fact_table_exists(conn, connector.catalog_alias, result_schema):
+            # Logging
+            logger.info(
+                f"No result table in '{result_schema}' yet: drift diagnostics skipped"
+            )
+            return None
+
+        # Projection intégrale : la table résultat est étroite (clés + métriques)
+        query = (
+            f'SELECT * FROM "{connector.catalog_alias}"."{result_schema}"."{_FACT_TABLE}"'
+        )
+        # Restriction éventuelle au périmètre recalculé
+        if reporters_products:
+            # Construction de la requête
+            values_clause = ", ".join(
+                f"({reporter!r}, {product!r})"
+                for reporter, product in reporters_products
+            )
+            query += (
+                f' WHERE ("{config.reporter_col}", "{config.product_col}") '
+                f"IN ({values_clause})"
+            )
+        # Exécution de la requête
+        previous_pdf = conn.execute(query).df()
+    finally:
+        conn.close()
+
+    # Logging
+    logger.info(f"Read {len(previous_pdf)} previous result rows from '{result_schema}'")
+    return nw.from_native(previous_pdf, eager_only=True)
+
+
 # Fonction d'orchestration incrémentale : catalogue Postgres partagé (source + résultat)
 # /!\ Retirer les mentions à postgres dans la fonction dans la mesure où il n'y a rien de spécifique à postgres dedans ?
 def run_vulnerabilities_incremental(
@@ -513,6 +636,9 @@ def run_vulnerabilities_incremental(
     metrics: Optional[Sequence[VulnerabilityMetric]] = None,
     config: VulnerabilityConfig = DEFAULT_CONFIG,
     backend: str = "pandas",
+    tracker: RunTracker = NULL_TRACKER,
+    log_artifacts: bool = True,
+    df_previous: Optional[nw.DataFrame] = None,
 ) -> VulnerabilityReport:
     """Recompute vulnerability metrics for a subset of reporter x product cells.
 
@@ -535,6 +661,12 @@ def run_vulnerabilities_incremental(
             :func:`~macroforecast.trade.vulnerabilities.metrics.default_metrics`.
         config: Column and partner-code conventions.
         backend: Native eager backend for narwhals computation.
+        tracker: Experiment tracker receiving the run artifacts. Defaults to the
+            null tracker, so an unconfigured run behaves exactly as before.
+        log_artifacts: Whether to build and send the business artifacts.
+        df_previous: Result of the previous run restricted to the same
+            reporter x product pairs, enabling the drift diagnostics (see
+            :func:`read_previous_result`).
 
     Returns:
         A :class:`VulnerabilityReport` summarising the run.
@@ -546,7 +678,7 @@ def run_vulnerabilities_incremental(
     if not reporters_products:
         logger.info("No reporter-product pairs to recalculate; early termination.")
         return VulnerabilityReport(
-            cells=0, metrics=[m.name for m in metric_list], created=False
+            cells=0, metrics=[metric.name for metric in metric_list], created=False
         )
 
     # Colonnes nécessaires : clés de la grille + partenaire + valeur
@@ -568,18 +700,32 @@ def run_vulnerabilities_incremental(
             connector.catalog_alias,
             source_schema,
             required,
-            reporter_col="reporter",
-            product_col="product",
+            reporter_col=config.reporter_col,
+            product_col=config.product_col,
             reporters_products=list(reporters_products),
         )
 
         # Conversion en narwhals et calcul des métriques
         data = nw.from_native(source_pdf, eager_only=True)
-        result = compute_vulnerabilities(data, metric_list, config)
+        result, report = compute_vulnerabilities(
+            data, metric_list, config, df_previous=df_previous
+        )
+
+        # Artefacts de synthèse : la grille est la projection du résultat sur les clés
+        if log_artifacts:
+            log_vulnerability_artifacts(
+                tracker,
+                data=data,
+                df_grid=result.select(*config.key_columns),
+                df_result=result,
+                report=report,
+                metrics=metric_list,
+                config=config,
+            )
 
         if same_catalog:
             # Écriture sur la connexion déjà ouverte (même catalogue que la source)
-            created = _write_result_pg(
+            report.created = _write_result_pg(
                 source_conn,
                 connector.catalog_alias,
                 result,
@@ -590,7 +736,7 @@ def run_vulnerabilities_incremental(
             # Catalogue résultat distinct : ouverture d'une seconde connexion dédiée
             result_conn = result_connector.connect()
             try:
-                created = _write_result_pg(
+                report.created = _write_result_pg(
                     result_conn,
                     result_connector.catalog_alias,
                     result,
@@ -602,8 +748,4 @@ def run_vulnerabilities_incremental(
     finally:
         source_conn.close()
 
-    return VulnerabilityReport(
-        cells=len(result),
-        metrics=[m.name for m in metric_list],
-        created=created,
-    )
+    return report

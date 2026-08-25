@@ -15,7 +15,7 @@ from __future__ import annotations
 # Modules de base
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from typing import ClassVar, Set, Tuple
+from typing import ClassVar, Optional, Set, Tuple
 # Module de manipulation de données
 import narwhals as nw
 
@@ -52,6 +52,30 @@ class VulnerabilityConfig:
             an underscore (e.g. ``EXT_EU``, ``INT_EU27_2020``) is treated as an
             aggregate. This cleanly drops every regional aggregate while keeping
             genuine two-letter country codes such as ``QA`` (Qatar).
+        reporter_col: Column holding the declaring country, used for the input
+            cardinality diagnostics.
+        product_col: Column holding the product code, same purpose.
+        period_col: Column holding the time period, same purpose.
+        high_score_threshold: Score above which a cell is reported as "highly
+            concentrated" (0.5 in the literature).
+        unit_score_threshold: Score above which a ratio-type index exceeds
+            parity (1.0, e.g. extra-EU imports exceeding total exports).
+        shares_lower_bound: Lower bound below which the individual partner
+            shares of a cell are reported as under-covering its total.
+        shares_tolerance: Absolute tolerance used when comparing a sum of
+            shares to 1, and a score to 1 (float equality is never exact).
+        drift_relative_change: Relative move above which a cell's score is
+            counted as changed between two runs.
+        psi_n_bins: Number of bins of the population stability index.
+        metric_alert_thresholds: Per-metric alert thresholds, as
+            ``(metric_name, threshold)`` pairs. A metric absent from the
+            mapping falls back to ``high_score_threshold``.
+        ranking_metric: Metric the "most vulnerable cells" artifact is sorted
+            on. ``None`` selects the first concentration metric of the registry
+            (see :attr:`VulnerabilityMetric.reciprocal_is_effective_count`).
+        artifact_top_n: Number of cells kept in the top-vulnerability artifact.
+        artifact_max_rows: Maximum number of rows of a tabular artifact; beyond
+            it the table is truncated (the truncation is reported).
     """
     # Grille d'itération (cellule de sortie)
     key_columns: Tuple[str, ...] = (
@@ -75,10 +99,73 @@ class VulnerabilityConfig:
     # Règles d'identification des agrégats (exclus des parts par pays)
     aggregate_codes: Tuple[str, ...] = ("WORLD", "QW")
     exclude_underscore_partners: bool = True
+    # Dimensions dont la cardinalité est rapportée (diagnostics de volumétrie)
+    reporter_col: str = "reporter"
+    product_col: str = "product"
+    period_col: str = "TIME_PERIOD"
+    # Seuils d'interprétation des scores
+    high_score_threshold: float = 0.5
+    unit_score_threshold: float = 1.0
+    # Seuils de contrôle de cohérence des agrégats
+    shares_lower_bound: float = 0.9
+    shares_tolerance: float = 1e-9
+    # Paramètres de la comparaison inter-exécutions
+    drift_relative_change: float = 0.1
+    psi_n_bins: int = 10
+    # Paramètres des artefacts de synthèse
+    metric_alert_thresholds: Tuple[Tuple[str, float], ...] = (
+        ("HHI", 0.5),
+        ("CDI2", 0.5),
+        ("CDI3", 1.0),
+    )
+    ranking_metric: Optional[str] = None
+    artifact_top_n: int = 50
+    artifact_max_rows: int = 10_000
 
 
 # Configuration par défaut (schéma Eurostat Comext DS-045409)
 DEFAULT_CONFIG = VulnerabilityConfig()
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Expressions partagées
+# ──────────────────────────────────────────────────────────────────────
+
+# Expression de filtre des partenaires individuels (hors agrégats)
+def individual_partner_expr(config: VulnerabilityConfig = DEFAULT_CONFIG) -> nw.Expr:
+    """Build a boolean narwhals expression selecting individual countries.
+
+    Excludes every aggregate partner code: the explicit ones listed in
+    :attr:`VulnerabilityConfig.aggregate_codes` and, when enabled, any code
+    containing an underscore (all regional aggregates such as ``EXT_EU``).
+
+    Deliberately a module-level function rather than a metric method: the
+    aggregate-coherence diagnostics must evaluate the *very same* rule as the
+    metrics, since what they check is precisely whether that heuristic still
+    catches every aggregate of the source nomenclature.
+
+    Args:
+        config: Column and partner-code conventions.
+
+    Returns:
+        A narwhals boolean expression usable in ``filter``.
+
+    Examples:
+        >>> expr = individual_partner_expr()
+        >>> isinstance(expr, nw.Expr)
+        True
+    """
+    # Colonne des partenaires
+    partner = nw.col(config.partner_col)
+    # Exclusion des partenaires nuls (jamais des pays individuels)
+    expr = ~partner.is_null()
+    # Exclusion des codes agrégés explicites (fill_null : un nul n'est pas agrégé)
+    expr = expr & ~partner.is_in(list(config.aggregate_codes)).fill_null(False)
+    # Exclusion des agrégats régionaux (codes contenant un underscore) ;
+    # fill_null(True) traite un partenaire nul comme exclu sans casser l'opérateur ~.
+    if config.exclude_underscore_partners:
+        expr = expr & ~partner.str.contains("_", literal=True).fill_null(True)
+    return expr
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -104,10 +191,18 @@ class VulnerabilityMetric(ABC):
 
     Attributes:
         name: Output column name of the metric (class attribute).
+        reciprocal_is_effective_count: Whether ``1 / score`` reads as an
+            effective number of suppliers — true for a concentration index such
+            as the HHI, false for a ratio. Drives the
+            ``effective_suppliers_median`` diagnostic, which is left ``NaN``
+            for the metrics that do not declare it.
     """
 
     # Nom de la métrique (colonne de sortie) — défini par chaque sous-classe
     name: ClassVar[str]
+    # Interprétation de l'inverse du score : nombre effectif de fournisseurs.
+    # Vraie pour un indice de concentration (HHI), fausse pour un ratio.
+    reciprocal_is_effective_count: ClassVar[bool] = False
 
     # Initialisation
     def __init__(self, config: VulnerabilityConfig = DEFAULT_CONFIG) -> None:
@@ -158,24 +253,14 @@ class VulnerabilityMetric(ABC):
     def _individual_partner_expr(self) -> nw.Expr:
         """Build a boolean narwhals expression selecting individual countries.
 
-        Excludes every aggregate partner code: the explicit ones listed in
-        :attr:`VulnerabilityConfig.aggregate_codes` and, when enabled, any code
-        containing an underscore (all regional aggregates such as ``EXT_EU``).
+        Thin delegation to :func:`individual_partner_expr`, which the
+        aggregate-coherence diagnostics reuse verbatim.
 
         Returns:
             A narwhals boolean expression usable in ``filter``.
         """
-        # Colonne des partenaires
-        partner = nw.col(self.config.partner_col)
-        # Exclusion des partenaires nuls (jamais des pays individuels)
-        expr = ~partner.is_null()
-        # Exclusion des codes agrégés explicites (fill_null : un nul n'est pas agrégé)
-        expr = expr & ~partner.is_in(list(self.config.aggregate_codes)).fill_null(False)
-        # Exclusion des agrégats régionaux (codes contenant un underscore) ;
-        # fill_null(True) traite un partenaire nul comme exclu sans casser l'opérateur ~.
-        if self.config.exclude_underscore_partners:
-            expr = expr & ~partner.str.contains("_", literal=True).fill_null(True)
-        return expr
+        # Délégation à l'expression partagée (métriques et diagnostics)
+        return individual_partner_expr(self.config)
 
     # Méthode auxiliaire : valeurs d'un partenaire donné, par cellule
     def _partner_values(

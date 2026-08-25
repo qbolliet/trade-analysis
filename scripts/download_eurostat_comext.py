@@ -8,7 +8,7 @@ ou intégré directement comme nœud Kedro via les fonctions exportées.
 # Modules de base
 import os
 import re
-from datetime import timedelta
+from datetime import datetime, timedelta
 import itertools
 import logging
 import sys
@@ -31,6 +31,10 @@ from macroforecast.datasets.utils import (
     filter_codes,
 )
 from macroforecast.datasets.core.download import download_updates, _schema_name
+from macroforecast.datasets.core.reports import QueryReport
+
+# Module de suivi d'exécution
+from macroforecast.tracking import get_tracker
 
 # Module de connexion à la base de données
 from macroforecast.storage2 import DuckLakeConnector
@@ -222,26 +226,66 @@ def main() -> None:
             s3_session_token=os.environ["AWS_SESSION_TOKEN"],
         )
 
-        # Téléchargement des données
-        report = download_updates(
-            client=client,
-            queries=queries,
-            connector=connector,
-            structures_path=config["DOWNLOADS"][DATAFLOW]["PATHS"]["STRUCTURES_PATH"],
-            last_download_path=config["DOWNLOADS"][DATAFLOW]["PATHS"]["LAST_DOWNLOAD_PATH"],
-            n_observations=config["DOWNLOADS"][DATAFLOW]["N_LAST_OBSERVATIONS"],
-            fresh_registry=False,
-            max_runtime=timedelta(
-                weeks=config["DOWNLOADS"][DATAFLOW]["MAX_RUNTIME"]["WEEKS"],
-                days=config["DOWNLOADS"][DATAFLOW]["MAX_RUNTIME"]["DAYS"],
-                hours=config["DOWNLOADS"][DATAFLOW]["MAX_RUNTIME"]["HOURS"],
-                minutes=config["DOWNLOADS"][DATAFLOW]["MAX_RUNTIME"]["MINUTES"],
-                seconds=config["DOWNLOADS"][DATAFLOW]["MAX_RUNTIME"]["SECONDS"]
-            ),
-            categorical_threshold=None,  # A supprimer avec la nouvelle version de la base de données
-            bucket=config['DOWNLOADS'][DATAFLOW]['BUCKET'],
-            storage_options=None,
+        # Construction du suivi d'exécution : sans URI (ou sans MLflow installé,
+        # ou serveur injoignable), get_tracker retourne un tracker inerte et
+        # l'exécution est strictement inchangée
+        mlflow_config = config.get("MLFLOW") or {}
+        tracker = get_tracker(
+            tracking_uri=mlflow_config.get("TRACKING_URI"),
+            experiment=mlflow_config.get("EXPERIMENT", "eurostat-download"),
+            run_name=f"{DATAFLOW}-{datetime.now():%Y%m%d-%H%M}",
         )
+        log_artifacts = bool(mlflow_config.get("LOG_ARTIFACTS", True))
+
+        with tracker:
+            # Suivi requête par requête : le paquet datasets ignore tout de
+            # MLflow, le rappel est le seul point de contact
+            def stream_query_metrics(query_report: QueryReport) -> None:
+                """Send one query's diagnostics to the tracker."""
+                tracker.log_metrics(
+                    query_report.to_metrics(), step=len(streamed_queries)
+                )
+                streamed_queries.append(query_report)
+
+            streamed_queries: list[QueryReport] = []
+
+            # Téléchargement des données
+            report = download_updates(
+                client=client,
+                queries=queries,
+                connector=connector,
+                structures_path=config["DOWNLOADS"][DATAFLOW]["PATHS"]["STRUCTURES_PATH"],
+                last_download_path=config["DOWNLOADS"][DATAFLOW]["PATHS"]["LAST_DOWNLOAD_PATH"],
+                n_observations=config["DOWNLOADS"][DATAFLOW]["N_LAST_OBSERVATIONS"],
+                fresh_registry=False,
+                max_runtime=timedelta(
+                    weeks=config["DOWNLOADS"][DATAFLOW]["MAX_RUNTIME"]["WEEKS"],
+                    days=config["DOWNLOADS"][DATAFLOW]["MAX_RUNTIME"]["DAYS"],
+                    hours=config["DOWNLOADS"][DATAFLOW]["MAX_RUNTIME"]["HOURS"],
+                    minutes=config["DOWNLOADS"][DATAFLOW]["MAX_RUNTIME"]["MINUTES"],
+                    seconds=config["DOWNLOADS"][DATAFLOW]["MAX_RUNTIME"]["SECONDS"]
+                ),
+                categorical_threshold=None,  # A supprimer avec la nouvelle version de la base de données
+                bucket=config['DOWNLOADS'][DATAFLOW]['BUCKET'],
+                storage_options=None,
+                on_query_complete=stream_query_metrics,
+            )
+
+            # Métriques de run : le rapport connaît sa mise en forme
+            tracker.log_metrics(report.to_metrics())
+            tracker.set_tags(
+                {
+                    "dataflow": DATAFLOW,
+                    "stopped_early": str(report.stopped_early),
+                    "n_queries_planned": str(report.n_queries_planned),
+                }
+            )
+            # Détail par requête : table auditable de ce que le run a fait
+            if log_artifacts and report.queries:
+                tracker.log_table(report.to_frame(), "download/queries.csv")
+
+        # Logging
+        logger.info(f"Téléchargement terminé : {report.to_metrics()}")
     finally:
         client.close()
 
