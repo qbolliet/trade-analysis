@@ -7,7 +7,6 @@ ou intégré directement comme nœud Kedro via les fonctions exportées.
 # Importation des modules
 # Modules de base
 import os
-import re
 from datetime import datetime, timedelta
 import itertools
 import logging
@@ -75,25 +74,31 @@ def load_config(config_path: Optional[os.PathLike] = None) -> dict:
 def fetch_dimension_codelists(
     structure: DataflowStructure,
     dimension: str,
-    client=None,
+    client: Optional[EurostatClient] = None,
 ) -> pd.DataFrame:
-    """Fetch reporter and product codelists for a Comext dataflow.
+    """Fetch the codelist of one dimension of a Comext dataflow.
 
-    Retrieves the Data Structure Definition (DSD) of the dataflow to deduce
-    the codelist identifiers of the ``reporter`` and ``product`` dimensions,
-    then downloads and parses each codelist.
+    Deduces the codelist identifier of the requested dimension from the
+    dataflow's Data Structure Definition (DSD), then downloads and parses it.
 
     Args:
-        dataflow: Eurostat dataflow identifier (e.g. ``"DS-045409"``).
-        client: EurostatClient instance; a new one is created if ``None``.
+        structure: Resolved dataflow structure (carries the dimension →
+            codelist mapping).
+        dimension: Name of the dimension to fetch the codelist of (e.g.
+            ``"reporter"``, ``"product"``).
+        client: ``EurostatClient`` instance; a new one is created if ``None``.
 
     Returns:
-        Tuple ``(reporter_codes, product_codes)``, each a DataFrame with
-        columns ``(code, name)``.
+        DataFrame with columns ``(code, name)`` for the requested dimension.
 
     Examples:
-        >>> reporter_codes, product_codes = fetch_codelists("DS-045409")
-        >>> "FR" in reporter_codes["code"].values
+        >>> structure = client.get_dataflow_structure(
+        ...     dataflow="DS-045409",
+        ... )  # doctest: +SKIP
+        >>> reporter_codes = fetch_dimension_codelists(
+        ...     structure, "reporter",
+        ... )  # doctest: +SKIP
+        >>> "FR" in reporter_codes["code"].values  # doctest: +SKIP
         True
     """
     # Initialisation du client s'il n'est pas spécifié
@@ -133,25 +138,30 @@ def build_split_queries(
 
     Args:
         dataflow: Eurostat dataflow identifier (e.g. ``"DS-045409"``).
-        reporter_codes: DataFrame with column ``code`` for the reporter dimension.
-        product_codes: DataFrame with column ``code`` for the product dimension.
-        config_path: Path to the YAML filter configuration file
-            (e.g. ``config/datasets/eurostat.yaml``).
-        fixed_dims: Fixed dimensions shared by every query. Defaults to the
-            standard DS-045409 dimensions (freq=A, partner=*, flow=1,
-            indicators=QUANTITY_IN_100KG).
+        dims_codes: Mapping of split-dimension name to its codelist DataFrame
+            (column ``code``), as returned by :func:`fetch_dimension_codelists`.
+        fixed_dims: Dimensions shared by every query (e.g. freq=A, partner=*,
+            flow=1, indicators=QUANTITY_IN_100KG), read from the YAML
+            ``fixed_dims`` section.
+        split_filters: Per split-dimension include/exclude filters (forwarded
+            to :func:`~macroforecast.datasets.utils.filter_codes`), read from
+            the YAML ``split_filters`` section. Must share the same keys as
+            ``dims_codes``.
 
     Returns:
-        List of ``EurostatQueryRequestV30`` objects, one per (reporter, product) pair.
+        List of ``EurostatQueryRequestV30`` objects, one per combination of
+        the cartesian product of the filtered split-dimension codes.
 
     Raises:
-        AssertionError: If a filtered code is absent from the upstream codelist.
-        KeyError: If the dataflow has no entry in the YAML ``split_filters`` section.
+        ValueError: If ``split_filters`` and ``dims_codes`` do not share the
+            same keys.
 
     Examples:
         >>> queries = build_split_queries(
-        ...     "DS-045409", reporter_codes, product_codes,
-        ...     "config/datasets/eurostat.yaml"
+        ...     "DS-045409",
+        ...     dims_codes={"reporter": reporter_codes, "product": product_codes},
+        ...     fixed_dims={"freq": "A"},
+        ...     split_filters={"reporter": {}, "product": {}},
         ... )  # doctest: +SKIP
         >>> len(queries) > 0
         True
@@ -181,9 +191,7 @@ def build_split_queries(
 
 # Fonction principale de téléchargement
 def main() -> None:
-    """CLI entry point for the Comext download script.
-    """
-    
+    """CLI entry point for the Comext download script."""
     # Chargement de la configuration
     config = load_config()
     # Spécification du dataflow que l'on souhaite télécharger
@@ -219,7 +227,7 @@ def main() -> None:
             admin_user="postgres",
             admin_password=os.environ["PGPASSWORD"],
             catalog_alias=config['DOWNLOADS']['CATALOG_ALIAS'],
-            schema=_schema_name(DATAFLOW),  # re.sub(r'[^a-zA-Z0-9]', '', DATAFLOW),
+            schema=_schema_name(DATAFLOW),
             s3_endpoint=os.environ["AWS_S3_ENDPOINT"],
             s3_access_key_id=os.environ["AWS_ACCESS_KEY_ID"],
             s3_secret_access_key=os.environ["AWS_SECRET_ACCESS_KEY"],

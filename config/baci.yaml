@@ -3,6 +3,11 @@
 # Bucket S3 des fichiers CEPII (null → lecture locale)
 BUCKET: "qbollietdgddi" # null
 
+# Activation de l'étape de réallocation des zones "Areas NES" (étape 6).
+# Distinct de PARAMETERS.nes_partner_codes : une liste vide de codes NES
+# déclarés ne signifie pas "ne pas réallouer".
+APPLY_NES: true
+
 # Chemins des données (relatifs à la racine du dépôt, résolus par l'appelant)
 PATHS:
   # Variables de gravité CEPII

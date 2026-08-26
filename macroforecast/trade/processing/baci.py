@@ -193,6 +193,10 @@ class BaciConfig:
             no lower bound. See :func:`run_baci` for the filtering rationale.
         period_end: Last year (included) kept from ``df_comtrade``; ``None``
             means no upper bound.
+        apply_nes: Whether to apply the "Areas NES" reallocation step (see
+            :class:`AreaNesReallocator`). Distinct from ``nes_partner_codes``:
+            an empty ``nes_partner_codes`` means "no NES code declared", not
+            "do not reallocate".
         world_partner_code: Numeric partner code of the *World* aggregate
             (rows dropped upfront).
         nes_partner_codes: Numeric partner codes of the "Areas NES" aggregates
@@ -229,6 +233,9 @@ class BaciConfig:
     period_start: Optional[int] = None
     period_end: Optional[int] = None
     # Zones non spécifiées / agrégats
+    # Active la réallocation (étape 6) ; distinct de nes_partner_codes, qui ne
+    # fait que déclarer les codes éligibles quand la réallocation est active
+    apply_nes: bool = True
     world_partner_code: int = 0
     nes_partner_codes: Tuple[int, ...] = (899,)  # 899 = "Areas, nes"
     nes_skip_codes: Tuple[int, ...] = (490,)  # 490 = "Other Asia, nes"
@@ -835,9 +842,6 @@ def _count_importers(df_regime: pd.DataFrame, regime: Optional[str]) -> int:
 # Étape 1 — Conversion des quantités en tonnes
 # ──────────────────────────────────────────────────────────────────────
 
-# Code unité COMTRADE de la tonne (annoté 21 dans la documentation publique)
-_TONNE_UNIT_CODE = 21
-
 # Origines possibles du tonnage d'une déclaration
 _SOURCE_NETWGT, _SOURCE_FACTOR = "netwgt", "unit_factor"
 _SOURCE_RATE, _SOURCE_MISSING = "rate", "missing"
@@ -905,13 +909,19 @@ class TonnageConverter:
     def __init__(
         self,
         *,
-        tonne_conversion_factors: Optional[Mapping[int, float]] = { 8 : 1e-3 , 21 : 1 },
+        tonne_conversion_factors: Optional[Mapping[int, float]] = None,
         min_mirror_flows: int = 10,
         max_conversion_std: float = 2.5,
         prefer_netwgt: bool = True,
     ) -> None:
-        # Initialisation des attributs
-        self.tonne_conversion_factors = dict(tonne_conversion_factors)
+        # Initialisation des attributs ; repli sur BaciConfig (source unique de
+        # la table de facteurs, évite toute duplication en dur de ce paramètre
+        # méthodologique)
+        self.tonne_conversion_factors = dict(
+            tonne_conversion_factors
+            if tonne_conversion_factors is not None
+            else DEFAULT_CONFIG.tonne_conversion_factors
+        )
         self.min_mirror_flows = min_mirror_flows
         self.max_conversion_std = max_conversion_std
         self.prefer_netwgt = prefer_netwgt
@@ -1951,7 +1961,6 @@ def _reconcile_pair(
 # ──────────────────────────────────────────────────────────────────────
 # Étape 6 — Traitement des zones non spécifiées (Areas NES)
 # ──────────────────────────────────────────────────────────────────────
-# /!\ Rétablir le paramètre "apply_nes" dans la configuration
 
 
 # Diagnostics de la réallocation des zones non spécifiées
@@ -2261,7 +2270,6 @@ class BaciReport:
 
     Attributes:
         flows: Number of reconciled flows produced.
-        mean_freight_rate: Mean estimated freight rate over the mirror flows.
         regime_country_years: Number of ``(importer, year)`` pairs whose import
             valuation regime was inferred.
         regime_fob_country_years: Number of those pairs inferred FOB (imports
@@ -2282,7 +2290,8 @@ class BaciReport:
         n_input_declarations: Number of COMTRADE rows handed to the run.
         total_reconciled_value: Total reconciled value produced.
         tonnage: Diagnostics of the tonne conversion step.
-        gravity: Diagnostics of the gravity estimation.
+        gravity: Diagnostics of the gravity estimation (carries
+            ``mean_freight_rate``, the only place it is reported).
         fobisation: Diagnostics of the fobisation step.
         mirror: Diagnostics of the mirror-flow construction.
         quality_value: Diagnostics of the reporting quality estimated on values.
@@ -2291,7 +2300,6 @@ class BaciReport:
         nes: Diagnostics of the "Areas NES" reallocation.
     """
     flows: int = 0
-    mean_freight_rate: float = float("nan")
     regime_country_years: int = 0
     regime_fob_country_years: int = 0
     regime_no_information: int = 0
@@ -2330,7 +2338,7 @@ class BaciReport:
             >>> report = BaciReport(flows=12)
             >>> report.to_metrics()["baci.flows"]
             12.0
-            >>> "baci.mean_freight_rate" in report.to_metrics()
+            >>> "baci.gravity.mean_freight_rate" in report.to_metrics()
             False
         """
         return flatten_metrics(self, prefix=prefix)
@@ -2427,7 +2435,7 @@ def run_baci(
     df_geo: pd.DataFrame,
     *,
     config: BaciConfig = DEFAULT_CONFIG,
-    apply_nes: bool = True,
+    apply_nes: Optional[bool] = None,
     period_start: Optional[int] = None,
     period_end: Optional[int] = None,
     tracker: RunTracker = NULL_TRACKER,
@@ -2462,9 +2470,10 @@ def run_baci(
         df_dist: Raw ``dist_cepii`` table, already loaded.
         df_geo: Raw ``geo_cepii`` table, already loaded.
         config: Column and methodological conventions. Its own
-            ``period_start``/``period_end`` are used whenever the
+            ``period_start``/``period_end``/``apply_nes`` are used whenever the
             same-named argument below is left ``None``.
-        apply_nes: Whether to apply the "Areas NES" reallocation step.
+        apply_nes: Whether to apply the "Areas NES" reallocation step; falls
+            back to ``config.apply_nes`` when ``None``.
         period_start: First year (included) kept from ``df_comtrade``; falls
             back to ``config.period_start`` when ``None``.
         period_end: Last year (included) kept from ``df_comtrade``; falls back
@@ -2493,6 +2502,8 @@ def run_baci(
     effective_period_end = (
         period_end if period_end is not None else config.period_end
     )
+    # Idem pour l'activation de la réallocation "Areas NES"
+    effective_apply_nes = apply_nes if apply_nes is not None else config.apply_nes
 
     # Vérification de l'homogénéité de la nomenclature HS
     classification_code = _assert_homogeneous_classification(
@@ -2503,7 +2514,7 @@ def run_baci(
     tracker.log_params(
         _run_params(
             config,
-            apply_nes=apply_nes,
+            apply_nes=effective_apply_nes,
             period_start=effective_period_start,
             period_end=effective_period_end,
             classification_code=classification_code,
@@ -2594,7 +2605,7 @@ def run_baci(
 
     # Étape 6 — réallocation des zones non spécifiées (optionnelle)
     nes_report = NesReport()
-    if apply_nes:
+    if effective_apply_nes:
         reallocator = AreaNesReallocator(
             flow_col=config.schema.flow_col,
             export_code=config.schema.export_code,
@@ -2613,12 +2624,11 @@ def run_baci(
     if df_reconciled.empty:
         raise ValueError("No reconciled flow produced")
 
-    # Rapport composite : contexte de l'exécution et rapports d'étape.
-    # « mean_freight_rate » est recopié depuis GravityReport, où il est
-    # désormais calculé, pour compatibilité avec les appelants existants.
+    # Rapport composite : contexte de l'exécution et rapports d'étape. Le taux
+    # de fret moyen n'est porté que par GravityReport (report.gravity), qui le
+    # calcule ; BaciReport ne le duplique pas.
     report = BaciReport(
         flows=len(df_reconciled),
-        mean_freight_rate=gravity_model.report_.mean_freight_rate,
         regime_country_years=len(df_regime),
         regime_fob_country_years=int((df_regime["regime"] == _FOB_REGIME).sum()),
         regime_no_information=int(df_regime["cif_share"].isna().sum()),

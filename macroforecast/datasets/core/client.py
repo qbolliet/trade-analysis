@@ -72,7 +72,7 @@ class APIClient:
         max_retries: int = 3,
         backoff_factor: float = 0.5,
         headers: Optional[Dict[str, str]] = None,
-    ):
+    ) -> None:
         # Initialisation des attributs
         self.base_url = base_url.rstrip("/")
         self.timeout = timeout
@@ -182,17 +182,22 @@ class APIClient:
             raise
 
     # Méthode de fermeture de la session
-    def close(self):
+    def close(self) -> None:
         """Close the session and clean up resources."""
         self.session.close()
 
     # Constructeur d'entrée comme context manager
-    def __enter__(self):
+    def __enter__(self) -> "APIClient":
         """Context manager entry."""
         return self
 
     # Constructeur de sortie comme contexte manager
-    def __exit__(self, exc_type, exc_val, exc_tb):
+    def __exit__(
+        self,
+        exc_type: Optional[type],
+        exc_val: Optional[BaseException],
+        exc_tb: Optional[Any],
+    ) -> None:
         """Context manager exit."""
         self.close()
 
@@ -269,7 +274,7 @@ class AbstractSDMXClient(ABC):
         auto_fetch_structure: bool = True,
         rate_limiter: Optional["RateLimiter"] = None,
         auto_load_rate_limit: bool = True,
-    ):
+    ) -> None:
         # Import local pour éviter la circularité au niveau module
         from .structures import DataflowStructureRegistry as _Registry
 
@@ -959,7 +964,7 @@ class AbstractSDMXClient(ABC):
                 column names. May be ``None`` if unavailable.
             on_duplicate: Strategy — ``"ignore"`` (no check), ``"warn"``
                 (log a warning), or ``"raise"`` (raise ``ValueError``).
-            default_dimensions: Default dimensions to check duplicates on
+            default_dimensions: Default dimensions to check duplicates on.
 
         Returns:
             Number of duplicate rows found — the count was previously computed
@@ -1053,6 +1058,11 @@ class AbstractSDMXClient(ABC):
         return self
 
     # Constructeur de sortie du contexte manager
-    def __exit__(self, exc_type, exc_val, exc_tb) -> None:
+    def __exit__(
+        self,
+        exc_type: Optional[type],
+        exc_val: Optional[BaseException],
+        exc_tb: Optional[Any],
+    ) -> None:
         """Context manager exit."""
         self.close()

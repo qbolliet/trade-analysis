@@ -54,7 +54,7 @@ class RateLimiter:
         max_requests: int,
         time_unit: TimeUnit,
         time_count: int = 1,
-    ):
+    ) -> None:
         """Initialize rate limiter.
 
         Args:
@@ -145,8 +145,8 @@ class RateLimiter:
     def _clean_old_requests(self) -> None:
         """Remove requests older than the time window.
 
-        Deletes all query records, allowing
-        you to restart with an empty counter.
+        Discards the timestamps that have fallen outside the sliding window,
+        keeping only those still counting toward the limit.
         """
         # Extraction du temps présent
         current_time = time.time()
@@ -216,8 +216,8 @@ class RateLimiter:
     def reset(self) -> None:
         """Reset the rate limiter state.
 
-        Deletes all query records, allowing
-        you to restart with an empty counter.
+        Clears every recorded request timestamp, restarting from an empty
+        counter.
 
         Example:
             >>> limiter = RateLimiter(max_requests=10, time_unit="seconds", time_count=1)
@@ -311,7 +311,7 @@ class CompositeRateLimiter:
     """
 
     # Initialisation
-    def __init__(self, limiters: List[RateLimiter]):
+    def __init__(self, limiters: List[RateLimiter]) -> None:
         """Initialize the composite rate limiter.
 
         Args:

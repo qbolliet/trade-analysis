@@ -28,6 +28,7 @@ import math
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 # Module de manipulation de données
 import narwhals as nw
+import pandas as pd
 # Modules du package
 from ...tracking import RunTracker, flatten_metrics
 from .base import (
@@ -1122,7 +1123,7 @@ def _json_number(value: Any) -> Optional[float]:
 
 
 # Fonction auxiliaire : troncature d'un artefact tabulaire
-def _bounded_table(frame: nw.DataFrame, max_rows: int, artifact: str):
+def _bounded_table(frame: nw.DataFrame, max_rows: int, artifact: str) -> pd.DataFrame:
     """Materialise a bounded table for artifact logging.
 
     Converting to pandas is unavoidable here — ``RunTracker.log_table`` takes a

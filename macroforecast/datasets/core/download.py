@@ -366,7 +366,7 @@ class SDMXDownloader:
         bucket: Optional[str] = None,
         storage_options: Optional[Dict[str, Any]] = None,
         on_query_complete: Optional[Callable[[QueryReport], None]] = None,
-    ):
+    ) -> None:
         # Dépendances injectées
         self._client = client
         self._connector = connector
@@ -756,7 +756,7 @@ class SDMXDownloader:
         epoch = datetime.min.replace(tzinfo=timezone.utc)
 
         # Fonction de tri
-        def sort_key(query: Any):
+        def sort_key(query: Any) -> tuple[int, datetime]:
             entry = self._registry.get(query.identity_key())
             last = _parse_iso(entry.get("last_download")) if entry else None
             # Jamais téléchargée (rang 0) avant déjà téléchargée (rang 1, plus ancienne d'abord)

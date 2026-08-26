@@ -103,7 +103,7 @@ class Saver(S3Saver):
             # Connection au S3 si nécessaire
             if not hasattr(self, "s3"):
                 self.connect(**s3_kwargs)
-            # Utilise la méthode de sauvegarde sur S3 du parent
+            # Utilisation de la méthode de sauvegarde sur S3 du parent
             super().save(bucket=bucket, key=filepath, obj=obj, **kwargs)
         # Cas de la sauvegarde en local
         else:

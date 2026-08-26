@@ -23,7 +23,6 @@ ordonnancé (Argo, cron) ou intégré comme nœud Kedro via la fonction exporté
 # Modules de base
 import logging
 import os
-import re
 from dataclasses import fields, replace
 from typing import Dict, Optional, Sequence
 import yaml
@@ -69,7 +68,7 @@ def load_comtrade_config(config_path: Optional[os.PathLike] = None) -> dict:
 
     Args:
         config_path: Path to config file. If None, uses default location or
-            the BACI_CONFIG_PATH environment variable.
+            the COMTRADE_CONFIG_PATH environment variable.
 
     Returns:
         dict: Configuration dictionary.
@@ -298,7 +297,7 @@ def main() -> None:
 
     Reads every parameter from the YAML configuration (``BACI_CONFIG_PATH`` or
     the default ``config/baci.yaml``); the "Areas NES" reallocation step can be
-    disabled by setting ``apply_nes: false`` at the root of that file.
+    disabled by setting ``APPLY_NES: false`` at the root of that file.
     """
     # Chargement des configurations (chemins, identifiants et paramètres méthodologiques)
     comtrade_config = load_comtrade_config()
@@ -306,14 +305,15 @@ def main() -> None:
 
     # Construction des parmaètres de modélisation
     baci_parameters_config = baci_config_from_params(baci_config.get("PARAMETERS"))
+    # Activation de l'étape de réallocation des zones "Areas NES" (clé racine,
+    # distincte de PARAMETERS.nes_partner_codes qui ne fait que déclarer les
+    # codes éligibles)
+    baci_parameters_config = replace(
+        baci_parameters_config, apply_nes=bool(baci_config.get("APPLY_NES", True))
+    )
 
     # Spécification du dataflow téléchargé auquel on souhaite appliquer la méthodologie BACI
     DATAFLOW = "C_A_HS"
-
-    # paths = config["paths"]
-    # bucket = config["BUCKET"]
-    # # Activation de l'étape de réallocation des zones "Areas NES"
-    # apply_nes = config.get("apply_nes", True)
 
     # Lecture des fichiers Excel CEPII
     excel_loader = Loader()
@@ -349,7 +349,7 @@ def main() -> None:
         # Lecture de la table de faits COMTRADE (schéma source du même catalogue)
         df_comtrade = _read_comtrade_fact_table(
             conn=conn,
-            source_schema=_schema_name(DATAFLOW),  # re.sub(r"[^a-zA-Z0-9]", "", DATAFLOW),
+            source_schema=_schema_name(DATAFLOW),
             columns=required_columns(baci_parameters_config)
         )
 
@@ -359,7 +359,6 @@ def main() -> None:
             df_dist=df_dist,
             df_geo=df_geo,
             config=baci_parameters_config,
-            apply_nes=(len(baci_config['PARAMETERS']["nes_partner_codes"]) > 0)
         )
 
         # Exportation des données pour test

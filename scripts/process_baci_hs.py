@@ -101,7 +101,7 @@ def load_comtrade_config(config_path: Optional[os.PathLike] = None) -> dict:
 
     Args:
         config_path: Path to config file. If None, uses default location or
-            the BACI_CONFIG_PATH environment variable.
+            the COMTRADE_CONFIG_PATH environment variable.
 
     Returns:
         dict: Configuration dictionary.
@@ -512,6 +512,10 @@ def main() -> None:
     failure on one vintage is logged and does not prevent the others from
     running, but the script exits with an error once every target has been
     attempted if at least one failed.
+
+    Raises:
+        RuntimeError: If at least one vintage failed, once every vintage has
+            been attempted.
     """
     # Chargement des configurations (chemins, identifiants et paramètres méthodologiques)
     comtrade_config = load_comtrade_config()
@@ -519,6 +523,12 @@ def main() -> None:
 
     # Construction des paramètres de modélisation
     baci_parameters_config = baci_config_from_params(baci_config.get("PARAMETERS"))
+    # Activation de l'étape de réallocation des zones "Areas NES" (clé racine,
+    # distincte de PARAMETERS.nes_partner_codes qui ne fait que déclarer les
+    # codes éligibles)
+    baci_parameters_config = replace(
+        baci_parameters_config, apply_nes=bool(baci_config.get("APPLY_NES", True))
+    )
     schema = baci_parameters_config.schema
 
     # Configuration du suivi d'exécution : sans URI (ou sans MLflow installé,
@@ -606,11 +616,6 @@ def main() -> None:
         finally:
             client.close()
 
-        # « Areas NES » : même dérivation que process_baci.py aujourd'hui
-        # (chantier H, non traité ici : à corriger globalement quand
-        # apply_nes deviendra un champ explicite de BaciConfig)
-        apply_nes = len(baci_config["PARAMETERS"]["nes_partner_codes"]) > 0
-
         # Passe 2 : harmonisation puis redressement BACI, par millésime cible.
         # L'échec d'un millésime n'interrompt pas les autres.
         reports: Dict[str, BaciReport] = {}
@@ -644,7 +649,6 @@ def main() -> None:
                         df_dist=df_dist,
                         df_geo=df_geo,
                         config=baci_parameters_config,
-                        apply_nes=apply_nes,
                         tracker=tracker,
                         log_artifacts=log_artifacts,
                     )
