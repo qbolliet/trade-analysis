@@ -58,7 +58,6 @@ Notes:
 from __future__ import annotations
 # Modules de base
 from dataclasses import dataclass, field
-from importlib import metadata
 import logging
 import math
 from typing import Dict, List, Literal, Mapping, Optional, Sequence, Tuple
@@ -70,7 +69,7 @@ import statsmodels.api as sm
 from statsmodels.stats.outliers_influence import OLSInfluence
 from linearmodels.iv import AbsorbingLS
 # Modules du package
-from ...tracking import NULL_TRACKER, RunTracker, flatten_metrics, flatten_params
+from ...tracking import NULL_TRACKER, RunTracker, flatten_metrics, run_params
 from .aggregation import aggregate_measures
 
 # Initialisation du logger
@@ -2512,13 +2511,15 @@ def run_baci(
 
     # Paramètres de l'exécution : configuration aplatie et contexte
     tracker.log_params(
-        _run_params(
+        run_params(
             config,
-            apply_nes=effective_apply_nes,
-            period_start=effective_period_start,
-            period_end=effective_period_end,
-            classification_code=classification_code,
-            n_input_declarations=len(df_comtrade),
+            {
+                "apply_nes": effective_apply_nes,
+                "period_start": effective_period_start,
+                "period_end": effective_period_end,
+                "classification_code": classification_code,
+                "n_input_declarations": len(df_comtrade),
+            },
         )
     )
 
@@ -2663,61 +2664,6 @@ def run_baci(
 # ──────────────────────────────────────────────────────────────────────
 # Alimentation du suivi d'exécution
 # ──────────────────────────────────────────────────────────────────────
-
-# Fonction auxiliaire : paramètres d'une exécution
-def _run_params(
-    config: BaciConfig,
-    *,
-    apply_nes: bool,
-    period_start: Optional[int],
-    period_end: Optional[int],
-    classification_code: Optional[str],
-    n_input_declarations: int,
-) -> Dict[str, str]:
-    """Assemble the parameters describing a BACI run.
-
-    Args:
-        config: Column and methodological conventions of the run.
-        apply_nes: Whether the "Areas NES" reallocation was requested.
-        period_start: Effective first year of the run.
-        period_end: Effective last year of the run.
-        classification_code: HS classification vintage of the run.
-        n_input_declarations: Number of COMTRADE rows handed to the run.
-
-    Returns:
-        Flat mapping of dotted parameter names to their string representation.
-
-    Examples:
-        >>> params = _run_params(
-        ...     DEFAULT_CONFIG, apply_nes=True, period_start=None,
-        ...     period_end=None, classification_code="H5", n_input_declarations=7,
-        ... )
-        >>> params["apply_nes"], params["classification_code"]
-        ('True', 'H5')
-    """
-    # Version du paquet : absente d'une arborescence non installée
-    try:
-        version = metadata.version("macroforecast")
-    except Exception:  # pragma: no cover - dépend de l'installation
-        version = "unknown"
-
-    # Initialisation des parmaètres depuis la config
-    params = flatten_params(config, prefix="config")
-    # Mise à jour avec les arguments
-    params.update(
-        flatten_params(
-            {
-                "apply_nes": apply_nes,
-                "period_start": period_start,
-                "period_end": period_end,
-                "classification_code": classification_code,
-                "n_input_declarations": n_input_declarations,
-                "macroforecast_version": version,
-            }
-        )
-    )
-    return params
-
 
 # Fonction auxiliaire : artefacts d'une exécution
 def _log_artifacts(

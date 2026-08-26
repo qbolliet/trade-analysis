@@ -36,7 +36,6 @@ from .runner import (
     compute_vulnerabilities,
     read_previous_result,
     run_vulnerabilities,
-    run_vulnerabilities_incremental,
 )
 
 # Réexport des éléments d'intérêt du sous-module
@@ -71,5 +70,4 @@ __all__ = [
     "compute_vulnerabilities",
     "read_previous_result",
     "run_vulnerabilities",
-    "run_vulnerabilities_incremental",
 ]

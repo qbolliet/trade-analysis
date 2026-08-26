@@ -28,7 +28,6 @@ from .vulnerabilities import (
     compute_vulnerabilities,
     read_previous_result,
     run_vulnerabilities,
-    run_vulnerabilities_incremental,
 )
 # Processing (redressement BACI) — idem pour son propre DEFAULT_CONFIG
 from .processing import (
@@ -91,7 +90,6 @@ __all__ = [
     "compute_vulnerabilities",
     "read_previous_result",
     "run_vulnerabilities",
-    "run_vulnerabilities_incremental",
     # Processing (redressement BACI)
     "ComtradeSchema",
     "BaciConfig",

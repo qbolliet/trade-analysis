@@ -11,8 +11,10 @@ Une date de dernier calcul est tenue par couple dans un registre JSON dédié au
 calcul des vulnérabilités (même principe que le registre de téléchargement,
 — cf. `vulnerabilities.yaml`).
 
-Source et résultat vivent dans deux schémas du même catalogue Postgres
-(`DuckLakeConnector.from_postgres`, cf. `run_vulnerabilities_incremental`).
+Source et résultat sont adressés par deux connecteurs DuckLake distincts, dont
+les connexions sont ouvertes ici et passées à `run_vulnerabilities` : le runner
+ne suppose rien du backend de catalogue et ne gère pas le cycle de vie des
+connexions.
 
 Prévu comme étape Argo s'exécutant après le téléchargement (dépendance directe,
 mais couplage faible : ce script ne lit que le registre JSON produit par le
@@ -28,32 +30,27 @@ faite ici — jamais par le module de calcul.
 from __future__ import annotations
 # Modules de base
 from dataclasses import fields, replace
-from importlib import metadata
 from datetime import datetime
 import logging
 import os
-import re
-import tempfile
 from pathlib import Path
 from typing import Any, Dict, Optional, Set, Tuple
 import yaml
 
-from botocore.exceptions import ClientError
-
-# Module de chargement/sauvegarde JSON (local ou S3), même brique que le téléchargement
-from macroforecast.storage import Loader, Saver
+# Modules de chargement/sauvegarde JSON (local ou S3), même brique que le téléchargement
+from macroforecast.storage import Loader, Saver, read_json, write_json
 # Module de connexion à la base de données
 from macroforecast.storage2 import DuckLakeConnector
 # Module d'utilitaires de téléchargement
 from macroforecast.datasets.core.download import _now, _parse_iso, _schema_name
 
 # Module de suivi d'exécution (MLflow optionnel, objet nul par défaut)
-from macroforecast.tracking import flatten_params, get_tracker
+from macroforecast.tracking import get_tracker
 # Module de calcul des indicateurs
 from macroforecast.trade.vulnerabilities import DEFAULT_CONFIG, VulnerabilityConfig
 from macroforecast.trade.vulnerabilities.runner import (
     read_previous_result,
-    run_vulnerabilities_incremental,
+    run_vulnerabilities,
 )
 
 # Configuration de logging
@@ -159,78 +156,6 @@ def vulnerability_config_from_params(params: Optional[Dict]) -> VulnerabilityCon
 
 
 # ──────────────────────────────────────────────────────────────────────
-# Accès aux registres JSON (local ou S3) — même pattern que SDMXDownloader
-# ──────────────────────────────────────────────────────────────────────
-
-# Fonction de lecture d'un registre JSON (local ou S3)
-# /!\ Voir si cela ne pourrait pas être mutualisé avec la méthode "_read_json" de SDMXDownloader dans macroforecast/datasets/core/download.py
-def _read_json(
-    path: Path,
-    loader: Loader,
-    bucket: Optional[str],
-) -> Optional[Dict[str, Any]]:
-    """Read a JSON registry from local storage or S3.
-
-    Mirrors ``SDMXDownloader._read_json`` : a missing file/object returns
-    ``None`` rather than raising.
-
-    Args:
-        path: Registry path (local path or S3 key).
-        loader: ``Loader`` instance.
-        bucket: S3 bucket, or ``None`` to read a local path.
-
-    Returns:
-        The deserialised JSON mapping, or ``None`` if absent.
-    """
-    # Cas S3 : l'absence d'objet se détecte via l'exception du client
-    if bucket is not None:
-        try:
-            return loader.load(path.as_posix(), bucket=bucket)
-        except ClientError:
-            return None
-    # Cas local : court-circuit si le fichier n'existe pas encore
-    if not path.exists():
-        return None
-    return loader.load(str(path))
-
-
-# Fonction d'écriture d'un registre JSON (local ou S3), atomique en local
-# /!\ Voir si cela ne pourrait pas être mutualisé avec la méthode "_read_json" de SDMXDownloader dans macroforecast/datasets/core/download.py
-def _write_json(
-    path: Path,
-    obj: Any,
-    saver: Saver,
-    bucket: Optional[str],
-) -> None:
-    """Write a JSON registry to local storage or S3, atomically when local.
-
-    Mirrors ``SDMXDownloader._write_json``.
-
-    Args:
-        path: Registry path (local path or S3 key).
-        obj: JSON-serialisable object to persist.
-        saver: ``Saver`` instance.
-        bucket: S3 bucket, or ``None`` to write a local path.
-    """
-    # Cas S3 : écriture directe (PUT d'objet atomique)
-    if bucket is not None:
-        saver.save(path.as_posix(), obj, bucket=bucket, indent=2, ensure_ascii=False)
-        return
-
-    # Cas local : écriture atomique via fichier temporaire + remplacement
-    path.parent.mkdir(parents=True, exist_ok=True)
-    fd, tmp_name = tempfile.mkstemp(dir=str(path.parent), suffix=".json")
-    os.close(fd)
-    try:
-        saver.save(tmp_name, obj, indent=2, ensure_ascii=False)
-        os.replace(tmp_name, str(path))
-    except Exception:
-        if os.path.exists(tmp_name):
-            os.remove(tmp_name)
-        raise
-
-
-# ──────────────────────────────────────────────────────────────────────
 # Registre de téléchargement (lecture seule) : dates par reporter x produit
 # ──────────────────────────────────────────────────────────────────────
 
@@ -252,7 +177,7 @@ def load_last_download_dates(
         Mapping ``(reporter, product) -> last_download`` (UTC-aware datetime).
     """
     # Lecture du registre (racine "DOWNLOADS", cf. _REGISTRY_ROOT de download.py)
-    data = _read_json(last_download_path, loader, bucket) or {}
+    data = read_json(last_download_path, loader, bucket) or {}
     registry = data.get("DOWNLOADS", {})
 
     # Extraction du couple et de la date par entrée
@@ -295,7 +220,7 @@ def load_last_computation_dates(
         Mapping ``(reporter, product) -> last_computed`` (UTC-aware datetime).
     """
     # Importation des données
-    data = _read_json(last_computation_path, loader, bucket) or {}
+    data = read_json(last_computation_path, loader, bucket) or {}
     # Extraction du registre
     registry = data.get(_REGISTRY_ROOT, {})
     # Initialisation du dictionnaire associant au tuple reporter X produit la date du dernier calcul de vulnérabilité
@@ -332,7 +257,7 @@ def save_last_computation_dates(
         bucket: S3 bucket holding the registry, or ``None`` for a local path.
     """
     # Fusion avec le registre existant : seules les entrées recalculées bougent
-    data = _read_json(last_computation_path, loader, bucket) or {}
+    data = read_json(last_computation_path, loader, bucket) or {}
     registry = data.get(_REGISTRY_ROOT, {})
 
     # Mise à jour des dates
@@ -344,7 +269,7 @@ def save_last_computation_dates(
         }
 
     # Ecriture du fichier json mis à jour
-    _write_json(last_computation_path, {_REGISTRY_ROOT: registry}, saver, bucket)
+    write_json(last_computation_path, {_REGISTRY_ROOT: registry}, saver, bucket)
     # Logging
     logger.info(
         f"{len(dates)} date(s) de calcul mise(s) à jour dans '{last_computation_path}'"
@@ -377,55 +302,6 @@ def pairs_to_recompute(
         for pair, downloaded_at in last_download.items()
         if pair not in last_computed or last_computed[pair] < downloaded_at
     }
-
-
-# ──────────────────────────────────────────────────────────────────────
-# Alimentation du suivi d'exécution
-# ──────────────────────────────────────────────────────────────────────
-
-# Fonction auxiliaire : paramètres d'une exécution
-# /!\ Voir si cette logique ne pourrait pas être rapprochée de celle à la fin de baci.py ?
-def _run_params(
-    config: VulnerabilityConfig,
-    *,
-    dataflow: str,
-    source_schema: str,
-    result_schema: str,
-    n_pairs: int,
-) -> Dict[str, str]:
-    """Assemble the parameters describing a vulnerability run.
-
-    Args:
-        config: Column, threshold and artifact conventions of the run.
-        dataflow: Source dataflow identifier.
-        source_schema: Schema holding the source fact table.
-        result_schema: Schema receiving the scores.
-        n_pairs: Number of reporter x product pairs recomputed.
-
-    Returns:
-        Flat mapping of dotted parameter names to their string representation.
-    """
-    # Version du paquet : absente d'une arborescence non installée
-    try:
-        version = metadata.version("macroforecast")
-    except Exception:  # pragma: no cover - dépend de l'installation
-        version = "unknown"
-
-    # Configuration méthodologique aplatie
-    params = flatten_params(config, prefix="config")
-    # Contexte de l'exécution
-    params.update(
-        flatten_params(
-            {
-                "dataflow": dataflow,
-                "source_schema": source_schema,
-                "result_schema": result_schema,
-                "n_reporter_product_pairs": n_pairs,
-                "macroforecast_version": version,
-            }
-        )
-    )
-    return params
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -540,54 +416,59 @@ def main() -> None:
         vulnerability_config["VULNERABILITIES"][DATAFLOW]["RESULT_SCHEMA"]
     )
 
-    with tracker:
-        # Paramètres de l'exécution : configuration aplatie et contexte
-        tracker.log_params(
-            _run_params(
-                vulnerability_parameters,
-                dataflow=DATAFLOW,
-                source_schema=_schema_name(DATAFLOW),
-                result_schema=result_schema,
-                n_pairs=len(reporters_products),
-            )
-        )
+    # Ouverture des connexions : leur cycle de vie appartient au script, le
+    # runner ne les ouvre ni ne les ferme (cf. `run_vulnerabilities`)
+    source_conn = source_connector.connect()
+    try:
+        result_conn = result_connector.connect()
+        try:
+            with tracker:
+                # Résultat de l'exécution précédente : la lecture appartient au
+                # script (principe P4), et son absence désactive simplement la
+                # mesure de dérive
+                df_previous = (
+                    read_previous_result(
+                        result_conn,
+                        result_connector.catalog_alias,
+                        result_schema,
+                        reporters_products=sorted(reporters_products),
+                        config=vulnerability_parameters,
+                    )
+                    if measure_drift
+                    else None
+                )
 
-        # Résultat de l'exécution précédente : la lecture appartient au script
-        # (principe P4), et son absence désactive simplement la mesure de dérive
-        df_previous = (
-            read_previous_result(
-                result_connector,
-                result_schema,
-                reporters_products=sorted(reporters_products),
-                config=vulnerability_parameters,
-            )
-            if measure_drift
-            else None
-        )
+                # Calcul incrémental et upsert dans le schéma résultat
+                report = run_vulnerabilities(
+                    source_conn,
+                    source_catalog_alias=source_connector.catalog_alias,
+                    source_schema=_schema_name(DATAFLOW),
+                    result_schema=result_schema,
+                    result_conn=result_conn,
+                    result_catalog_alias=result_connector.catalog_alias,
+                    reporters_products=reporters_products,
+                    config=vulnerability_parameters,
+                    tracker=tracker,
+                    log_artifacts=log_artifacts,
+                    df_previous=df_previous,
+                )
 
-        # Calcul incrémental et upsert dans le schéma résultat
-        report = run_vulnerabilities_incremental(
-            connector=source_connector,
-            reporters_products=reporters_products,
-            result_connector=result_connector,
-            source_schema=_schema_name(DATAFLOW),
-            result_schema=result_schema,
-            config=vulnerability_parameters,
-            tracker=tracker,
-            log_artifacts=log_artifacts,
-            df_previous=df_previous,
-        )
-
-        # Envoi des métriques : le rapport connaît sa mise en forme
-        tracker.log_metrics(report.to_metrics())
-        tracker.set_tags(
-            {
-                "dataflow": DATAFLOW,
-                "result_schema": result_schema,
-                "created": str(report.created),
-                "n_pairs": str(len(reporters_products)),
-            }
-        )
+                # Envoi des métriques : le rapport connaît sa mise en forme.
+                # Les paramètres sont journalisés par le runner lui-même ; seuls
+                # les tags propres au script restent ici.
+                tracker.log_metrics(report.to_metrics())
+                tracker.set_tags(
+                    {
+                        "dataflow": DATAFLOW,
+                        "result_schema": result_schema,
+                        "created": str(report.created),
+                        "n_pairs": str(len(reporters_products)),
+                    }
+                )
+        finally:
+            result_conn.close()
+    finally:
+        source_conn.close()
 
     # Logging
     logger.info(f"Vulnerability computation complete : {report}")

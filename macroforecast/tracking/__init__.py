@@ -6,6 +6,7 @@ from .base import (
     NULL_TRACKER,
     flatten_metrics,
     flatten_params,
+    run_params,
 )
 # Implémentation MLflow (import de mlflow paresseux)
 from .mlflow import (
@@ -21,6 +22,7 @@ __all__ = [
     "NULL_TRACKER",
     "flatten_metrics",
     "flatten_params",
+    "run_params",
     # Implémentation MLflow
     "MlflowTracker",
     "get_tracker",

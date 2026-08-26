@@ -23,21 +23,17 @@ from enum import Enum
 import logging
 import os
 from pathlib import Path
-import tempfile
 from typing import Any, Callable, Dict, Iterable, List, Optional, Union
 
-from botocore.exceptions import ClientError
 import duckdb
 import pandas as pd
 
 # Importation des modules de connexion
-from macroforecast.storage import Loader, Saver
+from macroforecast.storage import Loader, Saver, read_json, write_json
+# Helper DuckLake partagé (création puis upsert de la table de faits)
+from macroforecast.storage2.tables import write_dataframe
 
-from dt_ducklake_manager import (
-    DatabaseUpdater,
-    DuckLakeConnector,
-    DuckLakeTablesBuilder,
-)
+from dt_ducklake_manager import DuckLakeConnector
 
 from .client import AbstractSDMXClient
 from .reports import DownloadReport, HttpStats, QueryReport, RateLimitStats
@@ -46,8 +42,6 @@ from .structures import DataflowStructure, DataflowStructureRegistry
 # Initialisation du logger
 logger = logging.getLogger(__name__)
 
-# Nom de la table de faits DuckLake (convention dt_ducklake_manager)
-_FACT_TABLE = "fact_table"
 # Nom de la dimension temporelle SDMX (incluse dans la clé primaire)
 _TIME_COLUMN = "TIME_PERIOD"
 # Clé racine du registre JSON des dates de dernier téléchargement
@@ -400,7 +394,7 @@ class SDMXDownloader:
         # Registre des structures, injecté dans le client pour mutualiser le cache
         self._structure_registry = DataflowStructureRegistry()
         if not fresh_registry:
-            structures_data = self._read_json(self._structures_path)
+            structures_data = read_json(self._structures_path, self._loader, self._bucket)
             if structures_data:
                 self._structure_registry.load_from_dict(structures_data)
         self._client.structure_registry = self._structure_registry
@@ -495,9 +489,11 @@ class SDMXDownloader:
             # Export du registre des structures si une structure a été ajoutée
             if set(self._structure_registry.list_structures()) != initial_structure_keys:
                 # Export (routé vers le local ou S3 selon ``bucket``)
-                self._write_json(
+                write_json(
                     self._structures_path,
                     self._structure_registry.to_dict(),
+                    self._saver,
+                    self._bucket,
                 )
                 # Logging
                 logger.info(f"Structure registry exported to {self._structures_path}")
@@ -613,8 +609,9 @@ class SDMXDownloader:
     ) -> bool:
         """Create or update the dataflow's DuckLake table with a DataFrame.
 
-        Builds the schema on first encounter (``DuckLakeTablesBuilder``) or
-        upserts by primary key on subsequent runs (``DatabaseUpdater``).
+        Resolves the primary keys from the dataflow structure, then delegates the
+        create-then-upsert logic to the shared
+        :func:`macroforecast.storage2.write_dataframe`.
 
         Args:
             conn: Open DuckLake connection.
@@ -639,69 +636,16 @@ class SDMXDownloader:
                 f"Columns: {list(df.columns)}"
             )
 
-        # Distinction création / mise à jour selon l'existence de la fact table
-        if self._fact_table_exists(conn, schema):
-            # Mise à jour incrémentale (upsert par clé primaire lue des métadonnées)
-            updater = DatabaseUpdater(
-                connection=conn,
-                categorical_threshold=self._categorical_threshold,
-                ducklake_catalog_alias=self._catalog_alias,
-                schema=schema,
-            )
-            success = updater.update_database(
-                df,
-                use_transaction=True,
-                compact_after_update=True,
-            )
-            # Erreur
-            if not success:
-                raise ValueError(
-                    f"DatabaseUpdater reported failure for '{dataflow}'"
-                )
-            # Logging
-            logger.info(
-                f"{dataflow}: updated {len(df)} rows in schema '{schema}'"
-            )
-            return False
-        else:
-            # Première rencontre : construction du schéma (métadonnées + fact table)
-            builder = DuckLakeTablesBuilder(
-                df,
-                categorical_threshold=self._categorical_threshold,
-                primary_keys=primary_keys,
-                connection=conn,
-                schema=schema,
-            )
-            builder.build_schema()
-            # Logging
-            logger.info(
-                f"{dataflow}: created schema '{schema}' with {len(df)} rows "
-                f"(primary keys: {primary_keys})"
-            )
-            return True
-
-    # Méthode de détection de l'existence de la fact table d'un schéma
-    def _fact_table_exists(
-        self,
-        conn: duckdb.DuckDBPyConnection,
-        schema: str,
-    ) -> bool:
-        """Return whether the fact table already exists in a schema.
-
-        Args:
-            conn: Open DuckLake connection.
-            schema: Target DuckLake schema.
-
-        Returns:
-            ``True`` if ``{schema}.fact_table`` exists in the catalog.
-        """
-        # Introspection des tables du catalogue attaché
-        row = conn.execute(
-            "SELECT count(*) FROM duckdb_tables() "
-            "WHERE database_name = ? AND schema_name = ? AND table_name = ?",
-            [self._catalog_alias, schema, _FACT_TABLE],
-        ).fetchone()
-        return bool(row and row[0] > 0)
+        # Création du schéma à la première rencontre, upsert par clé primaire ensuite
+        return write_dataframe(
+            conn,
+            df,
+            primary_keys,
+            catalog_alias=self._catalog_alias,
+            schema=schema,
+            categorical_threshold=self._categorical_threshold,
+            label=dataflow,
+        )
 
     # Méthode de publication du diagnostic d'une requête
     def _notify(self, query_report: QueryReport) -> None:
@@ -778,7 +722,7 @@ class SDMXDownloader:
     def _load_registry(self) -> None:
         """Load the last-download registry from the JSON file (empty if absent)."""
         # Lecture du registre JSON existant (None si absent)
-        data = self._read_json(self._last_download_path) or {}
+        data = read_json(self._last_download_path, self._loader, self._bucket) or {}
         self._registry = data.get(_REGISTRY_ROOT, {})
         # Logging
         logger.info(
@@ -789,87 +733,12 @@ class SDMXDownloader:
     # Méthode de sauvegarde du registre des dates
     def _save_registry(self) -> None:
         """Persist the last-download registry through the configured storage."""
-        self._write_json(
+        write_json(
             self._last_download_path,
             {_REGISTRY_ROOT: self._registry},
+            self._saver,
+            self._bucket,
         )
-
-    # ──────────────────────────────────────────────────────────────────
-    # Accès au stockage des registres JSON (local ou S3)
-    # ──────────────────────────────────────────────────────────────────
-
-    # Méthode de lecture d'un registre JSON (local ou S3)
-    def _read_json(self, path: Path) -> Optional[Dict[str, Any]]:
-        """Read a JSON registry from local storage or S3.
-
-        Routing is driven by ``self._bucket``: when set, ``path`` is used as the
-        S3 object key (POSIX form); otherwise it is a local filesystem path. A
-        missing file/object is treated as "no registry yet" and returns
-        ``None`` rather than raising.
-
-        Args:
-            path: Registry path (local path or S3 key).
-
-        Returns:
-            The deserialised JSON mapping, or ``None`` when the registry does
-            not exist yet.
-        """
-        # Cas S3 : l'absence d'objet se détecte via l'exception du client
-        if self._bucket is not None:
-            try:
-                return self._loader.load(path.as_posix(), bucket=self._bucket)
-            except ClientError:
-                # Objet inexistant (NoSuchKey/404) → registre vide
-                return None
-        # Cas local : court-circuit si le fichier n'existe pas encore
-        if not path.exists():
-            return None
-        return self._loader.load(str(path))
-
-    # Méthode d'écriture d'un registre JSON (local ou S3)
-    def _write_json(self, path: Path, obj: Any) -> None:
-        """Write a JSON registry to local storage or S3.
-
-        On S3 the object PUT is atomic, so the payload is written directly. On
-        the local filesystem the write is made atomic by writing to a temporary
-        file in the destination directory and renaming it over the target, so a
-        crash never leaves a half-written registry.
-
-        Args:
-            path: Registry path (local path or S3 key).
-            obj: JSON-serialisable object to persist.
-        """
-        # Cas S3 : écriture directe (PUT d'objet atomique)
-        if self._bucket is not None:
-            self._saver.save(
-                path.as_posix(),
-                obj,
-                bucket=self._bucket,
-                indent=2,
-                ensure_ascii=False,
-            )
-            return
-
-        # Cas local : écriture atomique via fichier temporaire + remplacement
-        # Création du dossier parent si nécessaire
-        path.parent.mkdir(parents=True, exist_ok=True)
-        # L'extension .json est nécessaire pour que Saver reconnaisse le format.
-        fd, tmp_name = tempfile.mkstemp(dir=str(path.parent), suffix=".json")
-        # Fermeture immédiate du descripteur : Saver ouvre le fichier lui-même
-        os.close(fd)
-        try:
-            self._saver.save(
-                tmp_name,
-                obj,
-                indent=2,
-                ensure_ascii=False,
-            )
-            os.replace(tmp_name, str(path))
-        except Exception:
-            # Nettoyage du fichier temporaire en cas d'échec
-            if os.path.exists(tmp_name):
-                os.remove(tmp_name)
-            raise
 
 
 # ──────────────────────────────────────────────────────────────────────

@@ -31,13 +31,9 @@ import yaml
 import duckdb
 import pandas as pd
 
-# Module de gestion de la connexion à la base de données
-from dt_ducklake_manager import (
-    DatabaseUpdater,
-    DuckLakeTablesBuilder,
-)
-# Module de chargement de données
+# Modules de chargement de données et helpers DuckLake partagés
 from macroforecast.storage2 import Loader
+from macroforecast.storage2.tables import FACT_TABLE as _FACT_TABLE
 from macroforecast.datasets.core.download import _schema_name
 
 # Module d'implémentation du traitement BACI
@@ -54,9 +50,6 @@ logging.basicConfig(
 )
 # Initialisation du logger
 logger = logging.getLogger(__name__)
-
-# Nom de la table de faits DuckLake (convention dt_ducklake_manager)
-_FACT_TABLE = "fact_table"
 
 # Clé YAML portant les conventions de schéma des sources (sous-section de PARAMETERS)
 _SCHEMA_KEY = "SCHEMA"
@@ -130,91 +123,6 @@ def _read_comtrade_fact_table(
         f"SELECT {col_list} FROM {source_schema}.{_FACT_TABLE}"
     ).df()
 
-
-# Fonction de vérification de l'existence de la table de faits résultat
-def _fact_table_exists(
-    conn: duckdb.DuckDBPyConnection, catalog_alias: str, schema: str
-) -> bool:
-    """Return whether ``{schema}.fact_table`` exists in the attached catalog.
-
-    Args:
-        conn: Open DuckLake connection.
-        catalog_alias: Alias of the attached catalog.
-        schema: Target schema.
-
-    Returns:
-        ``True`` if the fact table already exists.
-    """
-    row = conn.execute(
-        "SELECT count(*) FROM duckdb_tables() "
-        "WHERE database_name = ? AND schema_name = ? AND table_name = ?",
-        [catalog_alias, schema, _FACT_TABLE],
-    ).fetchone()
-    return bool(row and row[0] > 0)
-
-
-# Fonction de création/mise à jour de la table de faits résultat
-def _write_result(
-    conn: duckdb.DuckDBPyConnection,
-    catalog_alias: str,
-    df_result: pd.DataFrame,
-    primary_keys: Sequence[str],
-    result_schema: str,
-) -> bool:
-    """Create or upsert the reconciled table into the result schema.
-
-    Mirrors :func:`macroforecast.trade.vulnerabilities.runner._write_result`:
-    builds the schema on first encounter, upserts by primary key afterwards.
-
-    Args:
-        conn: Open DuckLake connection (result-schema-bound connector).
-        catalog_alias: Alias of the attached catalog.
-        df_result: Reconciled flows to persist.
-        primary_keys: Primary-key columns.
-        result_schema: Target schema in the shared catalog.
-
-    Returns:
-        ``True`` if the schema was created, ``False`` if it was upserted.
-
-    Raises:
-        ValueError: If the update operation reports failure.
-    """
-    # Distinction création / mise à jour selon l'existence de la fact table
-    # Mise à jour de la base de données
-    if _fact_table_exists(conn, catalog_alias, result_schema):
-        # Initialisation de l'updater
-        updater = DatabaseUpdater(
-            connection=conn, categorical_threshold=None, schema=result_schema
-        )
-        # Application de la mise à jour à la base de données
-        success = updater.update_database(
-            df_result, use_transaction=True, compact_after_update=True
-        )
-        # Vérification de la bonne exécution de l'opération
-        if not success:
-            raise ValueError("DatabaseUpdater reported failure for result table")
-
-        # Logging
-        logger.info("Upserted %d rows into '%s'", len(df_result), result_schema)
-
-        return False
-    
-    # Première construction : métadonnées + fact table
-    builder = DuckLakeTablesBuilder(
-        df_result,
-        categorical_threshold=None,
-        primary_keys=list(primary_keys),
-        connection=conn,
-        schema=result_schema,
-    )
-    builder.build_schema()
-
-    # Logging
-    logger.info(
-        "Created schema '%s' with %d rows (primary keys: %s)",
-        result_schema, len(df_result), list(primary_keys),
-    )
-    return True
 
 
 # Fonction de construction des conventions de schéma des sources

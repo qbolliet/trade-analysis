@@ -1,33 +1,29 @@
 """Vulnerability computation runner.
 
-Iterates the registered vulnerability metrics over an entire trade DuckLake
-catalog and writes the scores to a result DuckLake catalog — one column per
-metric, keyed by ``date x nomenclature x indicator x flow x reporter`` (plus
-frequency).
+Iterates the registered vulnerability metrics over a trade DuckLake fact table —
+whole, or restricted to a set of reporter x product pairs — and writes the
+scores to a result schema: one column per metric, keyed by
+``date x nomenclature x indicator x flow x reporter`` (plus frequency).
 
-The source fact table is read through a direct, read-only DuckDB ``ATTACH`` (the
-data lives in immutable Parquet files), while the result catalog is created or
-upserted with the same ``DuckLakeTablesBuilder`` / ``DatabaseUpdater`` pattern as
+Source and result are reached through DuckDB connections opened by the caller.
+The result schema is built on
+first encounter and upserted afterwards, through the shared
+:mod:`macroforecast.storage2.tables` helpers also used by
 :mod:`macroforecast.datasets.core.download`.
 """
 # Importation des modules
 from __future__ import annotations
 # Modules de base
 import logging
-from pathlib import Path
-from typing import List, Optional, Sequence, Set, Tuple, Union
+from typing import Any, Collection, Iterable, Optional, Sequence, Tuple
 # Modules de manipulation de données
 import duckdb
 import narwhals as nw
 import pandas as pd
-# Module de gestion de la connexion à la base de données
-from dt_ducklake_manager import (
-    DatabaseUpdater,
-    DuckLakeConnector,
-    DuckLakeTablesBuilder,
-)
+# Modules de gestion des tables DuckLake
+from ...storage2.tables import FACT_TABLE, fact_table_exists, write_dataframe
 # Modules du package
-from ...tracking import NULL_TRACKER, RunTracker
+from ...tracking import NULL_TRACKER, RunTracker, run_params
 from .base import DEFAULT_CONFIG, VulnerabilityConfig, VulnerabilityMetric
 from .diagnostics import (
     VulnerabilityReport,
@@ -42,9 +38,6 @@ from .metrics import default_metrics
 
 # Initialisation du logger
 logger = logging.getLogger(__name__)
-
-# Nom de la table de faits DuckLake (convention dt_ducklake_manager)
-_FACT_TABLE = "fact_table"
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -157,191 +150,197 @@ def compute_vulnerabilities(
 
     return result, report
 
-
 # ──────────────────────────────────────────────────────────────────────
-# Lecture de la source / écriture du résultat (DuckLake)
+# Lecture de la source / relecture du résultat (DuckLake)
 # ──────────────────────────────────────────────────────────────────────
 
-# Fonction de conversion d'un chemin en littéral SQL à slashes avant
-def _sql_path(path: Union[str, Path]) -> str:
-    """Return a forward-slash string form of a path for SQL literals.
+# Fonction de mise en forme d'un littéral SQL
+def _sql_literal(value: str) -> str:
+    """Return a single-quoted SQL literal, embedded quotes doubled.
 
     Args:
-        path: Filesystem path.
+        value: Raw value to quote.
 
     Returns:
-        The path as a forward-slash string (portable inside DuckDB literals).
+        The value as a SQL string literal.
+
+    Examples:
+        >>> _sql_literal("FR")
+        "'FR'"
+        >>> _sql_literal("O'Brien")
+        "'O''Brien'"
     """
-    # Slashes avant : portables dans les littéraux DuckDB, y compris sous Windows
-    return Path(path).as_posix()
+    # Doublement des quotes simples : seul échappement admis par DuckDB
+    return "'" + str(value).replace("'", "''") + "'"
 
 
-# Fonction de lecture de la table de faits source (DuckDB en lecture seule)
+# Fonction de construction du prédicat SQL sur les couples reporter x produit
+def _reporter_product_predicate(
+    reporter_col: str,
+    product_col: str,
+    reporters_products: Iterable[Tuple[str, str]],
+) -> str:
+    """Build the SQL predicate restricting a query to reporter x product pairs.
+
+    Shared by the source read and the previous-result read, which must scope
+    themselves to exactly the same perimeter for the drift diagnostics to
+    compare comparable things.
+
+    Args:
+        reporter_col: Name of the reporter column.
+        product_col: Name of the product column.
+        reporters_products: Reporter x product pairs to restrict to.
+
+    Returns:
+        A SQL boolean expression of the form ``("reporter", "product") IN (...)``.
+
+    Examples:
+        >>> print(_reporter_product_predicate("reporter", "product", [("FR", "27")]))
+        ("reporter", "product") IN (('FR', '27'))
+    """
+    # Liste des couples ciblés, littéraux échappés
+    values_clause = ", ".join(
+        f"({_sql_literal(reporter)}, {_sql_literal(product)})"
+        for reporter, product in reporters_products
+    )
+    return f'("{reporter_col}", "{product_col}") IN ({values_clause})'
+
+
+# Fonction de lecture de la table de faits source
 def _read_source_fact_table(
-    source_catalog: Union[str, Path],
-    source_data_path: Union[str, Path],
-    source_schema: str,
-    columns: Sequence[str],
-) -> pd.DataFrame:
-    """Read selected columns of a DuckLake fact table, read-only.
-
-    Deliberately uses a hand-rolled ``ATTACH`` rather than ``DuckLakeConnector``:
-    ``DuckLakeConnector.connect()`` fails to re-attach an existing catalog under
-    Windows/OneDrive (the catalog stores a normalised ``DATA_PATH`` — lowercase
-    drive, forward slashes — that the connector's raw ``str(Path)`` does not
-    match), and the connector exposes no ``OVERRIDE_DATA_PATH`` option. The
-    direct read-only ``ATTACH`` with ``OVERRIDE_DATA_PATH true`` is the assumed
-    workaround. (If a future ``dt-ducklake-manager`` release adds an
-    ``override_data_path`` option, switch this read to ``DuckLakeConnector``.)
-
-    Args:
-        source_catalog: Path to the source ``.ducklake`` catalog file.
-        source_data_path: Directory of the source Parquet data files.
-        source_schema: Schema holding the ``fact_table``.
-        columns: Columns to project.
-
-    Returns:
-        A pandas DataFrame of the projected fact table.
-    """
-    # Connexion DuckDB en mémoire et chargement de l'extension DuckLake
-    conn = duckdb.connect(":memory:")
-    try:
-        conn.execute("INSTALL ducklake; LOAD ducklake;")
-        # Attachement en lecture seule ; OVERRIDE_DATA_PATH tolère un chemin de
-        # données déplacé/normalisé différemment de celui stocké dans le catalogue
-        # (contournement du mismatch DATA_PATH sous Windows/OneDrive).
-        conn.execute(
-            f"ATTACH 'ducklake:{_sql_path(source_catalog)}' AS src "
-            f"(DATA_PATH '{_sql_path(source_data_path)}/', READ_ONLY, "
-            f"OVERRIDE_DATA_PATH true)"
-        )
-        col_list = ", ".join(f'"{c}"' for c in columns)
-        return conn.execute(
-            f"SELECT {col_list} FROM src.{source_schema}.{_FACT_TABLE}"
-        ).df()
-    finally:
-        conn.close()
-
-
-# Fonction de détection de l'existence de la fact table d'un schéma
-# /!\ Voir si cela ne pourrait pas être mutualisé avec la méthode "_fact_table_exists" de SDMXDownloader dans macroforecast/datasets/core/download.py
-def _fact_table_exists(
     conn: duckdb.DuckDBPyConnection,
     catalog_alias: str,
-    schema: str,
-) -> bool:
-    """Return whether ``{schema}.fact_table`` exists in the attached catalog.
+    source_schema: str,
+    columns: Sequence[str],
+    *,
+    reporter_col: str,
+    product_col: str,
+    reporters_products: Optional[Sequence[Tuple[str, str]]] = None,
+) -> pd.DataFrame:
+    """Read the projected source fact table, optionally restricted to a perimeter.
+
+    Uses a connection already attached to the catalog, whatever its backend: the
+    source schema is reached by qualified name, no extra ``ATTACH`` is required.
 
     Args:
-        conn: Open DuckLake connection.
-        catalog_alias: Alias of the attached catalog.
-        schema: Target schema.
+        conn: Open DuckLake connection, owned by the caller.
+        catalog_alias: Alias under which the catalog is attached.
+        source_schema: Schema holding the source ``fact_table``.
+        columns: Columns to project.
+        reporter_col: Name of the reporter column.
+        product_col: Name of the product column.
+        reporters_products: Reporter x product pairs to restrict the read to.
+            ``None`` reads the whole fact table.
 
     Returns:
-        ``True`` if the fact table already exists.
+        A pandas DataFrame of the projected (and possibly filtered) fact table.
     """
-    # Introspection des tables du catalogue attaché
-    row = conn.execute(
-        "SELECT count(*) FROM duckdb_tables() "
-        "WHERE database_name = ? AND schema_name = ? AND table_name = ?",
-        [catalog_alias, schema, _FACT_TABLE],
-    ).fetchone()
-    return bool(row and row[0] > 0)
-
-
-# Fonction d'écriture du résultat dans le catalogue DuckLake (création ou upsert)
-# /!\ Voir si cela ne pourrait pas être mutualisé avec la méthode "_write_dataframe" de SDMXDownloader dans macroforecast/datasets/core/download.py
-def _write_result(
-    result: nw.DataFrame,
-    primary_keys: Sequence[str],
-    result_catalog: Union[str, Path],
-    result_data_path: Union[str, Path],
-    result_schema: str,
-) -> bool:
-    """Create or upsert the result table into the result DuckLake catalog.
-
-    Mirrors :meth:`macroforecast.datasets.core.download.SDMXDownloader._write_dataframe`:
-    builds the schema on first encounter, upserts by primary key afterwards. The
-    narwhals frame is passed straight to ``DuckLakeTablesBuilder`` /
-    ``DatabaseUpdater``
-
-    Args:
-        result: Result narwhals frame (grid keys + one column per metric).
-        primary_keys: Primary-key columns (the grid keys).
-        result_catalog: Path to the result ``.ducklake`` catalog file.
-        result_data_path: Directory for the result Parquet data files.
-        result_schema: Target schema in the result catalog.
-
-    Returns:
-        ``True`` if the schema was created, ``False`` if it was upserted.
-
-    Raises:
-        ValueError: If the update operation reports failure.
-    """
-    # Création du répertoire de données si nécessaire
-    Path(result_data_path).mkdir(parents=True, exist_ok=True)
-    Path(result_catalog).parent.mkdir(parents=True, exist_ok=True)
-
-    # Connexion au catalogue résultat
-    connector = DuckLakeConnector(str(result_catalog), str(result_data_path))
-    conn = connector.connect()
-    try:
-        # Distinction création / mise à jour selon l'existence de la fact table
-        if _fact_table_exists(conn, connector.catalog_alias, result_schema):
-            # Mise à jour incrémentale (upsert par clé primaire)
-            updater = DatabaseUpdater(
-                connection=conn,
-                categorical_threshold=None,
-                schema=result_schema,
-            )
-            success = updater.update_database(
-                result,
-                use_transaction=True,
-                compact_after_update=True,
-            )
-
-            # Vérification que l'opération s'est bien effectuée
-            if not success:
-                raise ValueError("DatabaseUpdater reported failure for result table")
-
-            # Logging
-            logger.info(
-                f"Upserted {len(result)} rows into '{result_schema}'"
-            )
-            return False
-        # Première construction : métadonnées + fact table
-        builder = DuckLakeTablesBuilder(
-            result,
-            categorical_threshold=None,
-            primary_keys=list(primary_keys),
-            connection=conn,
-            schema=result_schema,
+    # Projection des colonnes demandées
+    col_list = ", ".join(f'"{c}"' for c in columns)
+    query = (
+        f'SELECT {col_list} '
+        f'FROM "{catalog_alias}"."{source_schema}"."{FACT_TABLE}"'
+    )
+    # Restriction éventuelle au périmètre recalculé
+    if reporters_products:
+        query += " WHERE " + _reporter_product_predicate(
+            reporter_col, product_col, reporters_products
         )
-        builder.build_schema()
+    return conn.execute(query).df()
 
+
+# Fonction de lecture du résultat de l'exécution précédente (diagnostics de dérive)
+def read_previous_result(
+    conn: duckdb.DuckDBPyConnection,
+    catalog_alias: str,
+    result_schema: str,
+    *,
+    reporters_products: Optional[Sequence[Tuple[str, str]]] = None,
+    config: VulnerabilityConfig = DEFAULT_CONFIG,
+) -> Optional[nw.DataFrame]:
+    """Read the previous run's scores, for the run-to-run drift diagnostics.
+
+    Reading belongs to the caller: the runner never decides on its own to
+    re-read the result table. This helper only spares the callers the
+    duplication of the SQL, and degrades gracefully — a result table that does
+    not exist yet returns ``None``, which disables the drift diagnostics rather
+    than failing the run.
+
+    Args:
+        conn: Open DuckLake connection on the result catalog, owned by the
+            caller.
+        catalog_alias: Alias under which the result catalog is attached.
+        result_schema: Schema holding the result ``fact_table``.
+        reporters_products: Reporter x product pairs to restrict the read to,
+            mirroring the perimeter of an incremental recomputation. ``None``
+            reads the whole table.
+        config: Column conventions (``reporter_col`` / ``product_col`` name the
+            filtered columns).
+
+    Returns:
+        Narwhals frame of the previous scores, or ``None`` when no result table
+        exists yet.
+    """
+    # Première exécution : aucune table résultat, donc aucune dérive mesurable
+    if not fact_table_exists(conn, catalog_alias, result_schema):
         # Logging
         logger.info(
-            f"Created schema '{result_schema}' with {len(result)} rows "
-            f"(primary keys: {list(primary_keys)})"
+            f"No result table in '{result_schema}' yet: drift diagnostics skipped"
         )
-        return True
-    finally:
-        conn.close()
+        return None
+
+    # Projection intégrale : la table résultat est étroite (clés + métriques)
+    query = f'SELECT * FROM "{catalog_alias}"."{result_schema}"."{FACT_TABLE}"'
+    # Restriction éventuelle au périmètre recalculé
+    if reporters_products:
+        query += " WHERE " + _reporter_product_predicate(
+            config.reporter_col, config.product_col, reporters_products
+        )
+    # Exécution de la requête
+    previous_pdf = conn.execute(query).df()
+
+    # Logging
+    logger.info(f"Read {len(previous_pdf)} previous result rows from '{result_schema}'")
+    return nw.from_native(previous_pdf, eager_only=True)
 
 
 # ──────────────────────────────────────────────────────────────────────
 # Orchestration de bout en bout
 # ──────────────────────────────────────────────────────────────────────
 
-# Fonction d'orchestration : source DuckLake → métriques → résultat DuckLake
+# Fonction de bascule vers un backend eager natif
+def _to_native(source_pdf: pd.DataFrame, backend: str) -> Any:
+    """Convert a pandas frame to the requested native eager backend.
+
+    Args:
+        source_pdf: Frame read from the catalog.
+        backend: ``"pandas"``, ``"polars"`` or ``"pyarrow"``.
+
+    Returns:
+        The frame in its native form for the requested backend.
+    """
+    # Imports paresseux : polars et pyarrow sont des dépendances optionnelles
+    if backend == "polars":
+        import polars as pl
+
+        return pl.from_pandas(source_pdf)
+    if backend == "pyarrow":
+        import pyarrow as pa
+
+        return pa.Table.from_pandas(source_pdf)
+    return source_pdf
+
+
+# Fonction d'orchestration : table de faits source → métriques → schéma résultat
 def run_vulnerabilities(
-    source_catalog: Union[str, Path],
-    source_data_path: Union[str, Path],
-    result_catalog: Union[str, Path],
-    result_data_path: Union[str, Path],
+    source_conn: duckdb.DuckDBPyConnection,
     *,
-    source_schema: str = "DS_045409",
-    result_schema: str = "vulnerabilities",
+    source_catalog_alias: str,
+    source_schema: str,
+    result_schema: str,
+    result_conn: Optional[duckdb.DuckDBPyConnection] = None,
+    result_catalog_alias: Optional[str] = None,
+    reporters_products: Optional[Collection[Tuple[str, str]]] = None,
     metrics: Optional[Sequence[VulnerabilityMetric]] = None,
     config: VulnerabilityConfig = DEFAULT_CONFIG,
     backend: str = "pandas",
@@ -349,65 +348,112 @@ def run_vulnerabilities(
     log_artifacts: bool = True,
     df_previous: Optional[nw.DataFrame] = None,
 ) -> VulnerabilityReport:
-    """Compute trade-vulnerability metrics and write them to a result catalog.
+    """Compute trade-vulnerability metrics and write them to a result schema.
 
-    Reads the source fact table, applies every metric over the whole dataset,
-    and persists the scores (one column per metric) into the result DuckLake
-    catalog, keyed by ``config.key_columns``.
+    Reads the source fact table — whole, or restricted to a set of
+    reporter x product pairs — applies every metric, and persists the scores
+    (one column per metric, keyed by ``config.key_columns``) into the result
+    schema. Initialisation and incremental update are the same call: the result
+    schema is built on first encounter and upserted by primary key afterwards
+    (see :func:`macroforecast.storage2.write_dataframe`).
+
+    Connections are passed in and are **never opened or closed here**: their
+    lifecycle belongs to the caller. Nothing assumes a particular catalog
+    backend — a local ``.ducklake`` file and a PostgreSQL-backed catalog are
+    driven identically. Source and result may live in two schemas of the same
+    catalog (a single connection, the default) or in two distinct catalogs
+    (``result_conn`` and ``result_catalog_alias``).
 
     Args:
-        source_catalog: Path to the source ``.ducklake`` catalog file.
-        source_data_path: Directory of the source Parquet data files.
-        result_catalog: Path to the result ``.ducklake`` catalog file.
-        result_data_path: Directory for the result Parquet data files.
-        source_schema: Schema of the source ``fact_table``.
-        result_schema: Target schema in the result catalog.
+        source_conn: Open DuckLake connection on the source catalog.
+        source_catalog_alias: Alias under which the source catalog is attached.
+        source_schema: Schema holding the source ``fact_table``.
+        result_schema: Schema to create or upsert the scores into.
+        result_conn: Open connection on the result catalog, when it differs from
+            the source one. Defaults to ``source_conn``.
+        result_catalog_alias: Alias of the result catalog. Required whenever
+            ``result_conn`` is supplied; defaults to ``source_catalog_alias``.
+        reporters_products: Reporter x product pairs to (re)compute. ``None``
+            recomputes the whole fact table (initialisation, notebooks); an
+            empty collection is a no-op (nothing is read or written).
         metrics: Metric instances to apply. Defaults to
             :func:`~macroforecast.trade.vulnerabilities.metrics.default_metrics`.
         config: Column and partner-code conventions.
-        backend: Native eager backend for narwhals computation (``"pandas"`` or,
-            when installed, ``"polars"``/``"pyarrow"``).
-        tracker: Experiment tracker receiving the run artifacts. Defaults to the
-            null tracker, so an unconfigured run behaves exactly as before. The
-            *metrics* are left to the caller, which sends ``report.to_metrics()``
-            once the report is complete.
+        backend: Native eager backend for narwhals computation (``"pandas"``
+            or, when installed, ``"polars"``/``"pyarrow"``).
+        tracker: Experiment tracker receiving the run parameters and artifacts.
+            Defaults to the null tracker, so an unconfigured run behaves exactly
+            as before. The *metrics* are left to the caller, which sends
+            ``report.to_metrics()`` once the report is complete.
         log_artifacts: Whether to build and send the business artifacts (top
             vulnerable cells, alert counts, missing aggregates, deciles).
-        df_previous: Result of the previous run, enabling the drift diagnostics
-            (see :func:`read_previous_result`).
+        df_previous: Result of the previous run over the same perimeter,
+            enabling the drift diagnostics (see :func:`read_previous_result`).
 
     Returns:
         A :class:`VulnerabilityReport` summarising the run.
+
+    Raises:
+        ValueError: If ``result_conn`` is supplied without
+            ``result_catalog_alias``, or if the input frame is missing a column
+            required by one of the metrics.
     """
-    # Métriques par défaut si non fournies
+    # Initialisation de la liste des métriques
     metric_list = list(metrics) if metrics is not None else default_metrics(config)
 
-    # Colonnes nécessaires : clés de la grille + partenaire + valeur
-    required = list(
-        dict.fromkeys(
-            [*config.key_columns, config.partner_col, config.value_col]
+    # Périmètre vide (distinct de None, qui vaut « tout le catalogue ») :
+    # rien à recalculer, sortie anticipée sans toucher à la base
+    if reporters_products is not None and not reporters_products:
+        logger.info("No reporter-product pairs to recalculate; early termination.")
+        return VulnerabilityReport(
+            cells=0, metrics=[metric.name for metric in metric_list], created=False
+        )
+
+    # Catalogue résultat : partagé avec la source par défaut. Une connexion
+    # distincte impose de nommer son alias, qui n'est pas déductible.
+    if result_conn is not None and result_catalog_alias is None:
+        raise ValueError(
+            "result_catalog_alias is required when result_conn is supplied"
+        )
+    result_conn = result_conn if result_conn is not None else source_conn
+    result_catalog_alias = result_catalog_alias or source_catalog_alias
+
+    # Paramètres de l'exécution : configuration aplatie et contexte
+    tracker.log_params(
+        run_params(
+            config,
+            {
+                "source_schema": source_schema,
+                "result_schema": result_schema,
+                "backend": backend,
+                "metrics": [metric.name for metric in metric_list],
+                "n_reporter_product_pairs": (
+                    len(reporters_products) if reporters_products is not None else None
+                ),
+            },
         )
     )
 
-    # Lecture de la table de faits source (pandas)
-    source_pdf = _read_source_fact_table(
-        source_catalog, source_data_path, source_schema, required
+    # Colonnes nécessaires : clés de la grille + partenaire + valeur
+    required = list(
+        dict.fromkeys([*config.key_columns, config.partner_col, config.value_col])
     )
 
-    # Bascule éventuelle vers un autre backend eager (polars, pyarrow…)
-    if backend == "polars":
-        import polars as pl  # Import paresseux : dépendance optionnelle
-
-        native = pl.from_pandas(source_pdf)
-    elif backend == "pyarrow":
-        import pyarrow as pa  # Import paresseux : dépendance optionnelle
-
-        native = pa.Table.from_pandas(source_pdf)
-    else:
-        native = source_pdf
+    # Lecture de la table de faits source (pandas), filtrée le cas échéant
+    source_pdf = _read_source_fact_table(
+        source_conn,
+        source_catalog_alias,
+        source_schema,
+        required,
+        reporter_col=config.reporter_col,
+        product_col=config.product_col,
+        reporters_products=(
+            sorted(reporters_products) if reporters_products is not None else None
+        ),
+    )
 
     # Calcul des métriques via narwhals (agnostique du backend)
-    data = nw.from_native(native, eager_only=True)
+    data = nw.from_native(_to_native(source_pdf, backend), eager_only=True)
     result, report = compute_vulnerabilities(
         data, metric_list, config, df_previous=df_previous
     )
@@ -424,328 +470,15 @@ def run_vulnerabilities(
             config=config,
         )
 
-    # Écriture dans le catalogue résultat : le frame narwhals est passé tel quel,
+    # Écriture dans le schéma résultat : le frame narwhals est passé tel quel,
     # builder/updater de dt_ducklake_manager acceptant IntoDataFrame (aucune
     # reconversion pandas nécessaire).
-    report.created = _write_result(
+    report.created = write_dataframe(
+        result_conn,
         result,
         config.key_columns,
-        result_catalog,
-        result_data_path,
-        result_schema,
-    )
-
-    return report
-
-
-# ──────────────────────────────────────────────────────────────────────
-# Orchestration incrémentale (catalogue Postgres partagé source/résultat)
-# ──────────────────────────────────────────────────────────────────────
-#
-# Contrairement à `run_vulnerabilities`/`_read_source_fact_table`, qui
-# attachent un fichier catalogue DuckLake local en lecture seule, les fonctions
-# ci-dessous s'appuient sur un connecteur `DuckLakeConnector.from_postgres`
-# unique : source (schéma des données téléchargées) et résultat (schéma des
-# vulnérabilités) sont deux schémas du même catalogue Postgres, donc
-# accessibles depuis une seule connexion, sans ATTACH supplémentaire.
-
-# Fonction de lecture filtrée de la table de faits source (couples reporter x produit ciblés) depuis une base de données postgres
-# /!\ Retirer le suffixe "_pg" dans le nom de la fonction dans la mesure où il n'y a rien de spécifique à postgres dedans ?
-def _read_source_fact_table_pg(
-    conn: duckdb.DuckDBPyConnection,
-    catalog_alias: str,
-    source_schema: str,
-    columns: Sequence[str],
-    reporter_col: str,
-    product_col: str,
-    reporters_products: Sequence[Tuple[str, str]],
-) -> pd.DataFrame:
-    """Read fact-table rows restricted to given reporter x product pairs.
-
-    Uses a connection already attached to the Postgres-backed catalog (via
-    :meth:`DuckLakeConnector.from_postgres`), which exposes every schema of the
-    catalog — the source schema is reached by qualified name, no extra
-    ``ATTACH`` is required.
-
-    Args:
-        conn: Open DuckLake connection (Postgres-backed catalog).
-        catalog_alias: Alias under which the catalog is attached.
-        source_schema: Schema holding the source ``fact_table``.
-        columns: Columns to project.
-        reporter_col: Name of the reporter column.
-        product_col: Name of the product column.
-        reporters_products: Reporter x product pairs to restrict the read to.
-            Must be non-empty.
-
-    Returns:
-        A pandas DataFrame of the filtered fact table.
-    """
-    # Projection des colonnes demandées
-    col_list = ", ".join(f'"{c}"' for c in columns)
-    # Prédicat SQL sur les couples (reporter, produit) ciblés
-    values_clause = ", ".join(f"({r!r}, {p!r})" for r, p in reporters_products)
-    return conn.execute(
-        f'SELECT {col_list} FROM "{catalog_alias}"."{source_schema}"."{_FACT_TABLE}" '
-        f'WHERE ("{reporter_col}", "{product_col}") IN ({values_clause})'
-    ).df()
-
-
-# Fonction d'écriture du résultat via une connexion déjà ouverte (catalogue Postgres partagé)
-# /!\ Retirer le suffixe "_pg" dans le nom de la fonction dans la mesure où il n'y a rien de spécifique à postgres dedans ?
-# /!\ Voir si cela ne pourrait pas être mutualisé avec la méthode "_write_dataframe" de SDMXDownloader dans macroforecast/datasets/core/download.py
-def _write_result_pg(
-    conn: duckdb.DuckDBPyConnection,
-    catalog_alias: str,
-    result: nw.DataFrame,
-    primary_keys: Sequence[str],
-    result_schema: str,
-) -> bool:
-    """Create or upsert the result table using an already-open DuckLake connection.
-
-    Same create-then-upsert logic as :func:`_write_result`, reused here on a
-    connection already attached to the shared Postgres catalog rather than
-    opening a dedicated local-catalog connection.
-
-    Args:
-        conn: Open DuckLake connection (Postgres-backed catalog).
-        catalog_alias: Alias under which the catalog is attached.
-        result: Result narwhals frame (grid keys + one column per metric).
-        primary_keys: Primary-key columns (the grid keys).
-        result_schema: Target schema in the shared catalog.
-
-    Returns:
-        ``True`` if the schema was created, ``False`` if it was upserted.
-
-    Raises:
-        ValueError: If the update operation reports failure.
-    """
-    # Mise à jour de la table si elle existe déjà
-    if _fact_table_exists(conn, catalog_alias, result_schema):
-        # Mise à jour incrémentale (upsert par clé primaire) : ne touche que les
-        # cellules recalculées, le reste de la table résultat est préservé.
-        updater = DatabaseUpdater(
-            connection=conn,
-            categorical_threshold=None,
-            schema=result_schema,
-        )
-        success = updater.update_database(
-            result,
-            use_transaction=True,
-            compact_after_update=True,
-        )
-        # Vérification de la bonne réalisation de la mise à jour
-        if not success:
-            raise ValueError("DatabaseUpdater reported failure for result table")
-        # Logging
-        logger.info(f"Upserted {len(result)} rows into '{result_schema}'")
-        return False
-
-    # Première construction : métadonnées + fact table
-    # Initialisation de la classe
-    builder = DuckLakeTablesBuilder(
-        result,
-        categorical_threshold=None,
-        primary_keys=list(primary_keys),
-        connection=conn,
+        catalog_alias=result_catalog_alias,
         schema=result_schema,
     )
-    # Construction du schéma
-    builder.build_schema()
-    # Logging
-    logger.info(
-        f"Created schema '{result_schema}' with {len(result)} rows "
-        f"(primary keys: {list(primary_keys)})"
-    )
-    return True
-
-
-# Fonction de lecture du résultat de l'exécution précédente (diagnostics de dérive)
-def read_previous_result(
-    connector: DuckLakeConnector,
-    result_schema: str,
-    *,
-    reporters_products: Optional[Sequence[Tuple[str, str]]] = None,
-    config: VulnerabilityConfig = DEFAULT_CONFIG,
-) -> Optional[nw.DataFrame]:
-    """Read the previous run's scores, for the run-to-run drift diagnostics.
-
-    Reading belongs to the caller : the runner never decides on
-    its own to re-read the result table. This helper only spares the scripts the
-    duplication of the SQL, and degrades gracefully — a result table that does
-    not exist yet returns ``None``, which disables the drift diagnostics rather
-    than failing the run.
-
-    Args:
-        connector: DuckLake connector for the result catalog.
-        result_schema: Schema holding the result ``fact_table``.
-        reporters_products: Reporter x product pairs to restrict the read to,
-            mirroring the perimeter of an incremental recomputation. ``None``
-            reads the whole table.
-        config: Column conventions (``reporter_col`` / ``product_col`` name the
-            filtered columns).
-
-    Returns:
-        Narwhals frame of the previous scores, or ``None`` when no result table
-        exists yet.
-    """
-    # Connexion dédiée : la lecture précède l'ouverture de la connexion de calcul
-    conn = connector.connect()
-    try:
-        # Première exécution : aucune table résultat, donc aucune dérive mesurable
-        if not _fact_table_exists(conn, connector.catalog_alias, result_schema):
-            # Logging
-            logger.info(
-                f"No result table in '{result_schema}' yet: drift diagnostics skipped"
-            )
-            return None
-
-        # Projection intégrale : la table résultat est étroite (clés + métriques)
-        query = (
-            f'SELECT * FROM "{connector.catalog_alias}"."{result_schema}"."{_FACT_TABLE}"'
-        )
-        # Restriction éventuelle au périmètre recalculé
-        if reporters_products:
-            # Construction de la requête
-            values_clause = ", ".join(
-                f"({reporter!r}, {product!r})"
-                for reporter, product in reporters_products
-            )
-            query += (
-                f' WHERE ("{config.reporter_col}", "{config.product_col}") '
-                f"IN ({values_clause})"
-            )
-        # Exécution de la requête
-        previous_pdf = conn.execute(query).df()
-    finally:
-        conn.close()
-
-    # Logging
-    logger.info(f"Read {len(previous_pdf)} previous result rows from '{result_schema}'")
-    return nw.from_native(previous_pdf, eager_only=True)
-
-
-# Fonction d'orchestration incrémentale : catalogue Postgres partagé (source + résultat)
-# /!\ Retirer les mentions à postgres dans la fonction dans la mesure où il n'y a rien de spécifique à postgres dedans ?
-def run_vulnerabilities_incremental(
-    connector: DuckLakeConnector,
-    reporters_products: Set[Tuple[str, str]],
-    *,
-    result_connector: Optional[DuckLakeConnector] = None,
-    source_schema: str = "DS045409",
-    result_schema: str = "vulnerabilities",
-    metrics: Optional[Sequence[VulnerabilityMetric]] = None,
-    config: VulnerabilityConfig = DEFAULT_CONFIG,
-    backend: str = "pandas",
-    tracker: RunTracker = NULL_TRACKER,
-    log_artifacts: bool = True,
-    df_previous: Optional[nw.DataFrame] = None,
-) -> VulnerabilityReport:
-    """Recompute vulnerability metrics for a subset of reporter x product cells.
-
-    Production/incremental counterpart of :func:`run_vulnerabilities`. By
-    default, source and result live as two schemas of the *same*
-    Postgres-backed DuckLake catalog and share a single connection. Pass
-    ``result_connector`` to target a different catalog for the result — a
-    second connection is then opened for the write.
-
-    Args:
-        connector: DuckLake connector for the source catalog (see
-            :meth:`DuckLakeConnector.from_postgres`).
-        reporters_products: Reporter x product pairs to (re)compute. An empty
-            set is a no-op (nothing is read or written).
-        result_connector: DuckLake connector for the result catalog, if it
-            differs from the source catalog. Defaults to ``connector``.
-        source_schema: Schema holding the source ``fact_table``.
-        result_schema: Schema to create or upsert the result into.
-        metrics: Metric instances to apply. Defaults to
-            :func:`~macroforecast.trade.vulnerabilities.metrics.default_metrics`.
-        config: Column and partner-code conventions.
-        backend: Native eager backend for narwhals computation.
-        tracker: Experiment tracker receiving the run artifacts. Defaults to the
-            null tracker, so an unconfigured run behaves exactly as before.
-        log_artifacts: Whether to build and send the business artifacts.
-        df_previous: Result of the previous run restricted to the same
-            reporter x product pairs, enabling the drift diagnostics (see
-            :func:`read_previous_result`).
-
-    Returns:
-        A :class:`VulnerabilityReport` summarising the run.
-    """
-    # Initialisation de la liste des métriques
-    metric_list = list(metrics) if metrics is not None else default_metrics(config)
-
-    # Rien à recalculer : sortie anticipée sans ouvrir de connexion
-    if not reporters_products:
-        logger.info("No reporter-product pairs to recalculate; early termination.")
-        return VulnerabilityReport(
-            cells=0, metrics=[metric.name for metric in metric_list], created=False
-        )
-
-    # Colonnes nécessaires : clés de la grille + partenaire + valeur
-    required = list(
-        dict.fromkeys([*config.key_columns, config.partner_col, config.value_col])
-    )
-
-    # Catalogue résultat : partagé avec la source par défaut (comportement historique)
-    result_connector = result_connector or connector
-    # Détection d'un catalogue résultat distinct : impose deux connexions séparées
-    same_catalog = result_connector is connector
-
-    # Connexion au catalogue source
-    source_conn = connector.connect()
-    try:
-        # Lecture des seules lignes concernées par les couples reporter x produit ciblés
-        source_pdf = _read_source_fact_table_pg(
-            source_conn,
-            connector.catalog_alias,
-            source_schema,
-            required,
-            reporter_col=config.reporter_col,
-            product_col=config.product_col,
-            reporters_products=list(reporters_products),
-        )
-
-        # Conversion en narwhals et calcul des métriques
-        data = nw.from_native(source_pdf, eager_only=True)
-        result, report = compute_vulnerabilities(
-            data, metric_list, config, df_previous=df_previous
-        )
-
-        # Artefacts de synthèse : la grille est la projection du résultat sur les clés
-        if log_artifacts:
-            log_vulnerability_artifacts(
-                tracker,
-                data=data,
-                df_grid=result.select(*config.key_columns),
-                df_result=result,
-                report=report,
-                metrics=metric_list,
-                config=config,
-            )
-
-        if same_catalog:
-            # Écriture sur la connexion déjà ouverte (même catalogue que la source)
-            report.created = _write_result_pg(
-                source_conn,
-                connector.catalog_alias,
-                result,
-                config.key_columns,
-                result_schema,
-            )
-        else:
-            # Catalogue résultat distinct : ouverture d'une seconde connexion dédiée
-            result_conn = result_connector.connect()
-            try:
-                report.created = _write_result_pg(
-                    result_conn,
-                    result_connector.catalog_alias,
-                    result,
-                    config.key_columns,
-                    result_schema,
-                )
-            finally:
-                result_conn.close()
-    finally:
-        source_conn.close()
 
     return report

@@ -2,6 +2,7 @@
 # Modules de base
 from __future__ import annotations
 from dataclasses import fields, is_dataclass
+from importlib import metadata
 import logging
 import math
 import re
@@ -249,4 +250,56 @@ def flatten_params(payload: Any, prefix: str = "") -> Dict[str, str]:
     params: Dict[str, str] = {}
     for key, value in _walk(payload, prefix).items():
         params[_clean_key(key)] = str(value)[:_MAX_PARAM_LENGTH]
+    return params
+
+
+# Fonction d'assemblage des paramètres décrivant une exécution
+def run_params(
+    config: Any,
+    context: Optional[Mapping[str, Any]] = None,
+    *,
+    prefix: str = "config",
+    package: str = "macroforecast",
+) -> Dict[str, str]:
+    """Assemble the parameters describing a pipeline run.
+
+    Every run of the pipeline logs the same three things: its flattened
+    methodological configuration, the contextual facts of that particular run
+    (schemas, perimeter, effective options) and the version of the package that
+    produced it. This helper holds that shape once, so each step only supplies
+    its own context.
+
+    Args:
+        config: Run configuration (dataclass instance or mapping) to flatten
+            under ``prefix``.
+        context: Contextual facts of the run, flattened without prefix. ``None``
+            logs the configuration and the version alone.
+        prefix: Prefix given to the configuration keys.
+        package: Distribution whose version is recorded as
+            ``macroforecast_version``. Absent from a non-installed source tree,
+            in which case ``"unknown"`` is recorded.
+
+    Returns:
+        Flat mapping of dotted parameter names to their string representation.
+
+    Examples:
+        >>> params = run_params(
+        ...     {"cook_factor": 4.0}, {"n_rows": 7}, package="not-installed")
+        >>> params["config.cook_factor"], params["n_rows"]
+        ('4.0', '7')
+        >>> params["macroforecast_version"]
+        'unknown'
+    """
+    # Version du paquet : absente d'une arborescence non installée
+    try:
+        version = metadata.version(package)
+    except Exception:  # pragma: no cover - dépend de l'installation
+        version = "unknown"
+
+    # Configuration méthodologique aplatie
+    params = flatten_params(config, prefix=prefix)
+    # Contexte de l'exécution, complété de la version du paquet
+    params.update(
+        flatten_params({**dict(context or {}), "macroforecast_version": version})
+    )
     return params
