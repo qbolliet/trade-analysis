@@ -177,6 +177,9 @@ class BaciConfig:
             and fall back to unit conversion only when it is missing.
         cook_factor: Cook's-distance cutoff factor; observations with
             ``cook > cook_factor / n`` are dropped before the final gravity fit.
+        min_sigma_ratio: Strictly positive floor applied to the reporting-quality
+            ``σ̂``, as a fraction of the median strictly positive ``σ̂`` of the
+            fit (see :class:`ReportingQualityModel`).
         cif_share_threshold: CIF share above which an importer is deemed to
             value its imports CIF, in :func:`infer_import_valuation_regime`.
         regime_granularity: Grain of the valuation-regime inference, either
@@ -222,6 +225,8 @@ class BaciConfig:
     prefer_netwgt: bool = True
     # Équation de gravité
     cook_factor: float = 4.0
+    # Qualité de déclaration : plancher relatif des σ̂ (évite le poids tout-ou-rien)
+    min_sigma_ratio: float = 0.1
     # Inférence du régime de valorisation des importations (CAF/FAB)
     cif_share_threshold: float = 0.5
     regime_granularity: Literal["country", "country_year"] = "country_year"
@@ -247,6 +252,11 @@ DEFAULT_CONFIG = BaciConfig()
 
 # Noms de colonnes canoniques de la table de flux miroirs
 _EXP, _IMP, _PROD, _YEAR = "exporter", "importer", "product", "year"
+
+# Colonne transitoire portant le poids de la déclaration exportatrice dans la
+# réconciliation des valeurs : produite par MirrorReconciler, consommée par
+# AreaNesReallocator, retirée par run_baci avant restitution du résultat
+_VALUE_WEIGHT = "_value_weight"
 
 # Libellés des régimes de valorisation des importations
 _CIF_REGIME, _FOB_REGIME = "CIF", "FOB"
@@ -308,7 +318,11 @@ def build_gravity_data(
         distance_column,
         contig_col,
     ]
-    df_dist = df_dist[dist_cols].copy()
+    # Une paire orientée par ligne : un doublon dupliquerait les flux lors de la
+    # jointure de gravité et fausserait l'estimation comme la prédiction
+    df_dist = df_dist[dist_cols].drop_duplicates(
+        subset=[dist_iso_o_col, dist_iso_d_col]
+    ).copy()
 
     # Enclavement par pays : géographie dédupliquée (une ligne par ISO-3, la
     # table CEPII listant plusieurs villes par pays)
@@ -502,7 +516,8 @@ def build_mirror_flows(
 
     Raises:
         ValueError: If the ``period_start``/``period_end`` filter empties
-            ``df_comtrade``.
+            ``df_comtrade``, or if ``partner_code_col`` holds no numeric M49
+            code at all (the aggregates could then not be identified).
     """
     # Copiée indépendante du jeu de données
     df_data = df_comtrade.copy()
@@ -523,10 +538,22 @@ def build_mirror_flows(
             "estimation could run."
         )
 
+    # Coercition numérique du code partenaire M49 : les catalogues le livrent
+    # tantôt en entier, tantôt en texte, et une comparaison texte/entier
+    # laisserait passer les agrégats sans le moindre signal
+    partner_code = pd.to_numeric(df_data[partner_code_col], errors="coerce")
+    if partner_code.isna().all() and len(df_data):
+        raise ValueError(
+            f"Column {partner_code_col!r} holds no numeric M49 code: the World "
+            "and 'Areas nes' aggregates cannot be identified."
+        )
+
     # Exclusion explicite des agrégats non traités : (ex. Monde, « Other Asia, nes », ni réallouées ni pays)
-    df_data = df_data[df_data[partner_code_col] != world_partner_code]
+    keep = partner_code != world_partner_code
     if nes_skip_codes:
-        df_data = df_data[~df_data[partner_code_col].isin(list(nes_skip_codes))]
+        keep &= ~partner_code.isin(list(nes_skip_codes))
+    df_data = df_data[keep]
+    partner_code = partner_code[keep]
 
     # Séparation des déclarations d'export et d'import
     is_export = df_data[flow_col] == export_code
@@ -535,7 +562,7 @@ def build_mirror_flows(
     valid = set(valid_iso)
 
     # Flux NES : partenaire agrégé « Areas nes » (avant filtre pays individuels)
-    nes_mask = df_data[partner_code_col].isin(list(nes_partner_codes))
+    nes_mask = partner_code.isin(list(nes_partner_codes))
     df_nes = df_data[(is_export | is_import) & nes_mask].copy()
 
     # Restriction aux pays individuels (reporter et partenaire valides ISO-3)
@@ -851,20 +878,25 @@ _SOURCE_RATE, _SOURCE_MISSING = "rate", "missing"
 class TonnageReport:
     """Diagnostics of the tonne conversion step.
 
-    Shares are computed over the *side observations*, i.e. twice the number of
-    mirror flows (export side and import side).
+    Shares are computed over the *declared side observations*: each mirror flow
+    contributes its export side and its import side, but only those carrying a
+    quantity or a net weight. Sides that were never declared are excluded — they
+    say nothing about the conversion, and the double-declaration coverage they do
+    measure is already reported by :class:`MirrorReport`.
 
     Attributes:
         n_validated_rates: Number of ``(product, unit)`` rates that passed the
             count and dispersion filters.
         n_candidate_pairs: Number of ``(product, unit)`` pairs observed before
             those filters.
-        share_converted_from_other_units: Share of side observations whose
-            tonnage comes from an estimated rate, i.e. from a unit other than
-            the tonne or a weight unit.
-        share_tonnage_from_netwgt: Share of side observations whose tonnage
-            comes from the declared net weight.
-        share_tonnage_missing: Share of side observations left without tonnage.
+        share_converted_from_other_units: Share of declared side observations
+            whose tonnage comes from an estimated rate, i.e. from a unit other
+            than the tonne or a weight unit.
+        share_tonnage_from_netwgt: Share of declared side observations whose
+            tonnage comes from the declared net weight.
+        share_tonnage_missing: Share of declared side observations left without
+            tonnage — a genuine conversion failure (no weight, and no validated
+            rate for the ``(product, unit)`` pair).
     """
     n_validated_rates: int = 0
     n_candidate_pairs: int = 0
@@ -1061,9 +1093,17 @@ class TonnageConverter:
             df_out["q_m"], df_out["unit_m"], df_out["nw_m"], df_out[_PROD]
         )
 
-        # Diagnostics : parts par origine du tonnage, sur les observations de
-        # côté (export et import confondus)
+        # Diagnostics : parts par origine du tonnage, sur les seuls côtés
+        # effectivement déclarés (export et import confondus). Compter les côtés
+        # absents ferait de share_tonnage_missing une mesure de la couverture des
+        # déclarations — déjà portée par MirrorReport — et non de l'échec de
+        # conversion, et rendrait share_converted_from_other_units incomparable
+        # aux 8,5 % de la note.
+        declared_x = self._is_declared(df_out["q_x"], df_out["nw_x"])
+        declared_m = self._is_declared(df_out["q_m"], df_out["nw_m"])
         source = pd.concat([source_x, source_m], ignore_index=True)
+        declared = pd.concat([declared_x, declared_m], ignore_index=True)
+        source = source[declared]
         n_sides = len(source)
         denominator = float(n_sides) if n_sides else float("nan")
         self.report_.share_converted_from_other_units = (
@@ -1085,6 +1125,22 @@ class TonnageConverter:
         )
 
         return df_out
+
+    # Méthode auxiliaire : présence d'une déclaration exploitable d'un côté
+    @staticmethod
+    def _is_declared(qty: pd.Series, nw: pd.Series) -> pd.Series:
+        """Flag the sides carrying a quantity or a net weight.
+
+        Args:
+            qty: Declared quantities of one side.
+            nw: Net weights of the same side (kilograms).
+
+        Returns:
+            Boolean series, ``True`` where the side declared something a tonnage
+            could have been derived from.
+        """
+        # Côté déclaré : quantité renseignée ou poids net strictement positif
+        return qty.notna() | (nw > 0)
 
     # Méthode auxiliaire : conversion complète d'un côté vers la tonne
     def _to_tonnes(
@@ -1170,20 +1226,39 @@ def _collect_ratio(
 def world_median_unit_values(df_mirror: pd.DataFrame) -> pd.Series:
     """Compute the world median unit value ``UV^k`` per product.
 
-    Uses the export (FOB) unit value ``v_x / q_x_t`` across all flows, a proxy of
-    the product's transportability.
+    Pools the export unit values ``v_x / q_x_t`` **and** the import unit values
+    ``v_m / q_m_t``, a proxy of the product's transportability. Both sides are
+    used on purpose: ``ln UV^k`` is a regressor of the gravity equation whose
+    dependent variable is ``ln(UV^m) - ln(UV^x)``, so a median built on the
+    export side alone would correlate mechanically with the dependent variable on
+    thin products — where the world median is close to the very ``UV^x`` of the
+    flow — and bias the estimated coefficient ``η``.
 
     Args:
-        df_mirror: Mirror-flow table with tonne quantities (``q_x_t``).
+        df_mirror: Mirror-flow table with tonne quantities (``q_x_t``, ``q_m_t``).
 
     Returns:
         Series of median unit values indexed by product.
+
+    Examples:
+        >>> df_mirror = pd.DataFrame(
+        ...     {
+        ...         "product": ["100001", "100001"],
+        ...         "v_x": [10.0, float("nan")], "q_x_t": [1.0, float("nan")],
+        ...         "v_m": [float("nan"), 30.0], "q_m_t": [float("nan"), 1.0],
+        ...     }
+        ... )
+        >>> float(world_median_unit_values(df_mirror).loc["100001"])
+        20.0
     """
-    # Valeur unitaire export sur flux exploitables
-    uv = df_mirror["v_x"] / df_mirror["q_x_t"]
-    # Extraction des valeurs unitaires valides non nulles
-    df_valid = df_mirror.loc[(df_mirror["v_x"] > 0) & (df_mirror["q_x_t"] > 0), [_PROD]].copy()
-    df_valid["uv"] = uv[df_valid.index]
+    # Empilement des valeurs unitaires exploitables des deux côtés
+    frames = []
+    for value_col, qty_col in (("v_x", "q_x_t"), ("v_m", "q_m_t")):
+        usable = (df_mirror[value_col] > 0) & (df_mirror[qty_col] > 0)
+        df_side = df_mirror.loc[usable, [_PROD]].copy()
+        df_side["uv"] = df_mirror.loc[usable, value_col] / df_mirror.loc[usable, qty_col]
+        frames.append(df_side)
+    df_valid = pd.concat(frames, ignore_index=True)
     # Calcul de la médiane par produit
     return df_valid.groupby(_PROD)["uv"].median()
 
@@ -1260,11 +1335,21 @@ class CifGravityModel:
             and year dummies; rows with missing distance are dropped.
         """
         # Jointure des variables de gravité (exportateur = origine, importateur = destination)
+        # Restauration de l'index d'entrée : une jointure sur colonnes renvoie un
+        # RangeIndex, ce qui désalignerait silencieusement la série de predict de
+        # df_mirror (et, en aval, annulerait la fobisation sans erreur)
         df_merged = df_flows.merge(
             df_gravity.rename(columns={"iso_o": _EXP, "iso_d": _IMP}),
             on=[_EXP, _IMP],
             how="left",
         )
+        if len(df_merged) != len(df_flows):
+            raise ValueError(
+                f"The gravity join duplicated rows ({len(df_flows)} flows in, "
+                f"{len(df_merged)} out): df_gravity carries duplicate "
+                "(iso_o, iso_d) pairs."
+            )
+        df_merged.index = df_flows.index
         # Valeur unitaire médiane mondiale du produit
         df_merged["uv_world"] = df_merged[_PROD].map(self.uv_world_)
 
@@ -1449,8 +1534,15 @@ class FobisationReport:
             declaration that were corrected.
         share_skipped_non_cif: Share of flows left untouched because the
             importer's inferred regime is FOB.
-        share_reverted_fas: Share of flows whose FAS correction was reverted
-            because it widened the mirror gap.
+        share_reverted_fas: Share of flows whose FAS correction was abandoned,
+            for either reason — it widened the mirror gap, or no mirror
+            declaration allowed it to be tested at all.
+        share_fas_unverifiable: Subset of the above left uncorrected purely for
+            lack of a mirror declaration. The note conditions the FAS correction
+            on it *reducing* the mirror gap, which cannot be established without
+            a mirror; a value close to ``share_reverted_fas`` means the FAS
+            treatment is driven by untestable cases rather than by measured
+            deterioration.
         share_clipped_to_zero: Share of flows whose corrected value hit the zero
             floor.
         mean_correction_ratio: Mean ``v_m_fob / v_m`` over the corrected flows.
@@ -1462,6 +1554,7 @@ class FobisationReport:
     share_import_flows_corrected: float = float("nan")
     share_skipped_non_cif: float = float("nan")
     share_reverted_fas: float = float("nan")
+    share_fas_unverifiable: float = float("nan")
     share_clipped_to_zero: float = float("nan")
     mean_correction_ratio: float = float("nan")
     n_importers_detected_fob: int = 0
@@ -1474,19 +1567,27 @@ class Fobizer:
 
     Computes ``V_m_fob = V_m / (1 + cif_rate)`` under the note's safeguards, in
     strict priority order: conditional correction for FAS importers (kept only
-    when it reduces the mirror gap), no correction for importers whose inferred
-    valuation regime is FOB, unconditional correction floored at zero otherwise.
+    when it *demonstrably* reduces the mirror gap), no correction for importers
+    whose inferred valuation regime is FOB, unconditional correction floored at
+    zero otherwise.
+
+    The FAS condition is read strictly: an import declaration with no export
+    mirror offers nothing to compare, so the correction is abandoned rather than
+    presumed beneficial. Applying it there would mean correcting precisely where
+    the note's own criterion cannot be evaluated — and on a reporter the note
+    singles out because the correction is *not* systematically an improvement.
 
     The regime itself is no longer a parameter: it is inferred from the data by
     :func:`infer_import_valuation_regime` and handed to :meth:`transform`.
 
     Args:
         fas_countries: Importer ISO-3 codes declaring FAS (freight stripped only
-            when it reduces the mirror gap). FAS is not distinguishable from FOB
-            in the COMTRADE valuation columns — a FAS reporter fills
-            ``fobvalue`` — while the methodology reserves it a *conditional*
-            correction rather than no correction at all, hence this list stays in
-            configuration and takes priority over the inferred regime.
+            when it reduces the mirror gap, and only where that can be checked).
+            FAS is not distinguishable from FOB in the COMTRADE valuation
+            columns — a FAS reporter fills ``fobvalue`` — while the methodology
+            reserves it a *conditional* correction rather than no correction at
+            all, hence this list stays in configuration and takes priority over
+            the inferred regime.
 
     Attributes:
         report_: :class:`FobisationReport` of the step, populated by
@@ -1521,11 +1622,23 @@ class Fobizer:
 
         Returns:
             The frame with an added ``v_m_fob`` column.
+
+        Raises:
+            ValueError: If ``cif_rate`` is not aligned on ``df_mirror``.
         """
         # Copie indépendante des données
         df_out = df_mirror.copy()
         # Extraction de la valeur CIF (qui correspond généralement aux données d'importation)
         v_m = df_out["v_m"]
+
+        # Alignement exigé plutôt que subi : un désalignement rendrait le taux
+        # manquant partout, et la fobisation serait sautée sans le moindre signal
+        if not cif_rate.index.equals(df_out.index):
+            raise ValueError(
+                "cif_rate is not aligned on df_mirror: expected the index of "
+                "the mirror-flow table, got a different one. Pass the series "
+                "returned by CifGravityModel.predict on this very frame."
+            )
 
         # Valeur fobisée candidate (plancher à zéro), taux manquant → pas de correction
         rate = cif_rate.reindex(df_out.index)
@@ -1548,12 +1661,17 @@ class Fobizer:
 
         # Correction FAS conservée seulement si elle réduit l'écart miroir
         revert = pd.Series(False, index=df_out.index)
+        unverifiable = pd.Series(False, index=df_out.index)
         if fas.any():
             has_mirror = (df_out["v_x"] > 0) & (v_m > 0)
             gap_before = np.abs(np.log(df_out["v_x"] / v_m))
             gap_after = np.abs(np.log(df_out["v_x"] / candidate.replace(0.0, np.nan)))
-            # Ne garder la correction FAS que lorsqu'elle réduit l'écart
-            revert = fas & has_mirror & ~(gap_after < gap_before)
+            # Ne garder la correction FAS que lorsqu'elle réduit l'écart. Faute
+            # de flux miroir, le critère de la note est intestable : la
+            # correction est alors abandonnée plutôt que présumée bénéfique —
+            # « que si elle réduit l'écart » exclut d'agir sans pouvoir vérifier.
+            unverifiable = fas & ~has_mirror
+            revert = fas & (~has_mirror | ~(gap_after < gap_before))
             candidate = candidate.where(~revert, v_m)
 
         df_out["v_m_fob"] = candidate
@@ -1579,6 +1697,11 @@ class Fobizer:
             ),
             share_reverted_fas=(
                 float(int(revert.sum())) / float(n_flows) if n_flows else float("nan")
+            ),
+            share_fas_unverifiable=(
+                float(int(unverifiable.sum())) / float(n_flows)
+                if n_flows
+                else float("nan")
             ),
             share_clipped_to_zero=(
                 float(int((corrected & (candidate <= 0.0)).sum())) / float(n_flows)
@@ -1611,12 +1734,17 @@ class QualityReport:
 
     Attributes:
         n_countries_scored: Number of countries carrying a ``σ̂`` estimate.
+        sigma_floor: Strictly positive floor applied to ``σ̂``, derived from the
+            fit (see :class:`ReportingQualityModel`). Countries sitting on it
+            are those equation (13) drove below zero; comparing it to
+            ``sigma_*_median`` says how much of the ranking it flattens.
         sigma_export_median: Median ``σ̂`` of the exporter dimension.
         sigma_import_median: Median ``σ̂`` of the importer dimension.
         sigma_export_max: Largest ``σ̂`` of the exporter dimension.
         sigma_import_max: Largest ``σ̂`` of the importer dimension.
     """
     n_countries_scored: int = 0
+    sigma_floor: float = float("nan")
     sigma_export_median: float = float("nan")
     sigma_import_median: float = float("nan")
     sigma_export_max: float = float("nan")
@@ -1654,9 +1782,31 @@ class ReportingQualityModel:
     declared *values* for both targets, as in the note. Per-country marginal
     means are turned into standard deviations ``σ̂``.
 
-    The step works on the canonical mirror-flow columns only, so it carries no
-    methodological parameter.
+    Args:
+        min_sigma_ratio: Floor applied to ``σ̂``, expressed as a fraction of the
+            median strictly positive ``σ̂`` of the fit (so it follows the scale
+            the data actually produces instead of hard-coding one). Equation (13)
+            of the note, ``K_i = min_i LS_RD_i + 2·stderr_i``, drives every
+            country within two standard errors of the best declarant below zero;
+            flooring them at exactly zero gives them a null error variance, hence
+            a weight of exactly ``1`` against any partner with ``σ̂ > 0``. A
+            strictly positive floor removes that mass point. It only *softens*
+            the asymmetry — the note's optimal weight behaves like
+            ``σ_j² / (σ_i² + σ_j²)``, so raising the ratio is what makes the
+            reconciliation less winner-takes-all; the value belongs in
+            configuration and is worth revisiting once the ``σ̂`` distribution is
+            observed on real data (see ``quality/sigma_by_country.csv`` and the
+            ``sigma_*_median`` metrics).
+
+    Attributes:
+        sigma_floor_: Floor value derived by the last :meth:`fit`, in ``σ̂``
+            units.
     """
+
+    # Initialisation
+    def __init__(self, *, min_sigma_ratio: float = 0.1) -> None:
+        # Initialisation des attributs (stockage tel quel, convention sklearn)
+        self.min_sigma_ratio = min_sigma_ratio
 
     # Estimation pour une cible (valeurs ou quantités)
     def fit(self, df_mirror: pd.DataFrame, target: str) -> QualityResult:
@@ -1704,8 +1854,19 @@ class ReportingQualityModel:
         sigma_export = _ls_mean_to_sigma(ls_exp, se_exp)
         sigma_import = _ls_mean_to_sigma(ls_imp, se_imp)
 
+        # Plancher strictement positif : l'équation (13) ramène sous zéro tout
+        # pays situé à moins de deux écarts-types du meilleur déclarant, et une
+        # variance d'erreur exactement nulle lui vaudrait un poids de 1 face à
+        # n'importe quel partenaire. Calé sur l'échelle des σ̂ observés.
+        self.sigma_floor_ = _sigma_floor(
+            sigma_export, sigma_import, ratio=self.min_sigma_ratio
+        )
+        sigma_export = sigma_export.clip(lower=self.sigma_floor_)
+        sigma_import = sigma_import.clip(lower=self.sigma_floor_)
+
         # Diagnostics : dispersion des σ̂ estimés, déjà portés par le résultat
         report = QualityReport(
+            sigma_floor=self.sigma_floor_,
             n_countries_scored=int(
                 len(set(sigma_export.index) | set(sigma_import.index))
             ),
@@ -1718,11 +1879,12 @@ class ReportingQualityModel:
         # Logging
         logger.info(
             "ReportingQualityModel (%s): %d pays notés, sigma médian export "
-            "%.3f / import %.3f",
+            "%.3f / import %.3f (plancher %.4g)",
             target,
             report.n_countries_scored,
             report.sigma_export_median,
             report.sigma_import_median,
+            report.sigma_floor,
         )
 
         return QualityResult(
@@ -1810,7 +1972,10 @@ def _ls_mean_to_sigma(ls_mean: pd.Series, std_error: pd.Series) -> pd.Series:
 
     Applies ``K_i = min_i LS_RD + 2·stderr_i`` and
     ``σ̂_i = (π/2)·(LS_RD_i - K_i)``, floored at zero so the best declarant carries
-    the smallest variance.
+    the smallest variance. The strictly positive floor that keeps a null variance
+    from turning into a weight of exactly ``1`` is applied afterwards, by
+    :meth:`ReportingQualityModel.fit`, because it needs both dimensions to set
+    its scale.
 
     Args:
         ls_mean: Least-square mean of ``RD`` per country.
@@ -1824,6 +1989,42 @@ def _ls_mean_to_sigma(ls_mean: pd.Series, std_error: pd.Series) -> pd.Series:
     k = min_ls + 2.0 * std_error.reindex(ls_mean.index).fillna(0.0)
     sigma = (math.pi / 2.0) * (ls_mean - k)
     return sigma.clip(lower=0.0)
+
+
+# Fonction de calage du plancher des σ̂ sur l'échelle observée
+def _sigma_floor(
+    sigma_export: pd.Series, sigma_import: pd.Series, *, ratio: float
+) -> float:
+    """Derive the strictly positive floor applied to ``σ̂``.
+
+    Scales the floor on the data rather than on a hard-coded constant: it is
+    ``ratio`` times the median of the strictly positive ``σ̂`` pooled over both
+    country dimensions. Falls back to ``0`` when the fit produced no strictly
+    positive ``σ̂`` at all — there is then no scale to speak of, and every weight
+    degenerates to ``0.5`` anyway.
+
+    Args:
+        sigma_export: Raw exporter ``σ̂``, before flooring.
+        sigma_import: Raw importer ``σ̂``, before flooring.
+        ratio: Fraction of the median strictly positive ``σ̂`` to use as floor.
+
+    Returns:
+        The floor, in ``σ̂`` units.
+
+    Examples:
+        >>> exp = pd.Series({"AAA": 0.0, "BBB": 0.4})
+        >>> imp = pd.Series({"AAA": 0.6, "BBB": 0.0})
+        >>> _sigma_floor(exp, imp, ratio=0.1)
+        0.05
+        >>> _sigma_floor(pd.Series({"AAA": 0.0}), pd.Series({"AAA": 0.0}), ratio=0.1)
+        0.0
+    """
+    # Échelle des σ̂ effectivement estimés (les planchers à zéro sont écartés)
+    pooled = pd.concat([sigma_export, sigma_import], ignore_index=True)
+    positive = pooled[pooled > 0]
+    if positive.empty:
+        return 0.0
+    return float(ratio) * float(positive.median())
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -1886,29 +2087,39 @@ class MirrorReconciler:
 
         Returns:
             A frame keyed by ``(exporter, importer, product, year)`` with
-            ``reconciled_value`` and ``reconciled_quantity``.
+            ``reconciled_value``, ``reconciled_quantity`` and the transient
+            column :data:`_VALUE_WEIGHT` holding the weight ``w`` borne by the
+            exporter declaration in the value reconciliation. That column is
+            consumed by :class:`AreaNesReallocator` and dropped by
+            :func:`run_baci`; it is not part of the persisted schema.
         """
         # Copie indépendante des données
         df_out = df_mirror.copy()
 
-        # Réconciliation des valeurs (export FAB vs import fobisé)
-        df_out["reconciled_value"] = _reconcile_pair(
+        # Réconciliation des valeurs (export FAB vs import fobisé) ; le poids
+        # accompagne le résultat, l'étape NES en ayant besoin pour ajouter de la
+        # valeur du côté exportateur d'un flux déjà réconcilié
+        df_out["reconciled_value"], value_weight = _reconcile_pair(
             df_out, "v_x", "v_m_fob", quality_value
         )
+        df_out[_VALUE_WEIGHT] = value_weight
         # Réconciliation des quantités (tonnes des deux côtés)
-        df_out["reconciled_quantity"] = _reconcile_pair(
+        df_out["reconciled_quantity"], _ = _reconcile_pair(
             df_out, "q_x_t", "q_m_t", quality_qty
         )
 
         # Restriction aux colonnes d'intérêt
-        cols = [_EXP, _IMP, _PROD, _YEAR, "reconciled_value", "reconciled_quantity"]
+        cols = [
+            _EXP, _IMP, _PROD, _YEAR,
+            "reconciled_value", "reconciled_quantity", _VALUE_WEIGHT,
+        ]
         return df_out[cols]
 
 
 # Fonction de réconciliation d'un couple de colonnes miroirs
 def _reconcile_pair(
     df_mirror: pd.DataFrame, col_i: str, col_j: str, quality: QualityResult
-) -> pd.Series:
+) -> Tuple[pd.Series, pd.Series]:
     """Reconcile one mirror pair (value or quantity) into a single series.
 
     Args:
@@ -1918,8 +2129,15 @@ def _reconcile_pair(
         quality: Per-country variances for the reconciled quantity.
 
     Returns:
-        Reconciled series (both-flow convex combination, single-flow passthrough,
-        ``NaN`` when neither side exists).
+        A tuple ``(reconciled, weight)``: the reconciled series (both-flow convex
+        combination, single-flow passthrough, ``NaN`` when neither side exists)
+        and the weight ``w`` actually borne by the exporter declaration — the
+        optimal weight when both flows exist, ``1`` when only the exporter
+        declared, ``0`` when only the importer did, ``NaN`` when neither did.
+        The weight is returned rather than kept private because a later step may
+        have to add value *to the exporter declaration* of an already reconciled
+        flow (see :class:`AreaNesReallocator`), which is only correct on the
+        ``w`` scale.
     """
     # Extraction des valeurs d'intérêt des données
     v_i = df_mirror[col_i]
@@ -1954,7 +2172,14 @@ def _reconcile_pair(
     only_j = (~has_i & has_j).to_numpy()
     reconciled[only_i] = v_i[only_i]
     reconciled[only_j] = v_j[only_j]
-    return reconciled
+
+    # Poids effectivement porté par la déclaration de l'exportateur : le poids
+    # optimal sur les miroirs complets, 1 ou 0 sur les flux à déclaration unique
+    weight = pd.Series(np.nan, index=df_mirror.index, dtype="float64")
+    weight[both] = w[both]
+    weight[only_i] = 1.0
+    weight[only_j] = 0.0
+    return reconciled, weight
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -1971,7 +2196,13 @@ class NesReport:
         share_final_flows_affected: Share of the final reconciled flows that
             received reallocated value.
         n_flows_enriched: Number of flows that received reallocated value.
-        value_reallocated: Total value distributed across identified partners.
+        value_reallocated: NES value distributed across identified partners,
+            i.e. the amount added to the *exporter declarations* and removed
+            from the NES pool before the residual step.
+        value_added_to_flows: Value actually added to ``reconciled_value``,
+            i.e. ``Σ w·add`` — smaller than ``value_reallocated``, the
+            reconciled value retaining only the fraction ``w`` of the exporter
+            declaration.
         value_absorbed: NES value considered already counted in the imports
             declared without an export mirror.
         value_discarded: NES value left without any identifiable partner.
@@ -1980,6 +2211,7 @@ class NesReport:
     """
     share_final_flows_affected: float = float("nan")
     n_flows_enriched: int = 0
+    value_added_to_flows: float = float("nan")
     value_reallocated: float = float("nan")
     value_absorbed: float = float("nan")
     value_discarded: float = float("nan")
@@ -2003,6 +2235,13 @@ class AreaNesReallocator:
     This is the most heuristic step of the methodology and is therefore optional
     (``apply_nes`` in :func:`run_baci`). "Other Asia, nes" partners are excluded
     upfront by :func:`build_mirror_flows` (``nes_skip_codes``).
+
+    The note also asks for "Commodities NES" to be left aside. That exclusion is
+    **not** enforced here: it happens further upstream, at extraction time, via
+    the ``products.exclude`` list of ``config/datasets/comtrade.yaml`` (HS code
+    ``999999``, alongside the ``00``/``0090``/``009000`` aggregates). Should that
+    extraction filter change, the exclusion has to be reinstated — either there or
+    in this step.
 
     The complete list of Areas not elsewhere specified is available at https://uncomtrade.org/docs/areas-not-elsewhere-specified/
 
@@ -2061,8 +2300,19 @@ class AreaNesReallocator:
            counting; otherwise only the excess remains and, having no
            identifiable partner, is discarded (logged).
 
+        Steps 1 and 2 both reason on the **exporter declaration**: the value is
+        allocated as ``V^x' = V^x + add`` and the safeguard is evaluated on that
+        scale. Since this step runs *after* the reconciliation, only the fraction
+        ``w`` of ``add`` borne by the exporter declaration reaches
+        ``reconciled_value`` — hence the :data:`_VALUE_WEIGHT` column carried by
+        ``df_reconciled``. Adding ``add`` unweighted would over-allocate by
+        ``(1 - w)·add``.
+
         Args:
-            df_reconciled: Reconciled flows from :meth:`MirrorReconciler.transform`.
+            df_reconciled: Reconciled flows from :meth:`MirrorReconciler.transform`,
+                carrying the :data:`_VALUE_WEIGHT` column. Absent that column
+                every weight defaults to ``1``, which reproduces the unweighted
+                (over-allocating) behaviour.
             df_mirror: Mirror-flow table (for per-partner declared/mirror sums).
             df_nes: "Areas NES" declarations kept aside by
                 :func:`build_mirror_flows`.
@@ -2079,6 +2329,7 @@ class AreaNesReallocator:
         self.report_ = NesReport(
             share_final_flows_affected=0.0,
             value_reallocated=0.0,
+            value_added_to_flows=0.0,
             value_absorbed=0.0,
             value_discarded=0.0,
             share_nes_value_reallocated=0.0,
@@ -2205,6 +2456,7 @@ class AreaNesReallocator:
                 share_final_flows_affected=0.0,
                 n_flows_enriched=0,
                 value_reallocated=0.0,
+                value_added_to_flows=0.0,
                 value_absorbed=float(
                     (df_residual["v_nes_prime"] - df_residual["unallocated"]).sum()
                 ),
@@ -2223,6 +2475,13 @@ class AreaNesReallocator:
         # réallocation (dont les valeurs réconciliées manquantes) restent intacts
         df_out = df_reconciled.merge(df_add, on=keys4, how="left")
         add_value = df_out.pop("add_value").fillna(0.0)
+        # Pondération par w : la réallocation abonde la déclaration de
+        # l'exportateur (V^x' = V^x + add, échelle sur laquelle le garde-fou
+        # ci-dessus a été évalué), et la valeur réconciliée n'en retient que la
+        # fraction w. Ajouter add tel quel sur-allouerait de (1 − w)·add, soit
+        # près du double de la valeur voulue lorsque w ≈ 0,5.
+        weight = df_out[_VALUE_WEIGHT].fillna(1.0) if _VALUE_WEIGHT in df_out else 1.0
+        add_value = add_value * weight
         df_out["reconciled_value"] = df_out["reconciled_value"] + add_value
 
         # Diagnostics : ampleur du traitement sur les flux finaux
@@ -2235,6 +2494,7 @@ class AreaNesReallocator:
             ),
             n_flows_enriched=n_enriched,
             value_reallocated=value_reallocated,
+            value_added_to_flows=float(add_value.sum()),
             value_absorbed=float(
                 (df_residual["v_nes_prime"] - df_residual["unallocated"]).sum()
             ),
@@ -2247,11 +2507,13 @@ class AreaNesReallocator:
         # Logging
         logger.info(
             "AreaNesReallocator: %d flux enrichis, soit %.1f%% des flux finaux "
-            "(%.1f réalloués, %.1f absorbés par les imports sans miroir, "
-            "%.1f écartés faute de partenaire)",
+            "(%.1f réalloués côté exportateur, dont %.1f effectivement ajoutés "
+            "aux valeurs réconciliées ; %.1f absorbés par les imports sans "
+            "miroir, %.1f écartés faute de partenaire)",
             self.report_.n_flows_enriched,
             100.0 * self.report_.share_final_flows_affected,
             self.report_.value_reallocated,
+            self.report_.value_added_to_flows,
             self.report_.value_absorbed,
             self.report_.value_discarded,
         )
@@ -2360,6 +2622,8 @@ def required_columns(config: BaciConfig = DEFAULT_CONFIG) -> List[str]:
     Examples:
         >>> required_columns()[:3]
         ['flowCode', 'reporterISO', 'partnerISO']
+        >>> required_columns()[-1]
+        'classificationCode'
     """
     return list(
         dict.fromkeys(
@@ -2376,6 +2640,11 @@ def required_columns(config: BaciConfig = DEFAULT_CONFIG) -> List[str]:
                 config.schema.netwgt_col,
                 config.schema.cif_value_col,
                 config.schema.fob_value_col,
+                # Sans cette colonne, _assert_homogeneous_classification se
+                # contente d'un avertissement : le garde-fou d'homogénéité HS
+                # serait un no-op chez tout appelant projetant exactement cette
+                # liste (cas de scripts/process_baci.py)
+                config.schema.classification_col,
             ]
         )
     )
@@ -2597,7 +2866,7 @@ def run_baci(
     df_mirror = fobizer.transform(df_mirror, cif_rate, df_regime)
 
     # Étape 4 — qualité de déclaration (valeurs puis quantités)
-    quality_model = ReportingQualityModel()
+    quality_model = ReportingQualityModel(min_sigma_ratio=config.min_sigma_ratio)
     quality_value = quality_model.fit(df_mirror, target="value")
     quality_qty = quality_model.fit(df_mirror, target="quantity")
 
@@ -2618,10 +2887,13 @@ def run_baci(
         df_reconciled = reallocator.transform(df_reconciled, df_mirror, df_nes)
         nes_report = reallocator.report_
 
-    # Nettoyage : flux réconciliés exploitables (valeur non manquante)
+    # Nettoyage : flux réconciliés exploitables (valeur non manquante) et
+    # retrait du poids de réconciliation, transitoire (il n'a servi qu'à mettre
+    # la réallocation NES à l'échelle de la valeur réconciliée)
     df_reconciled = df_reconciled[
         df_reconciled["reconciled_value"].notna()
     ].reset_index(drop=True)
+    df_reconciled = df_reconciled.drop(columns=[_VALUE_WEIGHT], errors="ignore")
     if df_reconciled.empty:
         raise ValueError("No reconciled flow produced")
 
