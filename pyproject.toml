@@ -17,6 +17,7 @@ dependencies = [
     "pyyaml>=6.0.3",
     "requests>=2.32.5",
     "s3fs>=0.4.2",
+    "scipy>=1.18.0",
     "statsmodels>=0.14.6",
     "xlrd>=2.0.2",
 ]
@@ -32,6 +33,7 @@ eurostat-script = "scripts.download_eurostat_comext:main"
 baci-script = "scripts.process_baci:main"
 baci-hs-script = "scripts.process_baci_hs:main"
 vulnerabilities-eurostat-script = "scripts.compute_trade_vulnerabilities:main"
+vulnerabilities-network-script = "scripts.compute_network_vulnerabilities:main"
 test-baci-script = "scripts.test_baci:main"
 
 [build-system]
