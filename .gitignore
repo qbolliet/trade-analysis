@@ -220,8 +220,7 @@ __marimo__/
 # Claude
 CLAUDE.md
 .claude/
-PROMPTS.md
-ARCHITECTURE.md
+MIGRATION_PLAN.md
 TODO
 
 # Temp trade files
