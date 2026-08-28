@@ -1,0 +1,2486 @@
+{
+  "macroforecast.datasets": {
+    "APIClient": {
+      "kind": "class",
+      "methods": {
+        "close": {
+          "kind": "method",
+          "signature": "(self) -> None"
+        },
+        "get": {
+          "kind": "method",
+          "signature": "(self, endpoint: str, params: Optional[Dict[str, Any]] = None, headers: Optional[Dict[str, str]] = None, timeout: Optional[int] = None) -> requests.models.Response"
+        }
+      },
+      "qualified_name": "macroforecast.datasets.APIClient",
+      "signature": "(base_url: str, timeout: int = 30, max_retries: int = 3, backoff_factor: float = 0.5, headers: Optional[Dict[str, str]] = None) -> None"
+    },
+    "AbstractSDMXClient": {
+      "kind": "class",
+      "methods": {
+        "close": {
+          "kind": "method",
+          "signature": "(self) -> None"
+        },
+        "execute_query": {
+          "kind": "method",
+          "signature": "(self, query: Any) -> pandas.core.frame.DataFrame"
+        },
+        "fetch_updates": {
+          "kind": "method",
+          "signature": "(self, query: Any, since: Optional[datetime.datetime], n_observations: int = 10) -> pandas.core.frame.DataFrame"
+        },
+        "get_data": {
+          "kind": "method",
+          "signature": "(self, *args, **kwargs) -> pandas.core.frame.DataFrame"
+        },
+        "register_structure": {
+          "kind": "method",
+          "signature": "(self, structure: 'DataflowStructure') -> None"
+        },
+        "resolve_query_structure": {
+          "kind": "method",
+          "signature": "(self, query: Any) -> Optional[ForwardRef('DataflowStructure')]"
+        }
+      },
+      "qualified_name": "macroforecast.datasets.AbstractSDMXClient",
+      "signature": "(structure_registry: Optional[ForwardRef('DataflowStructureRegistry')] = None, auto_fetch_structure: bool = True, rate_limiter: Optional[ForwardRef('RateLimiter')] = None, auto_load_rate_limit: bool = True) -> None"
+    },
+    "CompositeRateLimiter": {
+      "kind": "class",
+      "methods": {
+        "acquire": {
+          "kind": "method",
+          "signature": "(self) -> None"
+        },
+        "get_remaining_requests": {
+          "kind": "method",
+          "signature": "(self) -> int"
+        },
+        "get_stats": {
+          "kind": "method",
+          "signature": "(self) -> macroforecast.datasets.core.reports.RateLimitStats"
+        },
+        "reset": {
+          "kind": "method",
+          "signature": "(self) -> None"
+        }
+      },
+      "qualified_name": "macroforecast.datasets.CompositeRateLimiter",
+      "signature": "(limiters: List[macroforecast.datasets.core.rate_limiter.RateLimiter]) -> None"
+    },
+    "ComtradeClient": {
+      "kind": "class",
+      "methods": {
+        "close": {
+          "kind": "method",
+          "signature": "(self) -> None"
+        },
+        "execute_query": {
+          "kind": "method",
+          "signature": "(self, query: 'ComtradeQueryRequest') -> pandas.core.frame.DataFrame"
+        },
+        "fetch_updates": {
+          "kind": "method",
+          "signature": "(self, query: 'ComtradeQueryRequest', since: Optional[datetime.datetime], n_observations: int = 10) -> pandas.core.frame.DataFrame"
+        },
+        "get": {
+          "kind": "method",
+          "signature": "(self, endpoint: str, params: Optional[Dict[str, Any]] = None, headers: Optional[Dict[str, str]] = None, timeout: Optional[int] = None) -> requests.models.Response"
+        },
+        "get_data": {
+          "kind": "method",
+          "signature": "(self, flows: Union[List[str], str, NoneType] = ['M', 'X'], products: Union[List[int], List[str], int, str, NoneType] = None, reporters: Union[List[int], List[str], int, str, NoneType] = None, partners: Union[List[int], List[str], int, str, NoneType] = None, partners2: Union[List[int], List[str], int, str, NoneType] = None, customs: Union[List[str], str, NoneType] = None, mot: Union[List[str], str, NoneType] = None, periods: Union[List[str], str, NoneType] = None, period_start: Optional[str] = None, period_end: Optional[str] = None, type_code: str = 'C', classification: str = 'HS', frequency: str = 'annual', max_records: Optional[int] = None, format_output: str = 'JSON', count_only: Optional[bool] = None, include_desc: bool = True) -> Tuple[pandas.core.frame.DataFrame, dict]"
+        },
+        "get_final_data_availability": {
+          "kind": "method",
+          "signature": "(self, reporters: Union[List[int], List[str], int, str, NoneType] = None, periods: Union[List[str], str, NoneType] = None, frequency: str = 'annual', type_code: str = 'C', classification: str = 'HS') -> pandas.core.frame.DataFrame"
+        },
+        "get_metadata": {
+          "kind": "method",
+          "signature": "(self, category: Optional[str] = None) -> pandas.core.frame.DataFrame"
+        },
+        "get_structure": {
+          "kind": "method",
+          "signature": "(self, dataflow: str, agency: str = 'COMTRADE') -> macroforecast.datasets.core.structures.DataflowStructure"
+        },
+        "get_valid_periods": {
+          "kind": "method",
+          "signature": "(self, periods: Union[List[str], str, NoneType] = None, period_start: Optional[str] = None, period_end: Optional[str] = None, frequency: Optional[str] = 'monthly') -> List[str]"
+        },
+        "resolve_query_structure": {
+          "kind": "method",
+          "signature": "(self, query: 'ComtradeQueryRequest') -> macroforecast.datasets.core.structures.DataflowStructure"
+        }
+      },
+      "qualified_name": "macroforecast.datasets.ComtradeClient",
+      "signature": "(base_url: str = 'https://comtradeapi.un.org', timeout: int = 120, subscription_key: Optional[str] = None, proxy: Optional[str] = None, structure_registry: Optional[macroforecast.datasets.core.structures.DataflowStructureRegistry] = None, rate_limiter: Union[macroforecast.datasets.core.rate_limiter.RateLimiter, macroforecast.datasets.core.rate_limiter.CompositeRateLimiter, NoneType] = None, auto_load_rate_limit: bool = True, max_retries: int = 3, backoff_factor: float = 0.5) -> None"
+    },
+    "ComtradeQueryRequest": {
+      "kind": "class",
+      "methods": {
+        "agency": {
+          "kind": "property",
+          "signature": null
+        },
+        "from_dict": {
+          "kind": "method",
+          "signature": "(data: Dict[str, Any]) -> 'SDMXQueryRequest'"
+        },
+        "get_dataflow_key": {
+          "kind": "method",
+          "signature": "(self) -> str"
+        },
+        "identity_key": {
+          "kind": "method",
+          "signature": "(self) -> str"
+        },
+        "to_dict": {
+          "kind": "method",
+          "signature": "(self) -> Dict[str, Any]"
+        }
+      },
+      "qualified_name": "macroforecast.datasets.ComtradeQueryRequest",
+      "signature": "(dataflow: str, version: str = '*', flows: Union[List[str], str, NoneType] = None, reporters: Union[List[str], List[int], str, int, NoneType] = None, partners: Union[List[str], List[int], str, int, NoneType] = None, partners2: Union[List[str], List[int], str, int, NoneType] = None, products: Union[List[str], List[int], str, int, NoneType] = None, customs: Union[List[str], str, NoneType] = None, mot: Union[List[str], str, NoneType] = None, periods: Union[List[str], str, NoneType] = None, period_start: Optional[str] = None, period_end: Optional[str] = None, type_code: str = 'C', classification: str = 'HS', frequency: str = 'annual', max_records: Optional[int] = None, count_only: Optional[bool] = None, include_desc: bool = True, format: macroforecast.datasets.sources.comtrade.formats.ComtradeResponseFormat = <ComtradeResponseFormat.JSON: 'json'>) -> None"
+    },
+    "ComtradeResponseFormat": {
+      "kind": "class",
+      "methods": {
+        "maketrans": {
+          "kind": "method",
+          "signature": null
+        }
+      },
+      "qualified_name": "macroforecast.datasets.ComtradeResponseFormat",
+      "signature": "(*values)"
+    },
+    "DataflowStructure": {
+      "kind": "class",
+      "methods": {
+        "from_dict": {
+          "kind": "method",
+          "signature": "(data: Dict[str, Any]) -> 'DataflowStructure'"
+        },
+        "get_key": {
+          "kind": "method",
+          "signature": "(self) -> str"
+        },
+        "get_name": {
+          "kind": "method",
+          "signature": "(self, position: int) -> Optional[str]"
+        },
+        "get_position": {
+          "kind": "method",
+          "signature": "(self, name: str) -> Optional[int]"
+        },
+        "to_dict": {
+          "kind": "method",
+          "signature": "(self) -> Dict[str, Any]"
+        }
+      },
+      "qualified_name": "macroforecast.datasets.DataflowStructure",
+      "signature": "(agency: str, dataflow: str, num_dimensions: int, dimensions: List[macroforecast.datasets.core.structures.DimensionInfo], description: Optional[str] = None)"
+    },
+    "DataflowStructureRegistry": {
+      "kind": "class",
+      "methods": {
+        "get": {
+          "kind": "method",
+          "signature": "(self, agency: str, dataflow: str) -> Optional[macroforecast.datasets.core.structures.DataflowStructure]"
+        },
+        "get_num_dimensions": {
+          "kind": "method",
+          "signature": "(self, agency: str, dataflow: str) -> Optional[int]"
+        },
+        "has": {
+          "kind": "method",
+          "signature": "(self, agency: str, dataflow: str) -> bool"
+        },
+        "list_structures": {
+          "kind": "method",
+          "signature": "(self) -> List[str]"
+        },
+        "load_from_dict": {
+          "kind": "method",
+          "signature": "(self, data: Dict[str, Any]) -> None"
+        },
+        "load_from_file": {
+          "kind": "method",
+          "signature": "(self, path: Union[str, pathlib._local.Path]) -> None"
+        },
+        "register": {
+          "kind": "method",
+          "signature": "(self, structure: macroforecast.datasets.core.structures.DataflowStructure) -> None"
+        },
+        "resolve_dimensions": {
+          "kind": "method",
+          "signature": "(self, agency: str, dataflow: str, dimensions: Dict[Union[str, int], Union[str, List[str]]]) -> Dict[int, List[str]]"
+        },
+        "save_to_file": {
+          "kind": "method",
+          "signature": "(self, path: Union[str, pathlib._local.Path]) -> None"
+        },
+        "to_dict": {
+          "kind": "method",
+          "signature": "(self) -> Dict[str, Any]"
+        }
+      },
+      "qualified_name": "macroforecast.datasets.DataflowStructureRegistry",
+      "signature": "(structures_dict: Optional[Dict[str, Any]] = None, config_path: Union[str, pathlib._local.Path, NoneType] = None)"
+    },
+    "DimensionAtObservation": {
+      "kind": "class",
+      "methods": {
+        "maketrans": {
+          "kind": "method",
+          "signature": null
+        }
+      },
+      "qualified_name": "macroforecast.datasets.DimensionAtObservation",
+      "signature": "(*values)"
+    },
+    "DimensionInfo": {
+      "kind": "class",
+      "methods": {
+        "from_dict": {
+          "kind": "method",
+          "signature": "(data: Dict[str, Any]) -> 'DimensionInfo'"
+        },
+        "to_dict": {
+          "kind": "method",
+          "signature": "(self) -> Dict[str, Any]"
+        }
+      },
+      "qualified_name": "macroforecast.datasets.DimensionInfo",
+      "signature": "(name: str, position: int, description: Optional[str] = None, codelist: Optional[str] = None)"
+    },
+    "DownloadReport": {
+      "kind": "class",
+      "methods": {
+        "aggregates": {
+          "kind": "method",
+          "signature": "(self) -> 'Dict[str, float]'"
+        },
+        "to_frame": {
+          "kind": "method",
+          "signature": "(self) -> 'pd.DataFrame'"
+        },
+        "to_metrics": {
+          "kind": "method",
+          "signature": "(self, prefix: 'str' = 'download') -> 'Dict[str, float]'"
+        }
+      },
+      "qualified_name": "macroforecast.datasets.DownloadReport",
+      "signature": "(processed: 'int' = 0, rows_written: 'int' = 0, empty: 'int' = 0, errors: 'int' = 0, stopped_early: 'bool' = False, n_queries_planned: 'int' = 0, n_queries_remaining: 'int' = 0, n_tables_created: 'int' = 0, n_structures_fetched: 'int' = 0, duration_seconds: 'float' = 0.0, queries: 'List[QueryReport]' = <factory>) -> None"
+    },
+    "DuplicateHandling": {
+      "kind": "function",
+      "qualified_name": "macroforecast.datasets.DuplicateHandling",
+      "signature": "(*args, **kwargs)"
+    },
+    "EurostatClient": {
+      "kind": "class",
+      "methods": {
+        "close": {
+          "kind": "method",
+          "signature": "(self) -> None"
+        },
+        "execute_query": {
+          "kind": "method",
+          "signature": "(self, query: Any) -> pandas.core.frame.DataFrame"
+        },
+        "fetch_updates": {
+          "kind": "method",
+          "signature": "(self, query: 'EurostatQueryRequest', since: Optional[datetime.datetime], n_observations: int = 10) -> pandas.core.frame.DataFrame"
+        },
+        "get_data": {
+          "kind": "method",
+          "signature": "(self, dataflow: str, version: str = '*', dimensions: Optional[Dict[str, Union[str, List[str]]]] = None, start_period: Optional[str] = None, end_period: Optional[str] = None, last_n_observations: Optional[int] = None, first_n_observations: Optional[int] = None, format: macroforecast.datasets.sources.eurostat.formats.EurostatResponseFormat = <EurostatResponseFormat.CSV: 'csv'>, compress: bool = False, attributes: Optional[str] = None, measures: Optional[str] = None, lang: Optional[str] = None, labels: Optional[str] = None, response_format_version: Optional[str] = None, dimension_at_observation: Optional[str] = None, detail: Optional[Literal['full', 'dataonly', 'serieskeysonly', 'nodata']] = None, on_duplicate: Literal['ignore', 'warn', 'raise'] = 'warn', split_dimensions: Optional[List[str]] = None, max_split_combinations: int = 100, default_dimensions: List[str] = ['TIME_PERIOD']) -> pandas.core.frame.DataFrame"
+        },
+        "get_data_last_update": {
+          "kind": "method",
+          "signature": "(self, dataflow: str, version: str = '*') -> Optional[datetime.datetime]"
+        },
+        "get_dataflow_structure": {
+          "kind": "method",
+          "signature": "(self, dataflow: str, version: str = '+') -> macroforecast.datasets.core.structures.DataflowStructure"
+        },
+        "get_structure": {
+          "kind": "method",
+          "signature": "(self, resource_type: macroforecast.datasets.core.sdmx.StructureResourceType, resource_id: str, agency: str = 'ESTAT', version: Optional[str] = '+', references: Literal['none', 'parents', 'parentsandsiblings', 'ancestors', 'children', 'descendants', 'all'] = 'none', detail: Literal['full', 'allstubs', 'referencestubs', 'allcompletestubs', 'referencecompletestubs', 'referencepartial'] = 'full', format: Optional[str] = None, format_version: Optional[str] = None, compress: Optional[Literal['true', 'false']] = None, accept_encoding: Optional[str] = None, accept_language: Optional[str] = None, timeout: Optional[int] = None) -> str"
+        },
+        "list_all_dataflows": {
+          "kind": "method",
+          "signature": "(self, agency: str = 'ESTAT') -> pandas.core.frame.DataFrame"
+        },
+        "register_structure": {
+          "kind": "method",
+          "signature": "(self, structure: 'DataflowStructure') -> None"
+        },
+        "resolve_query_structure": {
+          "kind": "method",
+          "signature": "(self, query: Any) -> Optional[ForwardRef('DataflowStructure')]"
+        }
+      },
+      "qualified_name": "macroforecast.datasets.EurostatClient",
+      "signature": "(api_version: macroforecast.datasets.core.sdmx.SDMXVersion = <SDMXVersion.V3: 'v3'>, base_url: Optional[str] = None, timeout: int = 90, structure_registry: Optional[macroforecast.datasets.core.structures.DataflowStructureRegistry] = None, auto_fetch_structure: bool = True, rate_limiter: Optional[macroforecast.datasets.core.rate_limiter.RateLimiter] = None, auto_load_rate_limit: bool = True)"
+    },
+    "EurostatEndpointBuilderV21": {
+      "kind": "class",
+      "methods": {
+        "build_data_endpoint": {
+          "kind": "method",
+          "signature": "(self, dataflow: str, agency: Optional[str], version: Optional[str], key: Optional[str] = 'all') -> str"
+        },
+        "build_data_params": {
+          "kind": "method",
+          "signature": "(self, *, start_period: Optional[str] = None, end_period: Optional[str] = None, last_n_observations: Optional[int] = None, first_n_observations: Optional[int] = None, compress: bool = False, dimensions: Optional[Dict[str, List[str]]] = None, response_format: Optional[macroforecast.datasets.sources.eurostat.formats.EurostatResponseFormat] = None, response_format_version: Optional[str] = None, lang: Optional[str] = None, labels: Optional[str] = None, attributes: Optional[str] = None, measures: Optional[str] = None, return_data: Optional[str] = None, dimension_at_observation: Optional[str] = None, detail: Optional[Literal['full', 'dataonly', 'serieskeysonly', 'nodata']] = None) -> Dict[str, str]"
+        },
+        "build_headers": {
+          "kind": "method",
+          "signature": "(self, accept_encoding: Optional[str] = None, accept_language: Optional[str] = None, response_format: Optional[Any] = None) -> Dict[str, str]"
+        },
+        "build_structure_endpoint": {
+          "kind": "method",
+          "signature": "(self, resource_type: macroforecast.datasets.core.sdmx.StructureResourceType, resource_id: str, agency: str, version: Optional[str]) -> str"
+        },
+        "build_structure_params": {
+          "kind": "method",
+          "signature": "(self, references: Optional[Literal['none', 'parents', 'parentsandsiblings', 'ancestors', 'children', 'descendants', 'all']] = 'none', detail: Optional[Literal['full', 'allstubs', 'referencestubs', 'allcompletestubs', 'referencecompletestubs', 'referencepartial']] = 'full', format: Optional[str] = None, format_version: Optional[str] = None, compress: Optional[Literal['true', 'false']] = None) -> Dict[str, str]"
+        }
+      },
+      "qualified_name": "macroforecast.datasets.EurostatEndpointBuilderV21",
+      "signature": "()"
+    },
+    "EurostatEndpointBuilderV30": {
+      "kind": "class",
+      "methods": {
+        "build_data_endpoint": {
+          "kind": "method",
+          "signature": "(self, dataflow: str, agency: str, version: str, key: Optional[str] = None) -> str"
+        },
+        "build_data_params": {
+          "kind": "method",
+          "signature": "(self, *, start_period: Optional[str] = None, end_period: Optional[str] = None, last_n_observations: Optional[int] = None, first_n_observations: Optional[int] = None, compress: bool = False, dimensions: Optional[Dict[str, List[str]]] = None, response_format: Optional[macroforecast.datasets.sources.eurostat.formats.EurostatResponseFormat] = None, response_format_version: Optional[str] = None, lang: Optional[str] = None, labels: Optional[str] = None, attributes: Optional[str] = None, measures: Optional[str] = None, return_data: Optional[str] = None, dimension_at_observation: Optional[str] = None, detail: Optional[Literal['full', 'dataonly', 'serieskeysonly', 'nodata']] = None) -> Dict[str, str]"
+        },
+        "build_headers": {
+          "kind": "method",
+          "signature": "(self, accept_encoding: Optional[str] = None, accept_language: Optional[str] = None, response_format: Optional[Any] = None) -> Dict[str, str]"
+        },
+        "build_structure_endpoint": {
+          "kind": "method",
+          "signature": "(self, resource_type: macroforecast.datasets.core.sdmx.StructureResourceType, resource_id: str, agency: str, version: Optional[str]) -> str"
+        },
+        "build_structure_params": {
+          "kind": "method",
+          "signature": "(self, references: Optional[Literal['none', 'parents', 'parentsandsiblings', 'ancestors', 'children', 'descendants', 'all']] = 'none', detail: Optional[Literal['full', 'allstubs', 'referencestubs', 'allcompletestubs', 'referencecompletestubs', 'referencepartial']] = 'full', format: Optional[str] = 'structure', format_version: Optional[str] = '3.0', compress: Optional[Literal['true', 'false']] = 'true') -> Dict[str, str]"
+        }
+      },
+      "qualified_name": "macroforecast.datasets.EurostatEndpointBuilderV30",
+      "signature": "()"
+    },
+    "EurostatQueryRequest": {
+      "kind": "class",
+      "methods": {
+        "agency": {
+          "kind": "property",
+          "signature": null
+        },
+        "from_dict": {
+          "kind": "method",
+          "signature": "(data: Dict[str, Any]) -> 'SDMXQueryRequest'"
+        },
+        "get_dataflow_key": {
+          "kind": "method",
+          "signature": "(self) -> str"
+        },
+        "identity_key": {
+          "kind": "method",
+          "signature": "(self) -> str"
+        },
+        "to_dict": {
+          "kind": "method",
+          "signature": "(self) -> Dict[str, Any]"
+        }
+      },
+      "qualified_name": "macroforecast.datasets.EurostatQueryRequest",
+      "signature": "(dataflow: str, version: str = '*', dimensions: Optional[Dict[str, Union[str, List[str]]]] = None, start_period: Optional[str] = None, end_period: Optional[str] = None, last_n_observations: Optional[int] = None, first_n_observations: Optional[int] = None, format: macroforecast.datasets.sources.eurostat.formats.EurostatResponseFormat = <EurostatResponseFormat.CSV: 'csv'>, compress: bool = False, on_duplicate: Literal['ignore', 'warn', 'raise'] = 'warn', split_dimensions: Optional[List[str]] = None, max_split_combinations: int = 100) -> None"
+    },
+    "EurostatQueryRequestV21": {
+      "kind": "class",
+      "methods": {
+        "agency": {
+          "kind": "property",
+          "signature": null
+        },
+        "from_dict": {
+          "kind": "method",
+          "signature": "(data: Dict[str, Any]) -> 'SDMXQueryRequest'"
+        },
+        "get_dataflow_key": {
+          "kind": "method",
+          "signature": "(self) -> str"
+        },
+        "identity_key": {
+          "kind": "method",
+          "signature": "(self) -> str"
+        },
+        "to_dict": {
+          "kind": "method",
+          "signature": "(self) -> Dict[str, Any]"
+        }
+      },
+      "qualified_name": "macroforecast.datasets.EurostatQueryRequestV21",
+      "signature": "(dataflow: str, version: str = '*', dimensions: Optional[Dict[str, Union[str, List[str]]]] = None, start_period: Optional[str] = None, end_period: Optional[str] = None, last_n_observations: Optional[int] = None, first_n_observations: Optional[int] = None, format: macroforecast.datasets.sources.eurostat.formats.EurostatResponseFormat = <EurostatResponseFormat.CSV: 'csv'>, compress: bool = False, on_duplicate: Literal['ignore', 'warn', 'raise'] = 'warn', split_dimensions: Optional[List[str]] = None, max_split_combinations: int = 100, dimension_at_observation: Optional[str] = None, detail: Optional[Literal['full', 'dataonly', 'serieskeysonly', 'nodata']] = None) -> None"
+    },
+    "EurostatQueryRequestV30": {
+      "kind": "class",
+      "methods": {
+        "agency": {
+          "kind": "property",
+          "signature": null
+        },
+        "from_dict": {
+          "kind": "method",
+          "signature": "(data: Dict[str, Any]) -> 'SDMXQueryRequest'"
+        },
+        "get_dataflow_key": {
+          "kind": "method",
+          "signature": "(self) -> str"
+        },
+        "identity_key": {
+          "kind": "method",
+          "signature": "(self) -> str"
+        },
+        "to_dict": {
+          "kind": "method",
+          "signature": "(self) -> Dict[str, Any]"
+        }
+      },
+      "qualified_name": "macroforecast.datasets.EurostatQueryRequestV30",
+      "signature": "(dataflow: str, version: str = '*', dimensions: Optional[Dict[str, Union[str, List[str]]]] = None, start_period: Optional[str] = None, end_period: Optional[str] = None, last_n_observations: Optional[int] = None, first_n_observations: Optional[int] = None, format: macroforecast.datasets.sources.eurostat.formats.EurostatResponseFormat = <EurostatResponseFormat.CSV: 'csv'>, compress: bool = False, on_duplicate: Literal['ignore', 'warn', 'raise'] = 'warn', split_dimensions: Optional[List[str]] = None, max_split_combinations: int = 100, attributes: Optional[str] = None, measures: Optional[str] = None, lang: Optional[str] = None, labels: Optional[str] = None, response_format_version: Optional[str] = None) -> None"
+    },
+    "EurostatResponseFormat": {
+      "kind": "class",
+      "methods": {
+        "maketrans": {
+          "kind": "method",
+          "signature": null
+        }
+      },
+      "qualified_name": "macroforecast.datasets.EurostatResponseFormat",
+      "signature": "(*values)"
+    },
+    "FetchReport": {
+      "kind": "class",
+      "methods": {},
+      "qualified_name": "macroforecast.datasets.FetchReport",
+      "signature": "(n_requests: 'int' = 0, n_request_errors: 'int' = 0, n_no_records: 'int' = 0, n_empty_responses: 'int' = 0, rows_fetched: 'int' = 0, rows_after_filter: 'int' = 0, n_duplicates: 'int' = 0, structure_from_cache: 'Optional[bool]' = None) -> None"
+    },
+    "HttpStats": {
+      "kind": "class",
+      "methods": {
+        "record": {
+          "kind": "method",
+          "signature": "(self, status_code: 'Optional[int]', seconds: 'float', n_bytes: 'int') -> 'None'"
+        },
+        "record_failure": {
+          "kind": "method",
+          "signature": "(self, status_code: 'Optional[int]', seconds: 'float') -> 'None'"
+        },
+        "reset": {
+          "kind": "method",
+          "signature": "(self) -> 'None'"
+        },
+        "snapshot": {
+          "kind": "method",
+          "signature": "(self) -> \"'HttpStats'\""
+        }
+      },
+      "qualified_name": "macroforecast.datasets.HttpStats",
+      "signature": "(n_requests: 'int' = 0, n_failures: 'int' = 0, total_seconds: 'float' = 0.0, total_bytes: 'int' = 0, status_counts: 'Dict[str, int]' = <factory>) -> None"
+    },
+    "OECDClient": {
+      "kind": "class",
+      "methods": {
+        "close": {
+          "kind": "method",
+          "signature": "(self) -> None"
+        },
+        "create_structure_from_api_response": {
+          "kind": "method",
+          "signature": "(self, agency: str, dataflow: str, api_response: Dict[str, Any]) -> macroforecast.datasets.core.structures.DataflowStructure"
+        },
+        "execute_query": {
+          "kind": "method",
+          "signature": "(self, query: Any) -> pandas.core.frame.DataFrame"
+        },
+        "fetch_updates": {
+          "kind": "method",
+          "signature": "(self, query: 'OECDQueryRequest', since: Optional[datetime.datetime], n_observations: int = 10) -> pandas.core.frame.DataFrame"
+        },
+        "get_data": {
+          "kind": "method",
+          "signature": "(self, agency: str, dataflow: str, version: str = '+', dimensions: Optional[Dict[Union[str, int], Union[str, List[str]]]] = None, start_period: Optional[str] = None, end_period: Optional[str] = None, last_n_observations: Optional[int] = None, format: macroforecast.datasets.sources.oecd.formats.OECDResponseFormat = <OECDResponseFormat.CSV_LABELS: 'csv_labels'>, dimension_at_observation: macroforecast.datasets.core.sdmx.DimensionAtObservation = <DimensionAtObservation.ALL_DIMENSIONS: 'AllDimensions'>, attributes: Optional[str] = None, measures: Optional[str] = None, on_duplicate: Literal['ignore', 'warn', 'raise'] = 'warn', split_dimensions: Optional[List[Union[int, str]]] = None, max_split_combinations: int = 100, updated_after: Union[str, datetime.datetime, NoneType] = None, default_dimensions: List[str] = ['TIME_PERIOD']) -> pandas.core.frame.DataFrame"
+        },
+        "get_structure": {
+          "kind": "method",
+          "signature": "(self, agency: str, dataflow: str, version: str = '+', timeout: Optional[int] = None) -> macroforecast.datasets.core.structures.DataflowStructure"
+        },
+        "list_all_dataflows": {
+          "kind": "method",
+          "signature": "(self) -> pandas.core.frame.DataFrame"
+        },
+        "register_structure": {
+          "kind": "method",
+          "signature": "(self, structure: 'DataflowStructure') -> None"
+        },
+        "resolve_query_structure": {
+          "kind": "method",
+          "signature": "(self, query: Any) -> Optional[ForwardRef('DataflowStructure')]"
+        }
+      },
+      "qualified_name": "macroforecast.datasets.OECDClient",
+      "signature": "(base_url: str = 'https://sdmx.oecd.org/public/rest', timeout: int = 60, sdmx_version: macroforecast.datasets.core.sdmx.SDMXVersion = <SDMXVersion.V2: 'v2'>, structure_registry: Optional[macroforecast.datasets.core.structures.DataflowStructureRegistry] = None, auto_fetch_structure: bool = True, rate_limiter: Optional[macroforecast.datasets.core.rate_limiter.RateLimiter] = None, auto_load_rate_limit: bool = True)"
+    },
+    "OECDEndpointBuilder": {
+      "kind": "class",
+      "methods": {
+        "build_data_endpoint": {
+          "kind": "method",
+          "signature": "(self, dataflow: str, agency: str, version: str, key: Optional[str] = None) -> str"
+        },
+        "build_data_params": {
+          "kind": "method",
+          "signature": "(self, *, start_period: Optional[str] = None, end_period: Optional[str] = None, last_n_observations: Optional[int] = None, first_n_observations: Optional[int] = None, compress: bool = False, dimensions: Optional[Dict[str, List[str]]] = None, response_format: Optional[ForwardRef('SDMXResponseFormat')] = None, response_format_version: Optional[str] = None, lang: Optional[str] = None, labels: Optional[str] = None, attributes: Optional[str] = None, measures: Optional[str] = None, return_data: Optional[str] = None, dimension_at_observation: Optional[str] = None, detail: Optional[str] = None) -> Dict[str, Any]"
+        },
+        "build_dimension_filter": {
+          "kind": "method",
+          "signature": "(dimensions: Dict[int, List[str]], num_dimensions: Optional[int] = None) -> str"
+        },
+        "build_headers": {
+          "kind": "method",
+          "signature": "(self, accept_encoding: Optional[str] = None, accept_language: Optional[str] = None, response_format: Optional[macroforecast.datasets.sources.oecd.formats.OECDResponseFormat] = None) -> Dict[str, str]"
+        },
+        "build_structure_endpoint": {
+          "kind": "method",
+          "signature": "(self, resource_type: 'StructureResourceType', resource_id: str, agency: str, version: Optional[str]) -> str"
+        },
+        "build_structure_params": {
+          "kind": "method",
+          "signature": "(self, references: Optional[str] = 'all', detail: Optional[str] = 'referencepartial', format: Optional[str] = None, format_version: Optional[str] = None, compress: Optional[str] = None) -> Dict[str, str]"
+        },
+        "get_accept_header": {
+          "kind": "method",
+          "signature": "(format: macroforecast.datasets.sources.oecd.formats.OECDResponseFormat, version: macroforecast.datasets.core.sdmx.SDMXVersion) -> str"
+        },
+        "get_structure_accept_header": {
+          "kind": "method",
+          "signature": "() -> str"
+        }
+      },
+      "qualified_name": "macroforecast.datasets.OECDEndpointBuilder",
+      "signature": "()"
+    },
+    "OECDEndpointBuilderV1": {
+      "kind": "class",
+      "methods": {
+        "build_data_endpoint": {
+          "kind": "method",
+          "signature": "(self, dataflow: str, agency: str, version: str, key: Optional[str] = None) -> str"
+        },
+        "build_data_params": {
+          "kind": "method",
+          "signature": "(self, *, start_period: Optional[str] = None, end_period: Optional[str] = None, last_n_observations: Optional[int] = None, first_n_observations: Optional[int] = None, compress: bool = False, dimensions: Optional[Dict[str, List[str]]] = None, response_format: Optional[macroforecast.datasets.sources.oecd.formats.OECDResponseFormat] = None, response_format_version: Optional[str] = None, lang: Optional[str] = None, labels: Optional[str] = None, attributes: Optional[str] = None, measures: Optional[str] = None, return_data: Optional[str] = None, dimension_at_observation: Optional[str] = None, detail: Optional[str] = None, updated_after: Union[str, datetime.datetime, NoneType] = None) -> Dict[str, Any]"
+        },
+        "build_dimension_filter": {
+          "kind": "method",
+          "signature": "(dimensions: Dict[int, List[str]], num_dimensions: Optional[int] = None) -> str"
+        },
+        "build_headers": {
+          "kind": "method",
+          "signature": "(self, accept_encoding: Optional[str] = None, accept_language: Optional[str] = None, response_format: Optional[macroforecast.datasets.sources.oecd.formats.OECDResponseFormat] = None) -> Dict[str, str]"
+        },
+        "build_structure_endpoint": {
+          "kind": "method",
+          "signature": "(self, resource_type: Any, resource_id: str, agency: str, version: Optional[str]) -> str"
+        },
+        "build_structure_params": {
+          "kind": "method",
+          "signature": "(self, references: Optional[str] = 'all', detail: Optional[str] = 'referencepartial', format: Optional[str] = None, format_version: Optional[str] = None, compress: Optional[str] = None) -> Dict[str, str]"
+        },
+        "get_accept_header": {
+          "kind": "method",
+          "signature": "(format: macroforecast.datasets.sources.oecd.formats.OECDResponseFormat, version: macroforecast.datasets.core.sdmx.SDMXVersion) -> str"
+        },
+        "get_structure_accept_header": {
+          "kind": "method",
+          "signature": "() -> str"
+        }
+      },
+      "qualified_name": "macroforecast.datasets.OECDEndpointBuilderV1",
+      "signature": "()"
+    },
+    "OECDEndpointBuilderV2": {
+      "kind": "class",
+      "methods": {
+        "build_data_endpoint": {
+          "kind": "method",
+          "signature": "(self, dataflow: str, agency: str, version: str, key: Optional[str] = None) -> str"
+        },
+        "build_data_params": {
+          "kind": "method",
+          "signature": "(self, *, start_period: Optional[str] = None, end_period: Optional[str] = None, last_n_observations: Optional[int] = None, first_n_observations: Optional[int] = None, compress: bool = False, dimensions: Optional[Dict[str, List[str]]] = None, response_format: Optional[macroforecast.datasets.sources.oecd.formats.OECDResponseFormat] = None, response_format_version: Optional[str] = None, lang: Optional[str] = None, labels: Optional[str] = None, attributes: Optional[str] = None, measures: Optional[str] = None, return_data: Optional[str] = None, dimension_at_observation: Optional[str] = None, detail: Optional[str] = None, updated_after: Union[str, datetime.datetime, NoneType] = None) -> Dict[str, Any]"
+        },
+        "build_dimension_filter": {
+          "kind": "method",
+          "signature": "(dimensions: Dict[int, List[str]], num_dimensions: Optional[int] = None) -> str"
+        },
+        "build_headers": {
+          "kind": "method",
+          "signature": "(self, accept_encoding: Optional[str] = None, accept_language: Optional[str] = None, response_format: Optional[macroforecast.datasets.sources.oecd.formats.OECDResponseFormat] = None) -> Dict[str, str]"
+        },
+        "build_structure_endpoint": {
+          "kind": "method",
+          "signature": "(self, resource_type: Any, resource_id: str, agency: str, version: Optional[str]) -> str"
+        },
+        "build_structure_params": {
+          "kind": "method",
+          "signature": "(self, references: Optional[str] = 'all', detail: Optional[str] = 'referencepartial', format: Optional[str] = None, format_version: Optional[str] = None, compress: Optional[str] = None) -> Dict[str, str]"
+        },
+        "get_accept_header": {
+          "kind": "method",
+          "signature": "(format: macroforecast.datasets.sources.oecd.formats.OECDResponseFormat, version: macroforecast.datasets.core.sdmx.SDMXVersion) -> str"
+        },
+        "get_structure_accept_header": {
+          "kind": "method",
+          "signature": "() -> str"
+        }
+      },
+      "qualified_name": "macroforecast.datasets.OECDEndpointBuilderV2",
+      "signature": "()"
+    },
+    "OECDQueryRequest": {
+      "kind": "class",
+      "methods": {
+        "from_dict": {
+          "kind": "method",
+          "signature": "(data: Dict[str, Any]) -> 'SDMXQueryRequest'"
+        },
+        "get_dataflow_key": {
+          "kind": "method",
+          "signature": "(self) -> str"
+        },
+        "identity_key": {
+          "kind": "method",
+          "signature": "(self) -> str"
+        },
+        "to_dict": {
+          "kind": "method",
+          "signature": "(self) -> Dict[str, Any]"
+        }
+      },
+      "qualified_name": "macroforecast.datasets.OECDQueryRequest",
+      "signature": "(agency: str, dataflow: str, version: str = '+', dimensions: Optional[Dict[Union[str, int], Union[str, List[str]]]] = None, start_period: Optional[str] = None, end_period: Optional[str] = None, last_n_observations: Optional[int] = None, format: macroforecast.datasets.sources.oecd.formats.OECDResponseFormat = <OECDResponseFormat.CSV_LABELS: 'csv_labels'>, dimension_at_observation: macroforecast.datasets.core.sdmx.DimensionAtObservation = <DimensionAtObservation.ALL_DIMENSIONS: 'AllDimensions'>, attributes: Optional[str] = None, measures: Optional[str] = None, on_duplicate: Literal['ignore', 'warn', 'raise'] = 'warn', split_dimensions: Optional[List[Union[int, str]]] = None, max_split_combinations: int = 100, updated_after: Union[str, datetime.datetime, NoneType] = None) -> None"
+    },
+    "OECDResponseFormat": {
+      "kind": "class",
+      "methods": {
+        "maketrans": {
+          "kind": "method",
+          "signature": null
+        }
+      },
+      "qualified_name": "macroforecast.datasets.OECDResponseFormat",
+      "signature": "(*values)"
+    },
+    "QueryReport": {
+      "kind": "class",
+      "methods": {
+        "to_metrics": {
+          "kind": "method",
+          "signature": "(self, prefix: 'str' = 'query') -> 'Dict[str, float]'"
+        }
+      },
+      "qualified_name": "macroforecast.datasets.QueryReport",
+      "signature": "(identity_key: 'str' = '', agency: 'str' = '', dataflow: 'str' = '', schema: 'str' = '', incremental: 'bool' = False, rows_written: 'int' = 0, table_created: 'bool' = False, empty: 'bool' = False, duration_seconds: 'float' = 0.0, error_type: 'Optional[str]' = None, error_message: 'Optional[str]' = None, fetch: 'FetchReport' = <factory>, http: 'HttpStats' = <factory>, rate_limit: 'RateLimitStats' = <factory>) -> None"
+    },
+    "RateLimitStats": {
+      "kind": "class",
+      "methods": {},
+      "qualified_name": "macroforecast.datasets.RateLimitStats",
+      "signature": "(n_acquisitions: 'int' = 0, total_wait_seconds: 'float' = 0.0, max_wait_seconds: 'float' = 0.0, remaining_requests: 'int' = 0) -> None"
+    },
+    "RateLimiter": {
+      "kind": "class",
+      "methods": {
+        "acquire": {
+          "kind": "method",
+          "signature": "(self) -> None"
+        },
+        "from_dict": {
+          "kind": "method",
+          "signature": "(config: Dict[str, Any]) -> 'RateLimiter'"
+        },
+        "get_remaining_requests": {
+          "kind": "method",
+          "signature": "(self) -> int"
+        },
+        "get_stats": {
+          "kind": "method",
+          "signature": "(self) -> macroforecast.datasets.core.reports.RateLimitStats"
+        },
+        "reset": {
+          "kind": "method",
+          "signature": "(self) -> None"
+        }
+      },
+      "qualified_name": "macroforecast.datasets.RateLimiter",
+      "signature": "(max_requests: int, time_unit: Literal['seconds', 'minutes', 'hours', 'days', 'weeks'], time_count: int = 1) -> None"
+    },
+    "SDMXEndpointBuilder": {
+      "kind": "class",
+      "methods": {
+        "build_data_endpoint": {
+          "kind": "method",
+          "signature": "(self, dataflow: str, agency: str, version: str, key: Optional[str] = None) -> str"
+        },
+        "build_data_params": {
+          "kind": "method",
+          "signature": "(self, *, start_period: Optional[str] = None, end_period: Optional[str] = None, last_n_observations: Optional[int] = None, first_n_observations: Optional[int] = None, compress: bool = False, dimensions: Optional[Dict[str, List[str]]] = None, response_format: Optional[ForwardRef('SDMXResponseFormat')] = None, response_format_version: Optional[str] = None, lang: Optional[str] = None, labels: Optional[str] = None, attributes: Optional[str] = None, measures: Optional[str] = None, return_data: Optional[str] = None, dimension_at_observation: Optional[str] = None, detail: Optional[str] = None) -> Dict[str, Any]"
+        },
+        "build_headers": {
+          "kind": "method",
+          "signature": "(self, accept_encoding: Optional[str] = None, accept_language: Optional[str] = None, response_format: Optional[ForwardRef('SDMXResponseFormat')] = None) -> Dict[str, str]"
+        },
+        "build_structure_endpoint": {
+          "kind": "method",
+          "signature": "(self, resource_type: 'StructureResourceType', resource_id: str, agency: str, version: Optional[str]) -> str"
+        },
+        "build_structure_params": {
+          "kind": "method",
+          "signature": "(self, references: Optional[str] = 'none', detail: Optional[str] = 'full', format: Optional[str] = None, format_version: Optional[str] = None, compress: Optional[str] = None) -> Dict[str, str]"
+        }
+      },
+      "qualified_name": "macroforecast.datasets.SDMXEndpointBuilder",
+      "signature": "()"
+    },
+    "SDMXQueryRequest": {
+      "kind": "class",
+      "methods": {
+        "from_dict": {
+          "kind": "method",
+          "signature": "(data: Dict[str, Any]) -> 'SDMXQueryRequest'"
+        },
+        "get_dataflow_key": {
+          "kind": "method",
+          "signature": "(self) -> str"
+        },
+        "identity_key": {
+          "kind": "method",
+          "signature": "(self) -> str"
+        },
+        "to_dict": {
+          "kind": "method",
+          "signature": "(self) -> Dict[str, Any]"
+        }
+      },
+      "qualified_name": "macroforecast.datasets.SDMXQueryRequest",
+      "signature": "()"
+    },
+    "SDMXResponseFormat": {
+      "kind": "class",
+      "methods": {
+        "maketrans": {
+          "kind": "method",
+          "signature": null
+        }
+      },
+      "qualified_name": "macroforecast.datasets.SDMXResponseFormat",
+      "signature": "(new_class_name, /, names, *, module=None, qualname=None, type=None, start=1, boundary=None)"
+    },
+    "SDMXVersion": {
+      "kind": "class",
+      "methods": {
+        "maketrans": {
+          "kind": "method",
+          "signature": null
+        }
+      },
+      "qualified_name": "macroforecast.datasets.SDMXVersion",
+      "signature": "(*values)"
+    },
+    "StructureResourceType": {
+      "kind": "class",
+      "methods": {
+        "maketrans": {
+          "kind": "method",
+          "signature": null
+        }
+      },
+      "qualified_name": "macroforecast.datasets.StructureResourceType",
+      "signature": "(*values)"
+    },
+    "UNSDClient": {
+      "kind": "class",
+      "methods": {
+        "close": {
+          "kind": "method",
+          "signature": "(self) -> None"
+        },
+        "download_raw": {
+          "kind": "method",
+          "signature": "(self, source: str, target: str) -> Tuple[bytes, str]"
+        },
+        "execute_query": {
+          "kind": "method",
+          "signature": "(self, query: 'UNSDCorrespondenceRequest') -> pandas.core.frame.DataFrame"
+        },
+        "get": {
+          "kind": "method",
+          "signature": "(self, endpoint: str, params: Optional[Dict[str, Any]] = None, headers: Optional[Dict[str, str]] = None, timeout: Optional[int] = None) -> requests.models.Response"
+        },
+        "get_correspondence": {
+          "kind": "method",
+          "signature": "(self, source: str, target: str, *, kind: str = 'conversion') -> pandas.core.frame.DataFrame"
+        },
+        "list_available_tables": {
+          "kind": "method",
+          "signature": "(self) -> pandas.core.frame.DataFrame"
+        }
+      },
+      "qualified_name": "macroforecast.datasets.UNSDClient",
+      "signature": "(base_url: str = 'https://unstats.un.org/unsd/classifications/Econ/tables', timeout: int = 120, max_retries: int = 3, backoff_factor: float = 0.5) -> None"
+    },
+    "UNSDCorrespondenceRequest": {
+      "kind": "class",
+      "methods": {
+        "agency": {
+          "kind": "property",
+          "signature": null
+        },
+        "dataflow": {
+          "kind": "property",
+          "signature": null
+        },
+        "from_dict": {
+          "kind": "method",
+          "signature": "(data: Dict[str, Any]) -> 'SDMXQueryRequest'"
+        },
+        "get_dataflow_key": {
+          "kind": "method",
+          "signature": "(self) -> str"
+        },
+        "identity_key": {
+          "kind": "method",
+          "signature": "(self) -> str"
+        },
+        "to_dict": {
+          "kind": "method",
+          "signature": "(self) -> Dict[str, Any]"
+        }
+      },
+      "qualified_name": "macroforecast.datasets.UNSDCorrespondenceRequest",
+      "signature": "(source: str, target: str, kind: str = 'conversion', version: str = '*', format: macroforecast.datasets.sources.unsd.formats.UNSDResponseFormat = <UNSDResponseFormat.XLSX: 'xlsx'>) -> None"
+    },
+    "UNSDResponseFormat": {
+      "kind": "class",
+      "methods": {
+        "maketrans": {
+          "kind": "method",
+          "signature": null
+        }
+      },
+      "qualified_name": "macroforecast.datasets.UNSDResponseFormat",
+      "signature": "(*values)"
+    },
+    "build_rate_limiter": {
+      "kind": "function",
+      "qualified_name": "macroforecast.datasets.build_rate_limiter",
+      "signature": "(config: Union[Dict[str, Any], List[Dict[str, Any]]]) -> Union[macroforecast.datasets.core.rate_limiter.RateLimiter, macroforecast.datasets.core.rate_limiter.CompositeRateLimiter]"
+    }
+  },
+  "macroforecast.datasets.core": {
+    "APIClient": {
+      "kind": "class",
+      "methods": {
+        "close": {
+          "kind": "method",
+          "signature": "(self) -> None"
+        },
+        "get": {
+          "kind": "method",
+          "signature": "(self, endpoint: str, params: Optional[Dict[str, Any]] = None, headers: Optional[Dict[str, str]] = None, timeout: Optional[int] = None) -> requests.models.Response"
+        }
+      },
+      "qualified_name": "macroforecast.datasets.core.APIClient",
+      "signature": "(base_url: str, timeout: int = 30, max_retries: int = 3, backoff_factor: float = 0.5, headers: Optional[Dict[str, str]] = None) -> None"
+    },
+    "AbstractSDMXClient": {
+      "kind": "class",
+      "methods": {
+        "close": {
+          "kind": "method",
+          "signature": "(self) -> None"
+        },
+        "execute_query": {
+          "kind": "method",
+          "signature": "(self, query: Any) -> pandas.core.frame.DataFrame"
+        },
+        "fetch_updates": {
+          "kind": "method",
+          "signature": "(self, query: Any, since: Optional[datetime.datetime], n_observations: int = 10) -> pandas.core.frame.DataFrame"
+        },
+        "get_data": {
+          "kind": "method",
+          "signature": "(self, *args, **kwargs) -> pandas.core.frame.DataFrame"
+        },
+        "register_structure": {
+          "kind": "method",
+          "signature": "(self, structure: 'DataflowStructure') -> None"
+        },
+        "resolve_query_structure": {
+          "kind": "method",
+          "signature": "(self, query: Any) -> Optional[ForwardRef('DataflowStructure')]"
+        }
+      },
+      "qualified_name": "macroforecast.datasets.core.AbstractSDMXClient",
+      "signature": "(structure_registry: Optional[ForwardRef('DataflowStructureRegistry')] = None, auto_fetch_structure: bool = True, rate_limiter: Optional[ForwardRef('RateLimiter')] = None, auto_load_rate_limit: bool = True) -> None"
+    },
+    "CompositeRateLimiter": {
+      "kind": "class",
+      "methods": {
+        "acquire": {
+          "kind": "method",
+          "signature": "(self) -> None"
+        },
+        "get_remaining_requests": {
+          "kind": "method",
+          "signature": "(self) -> int"
+        },
+        "get_stats": {
+          "kind": "method",
+          "signature": "(self) -> macroforecast.datasets.core.reports.RateLimitStats"
+        },
+        "reset": {
+          "kind": "method",
+          "signature": "(self) -> None"
+        }
+      },
+      "qualified_name": "macroforecast.datasets.core.CompositeRateLimiter",
+      "signature": "(limiters: List[macroforecast.datasets.core.rate_limiter.RateLimiter]) -> None"
+    },
+    "DataflowStructure": {
+      "kind": "class",
+      "methods": {
+        "from_dict": {
+          "kind": "method",
+          "signature": "(data: Dict[str, Any]) -> 'DataflowStructure'"
+        },
+        "get_key": {
+          "kind": "method",
+          "signature": "(self) -> str"
+        },
+        "get_name": {
+          "kind": "method",
+          "signature": "(self, position: int) -> Optional[str]"
+        },
+        "get_position": {
+          "kind": "method",
+          "signature": "(self, name: str) -> Optional[int]"
+        },
+        "to_dict": {
+          "kind": "method",
+          "signature": "(self) -> Dict[str, Any]"
+        }
+      },
+      "qualified_name": "macroforecast.datasets.core.DataflowStructure",
+      "signature": "(agency: str, dataflow: str, num_dimensions: int, dimensions: List[macroforecast.datasets.core.structures.DimensionInfo], description: Optional[str] = None)"
+    },
+    "DataflowStructureRegistry": {
+      "kind": "class",
+      "methods": {
+        "get": {
+          "kind": "method",
+          "signature": "(self, agency: str, dataflow: str) -> Optional[macroforecast.datasets.core.structures.DataflowStructure]"
+        },
+        "get_num_dimensions": {
+          "kind": "method",
+          "signature": "(self, agency: str, dataflow: str) -> Optional[int]"
+        },
+        "has": {
+          "kind": "method",
+          "signature": "(self, agency: str, dataflow: str) -> bool"
+        },
+        "list_structures": {
+          "kind": "method",
+          "signature": "(self) -> List[str]"
+        },
+        "load_from_dict": {
+          "kind": "method",
+          "signature": "(self, data: Dict[str, Any]) -> None"
+        },
+        "load_from_file": {
+          "kind": "method",
+          "signature": "(self, path: Union[str, pathlib._local.Path]) -> None"
+        },
+        "register": {
+          "kind": "method",
+          "signature": "(self, structure: macroforecast.datasets.core.structures.DataflowStructure) -> None"
+        },
+        "resolve_dimensions": {
+          "kind": "method",
+          "signature": "(self, agency: str, dataflow: str, dimensions: Dict[Union[str, int], Union[str, List[str]]]) -> Dict[int, List[str]]"
+        },
+        "save_to_file": {
+          "kind": "method",
+          "signature": "(self, path: Union[str, pathlib._local.Path]) -> None"
+        },
+        "to_dict": {
+          "kind": "method",
+          "signature": "(self) -> Dict[str, Any]"
+        }
+      },
+      "qualified_name": "macroforecast.datasets.core.DataflowStructureRegistry",
+      "signature": "(structures_dict: Optional[Dict[str, Any]] = None, config_path: Union[str, pathlib._local.Path, NoneType] = None)"
+    },
+    "DimensionAtObservation": {
+      "kind": "class",
+      "methods": {
+        "maketrans": {
+          "kind": "method",
+          "signature": null
+        }
+      },
+      "qualified_name": "macroforecast.datasets.core.DimensionAtObservation",
+      "signature": "(*values)"
+    },
+    "DimensionInfo": {
+      "kind": "class",
+      "methods": {
+        "from_dict": {
+          "kind": "method",
+          "signature": "(data: Dict[str, Any]) -> 'DimensionInfo'"
+        },
+        "to_dict": {
+          "kind": "method",
+          "signature": "(self) -> Dict[str, Any]"
+        }
+      },
+      "qualified_name": "macroforecast.datasets.core.DimensionInfo",
+      "signature": "(name: str, position: int, description: Optional[str] = None, codelist: Optional[str] = None)"
+    },
+    "DownloadReport": {
+      "kind": "class",
+      "methods": {
+        "aggregates": {
+          "kind": "method",
+          "signature": "(self) -> 'Dict[str, float]'"
+        },
+        "to_frame": {
+          "kind": "method",
+          "signature": "(self) -> 'pd.DataFrame'"
+        },
+        "to_metrics": {
+          "kind": "method",
+          "signature": "(self, prefix: 'str' = 'download') -> 'Dict[str, float]'"
+        }
+      },
+      "qualified_name": "macroforecast.datasets.core.DownloadReport",
+      "signature": "(processed: 'int' = 0, rows_written: 'int' = 0, empty: 'int' = 0, errors: 'int' = 0, stopped_early: 'bool' = False, n_queries_planned: 'int' = 0, n_queries_remaining: 'int' = 0, n_tables_created: 'int' = 0, n_structures_fetched: 'int' = 0, duration_seconds: 'float' = 0.0, queries: 'List[QueryReport]' = <factory>) -> None"
+    },
+    "DuplicateHandling": {
+      "kind": "function",
+      "qualified_name": "macroforecast.datasets.core.DuplicateHandling",
+      "signature": "(*args, **kwargs)"
+    },
+    "FetchReport": {
+      "kind": "class",
+      "methods": {},
+      "qualified_name": "macroforecast.datasets.core.FetchReport",
+      "signature": "(n_requests: 'int' = 0, n_request_errors: 'int' = 0, n_no_records: 'int' = 0, n_empty_responses: 'int' = 0, rows_fetched: 'int' = 0, rows_after_filter: 'int' = 0, n_duplicates: 'int' = 0, structure_from_cache: 'Optional[bool]' = None) -> None"
+    },
+    "HttpStats": {
+      "kind": "class",
+      "methods": {
+        "record": {
+          "kind": "method",
+          "signature": "(self, status_code: 'Optional[int]', seconds: 'float', n_bytes: 'int') -> 'None'"
+        },
+        "record_failure": {
+          "kind": "method",
+          "signature": "(self, status_code: 'Optional[int]', seconds: 'float') -> 'None'"
+        },
+        "reset": {
+          "kind": "method",
+          "signature": "(self) -> 'None'"
+        },
+        "snapshot": {
+          "kind": "method",
+          "signature": "(self) -> \"'HttpStats'\""
+        }
+      },
+      "qualified_name": "macroforecast.datasets.core.HttpStats",
+      "signature": "(n_requests: 'int' = 0, n_failures: 'int' = 0, total_seconds: 'float' = 0.0, total_bytes: 'int' = 0, status_counts: 'Dict[str, int]' = <factory>) -> None"
+    },
+    "QueryReport": {
+      "kind": "class",
+      "methods": {
+        "to_metrics": {
+          "kind": "method",
+          "signature": "(self, prefix: 'str' = 'query') -> 'Dict[str, float]'"
+        }
+      },
+      "qualified_name": "macroforecast.datasets.core.QueryReport",
+      "signature": "(identity_key: 'str' = '', agency: 'str' = '', dataflow: 'str' = '', schema: 'str' = '', incremental: 'bool' = False, rows_written: 'int' = 0, table_created: 'bool' = False, empty: 'bool' = False, duration_seconds: 'float' = 0.0, error_type: 'Optional[str]' = None, error_message: 'Optional[str]' = None, fetch: 'FetchReport' = <factory>, http: 'HttpStats' = <factory>, rate_limit: 'RateLimitStats' = <factory>) -> None"
+    },
+    "RateLimitStats": {
+      "kind": "class",
+      "methods": {},
+      "qualified_name": "macroforecast.datasets.core.RateLimitStats",
+      "signature": "(n_acquisitions: 'int' = 0, total_wait_seconds: 'float' = 0.0, max_wait_seconds: 'float' = 0.0, remaining_requests: 'int' = 0) -> None"
+    },
+    "RateLimiter": {
+      "kind": "class",
+      "methods": {
+        "acquire": {
+          "kind": "method",
+          "signature": "(self) -> None"
+        },
+        "from_dict": {
+          "kind": "method",
+          "signature": "(config: Dict[str, Any]) -> 'RateLimiter'"
+        },
+        "get_remaining_requests": {
+          "kind": "method",
+          "signature": "(self) -> int"
+        },
+        "get_stats": {
+          "kind": "method",
+          "signature": "(self) -> macroforecast.datasets.core.reports.RateLimitStats"
+        },
+        "reset": {
+          "kind": "method",
+          "signature": "(self) -> None"
+        }
+      },
+      "qualified_name": "macroforecast.datasets.core.RateLimiter",
+      "signature": "(max_requests: int, time_unit: Literal['seconds', 'minutes', 'hours', 'days', 'weeks'], time_count: int = 1) -> None"
+    },
+    "SDMXEndpointBuilder": {
+      "kind": "class",
+      "methods": {
+        "build_data_endpoint": {
+          "kind": "method",
+          "signature": "(self, dataflow: str, agency: str, version: str, key: Optional[str] = None) -> str"
+        },
+        "build_data_params": {
+          "kind": "method",
+          "signature": "(self, *, start_period: Optional[str] = None, end_period: Optional[str] = None, last_n_observations: Optional[int] = None, first_n_observations: Optional[int] = None, compress: bool = False, dimensions: Optional[Dict[str, List[str]]] = None, response_format: Optional[ForwardRef('SDMXResponseFormat')] = None, response_format_version: Optional[str] = None, lang: Optional[str] = None, labels: Optional[str] = None, attributes: Optional[str] = None, measures: Optional[str] = None, return_data: Optional[str] = None, dimension_at_observation: Optional[str] = None, detail: Optional[str] = None) -> Dict[str, Any]"
+        },
+        "build_headers": {
+          "kind": "method",
+          "signature": "(self, accept_encoding: Optional[str] = None, accept_language: Optional[str] = None, response_format: Optional[ForwardRef('SDMXResponseFormat')] = None) -> Dict[str, str]"
+        },
+        "build_structure_endpoint": {
+          "kind": "method",
+          "signature": "(self, resource_type: 'StructureResourceType', resource_id: str, agency: str, version: Optional[str]) -> str"
+        },
+        "build_structure_params": {
+          "kind": "method",
+          "signature": "(self, references: Optional[str] = 'none', detail: Optional[str] = 'full', format: Optional[str] = None, format_version: Optional[str] = None, compress: Optional[str] = None) -> Dict[str, str]"
+        }
+      },
+      "qualified_name": "macroforecast.datasets.core.SDMXEndpointBuilder",
+      "signature": "()"
+    },
+    "SDMXQueryRequest": {
+      "kind": "class",
+      "methods": {
+        "from_dict": {
+          "kind": "method",
+          "signature": "(data: Dict[str, Any]) -> 'SDMXQueryRequest'"
+        },
+        "get_dataflow_key": {
+          "kind": "method",
+          "signature": "(self) -> str"
+        },
+        "identity_key": {
+          "kind": "method",
+          "signature": "(self) -> str"
+        },
+        "to_dict": {
+          "kind": "method",
+          "signature": "(self) -> Dict[str, Any]"
+        }
+      },
+      "qualified_name": "macroforecast.datasets.core.SDMXQueryRequest",
+      "signature": "()"
+    },
+    "SDMXResponseFormat": {
+      "kind": "class",
+      "methods": {
+        "maketrans": {
+          "kind": "method",
+          "signature": null
+        }
+      },
+      "qualified_name": "macroforecast.datasets.core.SDMXResponseFormat",
+      "signature": "(new_class_name, /, names, *, module=None, qualname=None, type=None, start=1, boundary=None)"
+    },
+    "SDMXVersion": {
+      "kind": "class",
+      "methods": {
+        "maketrans": {
+          "kind": "method",
+          "signature": null
+        }
+      },
+      "qualified_name": "macroforecast.datasets.core.SDMXVersion",
+      "signature": "(*values)"
+    },
+    "StructureResourceType": {
+      "kind": "class",
+      "methods": {
+        "maketrans": {
+          "kind": "method",
+          "signature": null
+        }
+      },
+      "qualified_name": "macroforecast.datasets.core.StructureResourceType",
+      "signature": "(*values)"
+    },
+    "build_rate_limiter": {
+      "kind": "function",
+      "qualified_name": "macroforecast.datasets.core.build_rate_limiter",
+      "signature": "(config: Union[Dict[str, Any], List[Dict[str, Any]]]) -> Union[macroforecast.datasets.core.rate_limiter.RateLimiter, macroforecast.datasets.core.rate_limiter.CompositeRateLimiter]"
+    },
+    "flatten_metrics": {
+      "kind": "function",
+      "qualified_name": "macroforecast.datasets.core.flatten_metrics",
+      "signature": "(payload: 'Any', prefix: 'str' = '') -> 'Dict[str, float]'"
+    }
+  },
+  "macroforecast.datasets.sources": {
+    "ComtradeClient": {
+      "kind": "class",
+      "methods": {
+        "close": {
+          "kind": "method",
+          "signature": "(self) -> None"
+        },
+        "execute_query": {
+          "kind": "method",
+          "signature": "(self, query: 'ComtradeQueryRequest') -> pandas.core.frame.DataFrame"
+        },
+        "fetch_updates": {
+          "kind": "method",
+          "signature": "(self, query: 'ComtradeQueryRequest', since: Optional[datetime.datetime], n_observations: int = 10) -> pandas.core.frame.DataFrame"
+        },
+        "get": {
+          "kind": "method",
+          "signature": "(self, endpoint: str, params: Optional[Dict[str, Any]] = None, headers: Optional[Dict[str, str]] = None, timeout: Optional[int] = None) -> requests.models.Response"
+        },
+        "get_data": {
+          "kind": "method",
+          "signature": "(self, flows: Union[List[str], str, NoneType] = ['M', 'X'], products: Union[List[int], List[str], int, str, NoneType] = None, reporters: Union[List[int], List[str], int, str, NoneType] = None, partners: Union[List[int], List[str], int, str, NoneType] = None, partners2: Union[List[int], List[str], int, str, NoneType] = None, customs: Union[List[str], str, NoneType] = None, mot: Union[List[str], str, NoneType] = None, periods: Union[List[str], str, NoneType] = None, period_start: Optional[str] = None, period_end: Optional[str] = None, type_code: str = 'C', classification: str = 'HS', frequency: str = 'annual', max_records: Optional[int] = None, format_output: str = 'JSON', count_only: Optional[bool] = None, include_desc: bool = True) -> Tuple[pandas.core.frame.DataFrame, dict]"
+        },
+        "get_final_data_availability": {
+          "kind": "method",
+          "signature": "(self, reporters: Union[List[int], List[str], int, str, NoneType] = None, periods: Union[List[str], str, NoneType] = None, frequency: str = 'annual', type_code: str = 'C', classification: str = 'HS') -> pandas.core.frame.DataFrame"
+        },
+        "get_metadata": {
+          "kind": "method",
+          "signature": "(self, category: Optional[str] = None) -> pandas.core.frame.DataFrame"
+        },
+        "get_structure": {
+          "kind": "method",
+          "signature": "(self, dataflow: str, agency: str = 'COMTRADE') -> macroforecast.datasets.core.structures.DataflowStructure"
+        },
+        "get_valid_periods": {
+          "kind": "method",
+          "signature": "(self, periods: Union[List[str], str, NoneType] = None, period_start: Optional[str] = None, period_end: Optional[str] = None, frequency: Optional[str] = 'monthly') -> List[str]"
+        },
+        "resolve_query_structure": {
+          "kind": "method",
+          "signature": "(self, query: 'ComtradeQueryRequest') -> macroforecast.datasets.core.structures.DataflowStructure"
+        }
+      },
+      "qualified_name": "macroforecast.datasets.sources.ComtradeClient",
+      "signature": "(base_url: str = 'https://comtradeapi.un.org', timeout: int = 120, subscription_key: Optional[str] = None, proxy: Optional[str] = None, structure_registry: Optional[macroforecast.datasets.core.structures.DataflowStructureRegistry] = None, rate_limiter: Union[macroforecast.datasets.core.rate_limiter.RateLimiter, macroforecast.datasets.core.rate_limiter.CompositeRateLimiter, NoneType] = None, auto_load_rate_limit: bool = True, max_retries: int = 3, backoff_factor: float = 0.5) -> None"
+    },
+    "ComtradeQueryRequest": {
+      "kind": "class",
+      "methods": {
+        "agency": {
+          "kind": "property",
+          "signature": null
+        },
+        "from_dict": {
+          "kind": "method",
+          "signature": "(data: Dict[str, Any]) -> 'SDMXQueryRequest'"
+        },
+        "get_dataflow_key": {
+          "kind": "method",
+          "signature": "(self) -> str"
+        },
+        "identity_key": {
+          "kind": "method",
+          "signature": "(self) -> str"
+        },
+        "to_dict": {
+          "kind": "method",
+          "signature": "(self) -> Dict[str, Any]"
+        }
+      },
+      "qualified_name": "macroforecast.datasets.sources.ComtradeQueryRequest",
+      "signature": "(dataflow: str, version: str = '*', flows: Union[List[str], str, NoneType] = None, reporters: Union[List[str], List[int], str, int, NoneType] = None, partners: Union[List[str], List[int], str, int, NoneType] = None, partners2: Union[List[str], List[int], str, int, NoneType] = None, products: Union[List[str], List[int], str, int, NoneType] = None, customs: Union[List[str], str, NoneType] = None, mot: Union[List[str], str, NoneType] = None, periods: Union[List[str], str, NoneType] = None, period_start: Optional[str] = None, period_end: Optional[str] = None, type_code: str = 'C', classification: str = 'HS', frequency: str = 'annual', max_records: Optional[int] = None, count_only: Optional[bool] = None, include_desc: bool = True, format: macroforecast.datasets.sources.comtrade.formats.ComtradeResponseFormat = <ComtradeResponseFormat.JSON: 'json'>) -> None"
+    },
+    "ComtradeResponseFormat": {
+      "kind": "class",
+      "methods": {
+        "maketrans": {
+          "kind": "method",
+          "signature": null
+        }
+      },
+      "qualified_name": "macroforecast.datasets.sources.ComtradeResponseFormat",
+      "signature": "(*values)"
+    },
+    "EurostatClient": {
+      "kind": "class",
+      "methods": {
+        "close": {
+          "kind": "method",
+          "signature": "(self) -> None"
+        },
+        "execute_query": {
+          "kind": "method",
+          "signature": "(self, query: Any) -> pandas.core.frame.DataFrame"
+        },
+        "fetch_updates": {
+          "kind": "method",
+          "signature": "(self, query: 'EurostatQueryRequest', since: Optional[datetime.datetime], n_observations: int = 10) -> pandas.core.frame.DataFrame"
+        },
+        "get_data": {
+          "kind": "method",
+          "signature": "(self, dataflow: str, version: str = '*', dimensions: Optional[Dict[str, Union[str, List[str]]]] = None, start_period: Optional[str] = None, end_period: Optional[str] = None, last_n_observations: Optional[int] = None, first_n_observations: Optional[int] = None, format: macroforecast.datasets.sources.eurostat.formats.EurostatResponseFormat = <EurostatResponseFormat.CSV: 'csv'>, compress: bool = False, attributes: Optional[str] = None, measures: Optional[str] = None, lang: Optional[str] = None, labels: Optional[str] = None, response_format_version: Optional[str] = None, dimension_at_observation: Optional[str] = None, detail: Optional[Literal['full', 'dataonly', 'serieskeysonly', 'nodata']] = None, on_duplicate: Literal['ignore', 'warn', 'raise'] = 'warn', split_dimensions: Optional[List[str]] = None, max_split_combinations: int = 100, default_dimensions: List[str] = ['TIME_PERIOD']) -> pandas.core.frame.DataFrame"
+        },
+        "get_data_last_update": {
+          "kind": "method",
+          "signature": "(self, dataflow: str, version: str = '*') -> Optional[datetime.datetime]"
+        },
+        "get_dataflow_structure": {
+          "kind": "method",
+          "signature": "(self, dataflow: str, version: str = '+') -> macroforecast.datasets.core.structures.DataflowStructure"
+        },
+        "get_structure": {
+          "kind": "method",
+          "signature": "(self, resource_type: macroforecast.datasets.core.sdmx.StructureResourceType, resource_id: str, agency: str = 'ESTAT', version: Optional[str] = '+', references: Literal['none', 'parents', 'parentsandsiblings', 'ancestors', 'children', 'descendants', 'all'] = 'none', detail: Literal['full', 'allstubs', 'referencestubs', 'allcompletestubs', 'referencecompletestubs', 'referencepartial'] = 'full', format: Optional[str] = None, format_version: Optional[str] = None, compress: Optional[Literal['true', 'false']] = None, accept_encoding: Optional[str] = None, accept_language: Optional[str] = None, timeout: Optional[int] = None) -> str"
+        },
+        "list_all_dataflows": {
+          "kind": "method",
+          "signature": "(self, agency: str = 'ESTAT') -> pandas.core.frame.DataFrame"
+        },
+        "register_structure": {
+          "kind": "method",
+          "signature": "(self, structure: 'DataflowStructure') -> None"
+        },
+        "resolve_query_structure": {
+          "kind": "method",
+          "signature": "(self, query: Any) -> Optional[ForwardRef('DataflowStructure')]"
+        }
+      },
+      "qualified_name": "macroforecast.datasets.sources.EurostatClient",
+      "signature": "(api_version: macroforecast.datasets.core.sdmx.SDMXVersion = <SDMXVersion.V3: 'v3'>, base_url: Optional[str] = None, timeout: int = 90, structure_registry: Optional[macroforecast.datasets.core.structures.DataflowStructureRegistry] = None, auto_fetch_structure: bool = True, rate_limiter: Optional[macroforecast.datasets.core.rate_limiter.RateLimiter] = None, auto_load_rate_limit: bool = True)"
+    },
+    "EurostatEndpointBuilderV21": {
+      "kind": "class",
+      "methods": {
+        "build_data_endpoint": {
+          "kind": "method",
+          "signature": "(self, dataflow: str, agency: Optional[str], version: Optional[str], key: Optional[str] = 'all') -> str"
+        },
+        "build_data_params": {
+          "kind": "method",
+          "signature": "(self, *, start_period: Optional[str] = None, end_period: Optional[str] = None, last_n_observations: Optional[int] = None, first_n_observations: Optional[int] = None, compress: bool = False, dimensions: Optional[Dict[str, List[str]]] = None, response_format: Optional[macroforecast.datasets.sources.eurostat.formats.EurostatResponseFormat] = None, response_format_version: Optional[str] = None, lang: Optional[str] = None, labels: Optional[str] = None, attributes: Optional[str] = None, measures: Optional[str] = None, return_data: Optional[str] = None, dimension_at_observation: Optional[str] = None, detail: Optional[Literal['full', 'dataonly', 'serieskeysonly', 'nodata']] = None) -> Dict[str, str]"
+        },
+        "build_headers": {
+          "kind": "method",
+          "signature": "(self, accept_encoding: Optional[str] = None, accept_language: Optional[str] = None, response_format: Optional[Any] = None) -> Dict[str, str]"
+        },
+        "build_structure_endpoint": {
+          "kind": "method",
+          "signature": "(self, resource_type: macroforecast.datasets.core.sdmx.StructureResourceType, resource_id: str, agency: str, version: Optional[str]) -> str"
+        },
+        "build_structure_params": {
+          "kind": "method",
+          "signature": "(self, references: Optional[Literal['none', 'parents', 'parentsandsiblings', 'ancestors', 'children', 'descendants', 'all']] = 'none', detail: Optional[Literal['full', 'allstubs', 'referencestubs', 'allcompletestubs', 'referencecompletestubs', 'referencepartial']] = 'full', format: Optional[str] = None, format_version: Optional[str] = None, compress: Optional[Literal['true', 'false']] = None) -> Dict[str, str]"
+        }
+      },
+      "qualified_name": "macroforecast.datasets.sources.EurostatEndpointBuilderV21",
+      "signature": "()"
+    },
+    "EurostatEndpointBuilderV30": {
+      "kind": "class",
+      "methods": {
+        "build_data_endpoint": {
+          "kind": "method",
+          "signature": "(self, dataflow: str, agency: str, version: str, key: Optional[str] = None) -> str"
+        },
+        "build_data_params": {
+          "kind": "method",
+          "signature": "(self, *, start_period: Optional[str] = None, end_period: Optional[str] = None, last_n_observations: Optional[int] = None, first_n_observations: Optional[int] = None, compress: bool = False, dimensions: Optional[Dict[str, List[str]]] = None, response_format: Optional[macroforecast.datasets.sources.eurostat.formats.EurostatResponseFormat] = None, response_format_version: Optional[str] = None, lang: Optional[str] = None, labels: Optional[str] = None, attributes: Optional[str] = None, measures: Optional[str] = None, return_data: Optional[str] = None, dimension_at_observation: Optional[str] = None, detail: Optional[Literal['full', 'dataonly', 'serieskeysonly', 'nodata']] = None) -> Dict[str, str]"
+        },
+        "build_headers": {
+          "kind": "method",
+          "signature": "(self, accept_encoding: Optional[str] = None, accept_language: Optional[str] = None, response_format: Optional[Any] = None) -> Dict[str, str]"
+        },
+        "build_structure_endpoint": {
+          "kind": "method",
+          "signature": "(self, resource_type: macroforecast.datasets.core.sdmx.StructureResourceType, resource_id: str, agency: str, version: Optional[str]) -> str"
+        },
+        "build_structure_params": {
+          "kind": "method",
+          "signature": "(self, references: Optional[Literal['none', 'parents', 'parentsandsiblings', 'ancestors', 'children', 'descendants', 'all']] = 'none', detail: Optional[Literal['full', 'allstubs', 'referencestubs', 'allcompletestubs', 'referencecompletestubs', 'referencepartial']] = 'full', format: Optional[str] = 'structure', format_version: Optional[str] = '3.0', compress: Optional[Literal['true', 'false']] = 'true') -> Dict[str, str]"
+        }
+      },
+      "qualified_name": "macroforecast.datasets.sources.EurostatEndpointBuilderV30",
+      "signature": "()"
+    },
+    "EurostatQueryRequest": {
+      "kind": "class",
+      "methods": {
+        "agency": {
+          "kind": "property",
+          "signature": null
+        },
+        "from_dict": {
+          "kind": "method",
+          "signature": "(data: Dict[str, Any]) -> 'SDMXQueryRequest'"
+        },
+        "get_dataflow_key": {
+          "kind": "method",
+          "signature": "(self) -> str"
+        },
+        "identity_key": {
+          "kind": "method",
+          "signature": "(self) -> str"
+        },
+        "to_dict": {
+          "kind": "method",
+          "signature": "(self) -> Dict[str, Any]"
+        }
+      },
+      "qualified_name": "macroforecast.datasets.sources.EurostatQueryRequest",
+      "signature": "(dataflow: str, version: str = '*', dimensions: Optional[Dict[str, Union[str, List[str]]]] = None, start_period: Optional[str] = None, end_period: Optional[str] = None, last_n_observations: Optional[int] = None, first_n_observations: Optional[int] = None, format: macroforecast.datasets.sources.eurostat.formats.EurostatResponseFormat = <EurostatResponseFormat.CSV: 'csv'>, compress: bool = False, on_duplicate: Literal['ignore', 'warn', 'raise'] = 'warn', split_dimensions: Optional[List[str]] = None, max_split_combinations: int = 100) -> None"
+    },
+    "EurostatQueryRequestV21": {
+      "kind": "class",
+      "methods": {
+        "agency": {
+          "kind": "property",
+          "signature": null
+        },
+        "from_dict": {
+          "kind": "method",
+          "signature": "(data: Dict[str, Any]) -> 'SDMXQueryRequest'"
+        },
+        "get_dataflow_key": {
+          "kind": "method",
+          "signature": "(self) -> str"
+        },
+        "identity_key": {
+          "kind": "method",
+          "signature": "(self) -> str"
+        },
+        "to_dict": {
+          "kind": "method",
+          "signature": "(self) -> Dict[str, Any]"
+        }
+      },
+      "qualified_name": "macroforecast.datasets.sources.EurostatQueryRequestV21",
+      "signature": "(dataflow: str, version: str = '*', dimensions: Optional[Dict[str, Union[str, List[str]]]] = None, start_period: Optional[str] = None, end_period: Optional[str] = None, last_n_observations: Optional[int] = None, first_n_observations: Optional[int] = None, format: macroforecast.datasets.sources.eurostat.formats.EurostatResponseFormat = <EurostatResponseFormat.CSV: 'csv'>, compress: bool = False, on_duplicate: Literal['ignore', 'warn', 'raise'] = 'warn', split_dimensions: Optional[List[str]] = None, max_split_combinations: int = 100, dimension_at_observation: Optional[str] = None, detail: Optional[Literal['full', 'dataonly', 'serieskeysonly', 'nodata']] = None) -> None"
+    },
+    "EurostatQueryRequestV30": {
+      "kind": "class",
+      "methods": {
+        "agency": {
+          "kind": "property",
+          "signature": null
+        },
+        "from_dict": {
+          "kind": "method",
+          "signature": "(data: Dict[str, Any]) -> 'SDMXQueryRequest'"
+        },
+        "get_dataflow_key": {
+          "kind": "method",
+          "signature": "(self) -> str"
+        },
+        "identity_key": {
+          "kind": "method",
+          "signature": "(self) -> str"
+        },
+        "to_dict": {
+          "kind": "method",
+          "signature": "(self) -> Dict[str, Any]"
+        }
+      },
+      "qualified_name": "macroforecast.datasets.sources.EurostatQueryRequestV30",
+      "signature": "(dataflow: str, version: str = '*', dimensions: Optional[Dict[str, Union[str, List[str]]]] = None, start_period: Optional[str] = None, end_period: Optional[str] = None, last_n_observations: Optional[int] = None, first_n_observations: Optional[int] = None, format: macroforecast.datasets.sources.eurostat.formats.EurostatResponseFormat = <EurostatResponseFormat.CSV: 'csv'>, compress: bool = False, on_duplicate: Literal['ignore', 'warn', 'raise'] = 'warn', split_dimensions: Optional[List[str]] = None, max_split_combinations: int = 100, attributes: Optional[str] = None, measures: Optional[str] = None, lang: Optional[str] = None, labels: Optional[str] = None, response_format_version: Optional[str] = None) -> None"
+    },
+    "EurostatResponseFormat": {
+      "kind": "class",
+      "methods": {
+        "maketrans": {
+          "kind": "method",
+          "signature": null
+        }
+      },
+      "qualified_name": "macroforecast.datasets.sources.EurostatResponseFormat",
+      "signature": "(*values)"
+    },
+    "OECDClient": {
+      "kind": "class",
+      "methods": {
+        "close": {
+          "kind": "method",
+          "signature": "(self) -> None"
+        },
+        "create_structure_from_api_response": {
+          "kind": "method",
+          "signature": "(self, agency: str, dataflow: str, api_response: Dict[str, Any]) -> macroforecast.datasets.core.structures.DataflowStructure"
+        },
+        "execute_query": {
+          "kind": "method",
+          "signature": "(self, query: Any) -> pandas.core.frame.DataFrame"
+        },
+        "fetch_updates": {
+          "kind": "method",
+          "signature": "(self, query: 'OECDQueryRequest', since: Optional[datetime.datetime], n_observations: int = 10) -> pandas.core.frame.DataFrame"
+        },
+        "get_data": {
+          "kind": "method",
+          "signature": "(self, agency: str, dataflow: str, version: str = '+', dimensions: Optional[Dict[Union[str, int], Union[str, List[str]]]] = None, start_period: Optional[str] = None, end_period: Optional[str] = None, last_n_observations: Optional[int] = None, format: macroforecast.datasets.sources.oecd.formats.OECDResponseFormat = <OECDResponseFormat.CSV_LABELS: 'csv_labels'>, dimension_at_observation: macroforecast.datasets.core.sdmx.DimensionAtObservation = <DimensionAtObservation.ALL_DIMENSIONS: 'AllDimensions'>, attributes: Optional[str] = None, measures: Optional[str] = None, on_duplicate: Literal['ignore', 'warn', 'raise'] = 'warn', split_dimensions: Optional[List[Union[int, str]]] = None, max_split_combinations: int = 100, updated_after: Union[str, datetime.datetime, NoneType] = None, default_dimensions: List[str] = ['TIME_PERIOD']) -> pandas.core.frame.DataFrame"
+        },
+        "get_structure": {
+          "kind": "method",
+          "signature": "(self, agency: str, dataflow: str, version: str = '+', timeout: Optional[int] = None) -> macroforecast.datasets.core.structures.DataflowStructure"
+        },
+        "list_all_dataflows": {
+          "kind": "method",
+          "signature": "(self) -> pandas.core.frame.DataFrame"
+        },
+        "register_structure": {
+          "kind": "method",
+          "signature": "(self, structure: 'DataflowStructure') -> None"
+        },
+        "resolve_query_structure": {
+          "kind": "method",
+          "signature": "(self, query: Any) -> Optional[ForwardRef('DataflowStructure')]"
+        }
+      },
+      "qualified_name": "macroforecast.datasets.sources.OECDClient",
+      "signature": "(base_url: str = 'https://sdmx.oecd.org/public/rest', timeout: int = 60, sdmx_version: macroforecast.datasets.core.sdmx.SDMXVersion = <SDMXVersion.V2: 'v2'>, structure_registry: Optional[macroforecast.datasets.core.structures.DataflowStructureRegistry] = None, auto_fetch_structure: bool = True, rate_limiter: Optional[macroforecast.datasets.core.rate_limiter.RateLimiter] = None, auto_load_rate_limit: bool = True)"
+    },
+    "OECDEndpointBuilder": {
+      "kind": "class",
+      "methods": {
+        "build_data_endpoint": {
+          "kind": "method",
+          "signature": "(self, dataflow: str, agency: str, version: str, key: Optional[str] = None) -> str"
+        },
+        "build_data_params": {
+          "kind": "method",
+          "signature": "(self, *, start_period: Optional[str] = None, end_period: Optional[str] = None, last_n_observations: Optional[int] = None, first_n_observations: Optional[int] = None, compress: bool = False, dimensions: Optional[Dict[str, List[str]]] = None, response_format: Optional[ForwardRef('SDMXResponseFormat')] = None, response_format_version: Optional[str] = None, lang: Optional[str] = None, labels: Optional[str] = None, attributes: Optional[str] = None, measures: Optional[str] = None, return_data: Optional[str] = None, dimension_at_observation: Optional[str] = None, detail: Optional[str] = None) -> Dict[str, Any]"
+        },
+        "build_dimension_filter": {
+          "kind": "method",
+          "signature": "(dimensions: Dict[int, List[str]], num_dimensions: Optional[int] = None) -> str"
+        },
+        "build_headers": {
+          "kind": "method",
+          "signature": "(self, accept_encoding: Optional[str] = None, accept_language: Optional[str] = None, response_format: Optional[macroforecast.datasets.sources.oecd.formats.OECDResponseFormat] = None) -> Dict[str, str]"
+        },
+        "build_structure_endpoint": {
+          "kind": "method",
+          "signature": "(self, resource_type: 'StructureResourceType', resource_id: str, agency: str, version: Optional[str]) -> str"
+        },
+        "build_structure_params": {
+          "kind": "method",
+          "signature": "(self, references: Optional[str] = 'all', detail: Optional[str] = 'referencepartial', format: Optional[str] = None, format_version: Optional[str] = None, compress: Optional[str] = None) -> Dict[str, str]"
+        },
+        "get_accept_header": {
+          "kind": "method",
+          "signature": "(format: macroforecast.datasets.sources.oecd.formats.OECDResponseFormat, version: macroforecast.datasets.core.sdmx.SDMXVersion) -> str"
+        },
+        "get_structure_accept_header": {
+          "kind": "method",
+          "signature": "() -> str"
+        }
+      },
+      "qualified_name": "macroforecast.datasets.sources.OECDEndpointBuilder",
+      "signature": "()"
+    },
+    "OECDEndpointBuilderV1": {
+      "kind": "class",
+      "methods": {
+        "build_data_endpoint": {
+          "kind": "method",
+          "signature": "(self, dataflow: str, agency: str, version: str, key: Optional[str] = None) -> str"
+        },
+        "build_data_params": {
+          "kind": "method",
+          "signature": "(self, *, start_period: Optional[str] = None, end_period: Optional[str] = None, last_n_observations: Optional[int] = None, first_n_observations: Optional[int] = None, compress: bool = False, dimensions: Optional[Dict[str, List[str]]] = None, response_format: Optional[macroforecast.datasets.sources.oecd.formats.OECDResponseFormat] = None, response_format_version: Optional[str] = None, lang: Optional[str] = None, labels: Optional[str] = None, attributes: Optional[str] = None, measures: Optional[str] = None, return_data: Optional[str] = None, dimension_at_observation: Optional[str] = None, detail: Optional[str] = None, updated_after: Union[str, datetime.datetime, NoneType] = None) -> Dict[str, Any]"
+        },
+        "build_dimension_filter": {
+          "kind": "method",
+          "signature": "(dimensions: Dict[int, List[str]], num_dimensions: Optional[int] = None) -> str"
+        },
+        "build_headers": {
+          "kind": "method",
+          "signature": "(self, accept_encoding: Optional[str] = None, accept_language: Optional[str] = None, response_format: Optional[macroforecast.datasets.sources.oecd.formats.OECDResponseFormat] = None) -> Dict[str, str]"
+        },
+        "build_structure_endpoint": {
+          "kind": "method",
+          "signature": "(self, resource_type: Any, resource_id: str, agency: str, version: Optional[str]) -> str"
+        },
+        "build_structure_params": {
+          "kind": "method",
+          "signature": "(self, references: Optional[str] = 'all', detail: Optional[str] = 'referencepartial', format: Optional[str] = None, format_version: Optional[str] = None, compress: Optional[str] = None) -> Dict[str, str]"
+        },
+        "get_accept_header": {
+          "kind": "method",
+          "signature": "(format: macroforecast.datasets.sources.oecd.formats.OECDResponseFormat, version: macroforecast.datasets.core.sdmx.SDMXVersion) -> str"
+        },
+        "get_structure_accept_header": {
+          "kind": "method",
+          "signature": "() -> str"
+        }
+      },
+      "qualified_name": "macroforecast.datasets.sources.OECDEndpointBuilderV1",
+      "signature": "()"
+    },
+    "OECDEndpointBuilderV2": {
+      "kind": "class",
+      "methods": {
+        "build_data_endpoint": {
+          "kind": "method",
+          "signature": "(self, dataflow: str, agency: str, version: str, key: Optional[str] = None) -> str"
+        },
+        "build_data_params": {
+          "kind": "method",
+          "signature": "(self, *, start_period: Optional[str] = None, end_period: Optional[str] = None, last_n_observations: Optional[int] = None, first_n_observations: Optional[int] = None, compress: bool = False, dimensions: Optional[Dict[str, List[str]]] = None, response_format: Optional[macroforecast.datasets.sources.oecd.formats.OECDResponseFormat] = None, response_format_version: Optional[str] = None, lang: Optional[str] = None, labels: Optional[str] = None, attributes: Optional[str] = None, measures: Optional[str] = None, return_data: Optional[str] = None, dimension_at_observation: Optional[str] = None, detail: Optional[str] = None, updated_after: Union[str, datetime.datetime, NoneType] = None) -> Dict[str, Any]"
+        },
+        "build_dimension_filter": {
+          "kind": "method",
+          "signature": "(dimensions: Dict[int, List[str]], num_dimensions: Optional[int] = None) -> str"
+        },
+        "build_headers": {
+          "kind": "method",
+          "signature": "(self, accept_encoding: Optional[str] = None, accept_language: Optional[str] = None, response_format: Optional[macroforecast.datasets.sources.oecd.formats.OECDResponseFormat] = None) -> Dict[str, str]"
+        },
+        "build_structure_endpoint": {
+          "kind": "method",
+          "signature": "(self, resource_type: Any, resource_id: str, agency: str, version: Optional[str]) -> str"
+        },
+        "build_structure_params": {
+          "kind": "method",
+          "signature": "(self, references: Optional[str] = 'all', detail: Optional[str] = 'referencepartial', format: Optional[str] = None, format_version: Optional[str] = None, compress: Optional[str] = None) -> Dict[str, str]"
+        },
+        "get_accept_header": {
+          "kind": "method",
+          "signature": "(format: macroforecast.datasets.sources.oecd.formats.OECDResponseFormat, version: macroforecast.datasets.core.sdmx.SDMXVersion) -> str"
+        },
+        "get_structure_accept_header": {
+          "kind": "method",
+          "signature": "() -> str"
+        }
+      },
+      "qualified_name": "macroforecast.datasets.sources.OECDEndpointBuilderV2",
+      "signature": "()"
+    },
+    "OECDQueryRequest": {
+      "kind": "class",
+      "methods": {
+        "from_dict": {
+          "kind": "method",
+          "signature": "(data: Dict[str, Any]) -> 'SDMXQueryRequest'"
+        },
+        "get_dataflow_key": {
+          "kind": "method",
+          "signature": "(self) -> str"
+        },
+        "identity_key": {
+          "kind": "method",
+          "signature": "(self) -> str"
+        },
+        "to_dict": {
+          "kind": "method",
+          "signature": "(self) -> Dict[str, Any]"
+        }
+      },
+      "qualified_name": "macroforecast.datasets.sources.OECDQueryRequest",
+      "signature": "(agency: str, dataflow: str, version: str = '+', dimensions: Optional[Dict[Union[str, int], Union[str, List[str]]]] = None, start_period: Optional[str] = None, end_period: Optional[str] = None, last_n_observations: Optional[int] = None, format: macroforecast.datasets.sources.oecd.formats.OECDResponseFormat = <OECDResponseFormat.CSV_LABELS: 'csv_labels'>, dimension_at_observation: macroforecast.datasets.core.sdmx.DimensionAtObservation = <DimensionAtObservation.ALL_DIMENSIONS: 'AllDimensions'>, attributes: Optional[str] = None, measures: Optional[str] = None, on_duplicate: Literal['ignore', 'warn', 'raise'] = 'warn', split_dimensions: Optional[List[Union[int, str]]] = None, max_split_combinations: int = 100, updated_after: Union[str, datetime.datetime, NoneType] = None) -> None"
+    },
+    "OECDResponseFormat": {
+      "kind": "class",
+      "methods": {
+        "maketrans": {
+          "kind": "method",
+          "signature": null
+        }
+      },
+      "qualified_name": "macroforecast.datasets.sources.OECDResponseFormat",
+      "signature": "(*values)"
+    },
+    "UNSDClient": {
+      "kind": "class",
+      "methods": {
+        "close": {
+          "kind": "method",
+          "signature": "(self) -> None"
+        },
+        "download_raw": {
+          "kind": "method",
+          "signature": "(self, source: str, target: str) -> Tuple[bytes, str]"
+        },
+        "execute_query": {
+          "kind": "method",
+          "signature": "(self, query: 'UNSDCorrespondenceRequest') -> pandas.core.frame.DataFrame"
+        },
+        "get": {
+          "kind": "method",
+          "signature": "(self, endpoint: str, params: Optional[Dict[str, Any]] = None, headers: Optional[Dict[str, str]] = None, timeout: Optional[int] = None) -> requests.models.Response"
+        },
+        "get_correspondence": {
+          "kind": "method",
+          "signature": "(self, source: str, target: str, *, kind: str = 'conversion') -> pandas.core.frame.DataFrame"
+        },
+        "list_available_tables": {
+          "kind": "method",
+          "signature": "(self) -> pandas.core.frame.DataFrame"
+        }
+      },
+      "qualified_name": "macroforecast.datasets.sources.UNSDClient",
+      "signature": "(base_url: str = 'https://unstats.un.org/unsd/classifications/Econ/tables', timeout: int = 120, max_retries: int = 3, backoff_factor: float = 0.5) -> None"
+    },
+    "UNSDCorrespondenceRequest": {
+      "kind": "class",
+      "methods": {
+        "agency": {
+          "kind": "property",
+          "signature": null
+        },
+        "dataflow": {
+          "kind": "property",
+          "signature": null
+        },
+        "from_dict": {
+          "kind": "method",
+          "signature": "(data: Dict[str, Any]) -> 'SDMXQueryRequest'"
+        },
+        "get_dataflow_key": {
+          "kind": "method",
+          "signature": "(self) -> str"
+        },
+        "identity_key": {
+          "kind": "method",
+          "signature": "(self) -> str"
+        },
+        "to_dict": {
+          "kind": "method",
+          "signature": "(self) -> Dict[str, Any]"
+        }
+      },
+      "qualified_name": "macroforecast.datasets.sources.UNSDCorrespondenceRequest",
+      "signature": "(source: str, target: str, kind: str = 'conversion', version: str = '*', format: macroforecast.datasets.sources.unsd.formats.UNSDResponseFormat = <UNSDResponseFormat.XLSX: 'xlsx'>) -> None"
+    },
+    "UNSDResponseFormat": {
+      "kind": "class",
+      "methods": {
+        "maketrans": {
+          "kind": "method",
+          "signature": null
+        }
+      },
+      "qualified_name": "macroforecast.datasets.sources.UNSDResponseFormat",
+      "signature": "(*values)"
+    }
+  },
+  "macroforecast.datasets.sources.comtrade": {
+    "ComtradeClient": {
+      "kind": "class",
+      "methods": {
+        "close": {
+          "kind": "method",
+          "signature": "(self) -> None"
+        },
+        "execute_query": {
+          "kind": "method",
+          "signature": "(self, query: 'ComtradeQueryRequest') -> pandas.core.frame.DataFrame"
+        },
+        "fetch_updates": {
+          "kind": "method",
+          "signature": "(self, query: 'ComtradeQueryRequest', since: Optional[datetime.datetime], n_observations: int = 10) -> pandas.core.frame.DataFrame"
+        },
+        "get": {
+          "kind": "method",
+          "signature": "(self, endpoint: str, params: Optional[Dict[str, Any]] = None, headers: Optional[Dict[str, str]] = None, timeout: Optional[int] = None) -> requests.models.Response"
+        },
+        "get_data": {
+          "kind": "method",
+          "signature": "(self, flows: Union[List[str], str, NoneType] = ['M', 'X'], products: Union[List[int], List[str], int, str, NoneType] = None, reporters: Union[List[int], List[str], int, str, NoneType] = None, partners: Union[List[int], List[str], int, str, NoneType] = None, partners2: Union[List[int], List[str], int, str, NoneType] = None, customs: Union[List[str], str, NoneType] = None, mot: Union[List[str], str, NoneType] = None, periods: Union[List[str], str, NoneType] = None, period_start: Optional[str] = None, period_end: Optional[str] = None, type_code: str = 'C', classification: str = 'HS', frequency: str = 'annual', max_records: Optional[int] = None, format_output: str = 'JSON', count_only: Optional[bool] = None, include_desc: bool = True) -> Tuple[pandas.core.frame.DataFrame, dict]"
+        },
+        "get_final_data_availability": {
+          "kind": "method",
+          "signature": "(self, reporters: Union[List[int], List[str], int, str, NoneType] = None, periods: Union[List[str], str, NoneType] = None, frequency: str = 'annual', type_code: str = 'C', classification: str = 'HS') -> pandas.core.frame.DataFrame"
+        },
+        "get_metadata": {
+          "kind": "method",
+          "signature": "(self, category: Optional[str] = None) -> pandas.core.frame.DataFrame"
+        },
+        "get_structure": {
+          "kind": "method",
+          "signature": "(self, dataflow: str, agency: str = 'COMTRADE') -> macroforecast.datasets.core.structures.DataflowStructure"
+        },
+        "get_valid_periods": {
+          "kind": "method",
+          "signature": "(self, periods: Union[List[str], str, NoneType] = None, period_start: Optional[str] = None, period_end: Optional[str] = None, frequency: Optional[str] = 'monthly') -> List[str]"
+        },
+        "resolve_query_structure": {
+          "kind": "method",
+          "signature": "(self, query: 'ComtradeQueryRequest') -> macroforecast.datasets.core.structures.DataflowStructure"
+        }
+      },
+      "qualified_name": "macroforecast.datasets.sources.comtrade.ComtradeClient",
+      "signature": "(base_url: str = 'https://comtradeapi.un.org', timeout: int = 120, subscription_key: Optional[str] = None, proxy: Optional[str] = None, structure_registry: Optional[macroforecast.datasets.core.structures.DataflowStructureRegistry] = None, rate_limiter: Union[macroforecast.datasets.core.rate_limiter.RateLimiter, macroforecast.datasets.core.rate_limiter.CompositeRateLimiter, NoneType] = None, auto_load_rate_limit: bool = True, max_retries: int = 3, backoff_factor: float = 0.5) -> None"
+    },
+    "ComtradeQueryRequest": {
+      "kind": "class",
+      "methods": {
+        "agency": {
+          "kind": "property",
+          "signature": null
+        },
+        "from_dict": {
+          "kind": "method",
+          "signature": "(data: Dict[str, Any]) -> 'SDMXQueryRequest'"
+        },
+        "get_dataflow_key": {
+          "kind": "method",
+          "signature": "(self) -> str"
+        },
+        "identity_key": {
+          "kind": "method",
+          "signature": "(self) -> str"
+        },
+        "to_dict": {
+          "kind": "method",
+          "signature": "(self) -> Dict[str, Any]"
+        }
+      },
+      "qualified_name": "macroforecast.datasets.sources.comtrade.ComtradeQueryRequest",
+      "signature": "(dataflow: str, version: str = '*', flows: Union[List[str], str, NoneType] = None, reporters: Union[List[str], List[int], str, int, NoneType] = None, partners: Union[List[str], List[int], str, int, NoneType] = None, partners2: Union[List[str], List[int], str, int, NoneType] = None, products: Union[List[str], List[int], str, int, NoneType] = None, customs: Union[List[str], str, NoneType] = None, mot: Union[List[str], str, NoneType] = None, periods: Union[List[str], str, NoneType] = None, period_start: Optional[str] = None, period_end: Optional[str] = None, type_code: str = 'C', classification: str = 'HS', frequency: str = 'annual', max_records: Optional[int] = None, count_only: Optional[bool] = None, include_desc: bool = True, format: macroforecast.datasets.sources.comtrade.formats.ComtradeResponseFormat = <ComtradeResponseFormat.JSON: 'json'>) -> None"
+    },
+    "ComtradeResponseFormat": {
+      "kind": "class",
+      "methods": {
+        "maketrans": {
+          "kind": "method",
+          "signature": null
+        }
+      },
+      "qualified_name": "macroforecast.datasets.sources.comtrade.ComtradeResponseFormat",
+      "signature": "(*values)"
+    }
+  },
+  "macroforecast.datasets.sources.eurostat": {
+    "EurostatClient": {
+      "kind": "class",
+      "methods": {
+        "close": {
+          "kind": "method",
+          "signature": "(self) -> None"
+        },
+        "execute_query": {
+          "kind": "method",
+          "signature": "(self, query: Any) -> pandas.core.frame.DataFrame"
+        },
+        "fetch_updates": {
+          "kind": "method",
+          "signature": "(self, query: 'EurostatQueryRequest', since: Optional[datetime.datetime], n_observations: int = 10) -> pandas.core.frame.DataFrame"
+        },
+        "get_data": {
+          "kind": "method",
+          "signature": "(self, dataflow: str, version: str = '*', dimensions: Optional[Dict[str, Union[str, List[str]]]] = None, start_period: Optional[str] = None, end_period: Optional[str] = None, last_n_observations: Optional[int] = None, first_n_observations: Optional[int] = None, format: macroforecast.datasets.sources.eurostat.formats.EurostatResponseFormat = <EurostatResponseFormat.CSV: 'csv'>, compress: bool = False, attributes: Optional[str] = None, measures: Optional[str] = None, lang: Optional[str] = None, labels: Optional[str] = None, response_format_version: Optional[str] = None, dimension_at_observation: Optional[str] = None, detail: Optional[Literal['full', 'dataonly', 'serieskeysonly', 'nodata']] = None, on_duplicate: Literal['ignore', 'warn', 'raise'] = 'warn', split_dimensions: Optional[List[str]] = None, max_split_combinations: int = 100, default_dimensions: List[str] = ['TIME_PERIOD']) -> pandas.core.frame.DataFrame"
+        },
+        "get_data_last_update": {
+          "kind": "method",
+          "signature": "(self, dataflow: str, version: str = '*') -> Optional[datetime.datetime]"
+        },
+        "get_dataflow_structure": {
+          "kind": "method",
+          "signature": "(self, dataflow: str, version: str = '+') -> macroforecast.datasets.core.structures.DataflowStructure"
+        },
+        "get_structure": {
+          "kind": "method",
+          "signature": "(self, resource_type: macroforecast.datasets.core.sdmx.StructureResourceType, resource_id: str, agency: str = 'ESTAT', version: Optional[str] = '+', references: Literal['none', 'parents', 'parentsandsiblings', 'ancestors', 'children', 'descendants', 'all'] = 'none', detail: Literal['full', 'allstubs', 'referencestubs', 'allcompletestubs', 'referencecompletestubs', 'referencepartial'] = 'full', format: Optional[str] = None, format_version: Optional[str] = None, compress: Optional[Literal['true', 'false']] = None, accept_encoding: Optional[str] = None, accept_language: Optional[str] = None, timeout: Optional[int] = None) -> str"
+        },
+        "list_all_dataflows": {
+          "kind": "method",
+          "signature": "(self, agency: str = 'ESTAT') -> pandas.core.frame.DataFrame"
+        },
+        "register_structure": {
+          "kind": "method",
+          "signature": "(self, structure: 'DataflowStructure') -> None"
+        },
+        "resolve_query_structure": {
+          "kind": "method",
+          "signature": "(self, query: Any) -> Optional[ForwardRef('DataflowStructure')]"
+        }
+      },
+      "qualified_name": "macroforecast.datasets.sources.eurostat.EurostatClient",
+      "signature": "(api_version: macroforecast.datasets.core.sdmx.SDMXVersion = <SDMXVersion.V3: 'v3'>, base_url: Optional[str] = None, timeout: int = 90, structure_registry: Optional[macroforecast.datasets.core.structures.DataflowStructureRegistry] = None, auto_fetch_structure: bool = True, rate_limiter: Optional[macroforecast.datasets.core.rate_limiter.RateLimiter] = None, auto_load_rate_limit: bool = True)"
+    },
+    "EurostatEndpointBuilderV21": {
+      "kind": "class",
+      "methods": {
+        "build_data_endpoint": {
+          "kind": "method",
+          "signature": "(self, dataflow: str, agency: Optional[str], version: Optional[str], key: Optional[str] = 'all') -> str"
+        },
+        "build_data_params": {
+          "kind": "method",
+          "signature": "(self, *, start_period: Optional[str] = None, end_period: Optional[str] = None, last_n_observations: Optional[int] = None, first_n_observations: Optional[int] = None, compress: bool = False, dimensions: Optional[Dict[str, List[str]]] = None, response_format: Optional[macroforecast.datasets.sources.eurostat.formats.EurostatResponseFormat] = None, response_format_version: Optional[str] = None, lang: Optional[str] = None, labels: Optional[str] = None, attributes: Optional[str] = None, measures: Optional[str] = None, return_data: Optional[str] = None, dimension_at_observation: Optional[str] = None, detail: Optional[Literal['full', 'dataonly', 'serieskeysonly', 'nodata']] = None) -> Dict[str, str]"
+        },
+        "build_headers": {
+          "kind": "method",
+          "signature": "(self, accept_encoding: Optional[str] = None, accept_language: Optional[str] = None, response_format: Optional[Any] = None) -> Dict[str, str]"
+        },
+        "build_structure_endpoint": {
+          "kind": "method",
+          "signature": "(self, resource_type: macroforecast.datasets.core.sdmx.StructureResourceType, resource_id: str, agency: str, version: Optional[str]) -> str"
+        },
+        "build_structure_params": {
+          "kind": "method",
+          "signature": "(self, references: Optional[Literal['none', 'parents', 'parentsandsiblings', 'ancestors', 'children', 'descendants', 'all']] = 'none', detail: Optional[Literal['full', 'allstubs', 'referencestubs', 'allcompletestubs', 'referencecompletestubs', 'referencepartial']] = 'full', format: Optional[str] = None, format_version: Optional[str] = None, compress: Optional[Literal['true', 'false']] = None) -> Dict[str, str]"
+        }
+      },
+      "qualified_name": "macroforecast.datasets.sources.eurostat.EurostatEndpointBuilderV21",
+      "signature": "()"
+    },
+    "EurostatEndpointBuilderV30": {
+      "kind": "class",
+      "methods": {
+        "build_data_endpoint": {
+          "kind": "method",
+          "signature": "(self, dataflow: str, agency: str, version: str, key: Optional[str] = None) -> str"
+        },
+        "build_data_params": {
+          "kind": "method",
+          "signature": "(self, *, start_period: Optional[str] = None, end_period: Optional[str] = None, last_n_observations: Optional[int] = None, first_n_observations: Optional[int] = None, compress: bool = False, dimensions: Optional[Dict[str, List[str]]] = None, response_format: Optional[macroforecast.datasets.sources.eurostat.formats.EurostatResponseFormat] = None, response_format_version: Optional[str] = None, lang: Optional[str] = None, labels: Optional[str] = None, attributes: Optional[str] = None, measures: Optional[str] = None, return_data: Optional[str] = None, dimension_at_observation: Optional[str] = None, detail: Optional[Literal['full', 'dataonly', 'serieskeysonly', 'nodata']] = None) -> Dict[str, str]"
+        },
+        "build_headers": {
+          "kind": "method",
+          "signature": "(self, accept_encoding: Optional[str] = None, accept_language: Optional[str] = None, response_format: Optional[Any] = None) -> Dict[str, str]"
+        },
+        "build_structure_endpoint": {
+          "kind": "method",
+          "signature": "(self, resource_type: macroforecast.datasets.core.sdmx.StructureResourceType, resource_id: str, agency: str, version: Optional[str]) -> str"
+        },
+        "build_structure_params": {
+          "kind": "method",
+          "signature": "(self, references: Optional[Literal['none', 'parents', 'parentsandsiblings', 'ancestors', 'children', 'descendants', 'all']] = 'none', detail: Optional[Literal['full', 'allstubs', 'referencestubs', 'allcompletestubs', 'referencecompletestubs', 'referencepartial']] = 'full', format: Optional[str] = 'structure', format_version: Optional[str] = '3.0', compress: Optional[Literal['true', 'false']] = 'true') -> Dict[str, str]"
+        }
+      },
+      "qualified_name": "macroforecast.datasets.sources.eurostat.EurostatEndpointBuilderV30",
+      "signature": "()"
+    },
+    "EurostatQueryRequest": {
+      "kind": "class",
+      "methods": {
+        "agency": {
+          "kind": "property",
+          "signature": null
+        },
+        "from_dict": {
+          "kind": "method",
+          "signature": "(data: Dict[str, Any]) -> 'SDMXQueryRequest'"
+        },
+        "get_dataflow_key": {
+          "kind": "method",
+          "signature": "(self) -> str"
+        },
+        "identity_key": {
+          "kind": "method",
+          "signature": "(self) -> str"
+        },
+        "to_dict": {
+          "kind": "method",
+          "signature": "(self) -> Dict[str, Any]"
+        }
+      },
+      "qualified_name": "macroforecast.datasets.sources.eurostat.EurostatQueryRequest",
+      "signature": "(dataflow: str, version: str = '*', dimensions: Optional[Dict[str, Union[str, List[str]]]] = None, start_period: Optional[str] = None, end_period: Optional[str] = None, last_n_observations: Optional[int] = None, first_n_observations: Optional[int] = None, format: macroforecast.datasets.sources.eurostat.formats.EurostatResponseFormat = <EurostatResponseFormat.CSV: 'csv'>, compress: bool = False, on_duplicate: Literal['ignore', 'warn', 'raise'] = 'warn', split_dimensions: Optional[List[str]] = None, max_split_combinations: int = 100) -> None"
+    },
+    "EurostatQueryRequestV21": {
+      "kind": "class",
+      "methods": {
+        "agency": {
+          "kind": "property",
+          "signature": null
+        },
+        "from_dict": {
+          "kind": "method",
+          "signature": "(data: Dict[str, Any]) -> 'SDMXQueryRequest'"
+        },
+        "get_dataflow_key": {
+          "kind": "method",
+          "signature": "(self) -> str"
+        },
+        "identity_key": {
+          "kind": "method",
+          "signature": "(self) -> str"
+        },
+        "to_dict": {
+          "kind": "method",
+          "signature": "(self) -> Dict[str, Any]"
+        }
+      },
+      "qualified_name": "macroforecast.datasets.sources.eurostat.EurostatQueryRequestV21",
+      "signature": "(dataflow: str, version: str = '*', dimensions: Optional[Dict[str, Union[str, List[str]]]] = None, start_period: Optional[str] = None, end_period: Optional[str] = None, last_n_observations: Optional[int] = None, first_n_observations: Optional[int] = None, format: macroforecast.datasets.sources.eurostat.formats.EurostatResponseFormat = <EurostatResponseFormat.CSV: 'csv'>, compress: bool = False, on_duplicate: Literal['ignore', 'warn', 'raise'] = 'warn', split_dimensions: Optional[List[str]] = None, max_split_combinations: int = 100, dimension_at_observation: Optional[str] = None, detail: Optional[Literal['full', 'dataonly', 'serieskeysonly', 'nodata']] = None) -> None"
+    },
+    "EurostatQueryRequestV30": {
+      "kind": "class",
+      "methods": {
+        "agency": {
+          "kind": "property",
+          "signature": null
+        },
+        "from_dict": {
+          "kind": "method",
+          "signature": "(data: Dict[str, Any]) -> 'SDMXQueryRequest'"
+        },
+        "get_dataflow_key": {
+          "kind": "method",
+          "signature": "(self) -> str"
+        },
+        "identity_key": {
+          "kind": "method",
+          "signature": "(self) -> str"
+        },
+        "to_dict": {
+          "kind": "method",
+          "signature": "(self) -> Dict[str, Any]"
+        }
+      },
+      "qualified_name": "macroforecast.datasets.sources.eurostat.EurostatQueryRequestV30",
+      "signature": "(dataflow: str, version: str = '*', dimensions: Optional[Dict[str, Union[str, List[str]]]] = None, start_period: Optional[str] = None, end_period: Optional[str] = None, last_n_observations: Optional[int] = None, first_n_observations: Optional[int] = None, format: macroforecast.datasets.sources.eurostat.formats.EurostatResponseFormat = <EurostatResponseFormat.CSV: 'csv'>, compress: bool = False, on_duplicate: Literal['ignore', 'warn', 'raise'] = 'warn', split_dimensions: Optional[List[str]] = None, max_split_combinations: int = 100, attributes: Optional[str] = None, measures: Optional[str] = None, lang: Optional[str] = None, labels: Optional[str] = None, response_format_version: Optional[str] = None) -> None"
+    },
+    "EurostatResponseFormat": {
+      "kind": "class",
+      "methods": {
+        "maketrans": {
+          "kind": "method",
+          "signature": null
+        }
+      },
+      "qualified_name": "macroforecast.datasets.sources.eurostat.EurostatResponseFormat",
+      "signature": "(*values)"
+    }
+  },
+  "macroforecast.datasets.sources.oecd": {
+    "OECDClient": {
+      "kind": "class",
+      "methods": {
+        "close": {
+          "kind": "method",
+          "signature": "(self) -> None"
+        },
+        "create_structure_from_api_response": {
+          "kind": "method",
+          "signature": "(self, agency: str, dataflow: str, api_response: Dict[str, Any]) -> macroforecast.datasets.core.structures.DataflowStructure"
+        },
+        "execute_query": {
+          "kind": "method",
+          "signature": "(self, query: Any) -> pandas.core.frame.DataFrame"
+        },
+        "fetch_updates": {
+          "kind": "method",
+          "signature": "(self, query: 'OECDQueryRequest', since: Optional[datetime.datetime], n_observations: int = 10) -> pandas.core.frame.DataFrame"
+        },
+        "get_data": {
+          "kind": "method",
+          "signature": "(self, agency: str, dataflow: str, version: str = '+', dimensions: Optional[Dict[Union[str, int], Union[str, List[str]]]] = None, start_period: Optional[str] = None, end_period: Optional[str] = None, last_n_observations: Optional[int] = None, format: macroforecast.datasets.sources.oecd.formats.OECDResponseFormat = <OECDResponseFormat.CSV_LABELS: 'csv_labels'>, dimension_at_observation: macroforecast.datasets.core.sdmx.DimensionAtObservation = <DimensionAtObservation.ALL_DIMENSIONS: 'AllDimensions'>, attributes: Optional[str] = None, measures: Optional[str] = None, on_duplicate: Literal['ignore', 'warn', 'raise'] = 'warn', split_dimensions: Optional[List[Union[int, str]]] = None, max_split_combinations: int = 100, updated_after: Union[str, datetime.datetime, NoneType] = None, default_dimensions: List[str] = ['TIME_PERIOD']) -> pandas.core.frame.DataFrame"
+        },
+        "get_structure": {
+          "kind": "method",
+          "signature": "(self, agency: str, dataflow: str, version: str = '+', timeout: Optional[int] = None) -> macroforecast.datasets.core.structures.DataflowStructure"
+        },
+        "list_all_dataflows": {
+          "kind": "method",
+          "signature": "(self) -> pandas.core.frame.DataFrame"
+        },
+        "register_structure": {
+          "kind": "method",
+          "signature": "(self, structure: 'DataflowStructure') -> None"
+        },
+        "resolve_query_structure": {
+          "kind": "method",
+          "signature": "(self, query: Any) -> Optional[ForwardRef('DataflowStructure')]"
+        }
+      },
+      "qualified_name": "macroforecast.datasets.sources.oecd.OECDClient",
+      "signature": "(base_url: str = 'https://sdmx.oecd.org/public/rest', timeout: int = 60, sdmx_version: macroforecast.datasets.core.sdmx.SDMXVersion = <SDMXVersion.V2: 'v2'>, structure_registry: Optional[macroforecast.datasets.core.structures.DataflowStructureRegistry] = None, auto_fetch_structure: bool = True, rate_limiter: Optional[macroforecast.datasets.core.rate_limiter.RateLimiter] = None, auto_load_rate_limit: bool = True)"
+    },
+    "OECDEndpointBuilder": {
+      "kind": "class",
+      "methods": {
+        "build_data_endpoint": {
+          "kind": "method",
+          "signature": "(self, dataflow: str, agency: str, version: str, key: Optional[str] = None) -> str"
+        },
+        "build_data_params": {
+          "kind": "method",
+          "signature": "(self, *, start_period: Optional[str] = None, end_period: Optional[str] = None, last_n_observations: Optional[int] = None, first_n_observations: Optional[int] = None, compress: bool = False, dimensions: Optional[Dict[str, List[str]]] = None, response_format: Optional[ForwardRef('SDMXResponseFormat')] = None, response_format_version: Optional[str] = None, lang: Optional[str] = None, labels: Optional[str] = None, attributes: Optional[str] = None, measures: Optional[str] = None, return_data: Optional[str] = None, dimension_at_observation: Optional[str] = None, detail: Optional[str] = None) -> Dict[str, Any]"
+        },
+        "build_dimension_filter": {
+          "kind": "method",
+          "signature": "(dimensions: Dict[int, List[str]], num_dimensions: Optional[int] = None) -> str"
+        },
+        "build_headers": {
+          "kind": "method",
+          "signature": "(self, accept_encoding: Optional[str] = None, accept_language: Optional[str] = None, response_format: Optional[macroforecast.datasets.sources.oecd.formats.OECDResponseFormat] = None) -> Dict[str, str]"
+        },
+        "build_structure_endpoint": {
+          "kind": "method",
+          "signature": "(self, resource_type: 'StructureResourceType', resource_id: str, agency: str, version: Optional[str]) -> str"
+        },
+        "build_structure_params": {
+          "kind": "method",
+          "signature": "(self, references: Optional[str] = 'all', detail: Optional[str] = 'referencepartial', format: Optional[str] = None, format_version: Optional[str] = None, compress: Optional[str] = None) -> Dict[str, str]"
+        },
+        "get_accept_header": {
+          "kind": "method",
+          "signature": "(format: macroforecast.datasets.sources.oecd.formats.OECDResponseFormat, version: macroforecast.datasets.core.sdmx.SDMXVersion) -> str"
+        },
+        "get_structure_accept_header": {
+          "kind": "method",
+          "signature": "() -> str"
+        }
+      },
+      "qualified_name": "macroforecast.datasets.sources.oecd.OECDEndpointBuilder",
+      "signature": "()"
+    },
+    "OECDEndpointBuilderV1": {
+      "kind": "class",
+      "methods": {
+        "build_data_endpoint": {
+          "kind": "method",
+          "signature": "(self, dataflow: str, agency: str, version: str, key: Optional[str] = None) -> str"
+        },
+        "build_data_params": {
+          "kind": "method",
+          "signature": "(self, *, start_period: Optional[str] = None, end_period: Optional[str] = None, last_n_observations: Optional[int] = None, first_n_observations: Optional[int] = None, compress: bool = False, dimensions: Optional[Dict[str, List[str]]] = None, response_format: Optional[macroforecast.datasets.sources.oecd.formats.OECDResponseFormat] = None, response_format_version: Optional[str] = None, lang: Optional[str] = None, labels: Optional[str] = None, attributes: Optional[str] = None, measures: Optional[str] = None, return_data: Optional[str] = None, dimension_at_observation: Optional[str] = None, detail: Optional[str] = None, updated_after: Union[str, datetime.datetime, NoneType] = None) -> Dict[str, Any]"
+        },
+        "build_dimension_filter": {
+          "kind": "method",
+          "signature": "(dimensions: Dict[int, List[str]], num_dimensions: Optional[int] = None) -> str"
+        },
+        "build_headers": {
+          "kind": "method",
+          "signature": "(self, accept_encoding: Optional[str] = None, accept_language: Optional[str] = None, response_format: Optional[macroforecast.datasets.sources.oecd.formats.OECDResponseFormat] = None) -> Dict[str, str]"
+        },
+        "build_structure_endpoint": {
+          "kind": "method",
+          "signature": "(self, resource_type: Any, resource_id: str, agency: str, version: Optional[str]) -> str"
+        },
+        "build_structure_params": {
+          "kind": "method",
+          "signature": "(self, references: Optional[str] = 'all', detail: Optional[str] = 'referencepartial', format: Optional[str] = None, format_version: Optional[str] = None, compress: Optional[str] = None) -> Dict[str, str]"
+        },
+        "get_accept_header": {
+          "kind": "method",
+          "signature": "(format: macroforecast.datasets.sources.oecd.formats.OECDResponseFormat, version: macroforecast.datasets.core.sdmx.SDMXVersion) -> str"
+        },
+        "get_structure_accept_header": {
+          "kind": "method",
+          "signature": "() -> str"
+        }
+      },
+      "qualified_name": "macroforecast.datasets.sources.oecd.OECDEndpointBuilderV1",
+      "signature": "()"
+    },
+    "OECDEndpointBuilderV2": {
+      "kind": "class",
+      "methods": {
+        "build_data_endpoint": {
+          "kind": "method",
+          "signature": "(self, dataflow: str, agency: str, version: str, key: Optional[str] = None) -> str"
+        },
+        "build_data_params": {
+          "kind": "method",
+          "signature": "(self, *, start_period: Optional[str] = None, end_period: Optional[str] = None, last_n_observations: Optional[int] = None, first_n_observations: Optional[int] = None, compress: bool = False, dimensions: Optional[Dict[str, List[str]]] = None, response_format: Optional[macroforecast.datasets.sources.oecd.formats.OECDResponseFormat] = None, response_format_version: Optional[str] = None, lang: Optional[str] = None, labels: Optional[str] = None, attributes: Optional[str] = None, measures: Optional[str] = None, return_data: Optional[str] = None, dimension_at_observation: Optional[str] = None, detail: Optional[str] = None, updated_after: Union[str, datetime.datetime, NoneType] = None) -> Dict[str, Any]"
+        },
+        "build_dimension_filter": {
+          "kind": "method",
+          "signature": "(dimensions: Dict[int, List[str]], num_dimensions: Optional[int] = None) -> str"
+        },
+        "build_headers": {
+          "kind": "method",
+          "signature": "(self, accept_encoding: Optional[str] = None, accept_language: Optional[str] = None, response_format: Optional[macroforecast.datasets.sources.oecd.formats.OECDResponseFormat] = None) -> Dict[str, str]"
+        },
+        "build_structure_endpoint": {
+          "kind": "method",
+          "signature": "(self, resource_type: Any, resource_id: str, agency: str, version: Optional[str]) -> str"
+        },
+        "build_structure_params": {
+          "kind": "method",
+          "signature": "(self, references: Optional[str] = 'all', detail: Optional[str] = 'referencepartial', format: Optional[str] = None, format_version: Optional[str] = None, compress: Optional[str] = None) -> Dict[str, str]"
+        },
+        "get_accept_header": {
+          "kind": "method",
+          "signature": "(format: macroforecast.datasets.sources.oecd.formats.OECDResponseFormat, version: macroforecast.datasets.core.sdmx.SDMXVersion) -> str"
+        },
+        "get_structure_accept_header": {
+          "kind": "method",
+          "signature": "() -> str"
+        }
+      },
+      "qualified_name": "macroforecast.datasets.sources.oecd.OECDEndpointBuilderV2",
+      "signature": "()"
+    },
+    "OECDQueryRequest": {
+      "kind": "class",
+      "methods": {
+        "from_dict": {
+          "kind": "method",
+          "signature": "(data: Dict[str, Any]) -> 'SDMXQueryRequest'"
+        },
+        "get_dataflow_key": {
+          "kind": "method",
+          "signature": "(self) -> str"
+        },
+        "identity_key": {
+          "kind": "method",
+          "signature": "(self) -> str"
+        },
+        "to_dict": {
+          "kind": "method",
+          "signature": "(self) -> Dict[str, Any]"
+        }
+      },
+      "qualified_name": "macroforecast.datasets.sources.oecd.OECDQueryRequest",
+      "signature": "(agency: str, dataflow: str, version: str = '+', dimensions: Optional[Dict[Union[str, int], Union[str, List[str]]]] = None, start_period: Optional[str] = None, end_period: Optional[str] = None, last_n_observations: Optional[int] = None, format: macroforecast.datasets.sources.oecd.formats.OECDResponseFormat = <OECDResponseFormat.CSV_LABELS: 'csv_labels'>, dimension_at_observation: macroforecast.datasets.core.sdmx.DimensionAtObservation = <DimensionAtObservation.ALL_DIMENSIONS: 'AllDimensions'>, attributes: Optional[str] = None, measures: Optional[str] = None, on_duplicate: Literal['ignore', 'warn', 'raise'] = 'warn', split_dimensions: Optional[List[Union[int, str]]] = None, max_split_combinations: int = 100, updated_after: Union[str, datetime.datetime, NoneType] = None) -> None"
+    },
+    "OECDResponseFormat": {
+      "kind": "class",
+      "methods": {
+        "maketrans": {
+          "kind": "method",
+          "signature": null
+        }
+      },
+      "qualified_name": "macroforecast.datasets.sources.oecd.OECDResponseFormat",
+      "signature": "(*values)"
+    }
+  },
+  "macroforecast.datasets.sources.unsd": {
+    "UNSDClient": {
+      "kind": "class",
+      "methods": {
+        "close": {
+          "kind": "method",
+          "signature": "(self) -> None"
+        },
+        "download_raw": {
+          "kind": "method",
+          "signature": "(self, source: str, target: str) -> Tuple[bytes, str]"
+        },
+        "execute_query": {
+          "kind": "method",
+          "signature": "(self, query: 'UNSDCorrespondenceRequest') -> pandas.core.frame.DataFrame"
+        },
+        "get": {
+          "kind": "method",
+          "signature": "(self, endpoint: str, params: Optional[Dict[str, Any]] = None, headers: Optional[Dict[str, str]] = None, timeout: Optional[int] = None) -> requests.models.Response"
+        },
+        "get_correspondence": {
+          "kind": "method",
+          "signature": "(self, source: str, target: str, *, kind: str = 'conversion') -> pandas.core.frame.DataFrame"
+        },
+        "list_available_tables": {
+          "kind": "method",
+          "signature": "(self) -> pandas.core.frame.DataFrame"
+        }
+      },
+      "qualified_name": "macroforecast.datasets.sources.unsd.UNSDClient",
+      "signature": "(base_url: str = 'https://unstats.un.org/unsd/classifications/Econ/tables', timeout: int = 120, max_retries: int = 3, backoff_factor: float = 0.5) -> None"
+    },
+    "UNSDCorrespondenceRequest": {
+      "kind": "class",
+      "methods": {
+        "agency": {
+          "kind": "property",
+          "signature": null
+        },
+        "dataflow": {
+          "kind": "property",
+          "signature": null
+        },
+        "from_dict": {
+          "kind": "method",
+          "signature": "(data: Dict[str, Any]) -> 'SDMXQueryRequest'"
+        },
+        "get_dataflow_key": {
+          "kind": "method",
+          "signature": "(self) -> str"
+        },
+        "identity_key": {
+          "kind": "method",
+          "signature": "(self) -> str"
+        },
+        "to_dict": {
+          "kind": "method",
+          "signature": "(self) -> Dict[str, Any]"
+        }
+      },
+      "qualified_name": "macroforecast.datasets.sources.unsd.UNSDCorrespondenceRequest",
+      "signature": "(source: str, target: str, kind: str = 'conversion', version: str = '*', format: macroforecast.datasets.sources.unsd.formats.UNSDResponseFormat = <UNSDResponseFormat.XLSX: 'xlsx'>) -> None"
+    },
+    "UNSDResponseFormat": {
+      "kind": "class",
+      "methods": {
+        "maketrans": {
+          "kind": "method",
+          "signature": null
+        }
+      },
+      "qualified_name": "macroforecast.datasets.sources.unsd.UNSDResponseFormat",
+      "signature": "(*values)"
+    }
+  },
+  "macroforecast.storage": {
+    "Loader": {
+      "kind": "class",
+      "methods": {
+        "connect": {
+          "kind": "method",
+          "signature": "(self, **kwargs) -> None"
+        },
+        "load": {
+          "kind": "method",
+          "signature": "(self, filepath: str, bucket: Optional[str] = None, **kwargs) -> Any"
+        }
+      },
+      "qualified_name": "macroforecast.storage.Loader",
+      "signature": "(s3_package: Optional[str] = 'boto3') -> None"
+    },
+    "Saver": {
+      "kind": "class",
+      "methods": {
+        "connect": {
+          "kind": "method",
+          "signature": "(self, **kwargs) -> None"
+        },
+        "save": {
+          "kind": "method",
+          "signature": "(self, filepath: str, obj: Optional[object] = None, bucket: Optional[str] = None, **kwargs) -> None"
+        }
+      },
+      "qualified_name": "macroforecast.storage.Saver",
+      "signature": "(s3_package: Optional[str] = 'boto3')"
+    },
+    "merge_registry": {
+      "kind": "function",
+      "qualified_name": "macroforecast.storage.merge_registry",
+      "signature": "(path: 'Path', entries: 'Mapping[str, Dict[str, Any]]', loader: 'Loader', saver: 'Saver', bucket: 'Optional[str]', *, root: 'str') -> 'None'"
+    },
+    "read_json": {
+      "kind": "function",
+      "qualified_name": "macroforecast.storage.read_json",
+      "signature": "(path: 'Path', loader: 'Loader', bucket: 'Optional[str]') -> 'Optional[Dict[str, Any]]'"
+    },
+    "read_registry": {
+      "kind": "function",
+      "qualified_name": "macroforecast.storage.read_registry",
+      "signature": "(path: 'Path', loader: 'Loader', bucket: 'Optional[str]', *, root: 'str') -> 'Dict[str, Dict[str, Any]]'"
+    },
+    "write_json": {
+      "kind": "function",
+      "qualified_name": "macroforecast.storage.write_json",
+      "signature": "(path: 'Path', obj: 'Any', saver: 'Saver', bucket: 'Optional[str]') -> 'None'"
+    }
+  },
+  "macroforecast.storage2": {
+    "DuckLakeConnector": {
+      "kind": "class",
+      "methods": {
+        "at_clause": {
+          "kind": "method",
+          "signature": "(self) -> str"
+        },
+        "attach": {
+          "kind": "method",
+          "signature": "(self, conn: _duckdb.DuckDBPyConnection) -> _duckdb.DuckDBPyConnection"
+        },
+        "connect": {
+          "kind": "method",
+          "signature": "(self) -> _duckdb.DuckDBPyConnection"
+        },
+        "from_postgres": {
+          "kind": "method",
+          "signature": "(data_path: str, *, dbname: str, host: str | None = None, port: int | None = None, user: str | None = None, password: str | None = None, create_db_if_missing: bool = True, admin_dbname: str = 'postgres', admin_user: str | None = None, admin_password: str | None = None, meta_secret: str | None = None, secret_name: str = 'ducklake_pg_secret', read_only: bool = False, snapshot_version: int | None = None, snapshot_time: str | None = None, catalog_alias: str = 'db', schema: str = 'main', s3_secret: str | None = None, s3_region: str | None = None, s3_endpoint: str | None = None, s3_access_key_id: str | None = None, s3_secret_access_key: str | None = None, s3_session_token: str | None = None, log_filename: str | os.PathLike[str] | None = None) -> 'DuckLakeConnector'"
+        }
+      },
+      "qualified_name": "macroforecast.storage2.DuckLakeConnector",
+      "signature": "(catalog_path: str, data_path: str, read_only: bool = False, snapshot_version: int | None = None, snapshot_time: str | None = None, catalog_alias: str = 'db', schema: str = 'main', catalog_type: macroforecast.storage2.connector.CatalogType | str = <CatalogType.DUCKDB: 'duckdb'>, meta_secret: str | None = None, s3_secret: str | None = None, s3_region: str | None = None, s3_endpoint: str | None = None, s3_access_key_id: str | None = None, s3_secret_access_key: str | None = None, s3_session_token: str | None = None, log_filename: str | os.PathLike[str] | None = 'C:\\\\Users\\\\bolli\\\\OneDrive\\\\Documents\\\\COD Code\\\\trade-analysis\\\\logs/ducklake_connector.log') -> None"
+    },
+    "FACT_TABLE": {
+      "kind": "constant",
+      "qualified_name": "macroforecast.storage2.FACT_TABLE",
+      "value": "'fact_table'"
+    },
+    "Loader": {
+      "kind": "class",
+      "methods": {
+        "connect": {
+          "kind": "method",
+          "signature": "(self, **kwargs) -> None"
+        },
+        "load": {
+          "kind": "method",
+          "signature": "(self, filepath: str, bucket: Optional[str] = None, **kwargs) -> pandas.core.frame.DataFrame"
+        }
+      },
+      "qualified_name": "macroforecast.storage2.Loader",
+      "signature": "(s3_package: Optional[str] = 'boto3') -> None"
+    },
+    "Saver": {
+      "kind": "class",
+      "methods": {
+        "connect": {
+          "kind": "method",
+          "signature": "(self, **kwargs) -> None"
+        },
+        "save": {
+          "kind": "method",
+          "signature": "(self, filepath: str, obj: Optional[pandas.core.frame.DataFrame] = None, bucket: Optional[str] = None, **kwargs) -> None"
+        }
+      },
+      "qualified_name": "macroforecast.storage2.Saver",
+      "signature": "(s3_package: Optional[str] = 'boto3') -> None"
+    },
+    "fact_table_exists": {
+      "kind": "function",
+      "qualified_name": "macroforecast.storage2.fact_table_exists",
+      "signature": "(conn: 'duckdb.DuckDBPyConnection', catalog_alias: 'str', schema: 'str', *, table: 'str' = 'fact_table') -> 'bool'"
+    },
+    "write_dataframe": {
+      "kind": "function",
+      "qualified_name": "macroforecast.storage2.write_dataframe",
+      "signature": "(conn: 'duckdb.DuckDBPyConnection', data: 'Any', primary_keys: 'Sequence[str]', *, catalog_alias: 'str', schema: 'str', categorical_threshold: 'Optional[int]' = None, label: 'Optional[str]' = None) -> 'bool'"
+    }
+  }
+}
