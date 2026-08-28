@@ -41,6 +41,8 @@ MLFLOW:
 # VulnerabilityConfig surcharge le défaut correspondant (listes YAML → tuples) ;
 # les clés inconnues sont ignorées avec un avertissement.
 PARAMETERS:
+  # Backend de calcul narwhals ("pandas", ou "polars"/"pyarrow" si installés)
+  BACKEND: "pandas"
   # Seuils d'interprétation des scores
   high_score_threshold: 0.5
   unit_score_threshold: 1.0
@@ -49,11 +51,13 @@ PARAMETERS:
   # Comparaison inter-exécutions
   drift_relative_change: 0.1
   psi_n_bins: 10
-  # Artefacts de synthèse
+  # Seuils d'alerte par métrique, matérialisés en colonnes booléennes
+  # « {métrique}_ALERT » à côté du score continu dans la table résultat.
+  # Tous issus de la littérature
   metric_alert_thresholds:
-    - ["HHI", 0.5]
-    - ["CDI2", 0.5]
-    - ["CDI3", 1.0]
+    - ["HHI", 0.5]   # littérature (seuil de forte concentration)
+    - ["CDI2", 0.5]  # littérature (seuil de forte concentration)
+    - ["CDI3", 1.0]  # littérature (parité extra-UE / exportations)
   artifact_top_n: 50
 
 # ──────────────────────────────────────────────────────────────────────
@@ -101,18 +105,15 @@ NETWORK_VULNERABILITIES:
     # Comparaison inter-exécutions
     drift_relative_change: 0.1
     psi_n_bins: 10
-    # /!\ A supprimer ?
-    # Artefacts de synthèse. Seuls les seuils de centralité (2,5) et de
-    # concentration (0,5) viennent de la littérature ; la note ne fixe aucun
-    # seuil chiffré pour le clustering ni le diamètre (dimension 5), les valeurs
-    # ci-dessous sont donc des conventions à ajuster.
+    # Seuils d'alerte par métrique, matérialisés en colonnes booléennes
+    # « {métrique}_ALERT » à côté du score continu dans la table résultat.
     metric_alert_thresholds:
-      - ["CENTRALITY_RISK", 2.5]
-      - ["CLUSTERING_W", 0.5]
-      - ["DIAMETER", 4.0]
-      - ["EXPORT_HHI", 0.5]
-      - ["SPOF", 0.9]
-      - ["SPOF_DECILE", 9.0]
+      - ["CENTRALITY_RISK", 2.5]  # littérature (1er exportateur ~2/3 du monde)
+      - ["CLUSTERING_W", 0.5]     # hors littérature (convention)
+      - ["DIAMETER", 4.0]         # hors littérature (convention)
+      - ["EXPORT_HHI", 0.5]       # littérature (seuil de forte concentration)
+      - ["SPOF", 0.9]            # hors littérature (convention)
+      - ["SPOF_DECILE", 9.0]     # hors littérature (dernier décile sur 10)
     # Métrique servant de critère de tri du palmarès des produits exposés
     ranking_metric: "SPOF"
     artifact_top_n: 50

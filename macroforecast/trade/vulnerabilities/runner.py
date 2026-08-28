@@ -2,7 +2,8 @@
 
 Iterates the registered vulnerability metrics over a trade DuckLake fact table —
 whole, or restricted to a set of reporter x product pairs — and writes the
-scores to a result schema: one column per metric, keyed by
+scores to a result schema: one column per metric, plus one boolean
+``{metric}_ALERT`` column, keyed by
 ``date x nomenclature x indicator x flow x reporter`` (plus frequency).
 
 Source and result are reached through DuckDB connections opened by the caller.
@@ -45,6 +46,7 @@ from .diagnostics import (
     GraphQualityReport,
     NetworkVulnerabilityReport,
     VulnerabilityReport,
+    append_alert_flags,
     compute_coverage_report,
     compute_distribution_reports,
     compute_drift_report,
@@ -91,10 +93,12 @@ def compute_vulnerabilities(
             (see :func:`read_previous_result`).
 
     Returns:
-        Tuple ``(df_result, report)``: the scores — ``config.key_columns`` plus
-        one column per metric — and the :class:`VulnerabilityReport` of the run
-        (``created`` is left ``False``; the caller sets it once the result is
-        persisted).
+        Tuple ``(df_result, report)``: the scores — ``config.key_columns``, one
+        column per metric, and one boolean ``{metric}_ALERT`` column flagging the
+        cells above the metric's alert threshold (see
+        :func:`~macroforecast.trade.vulnerabilities.diagnostics.append_alert_flags`)
+        — and the :class:`VulnerabilityReport` of the run (``created`` is left
+        ``False``; the caller sets it once the result is persisted).
 
     Raises:
         ValueError: If the input frame is missing any column required by one of
@@ -114,6 +118,8 @@ def compute_vulnerabilities(
         ...     data, [HerfindahlHirschmanIndex(config)], config)
         >>> round(float(scores.to_native()["HHI"][0]), 2), report.cells
         (0.52, 1)
+        >>> bool(scores.to_native()["HHI_ALERT"][0])
+        True
     """
     # Clés de la grille de sortie
     keys = list(config.key_columns)
@@ -157,6 +163,10 @@ def compute_vulnerabilities(
         # Calcul de la métrique (frame indexé par les clés + colonne metric.name)
         scored = metric.compute(data)
         result = result.join(scored, on=keys, how="left")
+
+    # Drapeaux d'alerte persistés : un booléen de dépassement de seuil par
+    # métrique, écrit à côté du score continu pour l'indicateur synthétique aval
+    result = append_alert_flags(result, metrics, config)
 
     # Diagnostics de l'exécution
     report.cells = len(result)
@@ -374,7 +384,8 @@ def run_vulnerabilities(
 
     Reads the source fact table — whole, or restricted to a set of
     reporter x product pairs — applies every metric, and persists the scores
-    (one column per metric, keyed by ``config.key_columns``) into the result
+    (one column per metric plus one boolean ``{metric}_ALERT`` column, keyed by
+    ``config.key_columns``) into the result
     schema. Initialisation and incremental update are the same call: the result
     schema is built on first encounter and upserted by primary key afterwards
     (see :func:`macroforecast.storage2.write_dataframe`).
@@ -540,10 +551,12 @@ def compute_network_vulnerabilities(
             (see :func:`read_previous_network_result`).
 
     Returns:
-        Tuple ``(df_result, report)``: the scores — ``config.key_columns`` plus
-        one column per metric — and the :class:`NetworkVulnerabilityReport` of
-        the run (``created`` is left ``False``; the caller sets it once the
-        result is persisted).
+        Tuple ``(df_result, report)``: the scores — ``config.key_columns``, one
+        column per metric, and one boolean ``{metric}_ALERT`` column flagging the
+        cells above the metric's alert threshold (see
+        :func:`~macroforecast.trade.vulnerabilities.diagnostics.append_alert_flags`)
+        — and the :class:`NetworkVulnerabilityReport` of the run (``created`` is
+        left ``False``; the caller sets it once the result is persisted).
 
     Raises:
         ValueError: If the input frame is missing any column required by one of
@@ -565,6 +578,8 @@ def compute_network_vulnerabilities(
         ...     data, [WorldExportConcentration(config)], config)
         >>> round(float(scores.to_native()["EXPORT_HHI"][0]), 2), report.cells
         (0.52, 1)
+        >>> bool(scores.to_native()["EXPORT_HHI_ALERT"][0])
+        True
     """
     # Clés de la grille de sortie
     keys = list(config.key_columns)
@@ -610,6 +625,10 @@ def compute_network_vulnerabilities(
         # Calcul de la métrique (frame indexé par les clés + colonne metric.name)
         scored = metric.compute(data)
         result = result.join(scored, on=keys, how="left")
+
+    # Drapeaux d'alerte persistés : un booléen de dépassement de seuil par
+    # métrique, écrit à côté du score continu pour l'indicateur synthétique aval
+    result = append_alert_flags(result, metrics, config)
 
     # Diagnostics de l'exécution
     report.cells = len(result)
@@ -744,7 +763,8 @@ def run_network_vulnerabilities(
 
     Reads the BACI reconciled-flow table of a vintage, **stamps the vintage onto
     every row** as the ``classification`` column, applies every metric, and
-    upserts the scores into the result schema keyed by
+    upserts the scores (one column per metric plus one boolean
+    ``{metric}_ALERT`` column) into the result schema keyed by
     ``config.key_columns`` — ``nomenclature x product x year``, the nomenclature
     being the primary key the partner-level result table does not carry.
 

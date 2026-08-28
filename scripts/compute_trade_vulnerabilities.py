@@ -65,6 +65,8 @@ logger = logging.getLogger(__name__)
 # Clé racine du registre JSON des dates de dernier calcul (miroir de la
 # racine "DOWNLOADS" du registre de téléchargement)
 _REGISTRY_ROOT = "VULNERABILITIES"
+# Clé YAML portant le backend de calcul narwhals (hors VulnerabilityConfig)
+_BACKEND_KEY = "BACKEND"
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -123,7 +125,9 @@ def vulnerability_config_from_params(params: Optional[Dict]) -> VulnerabilityCon
     Generic construction : every key matching a ``VulnerabilityConfig``
     field name overrides the dataclass default; unknown keys are ignored with a
     warning. YAML lists are coerced to the tuple types the frozen dataclass
-    expects, nested pairs included (``metric_alert_thresholds``).
+    expects, nested pairs included (``metric_alert_thresholds``). The ``BACKEND``
+    key is skipped: it drives the narwhals execution backend, not the
+    methodology.
 
     Args:
         params: The ``PARAMETERS`` mapping of ``config/vulnerabilities.yaml``
@@ -140,6 +144,9 @@ def vulnerability_config_from_params(params: Optional[Dict]) -> VulnerabilityCon
     valid = {field.name for field in fields(VulnerabilityConfig)}
     overrides: Dict[str, Any] = {}
     for key, value in params.items():
+        # Backend d'exécution : lu à part, pas un paramètre méthodologique
+        if key == _BACKEND_KEY:
+            continue
         if key not in valid:
             # Logging
             logger.warning(f"Paramètre de vulnérabilité inconnu ignoré : {key}")
@@ -317,9 +324,10 @@ def main() -> None:
     vulnerability_config = load_vulnerability_config()
 
     # Construction des paramètres méthodologiques (seuils, conventions de colonnes)
-    vulnerability_parameters = vulnerability_config_from_params(
-        vulnerability_config.get("PARAMETERS")
-    )
+    parameters = vulnerability_config.get("PARAMETERS") or {}
+    vulnerability_parameters = vulnerability_config_from_params(parameters)
+    # Backend de calcul narwhals, lu à part (pas un paramètre méthodologique)
+    backend = parameters.get(_BACKEND_KEY, "pandas")
 
     # Construction du suivi d'exécution : sans URI (ou sans MLflow installé,
     # ou serveur injoignable), get_tracker retourne un tracker inerte et
@@ -448,6 +456,7 @@ def main() -> None:
                     result_catalog_alias=result_connector.catalog_alias,
                     reporters_products=reporters_products,
                     config=vulnerability_parameters,
+                    backend=backend,
                     tracker=tracker,
                     log_artifacts=log_artifacts,
                     df_previous=df_previous,

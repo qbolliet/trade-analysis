@@ -65,6 +65,8 @@ _RATIO = "_diag_ratio"
 _MISSING = "missing_aggregate"
 _PREVIOUS_SUFFIX = "__previous"
 _UNSCORED = "unscored_metric"
+# Suffixe des colonnes booléennes d'alerte, persistées à côté du score continu
+_ALERT_SUFFIX = "_ALERT"
 # Dossiers d'artefacts, un par famille de métriques
 _PARTNER_PREFIX = "vulnerabilities"
 _NETWORK_PREFIX = "network_vulnerabilities"
@@ -235,6 +237,99 @@ def _present_metrics(
     # Colonnes disponibles
     available = set(frame.columns)
     return [metric for metric in metrics if metric.name in available]
+
+
+# Fonction auxiliaire : seuil d'alerte d'une métrique
+def metric_alert_threshold(config: ScoreConfig, metric: AnyMetric) -> float:
+    """Return the alert threshold a metric's score is compared against.
+
+    The per-metric value configured in
+    :attr:`~macroforecast.trade.vulnerabilities.base.ScoreConfig.metric_alert_thresholds`,
+    or :attr:`~macroforecast.trade.vulnerabilities.base.ScoreConfig.high_score_threshold`
+    when the metric is absent from that mapping. Single source of truth shared by
+    the persisted alert columns (:func:`append_alert_flags`) and the
+    ``alerts_summary`` artifact (:func:`_log_alerts`), so the two can never
+    disagree on where a metric's alert starts.
+
+    Args:
+        config: Threshold conventions.
+        metric: Metric instance whose threshold is looked up.
+
+    Returns:
+        The threshold as a float.
+
+    Examples:
+        >>> from macroforecast.trade.vulnerabilities import (
+        ...     HerfindahlHirschmanIndex, DEFAULT_CONFIG)
+        >>> metric_alert_threshold(DEFAULT_CONFIG, HerfindahlHirschmanIndex())
+        0.5
+    """
+    # Valeur configurée pour la métrique, défaut = seuil de forte concentration
+    return dict(config.metric_alert_thresholds).get(
+        metric.name, config.high_score_threshold
+    )
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Drapeaux d'alerte persistés
+# ──────────────────────────────────────────────────────────────────────
+
+# Fonction d'ajout des colonnes booléennes d'alerte au résultat
+def append_alert_flags(
+    df_result: nw.DataFrame,
+    metrics: Sequence[AnyMetric],
+    config: ScoreConfig = DEFAULT_CONFIG,
+) -> nw.DataFrame:
+    """Append one boolean ``{metric}_ALERT`` column per metric to the result.
+
+    Materialises, next to each continuous score, whether the cell exceeds the
+    metric's alert threshold (:func:`metric_alert_threshold`) — the literature
+    thresholds and the tunable conventions alike. Persisting the flag *and* the
+    value lets a downstream synthetic indicator rank every nomenclature without
+    re-deriving the thresholds, and keeps the discretisation an auditable
+    property of the run rather than a convention rebuilt by every consumer.
+
+    An infinite score (division by a zero aggregate) is a data defect, not a
+    business alert — it is reported by the quality diagnostics — so its flag
+    stays ``False``; a cell a metric leaves unscored carries a ``False`` flag
+    too.
+
+    Args:
+        df_result: Result frame (grid keys plus one column per metric).
+        metrics: Metric instances applied to the run.
+        config: Threshold conventions.
+
+    Returns:
+        The frame with one appended ``{name}_ALERT`` boolean column per metric
+        present, in registry order. Returned unchanged when no metric column is
+        present.
+
+    Examples:
+        >>> import pandas as pd
+        >>> from macroforecast.trade.vulnerabilities import (
+        ...     HerfindahlHirschmanIndex, VulnerabilityConfig)
+        >>> config = VulnerabilityConfig(key_columns=("flow",))
+        >>> df = pd.DataFrame({"flow": [1, 2], "HHI": [0.7, 0.2]})
+        >>> frame = append_alert_flags(
+        ...     nw.from_native(df, eager_only=True),
+        ...     [HerfindahlHirschmanIndex(config)], config)
+        >>> list(frame.to_native()["HHI_ALERT"])
+        [True, False]
+    """
+    # Métriques effectivement présentes dans le résultat
+    present = _present_metrics(df_result, metrics)
+    if not present:
+        return df_result
+
+    # Un booléen de dépassement de seuil par métrique, score infini neutralisé
+    exprs = [
+        (
+            _flag(nw.col(metric.name) > metric_alert_threshold(config, metric))
+            & _scored_expr(metric.name)
+        ).alias(f"{metric.name}{_ALERT_SUFFIX}")
+        for metric in present
+    ]
+    return df_result.with_columns(*exprs)
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -1371,12 +1466,12 @@ def _log_alerts(
         config: Threshold conventions.
         prefix: Artifact directory, naming the metric family.
     """
-    # Seuils d'alerte par métrique (configuration, défaut = seuil de concentration)
-    thresholds = dict(config.metric_alert_thresholds)
+    # Comptes d'alertes par métrique, seuils partagés avec les colonnes
+    # booléennes persistées via metric_alert_threshold
     alerts: Dict[str, Any] = {"n_cells": len(df_result), "rules": {}}
     combined = None
     for metric in present:
-        threshold = thresholds.get(metric.name, config.high_score_threshold)
+        threshold = metric_alert_threshold(config, metric)
         # Un score infini est un défaut de donnée, pas une alerte métier :
         # il est rapporté par les diagnostics de qualité.
         rule = _flag(nw.col(metric.name) > threshold) & _scored_expr(metric.name)

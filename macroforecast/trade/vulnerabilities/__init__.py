@@ -28,6 +28,8 @@ from .diagnostics import (
     compute_shares_frame,
     missing_aggregate_cells,
     unscored_cells,
+    metric_alert_threshold,
+    append_alert_flags,
     log_vulnerability_artifacts,
     log_network_vulnerability_artifacts,
 )
@@ -96,6 +98,8 @@ __all__ = [
     "compute_shares_frame",
     "missing_aggregate_cells",
     "unscored_cells",
+    "metric_alert_threshold",
+    "append_alert_flags",
     "log_vulnerability_artifacts",
     "log_network_vulnerability_artifacts",
     # Primitives de graphe

@@ -77,7 +77,10 @@ class VulnerabilityConfig:
         psi_n_bins: Number of bins of the population stability index.
         metric_alert_thresholds: Per-metric alert thresholds, as
             ``(metric_name, threshold)`` pairs. A metric absent from the
-            mapping falls back to ``high_score_threshold``.
+            mapping falls back to ``high_score_threshold``. Each is also
+            materialised as a boolean ``{metric}_ALERT`` column in the result
+            table, next to the continuous score, so a downstream synthetic
+            indicator can rank the nomenclatures without re-deriving them.
         ranking_metric: Metric the "most vulnerable cells" artifact is sorted
             on. ``None`` selects the first concentration metric of the registry
             (see :attr:`VulnerabilityMetric.reciprocal_is_effective_count`).
@@ -120,11 +123,13 @@ class VulnerabilityConfig:
     # Paramètres de la comparaison inter-exécutions
     drift_relative_change: float = 0.1
     psi_n_bins: int = 10
-    # Paramètres des artefacts de synthèse
+    # Seuils d'alerte par métrique, matérialisés en colonnes booléennes
+    # « {métrique}_ALERT » à côté du score continu dans la table résultat
+    # (cf. append_alert_flags). Tous issus de la littérature ici.
     metric_alert_thresholds: Tuple[Tuple[str, float], ...] = (
-        ("HHI", 0.5),
-        ("CDI2", 0.5),
-        ("CDI3", 1.0),
+        ("HHI", 0.5),   # littérature (seuil de forte concentration)
+        ("CDI2", 0.5),  # littérature (seuil de forte concentration)
+        ("CDI3", 1.0),  # littérature (parité extra-UE / exportations)
     )
     ranking_metric: Optional[str] = None
     artifact_top_n: int = 50
@@ -328,7 +333,8 @@ class ScoreConfig(Protocol):
             changed between two runs.
         psi_n_bins: Number of bins of the population stability index.
         metric_alert_thresholds: Per-metric alert thresholds, as
-            ``(metric_name, threshold)`` pairs.
+            ``(metric_name, threshold)`` pairs, read both by the persisted
+            ``{metric}_ALERT`` columns and the ``alerts_summary`` artifact.
         ranking_metric: Metric the top-vulnerability artifact is sorted on.
         artifact_top_n: Number of cells kept in that artifact.
         artifact_max_rows: Maximum number of rows of a tabular artifact.
@@ -409,10 +415,9 @@ class NetworkVulnerabilityConfig:
         psi_n_bins: Number of bins of the population stability index.
         metric_alert_thresholds: Per-metric alert thresholds, as
             ``(metric_name, threshold)`` pairs. A metric absent from the mapping
-            falls back to ``high_score_threshold``. Only the centrality (2.5) and
-            concentration (0.5) thresholds come from the literature; the note
-            gives none for dimension 5, so the clustering and diameter values are
-            conventions meant to be tuned in configuration.
+            falls back to ``high_score_threshold``. Each threshold is also
+            materialised as a boolean ``{metric}_ALERT`` column in the result
+            table, next to the continuous score.
         ranking_metric: Metric the "most vulnerable products" artifact is sorted
             on. Defaults to the aggregate SPOF risk, which is precisely the
             measure combining the others; ``None`` would fall back to the first
@@ -453,18 +458,18 @@ class NetworkVulnerabilityConfig:
     # Paramètres de la comparaison inter-exécutions
     drift_relative_change: float = 0.1
     psi_n_bins: int = 10
-    # Paramètres des artefacts de synthèse. Seuls les seuils de centralité (2,5)
-    # et de concentration (0,5) viennent de la littérature ; ceux du clustering,
-    # du diamètre et des groupes de quantiles sont des conventions, à ajuster en
-    # configuration — sans eux, l'alerte retomberait sur high_score_threshold,
-    # que le diamètre et le décile dépassent par construction.
+    # Seuils d'alerte par métrique, matérialisés en colonnes booléennes
+    # « {métrique}_ALERT » à côté du score continu (cf. append_alert_flags).
+    # Sans eux, l'alerte retomberait sur high_score_threshold, que le diamètre
+    # et le décile dépassent par construction. L'appartenance de chaque seuil à
+    # la littérature est précisée en commentaire.
     metric_alert_thresholds: Tuple[Tuple[str, float], ...] = (
-        ("CENTRALITY_RISK", 2.5),
-        ("CLUSTERING_W", 0.5),
-        ("DIAMETER", 4.0),
-        ("EXPORT_HHI", 0.5),
-        ("SPOF", 0.9),
-        ("SPOF_DECILE", 9.0),
+        ("CENTRALITY_RISK", 2.5),  # littérature (1er exportateur ~2/3 du monde)
+        ("CLUSTERING_W", 0.5),  # hors littérature (convention)
+        ("DIAMETER", 4.0),  # hors littérature (convention)
+        ("EXPORT_HHI", 0.5),  # littérature (seuil de forte concentration)
+        ("SPOF", 0.9),  # hors littérature (convention)
+        ("SPOF_DECILE", 9.0),  # hors littérature (dernier décile sur 10)
     )
     ranking_metric: Optional[str] = "SPOF"
     artifact_top_n: int = 50
