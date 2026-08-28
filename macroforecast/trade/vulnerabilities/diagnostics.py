@@ -13,6 +13,16 @@ feeding it:
 - run-to-run stability (:func:`compute_drift_report`),
 - business artifacts (:func:`log_vulnerability_artifacts`).
 
+The volumetry, coverage, distribution and drift computations are **metric- and
+family-agnostic**: they read a configuration only through the
+:class:`~macroforecast.trade.vulnerabilities.base.ScoreConfig` fields, so the
+network family reuses them verbatim. What is family-specific is the coherence
+check — :class:`AggregateQualityReport` for the partner aggregates,
+:class:`GraphQualityReport` for the shape of the trade graphs — and the summary
+artifacts, whose common bricks are shared and whose family-specific listing is
+not (:func:`log_vulnerability_artifacts` versus
+:func:`log_network_vulnerability_artifacts`).
+
 Every computation is expressed in narwhals and **never converts to pandas**:
 the sub-package is deliberately backend-agnostic, and converting would forfeit
 lazy execution on DuckDB/Polars volumes. Only aggregation results — single rows
@@ -25,7 +35,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 import logging
 import math
-from typing import Any, Dict, List, Optional, Sequence, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Tuple, Union
 # Module de manipulation de données
 import narwhals as nw
 import pandas as pd
@@ -33,10 +43,15 @@ import pandas as pd
 from ...tracking import RunTracker, flatten_metrics
 from .base import (
     DEFAULT_CONFIG,
+    DEFAULT_NETWORK_CONFIG,
+    NetworkVulnerabilityConfig,
+    NetworkVulnerabilityMetric,
+    ScoreConfig,
     VulnerabilityConfig,
     VulnerabilityMetric,
     individual_partner_expr,
 )
+from .graph import GraphReport
 
 # Initialisation du logger
 logger = logging.getLogger(__name__)
@@ -49,6 +64,14 @@ _WORLD = "_diag_world"
 _RATIO = "_diag_ratio"
 _MISSING = "missing_aggregate"
 _PREVIOUS_SUFFIX = "__previous"
+_UNSCORED = "unscored_metric"
+# Dossiers d'artefacts, un par famille de métriques
+_PARTNER_PREFIX = "vulnerabilities"
+_NETWORK_PREFIX = "network_vulnerabilities"
+
+# Métrique de l'une ou l'autre famille : les diagnostics ci-dessous ne lisent
+# d'une métrique que son nom et son interprétation, jamais sa mécanique de calcul
+AnyMetric = Union[VulnerabilityMetric, NetworkVulnerabilityMetric]
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -197,8 +220,8 @@ def _flag(expr: nw.Expr) -> nw.Expr:
 # Fonction auxiliaire : noms des métriques présentes dans un frame
 def _present_metrics(
     frame: nw.DataFrame,
-    metrics: Sequence[VulnerabilityMetric],
-) -> List[VulnerabilityMetric]:
+    metrics: Sequence[AnyMetric],
+) -> List[AnyMetric]:
     """Keep the metrics whose output column exists in a frame.
 
     Args:
@@ -287,6 +310,80 @@ class AggregateQualityReport:
     share_cells_shares_lt_0_9: float = _NAN
     n_cells_world_le_zero: int = 0
     n_cells_with_world: int = 0
+
+
+# Forme et cohérence des graphes commerciaux
+@dataclass
+class GraphQualityReport:
+    """Shape and coherence of the graphs the network metrics are computed on.
+
+    Network counterpart of :class:`AggregateQualityReport`, which has no meaning
+    on a BACI flow table: there is no ``WORLD`` / ``EXT_EU`` aggregate to lose a
+    cell to. What can silently distort a topological score here is the *shape*
+    of the graph — a network too small to close a triangle, or fragmented into
+    components between which no path exists — so that is what is reported.
+
+    Attributes:
+        n_graphs: Number of graphs built, i.e. of output cells.
+        median_n_nodes: Median number of countries per graph.
+        median_n_edges: Median number of undirected trade links per graph.
+        median_density: Median density, ``2 m / (n (n - 1))``.
+        share_graphs_disconnected: Share of graphs made of more than one
+            connected component. The diameter being measured on the largest
+            component only, this says how representative it is.
+        share_graphs_below_min_nodes: Share of graphs too small for the
+            topological metrics, left undefined rather than computed on a
+            degenerate graph.
+        share_rows_dropped_non_positive: Share of input rows dropped for a
+            non-positive value — such a row describes no trade link.
+        share_rows_dropped_null: Share of input rows dropped upstream for a null
+            endpoint or value.
+    """
+    n_graphs: int = 0
+    median_n_nodes: float = _NAN
+    median_n_edges: float = _NAN
+    median_density: float = _NAN
+    share_graphs_disconnected: float = _NAN
+    share_graphs_below_min_nodes: float = _NAN
+    share_rows_dropped_non_positive: float = _NAN
+    share_rows_dropped_null: float = _NAN
+
+    # Construction depuis le rapport de la passe de graphe
+    @classmethod
+    def from_graph_report(
+        cls,
+        report: GraphReport,
+        *,
+        share_rows_dropped_null: float = _NAN,
+    ) -> "GraphQualityReport":
+        """Build the report from a graph pass, adding the upstream drop share.
+
+        Args:
+            report: Report of the graph-building pass (see
+                :func:`~macroforecast.trade.vulnerabilities.graph.compute_graph_features`).
+            share_rows_dropped_null: Share of input rows dropped upstream for a
+                null endpoint or value, measured around the runner's
+                ``drop_nulls``.
+
+        Returns:
+            The :class:`GraphQualityReport` of the run.
+
+        Examples:
+            >>> from macroforecast.trade.vulnerabilities.graph import GraphReport
+            >>> GraphQualityReport.from_graph_report(GraphReport(n_graphs=7)).n_graphs
+            7
+        """
+        # Reprise des champs homonymes du rapport de passe
+        return cls(
+            n_graphs=report.n_graphs,
+            median_n_nodes=report.median_n_nodes,
+            median_n_edges=report.median_n_edges,
+            median_density=report.median_density,
+            share_graphs_disconnected=report.share_graphs_disconnected,
+            share_graphs_below_min_nodes=report.share_graphs_below_min_nodes,
+            share_rows_dropped_non_positive=report.share_rows_dropped_non_positive,
+            share_rows_dropped_null=share_rows_dropped_null,
+        )
 
 
 # Distribution d'un score sur la grille
@@ -471,6 +568,82 @@ class VulnerabilityReport:
         return metrics
 
 
+# Structure résumant l'exécution du calcul des vulnérabilités de réseau
+@dataclass
+class NetworkVulnerabilityReport:
+    """Summary of a network-vulnerability run.
+
+    Same composite shape as :class:`VulnerabilityReport` — nested step reports
+    plus a :meth:`to_metrics` knowing the MLflow formatting — with the graph
+    diagnostics in place of the partner-aggregate ones, which do not apply to a
+    BACI flow table.
+
+    Attributes:
+        cells: Number of output cells (distinct ``nomenclature x product x year``
+            triples) scored.
+        metrics: Names of the metrics computed.
+        classification: HS vintage the run covers, carried so that a report read
+            on its own says which slice it describes.
+        created: Whether the result schema was created (vs. upserted).
+        input: Volumetry of the input flows.
+        coverage: Share of cells actually scored, per metric.
+        graph: Shape and coherence of the graphs built.
+        distributions: Distribution of each metric, keyed by metric name.
+        drift: Comparison with the previous run, ``None`` when no previous
+            result was supplied.
+    """
+    cells: int = 0
+    metrics: Optional[List[str]] = None
+    classification: Optional[str] = None
+    created: bool = False
+    # Rapports d'étape
+    input: InputReport = field(default_factory=InputReport)
+    coverage: CoverageReport = field(default_factory=CoverageReport)
+    graph: GraphQualityReport = field(default_factory=GraphQualityReport)
+    distributions: Dict[str, ScoreDistributionReport] = field(default_factory=dict)
+    drift: Optional[DriftReport] = None
+
+    # Mise en forme des métriques (la seule à connaître les contraintes MLflow)
+    def to_metrics(self, prefix: str = "network_vulnerabilities") -> Dict[str, float]:
+        """Flatten every numeric field into a dotted metric mapping.
+
+        Produces the nomenclature ``…cells.n_total``, ``…input.*``,
+        ``…coverage.share_non_null.SPOF``, ``…graph.*``, ``…SPOF.median`` (each
+        metric prefixes its own distribution) and ``…drift.spearman_SPOF``.
+        ``NaN`` and infinite values are dropped, MLflow rejecting them.
+
+        Args:
+            prefix: Prefix prepended to every metric name.
+
+        Returns:
+            Mapping of dotted metric names to finite floats.
+
+        Examples:
+            >>> report = NetworkVulnerabilityReport(cells=12)
+            >>> report.to_metrics()["network_vulnerabilities.cells.n_total"]
+            12.0
+            >>> "network_vulnerabilities.graph.median_n_nodes" in report.to_metrics()
+            False
+        """
+        metrics: Dict[str, float] = {}
+        # Volumétrie de la grille de sortie et issue de l'écriture
+        metrics.update(
+            flatten_metrics({"n_total": self.cells}, prefix=_join(prefix, "cells"))
+        )
+        metrics.update(flatten_metrics({"created": self.created}, prefix=prefix))
+        # Rapports d'étape à nomenclature directe
+        metrics.update(flatten_metrics(self.input, prefix=_join(prefix, "input")))
+        metrics.update(flatten_metrics(self.coverage, prefix=_join(prefix, "coverage")))
+        metrics.update(flatten_metrics(self.graph, prefix=_join(prefix, "graph")))
+        # Distributions : le nom de la métrique sert de préfixe
+        for name, distribution in self.distributions.items():
+            metrics.update(flatten_metrics(distribution, prefix=_join(prefix, name)))
+        # Dérive : absente si aucune exécution précédente n'a été fournie
+        if self.drift is not None:
+            metrics.update(self.drift.to_metrics(prefix=_join(prefix, "drift")))
+        return metrics
+
+
 # ──────────────────────────────────────────────────────────────────────
 # G.1 — Couverture et volumétrie
 # ──────────────────────────────────────────────────────────────────────
@@ -478,7 +651,7 @@ class VulnerabilityReport:
 # Fonction de calcul de la volumétrie d'entrée
 def compute_input_report(
     data: nw.DataFrame,
-    config: VulnerabilityConfig = DEFAULT_CONFIG,
+    config: ScoreConfig = DEFAULT_CONFIG,
 ) -> InputReport:
     """Measure the volumetry and dimension cardinalities of the input.
 
@@ -531,7 +704,7 @@ def compute_input_report(
 # Fonction de calcul de la couverture des scores
 def compute_coverage_report(
     df_result: nw.DataFrame,
-    metrics: Sequence[VulnerabilityMetric],
+    metrics: Sequence[AnyMetric],
 ) -> CoverageReport:
     """Measure the share of grid cells actually scored, per metric.
 
@@ -773,8 +946,8 @@ def compute_quality_report(
 # Fonction de calcul des distributions de scores
 def compute_distribution_reports(
     df_result: nw.DataFrame,
-    metrics: Sequence[VulnerabilityMetric],
-    config: VulnerabilityConfig = DEFAULT_CONFIG,
+    metrics: Sequence[AnyMetric],
+    config: ScoreConfig = DEFAULT_CONFIG,
 ) -> Dict[str, ScoreDistributionReport]:
     """Describe the distribution of every metric over the scored cells.
 
@@ -930,7 +1103,7 @@ def _population_stability_index(
     df_current: nw.DataFrame,
     df_previous: nw.DataFrame,
     column: str,
-    config: VulnerabilityConfig,
+    config: ScoreConfig,
 ) -> float:
     """Compute the population stability index of one metric.
 
@@ -976,8 +1149,8 @@ def _population_stability_index(
 def compute_drift_report(
     df_result: nw.DataFrame,
     df_previous: nw.DataFrame,
-    metrics: Sequence[VulnerabilityMetric],
-    config: VulnerabilityConfig = DEFAULT_CONFIG,
+    metrics: Sequence[AnyMetric],
+    config: ScoreConfig = DEFAULT_CONFIG,
 ) -> DriftReport:
     """Compare a run with its predecessor.
 
@@ -1073,13 +1246,13 @@ def compute_drift_report(
 
 
 # ──────────────────────────────────────────────────────────────────────
-# G.5 — Artefacts de synthèse
+# G.5 — Artefacts de synthèse : auxiliaires et briques communes
 # ──────────────────────────────────────────────────────────────────────
 
 # Fonction auxiliaire : métrique servant de critère de classement
 def _ranking_metric_name(
-    metrics: Sequence[VulnerabilityMetric],
-    config: VulnerabilityConfig,
+    metrics: Sequence[AnyMetric],
+    config: ScoreConfig,
 ) -> Optional[str]:
     """Pick the metric the top-vulnerability artifact is sorted on.
 
@@ -1149,6 +1322,176 @@ def _bounded_table(frame: nw.DataFrame, max_rows: int, artifact: str) -> pd.Data
     return frame.to_pandas()
 
 
+# Fonction d'envoi de l'artefact des cellules les plus vulnérables
+def _log_top_cells(
+    tracker: RunTracker,
+    df_result: nw.DataFrame,
+    present: Sequence[AnyMetric],
+    config: ScoreConfig,
+    *,
+    prefix: str,
+) -> None:
+    """Send the top-vulnerability table to the tracker.
+
+    Args:
+        tracker: Tracker receiving the artifact.
+        df_result: Result frame (grid keys plus one column per metric).
+        present: Metrics actually present in the result.
+        config: Ranking and artifact conventions.
+        prefix: Artifact directory, naming the metric family.
+    """
+    # Métrique servant de critère de tri
+    ranking = _ranking_metric_name(present, config)
+    if not ranking:
+        return
+    # Cellules effectivement scorées, par score décroissant
+    top = (
+        df_result.filter(_scored_expr(ranking))
+        .sort(ranking, descending=True)
+        .head(config.artifact_top_n)
+    )
+    tracker.log_table(top.to_pandas(), f"{prefix}/top_vulnerable_products.csv")
+
+
+# Fonction d'envoi de l'artefact des comptes d'alertes
+def _log_alerts(
+    tracker: RunTracker,
+    df_result: nw.DataFrame,
+    present: Sequence[AnyMetric],
+    config: ScoreConfig,
+    *,
+    prefix: str,
+) -> None:
+    """Send the per-metric alert counts to the tracker.
+
+    Args:
+        tracker: Tracker receiving the artifact.
+        df_result: Result frame (grid keys plus one column per metric).
+        present: Metrics actually present in the result.
+        config: Threshold conventions.
+        prefix: Artifact directory, naming the metric family.
+    """
+    # Seuils d'alerte par métrique (configuration, défaut = seuil de concentration)
+    thresholds = dict(config.metric_alert_thresholds)
+    alerts: Dict[str, Any] = {"n_cells": len(df_result), "rules": {}}
+    combined = None
+    for metric in present:
+        threshold = thresholds.get(metric.name, config.high_score_threshold)
+        # Un score infini est un défaut de donnée, pas une alerte métier :
+        # il est rapporté par les diagnostics de qualité.
+        rule = _flag(nw.col(metric.name) > threshold) & _scored_expr(metric.name)
+        alerts["rules"][metric.name] = {
+            "threshold": threshold,
+            "n_cells": _as_int(
+                _aggregate_row(df_result.select(rule.sum().alias("n"))).get("n")
+            ),
+        }
+        # Conjonction des règles : cellules cumulant toutes les alertes
+        combined = rule if combined is None else combined & rule
+    if combined is not None:
+        alerts["n_cells_all_rules"] = _as_int(
+            _aggregate_row(df_result.select(combined.sum().alias("n"))).get("n")
+        )
+    tracker.log_dict(alerts, f"{prefix}/alerts_summary.json")
+
+
+# Fonction d'envoi de l'artefact des distributions et déciles
+def _log_metric_distributions(
+    tracker: RunTracker,
+    df_result: nw.DataFrame,
+    present: Sequence[AnyMetric],
+    distributions: Dict[str, ScoreDistributionReport],
+    *,
+    prefix: str,
+) -> None:
+    """Send the per-metric deciles and distribution summaries to the tracker.
+
+    Args:
+        tracker: Tracker receiving the artifact.
+        df_result: Result frame (grid keys plus one column per metric).
+        present: Metrics actually present in the result.
+        distributions: Distribution reports of the completed run report.
+        prefix: Artifact directory, naming the metric family.
+    """
+    # Déciles de chaque métrique
+    deciles = {
+        metric.name: {
+            key: _json_number(value)
+            for key, value in _aggregate_row(
+                df_result.filter(_scored_expr(metric.name)).select(
+                    *(
+                        nw.col(metric.name)
+                        .quantile(index / 10, interpolation="linear")
+                        .alias(f"d{index}")
+                        for index in range(1, 10)
+                    )
+                )
+            ).items()
+        }
+        for metric in present
+    }
+    tracker.log_dict(
+        {
+            "deciles": deciles,
+            "distributions": {
+                name: {
+                    field_name: _json_number(value)
+                    for field_name, value in vars(distribution).items()
+                }
+                for name, distribution in distributions.items()
+            },
+        },
+        f"{prefix}/metric_distributions.json",
+    )
+
+
+# Fonction de repérage des cellules laissées sans score
+def unscored_cells(
+    df_result: nw.DataFrame,
+    metrics: Sequence[AnyMetric],
+    config: ScoreConfig,
+) -> nw.DataFrame:
+    """List every cell a metric left unscored, with the metric that skipped it.
+
+    Complement of the coverage report, which only counts: this says *which*
+    cells are missing a score, so a coverage below 1 can be audited instead of
+    guessed at. For the network family this is the direct reading of a graph too
+    small or too fragmented to carry a topological measure.
+
+    Args:
+        df_result: Result frame (grid keys plus one column per metric).
+        metrics: Metric instances applied to the run.
+        config: Key conventions.
+
+    Returns:
+        Narwhals frame of the grid keys plus an ``unscored_metric`` column
+        holding the name of the metric that left the cell unscored. Empty when
+        every cell of every metric is scored.
+    """
+    # Clés de la grille de sortie
+    keys = list(config.key_columns)
+    # Métriques effectivement présentes dans le résultat
+    present = _present_metrics(df_result, metrics)
+
+    # Un fragment par métrique : ses cellules non scorées, estampillées
+    frames = [
+        df_result.filter(~_scored_expr(metric.name))
+        .select(*keys)
+        .with_columns(nw.lit(metric.name).alias(_UNSCORED))
+        for metric in present
+    ]
+    # Aucune métrique présente : grille vide au schéma attendu
+    if not frames:
+        return df_result.select(*keys).head(0).with_columns(
+            nw.lit(None).cast(nw.String()).alias(_UNSCORED)
+        )
+    return nw.concat(frames, how="vertical")
+
+
+# ──────────────────────────────────────────────────────────────────────
+# G.6 — Artefacts de synthèse des métriques partenaires
+# ──────────────────────────────────────────────────────────────────────
+
 # Fonction d'envoi des artefacts de synthèse au tracker
 def log_vulnerability_artifacts(
     tracker: RunTracker,
@@ -1175,72 +1518,71 @@ def log_vulnerability_artifacts(
     present = _present_metrics(df_result, metrics)
 
     # Cellules les plus vulnérables, par score de concentration décroissant
-    ranking = _ranking_metric_name(present, config)
-    if ranking:
-        top = (
-            df_result.filter(_scored_expr(ranking))
-            .sort(ranking, descending=True)
-            .head(config.artifact_top_n)
-        )
-        tracker.log_table(top.to_pandas(), "vulnerabilities/top_vulnerable_products.csv")
+    _log_top_cells(tracker, df_result, present, config, prefix=_PARTNER_PREFIX)
+    # Comptes d'alertes par métrique
+    _log_alerts(tracker, df_result, present, config, prefix=_PARTNER_PREFIX)
 
-    # Seuils d'alerte par métrique (configuration, défaut = seuil de concentration)
-    thresholds = dict(config.metric_alert_thresholds)
-    alerts: Dict[str, Any] = {"n_cells": len(df_result), "rules": {}}
-    combined = None
-    for metric in present:
-        threshold = thresholds.get(metric.name, config.high_score_threshold)
-        # Un score infini est un défaut de donnée, pas une alerte métier :
-        # il est rapporté par quality.n_cells_world_le_zero.
-        rule = _flag(nw.col(metric.name) > threshold) & _scored_expr(metric.name)
-        alerts["rules"][metric.name] = {
-            "threshold": threshold,
-            "n_cells": _as_int(
-                _aggregate_row(df_result.select(rule.sum().alias("n"))).get("n")
-            ),
-        }
-        # Conjonction des règles : cellules cumulant toutes les alertes
-        combined = rule if combined is None else combined & rule
-    if combined is not None:
-        alerts["n_cells_all_rules"] = _as_int(
-            _aggregate_row(df_result.select(combined.sum().alias("n"))).get("n")
-        )
-    tracker.log_dict(alerts, "vulnerabilities/alerts_summary.json")
-
-    # Cellules privées d'un agrégat : liste auditables des disparitions silencieuses
+    # Cellules privées d'un agrégat : liste auditable des disparitions silencieuses
     missing = missing_aggregate_cells(data, df_grid, config)
     tracker.log_table(
         _bounded_table(missing, config.artifact_max_rows, "missing_aggregates.csv"),
-        "vulnerabilities/missing_aggregates.csv",
+        f"{_PARTNER_PREFIX}/missing_aggregates.csv",
     )
 
-    # Déciles de chaque métrique
-    deciles = {
-        metric.name: {
-            key: _json_number(value)
-            for key, value in _aggregate_row(
-                df_result.filter(_scored_expr(metric.name)).select(
-                    *(
-                        nw.col(metric.name)
-                        .quantile(index / 10, interpolation="linear")
-                        .alias(f"d{index}")
-                        for index in range(1, 10)
-                    )
-                )
-            ).items()
-        }
-        for metric in present
-    }
-    tracker.log_dict(
-        {
-            "deciles": deciles,
-            "distributions": {
-                name: {
-                    field_name: _json_number(value)
-                    for field_name, value in vars(distribution).items()
-                }
-                for name, distribution in report.distributions.items()
-            },
-        },
-        "vulnerabilities/metric_distributions.json",
+    # Déciles et distributions de chaque métrique
+    _log_metric_distributions(
+        tracker, df_result, present, report.distributions, prefix=_PARTNER_PREFIX
+    )
+
+
+# ──────────────────────────────────────────────────────────────────────
+# G.7 — Artefacts de synthèse des métriques de réseau
+# ──────────────────────────────────────────────────────────────────────
+
+# Fonction d'envoi des artefacts de synthèse du calcul de réseau
+def log_network_vulnerability_artifacts(
+    tracker: RunTracker,
+    *,
+    df_result: nw.DataFrame,
+    report: NetworkVulnerabilityReport,
+    metrics: Sequence[NetworkVulnerabilityMetric],
+    config: NetworkVulnerabilityConfig = DEFAULT_NETWORK_CONFIG,
+) -> None:
+    """Send the four business artifacts of a network run to the tracker.
+
+    Same three artifacts as the partner-level family — most vulnerable products,
+    alert counts, deciles and distributions — with the unscored-cell listing in
+    place of the missing-aggregate one: what makes a network cell disappear is a
+    graph too small or too fragmented to measure, not a missing partner
+    aggregate.
+
+    Takes no source frame: unlike the partner-level artifacts, none of these is
+    computed against the input observations, only against the scores.
+
+    Args:
+        tracker: Tracker receiving the artifacts.
+        df_result: Result frame (grid keys plus one column per metric).
+        report: Completed run report (its distributions feed the deciles).
+        metrics: Metric instances applied to the run.
+        config: Column, threshold and artifact conventions.
+    """
+    # Métriques effectivement présentes dans le résultat
+    present = _present_metrics(df_result, metrics)
+
+    # Produits les plus exposés, par score décroissant
+    _log_top_cells(tracker, df_result, present, config, prefix=_NETWORK_PREFIX)
+    # Comptes d'alertes par métrique
+    _log_alerts(tracker, df_result, present, config, prefix=_NETWORK_PREFIX)
+
+    # Cellules laissées sans score : graphes dégénérés ou fragmentés, liste
+    # auditable de ce que la couverture ne fait que compter
+    unscored = unscored_cells(df_result, present, config)
+    tracker.log_table(
+        _bounded_table(unscored, config.artifact_max_rows, "unscored_cells.csv"),
+        f"{_NETWORK_PREFIX}/unscored_cells.csv",
+    )
+
+    # Déciles et distributions de chaque métrique
+    _log_metric_distributions(
+        tracker, df_result, present, report.distributions, prefix=_NETWORK_PREFIX
     )

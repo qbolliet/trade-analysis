@@ -6,8 +6,11 @@ the download orchestrator (:mod:`macroforecast.datasets.core.download`) and the
 vulnerability script used to carry their own copy of the read/write pair; this
 module holds the single implementation.
 
-The root key of a registry (``"DOWNLOADS"``, ``"VULNERABILITIES"``…) stays the
-caller's concern: these helpers only handle the storage round-trip.
+Two levels are offered: :func:`read_json` / :func:`write_json` handle the bare
+storage round-trip, while :func:`read_registry` / :func:`merge_registry` add the
+root-key-and-merge convention every registry of the pipeline follows — read the
+entries under a named root, update only the keys a run touched, leave the rest
+alone.
 """
 # Importation des modules
 from __future__ import annotations
@@ -15,7 +18,7 @@ from __future__ import annotations
 import os
 import tempfile
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Mapping, Optional
 # Module de gestion des erreurs S3
 from botocore.exceptions import ClientError
 # Modules du package
@@ -98,3 +101,64 @@ def write_json(
         if os.path.exists(tmp_name):
             os.remove(tmp_name)
         raise
+
+
+# Fonction de lecture des entrées d'un registre (racine nommée)
+def read_registry(
+    path: Path,
+    loader: Loader,
+    bucket: Optional[str],
+    *,
+    root: str,
+) -> Dict[str, Dict[str, Any]]:
+    """Read the entries of a registry, keyed under a named root.
+
+    Thin wrapper over :func:`read_json` adding the root-key convention the
+    pipeline's registries share (``"DOWNLOADS"``, ``"BACI"``,
+    ``"NETWORK_VULNERABILITIES"``…): an absent file and an absent root both mean
+    "no entry yet" and return an empty mapping, so a first run is never a special
+    case.
+
+    Args:
+        path: Registry path (local path or S3 key).
+        loader: ``Loader`` instance.
+        bucket: S3 bucket holding the registry, or ``None`` for a local path.
+        root: Root key holding the entries.
+
+    Returns:
+        Mapping of entry key to entry, empty when the registry does not exist
+        yet.
+    """
+    # Absence de fichier ou de racine : registre vide
+    return (read_json(path, loader, bucket) or {}).get(root, {})
+
+
+# Fonction de fusion d'entrées dans un registre, puis persistance
+def merge_registry(
+    path: Path,
+    entries: Mapping[str, Dict[str, Any]],
+    loader: Loader,
+    saver: Saver,
+    bucket: Optional[str],
+    *,
+    root: str,
+) -> None:
+    """Merge entries into a registry and persist it.
+
+    Merges rather than overwrites: only the supplied keys move, every other
+    entry is preserved untouched. That is what lets a partial run — one HS
+    vintage, one dataflow — update its own entry without erasing the others.
+
+    Args:
+        path: Registry path (local path or S3 key).
+        entries: Entries to merge, keyed by their registry key.
+        loader: ``Loader`` instance, to read the existing registry first.
+        saver: ``Saver`` instance.
+        bucket: S3 bucket holding the registry, or ``None`` for a local path.
+        root: Root key holding the entries.
+    """
+    # Fusion avec le registre existant : seules les entrées fournies bougent
+    registry = read_registry(path, loader, bucket, root=root)
+    registry.update(entries)
+    # Écriture du registre mis à jour
+    write_json(path, {root: registry}, saver, bucket)

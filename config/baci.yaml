@@ -17,6 +17,11 @@ PATHS:
   RESULT_CATALOG: "data/baci.ducklake"
   RESULT_DATA: "data/baci"
   RESULT_SCHEMA: "baci"
+  # Registre des dates de dernier traitement, par millésime de nomenclature.
+  # Écrit après succès de l'écriture, il est la source de fraîcheur de
+  # scripts/compute_network_vulnerabilities.py, qui ne recalcule que les
+  # millésimes réécrits depuis son dernier passage.
+  LAST_PROCESSING_PATH: "trade/datasets/last_processing/baci.json"
 
 # Suivi d'exécution MLflow. Dépendance optionnelle : installer l'extra
 # « tracking » (uv sync --extra tracking) pour l'activer.

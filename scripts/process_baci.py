@@ -24,7 +24,8 @@ ordonnancé (Argo, cron) ou intégré comme nœud Kedro via la fonction exporté
 import logging
 import os
 from dataclasses import fields, replace
-from datetime import datetime
+from datetime import datetime, timezone
+from pathlib import Path
 from typing import Dict, Optional, Sequence
 import yaml
 
@@ -36,6 +37,9 @@ import pandas as pd
 from dt_ducklake_manager import DuckLakeConnector
 # Modules de chargement de données et helpers DuckLake partagés
 from macroforecast.storage2 import Loader
+# Module de tenue du registre JSON des dates de traitement (local ou S3)
+from macroforecast.storage import Loader as JsonLoader, Saver as JsonSaver
+from macroforecast.storage import merge_registry
 from macroforecast.storage2.tables import FACT_TABLE as _FACT_TABLE, write_dataframe
 from macroforecast.datasets.core.download import _schema_name
 
@@ -57,6 +61,11 @@ logger = logging.getLogger(__name__)
 
 # Clé YAML portant les conventions de schéma des sources (sous-section de PARAMETERS)
 _SCHEMA_KEY = "SCHEMA"
+
+# Clé racine du registre JSON des dates de dernier traitement BACI, partagée
+# avec scripts/process_baci_hs.py : les deux écrivent des entrées indexées par
+# schéma résultat, qui ne peuvent donc pas se marcher dessus
+_PROCESSING_ROOT = "BACI"
 
 
 # Fonction de chargement de la configuration associée à la base comtrade
@@ -238,6 +247,12 @@ def main() -> None:
     # Spécification du dataflow téléchargé auquel on souhaite appliquer la méthodologie BACI
     DATAFLOW = "C_A_HS"
 
+    # Instant de référence capturé avant le traitement : la date consignée
+    # correspond au début du redressement, jamais à sa fin
+    processed_at = datetime.now(timezone.utc)
+    # Schéma résultat, commun à l'écriture et au registre
+    result_schema = _schema_name(baci_config["PATHS"]["RESULT_SCHEMA"])
+
     # Lecture des fichiers Excel CEPII
     excel_loader = Loader()
     df_dist = excel_loader.load(
@@ -293,20 +308,39 @@ def main() -> None:
                 df_reconciled,
                 baci_parameters_config.primary_keys,
                 catalog_alias=connector.catalog_alias,
-                schema=_schema_name(baci_config["PATHS"]["RESULT_SCHEMA"]),
+                schema=result_schema,
             )
 
             # Envoi des métriques : le rapport connaît sa mise en forme
             tracker.log_metrics(report.to_metrics())
             tracker.set_tags(
                 {
-                    "result_schema": _schema_name(baci_config["PATHS"]["RESULT_SCHEMA"]),
+                    "result_schema": result_schema,
                     "classification_code": str(report.classification_code),
                     "created": str(report.created),
                 }
             )
     finally:
         conn.close()
+
+    # Registre des dates de traitement : écrit après succès de l'écriture, jamais
+    # avant — une date avancée à tort ferait silencieusement sauter le recalcul
+    # des indicateurs qui en dépendent
+    merge_registry(
+        Path(baci_config["PATHS"]["LAST_PROCESSING_PATH"]),
+        {
+            result_schema: {
+                "vintage": str(report.classification_code),
+                "result_schema": result_schema,
+                "last_processed": processed_at.isoformat(),
+                "n_rows": int(len(df_reconciled)),
+            }
+        },
+        JsonLoader(),
+        JsonSaver(),
+        baci_config["BUCKET"],
+        root=_PROCESSING_ROOT,
+    )
 
     # Logging
     logger.info("Redressement BACI terminé : %s", report)

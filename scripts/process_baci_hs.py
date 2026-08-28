@@ -32,12 +32,19 @@ distante), sauf ``FORCE_REFRESH`` explicite en configuration.
 L'échec d'un millésime n'interrompt pas les autres : chaque échec est capturé
 et journalisé individuellement, et le script ne sort en erreur qu'en fin de
 parcours si au moins un millésime a échoué.
+
+Chaque millésime effectivement réécrit voit sa date de traitement consignée dans
+le registre JSON ``PATHS.LAST_PROCESSING_PATH`` (même principe que le
+``LAST_DOWNLOAD_PATH`` du téléchargement). C'est la seule chose que
+``scripts/compute_network_vulnerabilities.py`` lit de ce script : le couplage
+reste faible, aucun état en mémoire n'étant partagé.
 """
 # Importation des modules
 # Modules de base
 import hashlib
 import logging
 import os
+from pathlib import Path
 from dataclasses import fields, replace
 from datetime import datetime, timezone
 from typing import Dict, Optional, Sequence, Set, Tuple
@@ -55,6 +62,7 @@ from macroforecast.storage2 import Loader as TableLoader, Saver as TableSaver
 # Helpers DuckLake partagés (création puis upsert de la table de faits)
 from macroforecast.storage2.tables import FACT_TABLE as _FACT_TABLE, write_dataframe
 from macroforecast.storage import Loader as JsonLoader, Saver as JsonSaver
+from macroforecast.storage import merge_registry
 from macroforecast.datasets.core.download import _schema_name
 
 # Module client des tables de correspondance de nomenclatures UNSD
@@ -82,6 +90,11 @@ _SCHEMA_KEY = "SCHEMA"
 
 # Nom du fichier de registre des téléchargements de tables de correspondance
 _REGISTRY_FILE = "unsd_correspondance_tables.json"
+
+# Clé racine du registre JSON des dates de dernier traitement BACI, lu par
+# scripts/compute_network_vulnerabilities.py pour ne recalculer que les
+# millésimes réécrits depuis son dernier passage
+_PROCESSING_ROOT = "BACI"
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -457,6 +470,11 @@ def main() -> None:
     # Spécification du dataflow téléchargé auquel on souhaite appliquer la méthodologie BACI
     DATAFLOW = "C_A_HS"
 
+    # Instant de référence capturé avant le traitement : la date consignée
+    # correspond au début du redressement, jamais à sa fin, pour ne pas masquer
+    # une mise à jour COMTRADE survenue pendant l'exécution
+    processed_at = datetime.now(timezone.utc)
+
     # Lecture des fichiers Excel CEPII
     table_loader = TableLoader()
     table_saver = TableSaver()
@@ -530,6 +548,8 @@ def main() -> None:
         # L'échec d'un millésime n'interrompt pas les autres.
         reports: Dict[str, BaciReport] = {}
         failures: Dict[str, Exception] = {}
+        # Entrées de registre des millésimes effectivement réécrits
+        processed: Dict[str, Dict[str, object]] = {}
         for label, target_cfg in targets_config.items():
             try:
                 harmonizer = HsHarmonizer(
@@ -573,6 +593,15 @@ def main() -> None:
                         label=label,
                     )
                     reports[label] = report
+                    # Traçage du millésime réécrit, indexé par son schéma
+                    # résultat — identité non ambiguë de ce qui a été produit
+                    result_schema = _schema_name(target_cfg["RESULT_SCHEMA"])
+                    processed[result_schema] = {
+                        "vintage": label,
+                        "result_schema": result_schema,
+                        "last_processed": processed_at.isoformat(),
+                        "n_rows": int(len(df_reconciled)),
+                    }
 
                     # Envoi des métriques du redressement et de l'harmonisation
                     tracker.log_metrics(report.to_metrics())
@@ -599,6 +628,25 @@ def main() -> None:
                 failures[label] = exc
     finally:
         conn.close()
+
+    # Registre des dates de traitement : écrit après succès de l'écriture des
+    # millésimes concernés, jamais avant — une date avancée à tort ferait
+    # silencieusement sauter le recalcul des vulnérabilités de réseau
+    if processed:
+        merge_registry(
+            Path(baci_config["PATHS"]["LAST_PROCESSING_PATH"]),
+            processed,
+            JsonLoader(),
+            JsonSaver(),
+            bucket,
+            root=_PROCESSING_ROOT,
+        )
+        # Logging
+        logger.info(
+            "%d millésime(s) consigné(s) dans le registre de traitement '%s'",
+            len(processed),
+            baci_config["PATHS"]["LAST_PROCESSING_PATH"],
+        )
 
     # Échec global si au moins un millésime a échoué, une fois tous tentés
     if failures:
