@@ -539,12 +539,13 @@ wheels = [
 
 [[package]]
 name = "dt-ducklake-manager"
-version = "0.2.0"
-source = { git = "https://github.com/qbolliet/dt-ducklake-manager?branch=main#b9c0d7a353d515bd64a1ddf223c1f5264cf3ba50" }
+version = "0.3.0"
+source = { git = "https://github.com/qbolliet/dt-ducklake-manager?tag=v0.3.0#0b465c4b13bd96b68541bf7a298067ad942f0dc1" }
 dependencies = [
     { name = "duckdb" },
     { name = "narwhals" },
     { name = "polars" },
+    { name = "psycopg2" },
     { name = "pyarrow" },
 ]
 
@@ -1225,7 +1226,7 @@ dev = [
 requires-dist = [
     { name = "boto3", specifier = ">=1.43.34" },
     { name = "comtradeapicall", specifier = ">=1.3.2" },
-    { name = "dt-ducklake-manager", git = "https://github.com/qbolliet/dt-ducklake-manager?branch=main" },
+    { name = "dt-ducklake-manager", git = "https://github.com/qbolliet/dt-ducklake-manager?tag=v0.3.0" },
     { name = "linearmodels", specifier = ">=7.0" },
     { name = "mlflow", marker = "extra == 'tracking'", specifier = ">=2.16" },
     { name = "narwhals", specifier = ">=2.22.1" },

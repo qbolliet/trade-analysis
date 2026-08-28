@@ -49,7 +49,7 @@ dev = [
 ]
 
 [tool.uv.sources]
-dt-ducklake-manager = { git = "https://github.com/qbolliet/dt-ducklake-manager", branch = "main" }
+dt-ducklake-manager = { git = "https://github.com/qbolliet/dt-ducklake-manager", tag = "v0.3.0" }
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
