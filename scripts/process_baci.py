@@ -39,7 +39,6 @@ from dt_ducklake_manager import DuckLakeConnector
 from macroforecast.storage2 import Loader
 # Module de tenue du registre JSON des dates de traitement (local ou S3)
 from macroforecast.storage import Loader as JsonLoader, Saver as JsonSaver
-from macroforecast.storage import merge_registry
 from macroforecast.storage2.tables import FACT_TABLE as _FACT_TABLE, write_dataframe
 from macroforecast.datasets.core.download import _schema_name
 
@@ -326,8 +325,13 @@ def main() -> None:
     # Registre des dates de traitement : écrit après succès de l'écriture, jamais
     # avant — une date avancée à tort ferait silencieusement sauter le recalcul
     # des indicateurs qui en dépendent
-    merge_registry(
-        Path(baci_config["PATHS"]["LAST_PROCESSING_PATH"]),
+    last_processing_path = Path(baci_config["PATHS"]["LAST_PROCESSING_PATH"])
+    bucket = baci_config["BUCKET"]
+    # Fusion avec le registre existant : seule l'entrée du schéma traité bouge
+    registry = (
+        JsonLoader().load(last_processing_path, bucket=bucket, missing_ok=True) or {}
+    ).get(_PROCESSING_ROOT, {})
+    registry.update(
         {
             result_schema: {
                 "vintage": str(report.classification_code),
@@ -335,11 +339,15 @@ def main() -> None:
                 "last_processed": processed_at.isoformat(),
                 "n_rows": int(len(df_reconciled)),
             }
-        },
-        JsonLoader(),
-        JsonSaver(),
-        baci_config["BUCKET"],
-        root=_PROCESSING_ROOT,
+        }
+    )
+    # Écriture du registre mis à jour
+    JsonSaver().save(
+        last_processing_path,
+        {_PROCESSING_ROOT: registry},
+        bucket=bucket,
+        indent=2,
+        ensure_ascii=False,
     )
 
     # Logging

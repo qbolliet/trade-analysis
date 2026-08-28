@@ -38,7 +38,7 @@ from typing import Any, Dict, Optional, Set, Tuple
 import yaml
 
 # Modules de chargement/sauvegarde JSON (local ou S3), même brique que le téléchargement
-from macroforecast.storage import Loader, Saver, read_json, write_json
+from macroforecast.storage import Loader, Saver
 # Module de connexion à la base de données
 from macroforecast.storage2 import DuckLakeConnector
 # Module d'utilitaires de téléchargement
@@ -184,7 +184,7 @@ def load_last_download_dates(
         Mapping ``(reporter, product) -> last_download`` (UTC-aware datetime).
     """
     # Lecture du registre (racine "DOWNLOADS", cf. _REGISTRY_ROOT de download.py)
-    data = read_json(last_download_path, loader, bucket) or {}
+    data = loader.load(last_download_path, bucket=bucket, missing_ok=True) or {}
     registry = data.get("DOWNLOADS", {})
 
     # Extraction du couple et de la date par entrée
@@ -227,7 +227,7 @@ def load_last_computation_dates(
         Mapping ``(reporter, product) -> last_computed`` (UTC-aware datetime).
     """
     # Importation des données
-    data = read_json(last_computation_path, loader, bucket) or {}
+    data = loader.load(last_computation_path, bucket=bucket, missing_ok=True) or {}
     # Extraction du registre
     registry = data.get(_REGISTRY_ROOT, {})
     # Initialisation du dictionnaire associant au tuple reporter X produit la date du dernier calcul de vulnérabilité
@@ -264,7 +264,7 @@ def save_last_computation_dates(
         bucket: S3 bucket holding the registry, or ``None`` for a local path.
     """
     # Fusion avec le registre existant : seules les entrées recalculées bougent
-    data = read_json(last_computation_path, loader, bucket) or {}
+    data = loader.load(last_computation_path, bucket=bucket, missing_ok=True) or {}
     registry = data.get(_REGISTRY_ROOT, {})
 
     # Mise à jour des dates
@@ -276,7 +276,13 @@ def save_last_computation_dates(
         }
 
     # Ecriture du fichier json mis à jour
-    write_json(last_computation_path, {_REGISTRY_ROOT: registry}, saver, bucket)
+    saver.save(
+        last_computation_path,
+        {_REGISTRY_ROOT: registry},
+        bucket=bucket,
+        indent=2,
+        ensure_ascii=False,
+    )
     # Logging
     logger.info(
         f"{len(dates)} date(s) de calcul mise(s) à jour dans '{last_computation_path}'"

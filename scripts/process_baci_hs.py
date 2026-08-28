@@ -62,7 +62,6 @@ from macroforecast.storage2 import Loader as TableLoader, Saver as TableSaver
 # Helpers DuckLake partagés (création puis upsert de la table de faits)
 from macroforecast.storage2.tables import FACT_TABLE as _FACT_TABLE, write_dataframe
 from macroforecast.storage import Loader as JsonLoader, Saver as JsonSaver
-from macroforecast.storage import merge_registry
 from macroforecast.datasets.core.download import _schema_name
 
 # Module client des tables de correspondance de nomenclatures UNSD
@@ -315,39 +314,6 @@ def _load_cached_table(
         return None
 
 
-# Fonction de lecture du registre des téléchargements
-def _load_registry(loader: JsonLoader, registry_path: str, bucket: Optional[str]) -> Dict:
-    """Read the JSON download registry, or an empty one when absent.
-
-    Args:
-        loader: JSON loader (local or S3, dispatched on ``bucket``).
-        registry_path: Registry path (local path or S3 key).
-        bucket: S3 bucket name, or ``None`` for a local registry.
-
-    Returns:
-        The deserialised registry mapping (empty when the file does not exist).
-    """
-    try:
-        return loader.load(registry_path, bucket=bucket)
-    except (FileNotFoundError, ClientError):
-        return {}
-
-
-# Fonction d'écriture du registre des téléchargements
-def _save_registry(
-    saver: JsonSaver, registry_path: str, registry: Dict, bucket: Optional[str]
-) -> None:
-    """Persist the JSON download registry.
-
-    Args:
-        saver: JSON saver (local or S3, dispatched on ``bucket``).
-        registry_path: Registry path (local path or S3 key).
-        registry: Registry mapping to persist.
-        bucket: S3 bucket name, or ``None`` for a local registry.
-    """
-    saver.save(registry_path, registry, bucket=bucket, indent=2, ensure_ascii=False)
-
-
 # Fonction de chargement des tables de correspondance nécessaires, avec cache
 def _ensure_concordances(
     pairs: Sequence[Tuple[str, str]],
@@ -386,7 +352,11 @@ def _ensure_concordances(
     """
     # Registre des téléchargements (date, URL, volumétrie, somme de contrôle)
     registry_path = _registry_path(concordance_path)
-    registry = _load_registry(JsonLoader(), registry_path, bucket)
+    # Instances réutilisables : la connexion S3 paresseuse est ainsi établie une
+    # seule fois et partagée par la lecture initiale et les écritures successives
+    json_saver = JsonSaver()
+    # Registre absent : premier téléchargement des tables de correspondance
+    registry = JsonLoader().load(registry_path, bucket=bucket, missing_ok=True) or {}
 
     # Catalogue des tables déclarées (URL source de chaque paire)
     df_catalogue = client.list_available_tables().set_index(
@@ -414,7 +384,9 @@ def _ensure_concordances(
                 "n_rows": int(len(df_table)),
                 "checksum": _checksum(df_table),
             }
-            _save_registry(JsonSaver(), registry_path, registry, bucket)
+            json_saver.save(
+                registry_path, registry, bucket=bucket, indent=2, ensure_ascii=False
+            )
 
         concordances[(source, target)] = df_table
 
@@ -633,13 +605,19 @@ def main() -> None:
     # millésimes concernés, jamais avant — une date avancée à tort ferait
     # silencieusement sauter le recalcul des vulnérabilités de réseau
     if processed:
-        merge_registry(
-            Path(baci_config["PATHS"]["LAST_PROCESSING_PATH"]),
-            processed,
-            JsonLoader(),
-            JsonSaver(),
-            bucket,
-            root=_PROCESSING_ROOT,
+        last_processing_path = Path(baci_config["PATHS"]["LAST_PROCESSING_PATH"])
+        # Fusion avec le registre existant : seuls les millésimes traités bougent
+        registry = (
+            JsonLoader().load(last_processing_path, bucket=bucket, missing_ok=True) or {}
+        ).get(_PROCESSING_ROOT, {})
+        registry.update(processed)
+        # Écriture du registre mis à jour
+        JsonSaver().save(
+            last_processing_path,
+            {_PROCESSING_ROOT: registry},
+            bucket=bucket,
+            indent=2,
+            ensure_ascii=False,
         )
         # Logging
         logger.info(

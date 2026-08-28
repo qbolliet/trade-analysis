@@ -29,7 +29,7 @@ import duckdb
 import pandas as pd
 
 # Importation des modules de connexion
-from macroforecast.storage import Loader, Saver, read_json, write_json
+from macroforecast.storage import Loader, Saver
 # Helper DuckLake partagé (création puis upsert de la table de faits)
 from macroforecast.storage2.tables import write_dataframe
 
@@ -394,7 +394,9 @@ class SDMXDownloader:
         # Registre des structures, injecté dans le client pour mutualiser le cache
         self._structure_registry = DataflowStructureRegistry()
         if not fresh_registry:
-            structures_data = read_json(self._structures_path, self._loader, self._bucket)
+            structures_data = self._loader.load(
+                self._structures_path, bucket=self._bucket, missing_ok=True
+            )
             if structures_data:
                 self._structure_registry.load_from_dict(structures_data)
         self._client.structure_registry = self._structure_registry
@@ -489,11 +491,12 @@ class SDMXDownloader:
             # Export du registre des structures si une structure a été ajoutée
             if set(self._structure_registry.list_structures()) != initial_structure_keys:
                 # Export (routé vers le local ou S3 selon ``bucket``)
-                write_json(
+                self._saver.save(
                     self._structures_path,
                     self._structure_registry.to_dict(),
-                    self._saver,
-                    self._bucket,
+                    bucket=self._bucket,
+                    indent=2,
+                    ensure_ascii=False,
                 )
                 # Logging
                 logger.info(f"Structure registry exported to {self._structures_path}")
@@ -722,7 +725,12 @@ class SDMXDownloader:
     def _load_registry(self) -> None:
         """Load the last-download registry from the JSON file (empty if absent)."""
         # Lecture du registre JSON existant (None si absent)
-        data = read_json(self._last_download_path, self._loader, self._bucket) or {}
+        data = (
+            self._loader.load(
+                self._last_download_path, bucket=self._bucket, missing_ok=True
+            )
+            or {}
+        )
         self._registry = data.get(_REGISTRY_ROOT, {})
         # Logging
         logger.info(
@@ -733,11 +741,12 @@ class SDMXDownloader:
     # Méthode de sauvegarde du registre des dates
     def _save_registry(self) -> None:
         """Persist the last-download registry through the configured storage."""
-        write_json(
+        self._saver.save(
             self._last_download_path,
             {_REGISTRY_ROOT: self._registry},
-            self._saver,
-            self._bucket,
+            bucket=self._bucket,
+            indent=2,
+            ensure_ascii=False,
         )
 
 

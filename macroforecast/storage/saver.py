@@ -1,6 +1,9 @@
 # Importation des modules
 # Modules de base
-from typing import Optional
+import os
+import tempfile
+from pathlib import Path
+from typing import Optional, Union
 # Modules de package
 from .local.saver import save_local
 from .s3.saver import S3Saver
@@ -49,19 +52,26 @@ class Saver(S3Saver):
     # Méthode de sauvegarde des données
     def save(
         self,
-        filepath: str,
+        filepath: Union[str, Path],
         obj: Optional[object] = None,
         bucket: Optional[str] = None,
+        atomic: bool = True,
         **kwargs,
     ) -> None:
         """Save a JSON-serialisable object to S3 or local storage.
 
         Args:
-            filepath (str): Path for saving the file. For S3, this is the object
-                key within the bucket; for local storage, the filesystem path.
+            filepath (str or Path): Path for saving the file. For S3, this is the
+                object key within the bucket — a ``Path`` is converted to its
+                POSIX form, so a registry path built on Windows still addresses
+                the right key; for local storage, the filesystem path.
             obj: Any JSON-serialisable object to save.
             bucket (str, optional): S3 bucket name. If ``None``, saves to local
                 storage.
+            atomic (bool, optional): If ``True``, the local write goes through a
+                temporary file in the destination directory, renamed over the
+                target, so a crash never leaves a half-written file. Ignored on
+                S3, where the object PUT is already atomic. Defaults to ``True``.
             **kwargs: Additional arguments passed to the underlying saver.
                 For S3: ``aws_access_key_id``, ``aws_secret_access_key``,
                 ``aws_session_token``, ``endpoint_url``, ``verify``.
@@ -89,6 +99,13 @@ class Saver(S3Saver):
             ...     obj={'key': 'value'},
             ...     indent=2,
             ... )
+
+            Save a dict locally without the temporary-file dance:
+            >>> saver.save(
+            ...     filepath='data/registry.json',
+            ...     obj={'key': 'value'},
+            ...     atomic=False,
+            ... )
         """
         # Cas de la sauvegarde sur S3
         if bucket is not None:
@@ -108,7 +125,28 @@ class Saver(S3Saver):
             if not hasattr(self, "s3"):
                 self.connect(**s3_kwargs)
             # Utilise la méthode de sauvegarde sur S3 du parent
-            super().save(bucket=bucket, key=filepath, obj=obj, **kwargs)
-        # Cas de la sauvegarde en local
+            super().save(
+                bucket=bucket, key=Path(filepath).as_posix(), obj=obj, **kwargs
+            )
+        # Cas de la sauvegarde en local, écriture directe
+        elif not atomic:
+            save_local(filepath=str(filepath), obj=obj, **kwargs)
+        # Cas de la sauvegarde en local, écriture atomique
         else:
-            save_local(filepath=filepath, obj=obj, **kwargs)
+            path = Path(filepath)
+            # Création du dossier parent si nécessaire
+            path.parent.mkdir(parents=True, exist_ok=True)
+            # Extension du temporaire reprise de la destination : la validation de
+            # format reste ainsi celle du fichier réellement demandé
+            fd, tmp_name = tempfile.mkstemp(dir=str(path.parent), suffix=path.suffix)
+            # Fermeture immédiate du descripteur : save_local ouvre le fichier lui-même
+            os.close(fd)
+            try:
+                # Écriture dans le temporaire puis remplacement de la destination
+                save_local(filepath=tmp_name, obj=obj, **kwargs)
+                os.replace(tmp_name, str(path))
+            except Exception:
+                # Nettoyage du fichier temporaire en cas d'échec
+                if os.path.exists(tmp_name):
+                    os.remove(tmp_name)
+                raise

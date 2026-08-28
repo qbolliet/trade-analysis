@@ -46,7 +46,7 @@ from typing import Any, Dict, List, Mapping, Optional, Tuple
 import yaml
 
 # Modules de chargement/sauvegarde JSON (local ou S3), même brique que le téléchargement
-from macroforecast.storage import Loader, Saver, merge_registry, read_registry
+from macroforecast.storage import Loader, Saver
 # Module de connexion à la base de données
 from macroforecast.storage2 import DuckLakeConnector
 # Module d'utilitaires de téléchargement
@@ -269,10 +269,10 @@ def load_last_processing_dates(
         Mapping ``result_schema -> last_processed`` (UTC-aware datetime).
     """
     # Lecture du registre (racine "BACI") et indexation par schéma résultat
-    return _dates_by_schema(
-        read_registry(last_processing_path, loader, bucket, root=_PROCESSING_ROOT),
-        "last_processed",
-    )
+    registry = (
+        loader.load(last_processing_path, bucket=bucket, missing_ok=True) or {}
+    ).get(_PROCESSING_ROOT, {})
+    return _dates_by_schema(registry, "last_processed")
 
 
 # Fonction de lecture des dates de dernier calcul, par schéma source
@@ -292,10 +292,10 @@ def load_last_computation_dates(
         Mapping ``source_schema -> last_computed`` (UTC-aware datetime).
     """
     # Lecture du registre et indexation par schéma source
-    return _dates_by_schema(
-        read_registry(last_computation_path, loader, bucket, root=_REGISTRY_ROOT),
-        "last_computed",
-    )
+    registry = (
+        loader.load(last_computation_path, bucket=bucket, missing_ok=True) or {}
+    ).get(_REGISTRY_ROOT, {})
+    return _dates_by_schema(registry, "last_computed")
 
 
 # Fonction de fusion et de sauvegarde des dates de calcul mises à jour
@@ -318,8 +318,17 @@ def save_last_computation_dates(
         bucket: S3 bucket holding the registry, or ``None`` for a local path.
     """
     # Fusion avec le registre existant : seules les entrées recalculées bougent
-    merge_registry(
-        last_computation_path, entries, loader, saver, bucket, root=_REGISTRY_ROOT
+    registry = (
+        loader.load(last_computation_path, bucket=bucket, missing_ok=True) or {}
+    ).get(_REGISTRY_ROOT, {})
+    registry.update(entries)
+    # Écriture du registre mis à jour
+    saver.save(
+        last_computation_path,
+        {_REGISTRY_ROOT: registry},
+        bucket=bucket,
+        indent=2,
+        ensure_ascii=False,
     )
     # Logging
     logger.info(
