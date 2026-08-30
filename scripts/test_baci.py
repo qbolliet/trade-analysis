@@ -40,7 +40,7 @@ from macroforecast.datasets.core.download import _schema_name
 from macroforecast.trade.processing import required_columns, run_baci
 from macroforecast.trade.processing import BaciConfig, ComtradeSchema, DEFAULT_CONFIG
 # Module de connexion à la base de données
-from macroforecast.storage2 import DuckLakeConnector
+from dt_ducklake_manager import DuckLakeConnector
 
 # Configuration de logging
 logging.basicConfig(
@@ -242,6 +242,7 @@ def main() -> None:
         port=os.environ["PGPORT"],
         user=os.environ["PGUSER"],
         password=os.environ["PGPASSWORD"],
+        create_db_if_missing=True,
         admin_dbname=os.environ["PGDATABASE"],
         catalog_alias=comtrade_config["DOWNLOADS"]["CATALOG_ALIAS"],
         schema=_schema_name(baci_config["PATHS"]["RESULT_SCHEMA"]),

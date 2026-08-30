@@ -48,7 +48,7 @@ import yaml
 # Modules de chargement/sauvegarde JSON (local ou S3), même brique que le téléchargement
 from macroforecast.storage import Loader, Saver
 # Module de connexion à la base de données
-from macroforecast.storage2 import DuckLakeConnector
+from dt_ducklake_manager import DuckLakeConnector
 # Module d'utilitaires de téléchargement
 from macroforecast.datasets.core.download import _now, _parse_iso, _schema_name
 
@@ -475,6 +475,7 @@ def main() -> None:
         port=os.environ["PGPORT"],
         user=os.environ["PGUSER"],
         password=os.environ["PGPASSWORD"],
+        create_db_if_missing=True,
         admin_dbname=os.environ["PGDATABASE"],
         admin_user="postgres",
         admin_password=os.environ["PGPASSWORD"],
@@ -498,6 +499,7 @@ def main() -> None:
         port=os.environ["PGPORT"],
         user=os.environ["PGUSER"],
         password=os.environ["PGPASSWORD"],
+        create_db_if_missing=True,
         admin_dbname=os.environ["PGDATABASE"],
         admin_user="postgres",
         admin_password=os.environ["PGPASSWORD"],

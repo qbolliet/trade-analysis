@@ -36,7 +36,7 @@ from macroforecast.datasets.core.reports import QueryReport
 from macroforecast.tracking import get_tracker
 
 # Module de connexion à la base de données
-from macroforecast.storage2 import DuckLakeConnector
+from dt_ducklake_manager import DuckLakeConnector
     
 
 # Configuration de logging
@@ -223,6 +223,7 @@ def main() -> None:
             port=os.environ['PGPORT'],
             user=os.environ['PGUSER'],
             password=os.environ['PGPASSWORD'],
+            create_db_if_missing=True,
             admin_dbname=os.environ['PGDATABASE'],
             admin_user="postgres",
             admin_password=os.environ["PGPASSWORD"],

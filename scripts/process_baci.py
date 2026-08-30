@@ -271,6 +271,7 @@ def main() -> None:
         port=os.environ["PGPORT"],
         user=os.environ["PGUSER"],
         password=os.environ["PGPASSWORD"],
+        create_db_if_missing=True,
         admin_dbname=os.environ["PGDATABASE"],
         catalog_alias=comtrade_config["DOWNLOADS"]["CATALOG_ALIAS"],
         schema=_schema_name(baci_config["PATHS"]["RESULT_SCHEMA"]),
