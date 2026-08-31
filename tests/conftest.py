@@ -104,6 +104,21 @@ def sample_xls_path(tmp_path: Path) -> Path:
     return path
 
 
+@pytest.fixture
+def sample_xlsx_path(tmp_path: Path) -> Path:
+    """Génère un classeur ``.xlsx`` (Office Open XML) lisible par le moteur ``openpyxl``.
+
+    Returns:
+        Chemin vers le ``.xlsx`` (2 colonnes ``geo``/``value``, 2 lignes).
+    """
+    pytest.importorskip("openpyxl")
+
+    frame = pd.DataFrame({"geo": ["FR", "DE"], "value": [1.0, 2.0]})
+    path = tmp_path / "sample.xlsx"
+    frame.to_excel(path, index=False, engine="openpyxl")
+    return path
+
+
 # ──────────────────────────────────────────────────────────────────────
 # Connexion DuckLake sur catalogue fichier temporaire
 # ──────────────────────────────────────────────────────────────────────

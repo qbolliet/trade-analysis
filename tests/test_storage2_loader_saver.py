@@ -1,7 +1,8 @@
 """Tests de caractérisation — ``macroforecast.storage`` (``Loader`` / ``Saver`` tabulaire).
 
 Comportement figé : extension non supportée → ``ValueError``, lecture d'un ``.xls``
-et d'un ``.parquet`` (local et S3 via moto), écriture d'un ``.parquet``.
+(moteur ``xlrd``), d'un ``.xlsx`` (moteur ``openpyxl``) et d'un ``.parquet`` (local
+et S3 via moto), écriture d'un ``.parquet``.
 """
 
 from __future__ import annotations
@@ -14,7 +15,7 @@ from pandas.testing import assert_frame_equal
 
 from macroforecast.storage import Loader, Saver
 
-_LOADER_BAD_EXT = "Unsupported extension '.csv': only ('xls', 'parquet') files are supported."
+_LOADER_BAD_EXT = "Unsupported extension '.csv': only ('xls', 'xlsx', 'parquet') files are supported."
 _SAVER_BAD_EXT = "Unsupported extension '.csv': only '.parquet' files are supported."
 
 
@@ -52,14 +53,14 @@ def test_saver_rejects_unsupported_extension_s3(s3_bucket: str, sample_df: pd.Da
 # ──────────────────────────────────────────────────────────────────────
 
 
-def _assert_sample_xls(df: pd.DataFrame) -> None:
+def _assert_sample_excel(df: pd.DataFrame) -> None:
     assert list(df.columns) == ["geo", "value"]
     assert df["geo"].tolist() == ["FR", "DE"]
     assert df["value"].tolist() == [1.0, 2.0]
 
 
 def test_read_xls_local(sample_xls_path: Path) -> None:
-    _assert_sample_xls(Loader().load(str(sample_xls_path)))
+    _assert_sample_excel(Loader().load(str(sample_xls_path)))
 
 
 def test_read_xls_s3(s3_bucket: str, s3_client, sample_xls_path: Path) -> None:
@@ -67,7 +68,24 @@ def test_read_xls_s3(s3_bucket: str, s3_client, sample_xls_path: Path) -> None:
         Bucket=s3_bucket, Key="dir/sample.xls", Body=sample_xls_path.read_bytes()
     )
 
-    _assert_sample_xls(Loader().load("dir/sample.xls", bucket=s3_bucket))
+    _assert_sample_excel(Loader().load("dir/sample.xls", bucket=s3_bucket))
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Lecture .xlsx (moteur openpyxl)
+# ──────────────────────────────────────────────────────────────────────
+
+
+def test_read_xlsx_local(sample_xlsx_path: Path) -> None:
+    _assert_sample_excel(Loader().load(str(sample_xlsx_path)))
+
+
+def test_read_xlsx_s3(s3_bucket: str, s3_client, sample_xlsx_path: Path) -> None:
+    s3_client.put_object(
+        Bucket=s3_bucket, Key="dir/sample.xlsx", Body=sample_xlsx_path.read_bytes()
+    )
+
+    _assert_sample_excel(Loader().load("dir/sample.xlsx", bucket=s3_bucket))
 
 
 # ──────────────────────────────────────────────────────────────────────
