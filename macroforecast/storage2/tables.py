@@ -7,17 +7,22 @@ pipeline used to duplicate: the download orchestrator
 scripts.
 
 Both helpers take an **already-open** DuckDB connection.
+
+Only :func:`write_dataframe` needs ``dt_ducklake_manager``, which it imports
+lazily: this module — and :func:`fact_table_exists` — stays importable without
+the optional ``ducklake`` extra.
 """
 # Importation des modules
 from __future__ import annotations
 # Modules de base
 import logging
 from contextlib import contextmanager
-from typing import Any, Iterator, Optional, Sequence
-# Module de manipulation de la base de données
-import duckdb
-# Module de gestion des tables DuckLake
-from dt_ducklake_manager import DatabaseUpdater, DuckLakeTablesBuilder
+from typing import TYPE_CHECKING, Any, Iterator, Optional, Sequence
+
+# Module de manipulation de la base de données : usage purement annotatif, donc
+# importé au seul typage (annotations différées par `from __future__`)
+if TYPE_CHECKING:
+    import duckdb
 
 # Initialisation du logger
 logger = logging.getLogger(__name__)
@@ -82,6 +87,7 @@ def fact_table_exists(
         ``True`` if the table already exists in that schema.
 
     Examples:
+        >>> import duckdb
         >>> conn = duckdb.connect(":memory:")
         >>> fact_table_exists(conn, "db", "vulnerabilities")
         False
@@ -131,8 +137,20 @@ def write_dataframe(
         ``True`` if the schema was created, ``False`` if it was upserted.
 
     Raises:
+        ImportError: If the optional ``dt-ducklake-manager`` dependency is not
+            installed.
         ValueError: If the update operation reports failure.
     """
+    # Dépendance optionnelle : seule l'écriture DuckLake la requiert. Importation
+    # en tête de corps, avant tout effet de bord sur la connexion.
+    try:
+        from dt_ducklake_manager import DatabaseUpdater, DuckLakeTablesBuilder
+    except ImportError as exc:
+        raise ImportError(
+            "write_dataframe requires the optional 'dt-ducklake-manager' "
+            "dependency. Install it with: pip install 'macroforecast[ducklake]'"
+        ) from exc
+
     # Préfixe de journalisation : identifie le jeu de données écrit
     prefix = f"{label}: " if label else ""
 

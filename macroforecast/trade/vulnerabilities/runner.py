@@ -25,11 +25,15 @@ plumbing, nothing else.
 from __future__ import annotations
 # Modules de base
 import logging
-from typing import Any, Collection, Iterable, Optional, Sequence, Tuple
+from typing import TYPE_CHECKING, Any, Collection, Iterable, Optional, Sequence, Tuple
 # Modules de manipulation de données
-import duckdb
 import narwhals as nw
 import pandas as pd
+
+# DuckDB : usage purement annotatif ici (les connexions sont ouvertes par
+# l'appelant), donc importé au seul typage pour ne pas imposer l'extra `ducklake`
+if TYPE_CHECKING:
+    import duckdb
 # Modules de gestion des tables DuckLake
 from ...storage2.tables import FACT_TABLE, fact_table_exists, write_dataframe
 # Modules du package
