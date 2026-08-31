@@ -1,4 +1,4 @@
-"""Tests de caractérisation — helpers purs de ``macroforecast.datasets.core.download``.
+"""Tests de caractérisation — helpers purs de ``statflows.core.download``.
 
 Comportement figé : ``_schema_name``, ``_parse_iso``, ``_json_safe``, ``_primary_keys``.
 """
@@ -11,7 +11,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from macroforecast.datasets.core.download import (
+from statflows.core.download import (
     _json_safe,
     _parse_iso,
     _primary_keys,

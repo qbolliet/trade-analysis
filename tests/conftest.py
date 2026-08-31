@@ -25,9 +25,9 @@ BUCKET = "test-bucket"
 
 @pytest.fixture
 def aws_env(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Renseigne les variables d'environnement AWS attendues par ``_S3Connection``.
+    """Renseigne les variables d'environnement AWS attendues par ``S3Connection``.
 
-    ``_S3Connection._connect`` lit ``os.environ[...]`` (et lève ``KeyError`` en
+    ``statflows.storage.S3Connection._connect`` lit ``os.environ[...]`` (et lève ``KeyError`` en
     l'absence) dès qu'un argument S3 vaut ``None`` — ce qui est le cas via les
     ``Loader``/``Saver`` par défaut. On pose donc des valeurs factices.
     """

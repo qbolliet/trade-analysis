@@ -1,14 +1,20 @@
 # Importation des modules
-import json
+from io import BytesIO
 from typing import Optional
 
-# Importation du module de connection
-from ._connection import _S3Connection
+# Module de manipulation de données
+import pandas as pd
+
+# Importation du module de connexion partagé (fourni par statflows)
+from statflows.storage import S3Connection
+
+# Extensions supportées par le chargeur S3
+_SUPPORTED_EXTENSIONS = ("xls", "parquet")
 
 
 # Classe de chargement de données depuis S3
-class S3Loader(_S3Connection):
-    """Load JSON data from Amazon S3 buckets.
+class S3Loader(S3Connection):
+    """Load xls or parquet data from Amazon S3 buckets.
 
     Args:
         s3_package (str, optional): Package to use for S3 connections
@@ -19,13 +25,13 @@ class S3Loader(_S3Connection):
         s3_package (str): The package being used for S3 connectivity.
 
     Examples:
-        Load JSON from S3 using boto3:
+        Load an xls file from S3 using boto3:
         >>> loader = S3Loader()
         >>> loader.connect(
         ...     aws_access_key_id='YOUR_KEY',
         ...     aws_secret_access_key='YOUR_SECRET'
         ... )
-        >>> data = loader.load(bucket='my-bucket', key='path/to/file.json')
+        >>> data = loader.load(bucket='my-bucket', key='path/to/file.xls')
     """
 
     # Initialisation
@@ -50,37 +56,49 @@ class S3Loader(_S3Connection):
         return self._connect(**kwargs)
 
     # Méthode de chargement des données
-    def load(self, bucket: str, key: str, **kwargs) -> object:
-        """Load a JSON object from an S3 object.
+    def load(self, bucket: str, key: str, **kwargs) -> pd.DataFrame:
+        """Load an xls or parquet object from an S3 object.
 
         Args:
             bucket (str): The name of the S3 bucket.
-            key (str): The S3 object key. Must end in ``.json``.
-            **kwargs: Additional arguments forwarded to ``json.load``.
+            key (str): The S3 object key. Must end in ``.xls`` or ``.parquet``.
+            **kwargs: Additional arguments forwarded to ``pd.read_excel``
+                (``.xls``) or ``pd.read_parquet`` (``.parquet``).
 
         Returns:
-            object: The deserialised JSON object.
+            pd.DataFrame: The DataFrame containing the data of the file.
 
         Raises:
-            ValueError: If the key does not end in ``.json``.
+            ValueError: If the key extension is neither ``.xls`` nor ``.parquet``.
 
         Examples:
-            >>> data = loader.load(bucket='my-bucket', key='data/config.json')
+            >>> data = loader.load(bucket='my-bucket', key='data/my-data.xls')
+            >>> data = loader.load(bucket='my-bucket', key='data/my-table.parquet')
         """
         # Extraction de l'extension
         extension = key.rsplit(".", 1)[-1].lower()
         # Vérification que l'extension est supportée
-        if extension != "json":
+        if extension not in _SUPPORTED_EXTENSIONS:
             raise ValueError(
-                f"Unsupported extension '.{extension}': only '.json' files are supported."
+                f"Unsupported extension '.{extension}': only "
+                f"{_SUPPORTED_EXTENSIONS} files are supported."
             )
         # Etablissement d'une connexion si nécessaire
         if not hasattr(self, "s3"):
             self.connect()
-        # Chargement du fichier JSON
-        if self.s3_package == "boto3":
-            s3_file = self.s3.get_object(Bucket=bucket, Key=key)["Body"]
-            return json.load(s3_file, **kwargs)
-        elif self.s3_package == "s3fs":
-            with self.s3.open(f"{bucket}/{key}", "r") as s3_file:
-                return json.load(s3_file, **kwargs)
+        # Chargement du fichier xls
+        if extension == "xls":
+            if self.s3_package == "boto3":
+                s3_file = self.s3.get_object(Bucket=bucket, Key=key)["Body"]
+                return pd.read_excel(s3_file.read(), engine="xlrd", **kwargs)
+            elif self.s3_package == "s3fs":
+                with self.s3.open(f"{bucket}/{key}", "r") as s3_file:
+                    return pd.read_excel(s3_file, engine="xlrd", **kwargs)
+        # Chargement du fichier parquet (mode binaire, requis par pyarrow)
+        elif extension == "parquet":
+            if self.s3_package == "boto3":
+                s3_file = self.s3.get_object(Bucket=bucket, Key=key)["Body"]
+                return pd.read_parquet(BytesIO(s3_file.read()), **kwargs)
+            elif self.s3_package == "s3fs":
+                with self.s3.open(f"{bucket}/{key}", "rb") as s3_file:
+                    return pd.read_parquet(s3_file, **kwargs)

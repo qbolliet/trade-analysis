@@ -1,4 +1,4 @@
-"""Tests de caractérisation — ``macroforecast.storage2.tables``.
+"""Tests de caractérisation — ``statflows.storage.ducklake.tables``.
 
 Comportement figé : ``fact_table_exists`` sur un DuckDB en mémoire, et
 ``write_dataframe`` sur un catalogue ``.ducklake`` fichier temp (création au
@@ -10,7 +10,7 @@ from __future__ import annotations
 import pandas as pd
 import pytest
 
-from macroforecast.storage2.tables import FACT_TABLE, fact_table_exists, write_dataframe
+from statflows.storage.ducklake.tables import FACT_TABLE, fact_table_exists, write_dataframe
 
 
 # ──────────────────────────────────────────────────────────────────────

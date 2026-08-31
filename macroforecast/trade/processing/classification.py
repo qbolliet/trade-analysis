@@ -38,8 +38,8 @@ import pandas as pd
 # Modules du package
 from ...tracking import flatten_metrics
 from .aggregation import aggregate_measures
-from ...datasets.sources.unsd.formats import vintage_year
-from ...datasets.sources.unsd.parsing import PARAMETERS, normalise_codes
+from statflows.sources.unsd.formats import vintage_year
+from statflows.sources.unsd.parsing import PARAMETERS, normalise_codes
 
 # Initialisation du logger
 logger = logging.getLogger(__name__)

@@ -1,7 +1,7 @@
 """Capture et comparaison de l'API publique des packages de données.
 
-Ce script parcourt récursivement les packages ``macroforecast.datasets``,
-``macroforecast.storage`` et ``macroforecast.storage2``. Pour chaque module
+Ce script parcourt récursivement le package ``macroforecast.storage`` (chargeurs
+tabulaires conservés localement ; le reste est fourni par ``statflows``). Pour chaque module
 exposant un ``__all__``, il sérialise dans un JSON, pour chaque symbole réexporté :
 le nom qualifié, le type (``class`` / ``function`` / ``constant`` / ``property``),
 la signature ``inspect.signature`` pour les callables, ainsi que les méthodes
@@ -33,9 +33,7 @@ from typing import Any, Dict, List, Tuple
 
 # Packages dont l'API publique est suivie
 TRACKED_PACKAGES: Tuple[str, ...] = (
-    "macroforecast.datasets",
     "macroforecast.storage",
-    "macroforecast.storage2",
 )
 
 # Type alias pour la structure de snapshot : {module: {symbole: description}}

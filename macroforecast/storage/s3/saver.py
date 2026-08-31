@@ -1,14 +1,17 @@
 # Importation des modules
-from json import dumps
+from io import BytesIO
 from typing import Optional
 
-# Importation du module de connection
-from ._connection import _S3Connection
+# Module de manipulation de données
+import pandas as pd
+
+# Importation du module de connexion partagé (fourni par statflows)
+from statflows.storage import S3Connection
 
 
-# Classe de sauvegarde de données JSON sur un Bucket S3
-class S3Saver(_S3Connection):
-    """Save JSON data to Amazon S3 buckets.
+# Classe de sauvegarde de données parquet sur un Bucket S3
+class S3Saver(S3Connection):
+    """Save Parquet data to Amazon S3 buckets.
 
     Args:
         s3_package (str, optional): Package to use for S3 connections
@@ -19,13 +22,13 @@ class S3Saver(_S3Connection):
         s3_package (str): The package being used for S3 connectivity.
 
     Examples:
-        Save a dict to S3 using boto3:
+        Save a DataFrame to S3 using boto3:
         >>> saver = S3Saver()
         >>> saver.connect(
         ...     aws_access_key_id='YOUR_KEY',
         ...     aws_secret_access_key='YOUR_SECRET'
         ... )
-        >>> saver.save(bucket='my-bucket', key='path/to/file.json', obj={'a': 1})
+        >>> saver.save(bucket='my-bucket', key='path/to/file.parquet', obj=df)
     """
 
     # Initialisation
@@ -51,43 +54,43 @@ class S3Saver(_S3Connection):
 
     # Méthode de sauvegarde
     def save(
-        self, bucket: str, key: str, obj: Optional[object] = None, **kwargs
+        self, bucket: str, key: str, obj: Optional[pd.DataFrame] = None, **kwargs
     ) -> None:
-        """Save a JSON-serialisable object to an S3 object.
+        """Save a DataFrame to an S3 object in Parquet format.
 
         Args:
             bucket (str): The name of the S3 bucket.
-            key (str): The S3 object key. Must end in ``.json``.
-            obj: Any JSON-serialisable object to save.
-            **kwargs: Additional arguments forwarded to ``json.dumps``
-                (e.g. ``indent``, ``ensure_ascii``).
+            key (str): The S3 object key. Must end in ``.parquet``.
+            obj: DataFrame to save.
+            **kwargs: Additional arguments forwarded to
+                ``pandas.DataFrame.to_parquet``.
 
         Raises:
-            ValueError: If the key does not end in ``.json``.
-            TypeError: If ``obj`` is not JSON-serialisable.
+            ValueError: If the key does not end in ``.parquet``.
 
         Examples:
             >>> saver.save(
             ...     bucket='my-bucket',
-            ...     key='data/registry.json',
-            ...     obj={'key': 'value'},
-            ...     indent=2,
+            ...     key='data/table.parquet',
+            ...     obj=df,
             ... )
         """
         # Extraction de l'extension
         extension = key.rsplit(".", 1)[-1].lower()
-        # Vérification que l'extion est supportée
-        if extension != "json":
+        # Vérification que l'extension est supportée
+        if extension != "parquet":
             raise ValueError(
-                f"Unsupported extension '.{extension}': only '.json' files are supported."
+                f"Unsupported extension '.{extension}': only '.parquet' files are supported."
             )
         # Etablissement d'une connexion si nécessaire
         if not hasattr(self, "s3"):
             self.connect()
-        # Sérialisation et upload
-        body = dumps(obj, **kwargs)
+        # Sérialisation en mémoire puis upload
+        buffer = BytesIO()
+        obj.to_parquet(buffer, **kwargs)
+        body = buffer.getvalue()
         if self.s3_package == "boto3":
             self.s3.put_object(Bucket=bucket, Key=key, Body=body)
         elif self.s3_package == "s3fs":
-            with self.s3.open(f"{bucket}/{key}", "w") as s3_file:
+            with self.s3.open(f"{bucket}/{key}", "wb") as s3_file:
                 s3_file.write(body)

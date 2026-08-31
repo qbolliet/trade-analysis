@@ -287,7 +287,7 @@ def build_gravity_data(
 
     Args:
         df_dist: Raw ``dist_cepii`` table, already loaded (e.g. via
-            :class:`macroforecast.storage2.Loader`).
+            :class:`macroforecast.storage.Loader`).
         df_geo: Raw ``geo_cepii`` table, already loaded.
         dist_iso_o_col: Distance-table column with the origin ISO-3 code.
         dist_iso_d_col: Distance-table column with the destination ISO-3 code.

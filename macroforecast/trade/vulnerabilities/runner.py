@@ -9,8 +9,8 @@ scores to a result schema: one column per metric, plus one boolean
 Source and result are reached through DuckDB connections opened by the caller.
 The result schema is built on
 first encounter and upserted afterwards, through the shared
-:mod:`macroforecast.storage2.tables` helpers also used by
-:mod:`macroforecast.datasets.core.download`.
+:mod:`statflows.storage.ducklake.tables` helpers also used by
+:mod:`statflows.core.download`.
 
 The same three-layer structure (compute / read previous / orchestrate) is
 repeated for the **network** family, which scores the world trade graph of a
@@ -34,8 +34,12 @@ import pandas as pd
 # l'appelant), donc importé au seul typage pour ne pas imposer l'extra `ducklake`
 if TYPE_CHECKING:
     import duckdb
-# Modules de gestion des tables DuckLake
-from ...storage2.tables import FACT_TABLE, fact_table_exists, write_dataframe
+# Modules de gestion des tables DuckLake (fournis par statflows)
+from statflows.storage.ducklake.tables import (
+    FACT_TABLE,
+    fact_table_exists,
+    write_dataframe,
+)
 # Modules du package
 from ...tracking import NULL_TRACKER, RunTracker, run_params
 from .base import (
@@ -392,7 +396,7 @@ def run_vulnerabilities(
     ``config.key_columns``) into the result
     schema. Initialisation and incremental update are the same call: the result
     schema is built on first encounter and upserted by primary key afterwards
-    (see :func:`macroforecast.storage2.write_dataframe`).
+    (see :func:`statflows.storage.ducklake.tables.write_dataframe`).
 
     Connections are passed in and are **never opened or closed here**: their
     lifecycle belongs to the caller. Nothing assumes a particular catalog

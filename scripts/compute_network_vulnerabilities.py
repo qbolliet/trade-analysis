@@ -46,11 +46,11 @@ from typing import Any, Dict, List, Mapping, Optional, Tuple
 import yaml
 
 # Modules de chargement/sauvegarde JSON (local ou S3), même brique que le téléchargement
-from macroforecast.storage import Loader, Saver
+from statflows.storage.json import Loader, Saver
 # Module de connexion à la base de données
 from dt_ducklake_manager import DuckLakeConnector
 # Module d'utilitaires de téléchargement
-from macroforecast.datasets.core.download import _now, _parse_iso, _schema_name
+from statflows.core.download import _now, _parse_iso, _schema_name
 
 # Module de suivi d'exécution (MLflow optionnel, objet nul par défaut)
 from macroforecast.tracking import get_tracker

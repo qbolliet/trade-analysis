@@ -53,10 +53,10 @@ def test_import_macroforecast_without_ducklake_manager(
     assert hasattr(module, "run_baci")
 
     # Loader / Saver tabulaires accessibles, helpers DuckLake sans écriture aussi
-    storage2 = importlib.import_module("macroforecast.storage2")
-    assert storage2.__all__ == ["Loader", "Saver"]
+    storage = importlib.import_module("macroforecast.storage")
+    assert storage.__all__ == ["Loader", "Saver"]
 
-    tables = importlib.import_module("macroforecast.storage2.tables")
+    tables = importlib.import_module("statflows.storage.ducklake.tables")
     assert tables.FACT_TABLE == "fact_table"
     assert callable(tables.fact_table_exists)
 
@@ -70,11 +70,11 @@ def test_write_dataframe_raises_explicit_import_error(
     ducklake_manager_absent: None,
 ) -> None:
     """``write_dataframe`` lève une ``ImportError`` nommant l'extra à installer."""
-    from macroforecast.storage2.tables import write_dataframe
+    from statflows.storage.ducklake.tables import write_dataframe
 
     # L'importation est en tête de corps : l'échec précède tout usage de la
     # connexion, `conn` et `data` peuvent donc valoir None.
-    with pytest.raises(ImportError, match=r"macroforecast\[ducklake\]") as excinfo:
+    with pytest.raises(ImportError, match=r"statflows\[ducklake\]") as excinfo:
         write_dataframe(None, None, ["id"], catalog_alias="db", schema="s1")
 
     assert "dt-ducklake-manager" in str(excinfo.value)

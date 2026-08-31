@@ -35,12 +35,12 @@ import pandas as pd
 
 # Module de gestion de la connexion à la base de données
 from dt_ducklake_manager import DuckLakeConnector
-# Modules de chargement de données et helpers DuckLake partagés
-from macroforecast.storage2 import Loader
+# Modules de chargement de données tabulaires et helpers DuckLake partagés
+from macroforecast.storage import Loader
 # Module de tenue du registre JSON des dates de traitement (local ou S3)
-from macroforecast.storage import Loader as JsonLoader, Saver as JsonSaver
-from macroforecast.storage2.tables import FACT_TABLE as _FACT_TABLE, write_dataframe
-from macroforecast.datasets.core.download import _schema_name
+from statflows.storage.json import Loader as JsonLoader, Saver as JsonSaver
+from statflows.storage.ducklake.tables import FACT_TABLE as _FACT_TABLE, write_dataframe
+from statflows.core.download import _schema_name
 
 # Module d'implémentation du traitement BACI
 from macroforecast.trade.processing import required_columns, run_baci

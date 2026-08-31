@@ -58,14 +58,14 @@ import pandas as pd
 # Module de gestion de la connexion à la base de données
 from dt_ducklake_manager import DuckLakeConnector
 # Modules de chargement/sauvegarde de données (xls/parquet, puis json)
-from macroforecast.storage2 import Loader as TableLoader, Saver as TableSaver
+from macroforecast.storage import Loader as TableLoader, Saver as TableSaver
 # Helpers DuckLake partagés (création puis upsert de la table de faits)
-from macroforecast.storage2.tables import FACT_TABLE as _FACT_TABLE, write_dataframe
-from macroforecast.storage import Loader as JsonLoader, Saver as JsonSaver
-from macroforecast.datasets.core.download import _schema_name
+from statflows.storage.ducklake.tables import FACT_TABLE as _FACT_TABLE, write_dataframe
+from statflows.storage.json import Loader as JsonLoader, Saver as JsonSaver
+from statflows.core.download import _schema_name
 
 # Module client des tables de correspondance de nomenclatures UNSD
-from macroforecast.datasets import UNSDClient
+from statflows import UNSDClient
 
 # Module d'implémentation du traitement BACI
 from macroforecast.trade.processing import required_columns, run_baci

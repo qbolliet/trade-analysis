@@ -1,4 +1,4 @@
-"""Tests de caractérisation — ``macroforecast.storage`` (``Loader`` / ``Saver`` JSON).
+"""Tests de caractérisation — ``statflows.storage.json`` (``Loader`` / ``Saver`` JSON).
 
 Comportement figé : extension non ``.json`` → ``ValueError``, allers-retours local
 et S3 (moto), lecture tolérante (``missing_ok``), écriture atomique locale
@@ -13,7 +13,7 @@ from pathlib import Path
 import pytest
 from botocore.exceptions import ClientError
 
-from macroforecast.storage import Loader, Saver
+from statflows.storage.json import Loader, Saver
 
 _BAD_EXT_MSG = "Unsupported extension '.txt': only '.json' files are supported."
 

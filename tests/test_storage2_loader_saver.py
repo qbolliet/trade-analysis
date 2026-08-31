@@ -1,4 +1,4 @@
-"""Tests de caractérisation — ``macroforecast.storage2`` (``Loader`` / ``Saver`` tabulaire).
+"""Tests de caractérisation — ``macroforecast.storage`` (``Loader`` / ``Saver`` tabulaire).
 
 Comportement figé : extension non supportée → ``ValueError``, lecture d'un ``.xls``
 et d'un ``.parquet`` (local et S3 via moto), écriture d'un ``.parquet``.
@@ -12,7 +12,7 @@ import pandas as pd
 import pytest
 from pandas.testing import assert_frame_equal
 
-from macroforecast.storage2 import Loader, Saver
+from macroforecast.storage import Loader, Saver
 
 _LOADER_BAD_EXT = "Unsupported extension '.csv': only ('xls', 'parquet') files are supported."
 _SAVER_BAD_EXT = "Unsupported extension '.csv': only '.parquet' files are supported."

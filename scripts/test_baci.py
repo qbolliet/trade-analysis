@@ -32,9 +32,9 @@ import duckdb
 import pandas as pd
 
 # Modules de chargement de données et helpers DuckLake partagés
-from macroforecast.storage2 import Loader
-from macroforecast.storage2.tables import FACT_TABLE as _FACT_TABLE
-from macroforecast.datasets.core.download import _schema_name
+from macroforecast.storage import Loader
+from statflows.storage.ducklake.tables import FACT_TABLE as _FACT_TABLE
+from statflows.core.download import _schema_name
 
 # Module d'implémentation du traitement BACI
 from macroforecast.trade.processing import required_columns, run_baci

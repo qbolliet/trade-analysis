@@ -19,18 +19,18 @@ import yaml
 import pandas as pd
 
 # Importation des modules du package
-from macroforecast.datasets import (
+from statflows import (
     EurostatClient,
     StructureResourceType,
     DataflowStructure,
     EurostatQueryRequestV30
 )
-from macroforecast.datasets.sources.eurostat.parsing import parse_codelist_response
-from macroforecast.datasets.utils import (
+from statflows.sources.eurostat.parsing import parse_codelist_response
+from statflows.core.factory import (
     filter_codes,
 )
-from macroforecast.datasets.core.download import download_updates, _schema_name
-from macroforecast.datasets.core.reports import QueryReport
+from statflows.core.download import download_updates, _schema_name
+from statflows.core.reports import QueryReport
 
 # Module de suivi d'exécution
 from macroforecast.tracking import get_tracker
@@ -144,7 +144,7 @@ def build_split_queries(
             flow=1, indicators=QUANTITY_IN_100KG), read from the YAML
             ``fixed_dims`` section.
         split_filters: Per split-dimension include/exclude filters (forwarded
-            to :func:`~macroforecast.datasets.utils.filter_codes`), read from
+            to :func:`~statflows.core.factory.filter_codes`), read from
             the YAML ``split_filters`` section. Must share the same keys as
             ``dims_codes``.
 
@@ -247,8 +247,8 @@ def main() -> None:
         log_artifacts = bool(mlflow_config.get("LOG_ARTIFACTS", True))
 
         with tracker:
-            # Suivi requête par requête : le paquet datasets ignore tout de
-            # MLflow, le rappel est le seul point de contact
+            # Suivi requête par requête : statflows ignore tout de MLflow,
+            # le rappel est le seul point de contact
             def stream_query_metrics(query_report: QueryReport) -> None:
                 """Send one query's diagnostics to the tracker."""
                 tracker.log_metrics(

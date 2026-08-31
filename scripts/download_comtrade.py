@@ -22,9 +22,9 @@ import yaml
 import pandas as pd
 
 # Importation des modules du package
-from macroforecast.datasets import ComtradeClient, ComtradeQueryRequest
-from macroforecast.datasets.utils import filter_codes
-from macroforecast.datasets.core.download import download_updates, _schema_name
+from statflows import ComtradeClient, ComtradeQueryRequest
+from statflows.core.factory import filter_codes
+from statflows.core.download import download_updates, _schema_name
 
 # Module de connexion à la base de données
 from dt_ducklake_manager import DuckLakeConnector

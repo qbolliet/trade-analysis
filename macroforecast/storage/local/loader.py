@@ -1,35 +1,42 @@
 # Importation des modules
-import json
 from pathlib import Path
-from typing import Any
+import pandas as pd
+
+# Extensions supportées par le chargeur local
+_SUPPORTED_EXTENSIONS = ("xls", "parquet")
 
 
-# Fonction de chargement des données depuis un fichier JSON en local
-def load_local(filepath: str, **kwargs) -> Any:
-    """Load a JSON file from local storage.
+# Fonction de chargement des données depuis un fichier xls ou parquet en local
+def load_local(filepath: str, **kwargs) -> pd.DataFrame:
+    """Load an xls or parquet file from local storage.
 
     Args:
-        filepath (str): Path to the local JSON file.
-        **kwargs: Additional arguments forwarded to ``json.load``.
+        filepath (str): Path to the local file (``.xls`` or ``.parquet``).
+        **kwargs: Additional arguments forwarded to ``pd.read_excel`` (``.xls``)
+            or ``pd.read_parquet`` (``.parquet``).
 
     Returns:
-        Any: The deserialised JSON object (dict, list, etc.).
+        pd.DataFrame: The DataFrame containing the data of the file.
 
     Raises:
-        ValueError: If the file extension is not ``.json``.
+        ValueError: If the file extension is neither ``.xls`` nor ``.parquet``.
         FileNotFoundError: If the file does not exist.
-        json.JSONDecodeError: If the file is not valid JSON.
 
     Examples:
-        >>> data = load_local('config.json')
-        >>> data = load_local('records.json')
+        >>> data = load_local('dist_cepii.xls')
+        >>> data = load_local('geo_cepii.xls')
+        >>> data = load_local('HS2022-HS2017.parquet')
     """
     # Vérification de l'extension
     extension = Path(filepath).suffix.lower()[1:]
-    if extension != "json":
-        raise ValueError(
-            f"Unsupported extension '.{extension}': only '.json' files are supported."
-        )
-    # Lecture du fichier JSON
-    with open(filepath, "r", encoding="utf-8") as f:
-        return json.load(f, **kwargs)
+    # Lecture du fichier xls (mode binaire, requis par le moteur xlrd)
+    if extension == "xls":
+        with open(filepath, "rb") as f:
+            return pd.read_excel(f, engine="xlrd", **kwargs)
+    # Lecture du fichier parquet
+    if extension == "parquet":
+        return pd.read_parquet(filepath, **kwargs)
+    raise ValueError(
+        f"Unsupported extension '.{extension}': only {_SUPPORTED_EXTENSIONS} "
+        f"files are supported."
+    )
