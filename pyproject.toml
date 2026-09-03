@@ -15,6 +15,7 @@ dependencies = [
     "pyarrow>=24.0.0",
     "pyyaml>=6.0.3",
     "s3fs>=0.4.2",
+    "scikit-learn>=1.5",
     "scipy>=1.18.0",
     "statsmodels>=0.14.6",
     "xlrd>=2.0.2",
@@ -23,6 +24,13 @@ dependencies = [
 [project.optional-dependencies]
 tracking = [
     "mlflow>=2.16",
+]
+# Score de Kantorovitch orienté (macroforecast.trade.aggregation.optimal_transport) :
+# dépendance lourde, non requise pour le reste du package (import paresseux,
+# ImportError explicite en son absence).
+optimal-transport = [
+    "jax>=0.4.30",
+    "ott-jax>=0.4.6",
 ]
 
 [project.scripts]
