@@ -123,6 +123,16 @@ from .synthesis import (
     run_synthesis,
     score_columns,
 )
+# Cohérence des métriques et des synthèses (contexte x niveau x groupe)
+from .coherence import (
+    COHERENCE_FAMILIES,
+    CoherenceConfig,
+    CoherenceLevelReport,
+    CoherenceRunReport,
+    log_coherence_artifacts,
+    pareto_front_share_expected,
+    run_coherence,
+)
 # Orchestration
 from .runner import (
     AggregationReport,
@@ -237,6 +247,14 @@ __all__ = [
     "log_synthesis_artifacts",
     "run_synthesis",
     "score_columns",
+    # Cohérence
+    "COHERENCE_FAMILIES",
+    "CoherenceConfig",
+    "CoherenceLevelReport",
+    "CoherenceRunReport",
+    "log_coherence_artifacts",
+    "pareto_front_share_expected",
+    "run_coherence",
     # Orchestration
     "AggregationReport",
     "default_pipeline",
