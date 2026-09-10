@@ -112,12 +112,26 @@ class Winsorizer(BaseEstimator, TransformerMixin):
     per-coordinate transform leaves the Pareto-dominance relation invariant
     (see :mod:`~macroforecast.trade.aggregation.pareto`).
 
+    Above the cap, however, it destroys exactly the discrimination the
+    exercise is after: capping at 0.99 then min-max scaling sends the top 1%
+    of every metric to the value 1, i.e. 50 products tied at the maximum out
+    of 5 000, and the ranking of the most vulnerable becomes undecidable
+    metric by metric (M-08). Hence the ``None`` default, which makes the
+    transformer the identity. Where the scale statistics really do need
+    protecting, state the trade-off explicitly and prefer, for the methods
+    sensitive to extremes, the rank or Gaussian-quantile normalisations
+    (:class:`RankScaler`, :class:`GaussianQuantileScaler`), which need no
+    winsorisation at all.
+
     Args:
         quantile: Upper quantile at which values are capped (0.99 in the
-            note, typical for HHI-like concentration indices).
+            note, typical for HHI-like concentration indices). ``None``
+            disables the capping altogether: ``fit`` stores no bound and
+            ``transform`` returns its input unchanged.
         two_sided: When ``True``, also floors values at ``1 - quantile``.
             ``False`` by default: concentration indices are right-skewed and
-            the extremes being sought are precisely the upper tail.
+            the extremes being sought are precisely the upper tail. Ignored
+            when ``quantile`` is ``None``.
 
     Examples:
         >>> import numpy as np
@@ -127,10 +141,17 @@ class Winsorizer(BaseEstimator, TransformerMixin):
                [ 2.  ],
                [ 3.  ],
                [27.25]])
+        >>> Winsorizer().fit_transform(X)
+        array([[  1.],
+               [  2.],
+               [  3.],
+               [100.]])
     """
 
     # Initialisation
-    def __init__(self, quantile: float = 0.99, two_sided: bool = False) -> None:
+    def __init__(
+        self, quantile: Optional[float] = None, two_sided: bool = False
+    ) -> None:
         self.quantile = quantile
         self.two_sided = two_sided
 
@@ -144,10 +165,15 @@ class Winsorizer(BaseEstimator, TransformerMixin):
 
         Returns:
             ``self``, with ``upper_`` (and ``lower_`` when ``two_sided``)
-            fitted.
+            fitted — both ``None`` when ``quantile`` is ``None``.
         """
         X = check_array(X)
         self.n_features_in_ = X.shape[1]
+        # Winsorisation désactivée : aucune borne, transformation identité (D-12)
+        if self.quantile is None:
+            self.upper_ = None
+            self.lower_ = None
+            return self
         self.upper_ = np.quantile(X, self.quantile, axis=0)
         if self.two_sided:
             self.lower_ = np.quantile(X, 1.0 - self.quantile, axis=0)
@@ -161,10 +187,13 @@ class Winsorizer(BaseEstimator, TransformerMixin):
             X: Metric matrix of shape ``(n, d)``.
 
         Returns:
-            Winsorised matrix, same shape.
+            Winsorised matrix, same shape; the input itself when ``quantile``
+            is ``None``.
         """
-        check_is_fitted(self, "upper_")
+        check_is_fitted(self, "n_features_in_")
         X = check_array(X)
+        if self.quantile is None:
+            return X
         out = np.minimum(X, self.upper_)
         if self.two_sided:
             out = np.maximum(out, self.lower_)

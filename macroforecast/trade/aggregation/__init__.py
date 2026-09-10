@@ -75,12 +75,14 @@ from .estimators import (
 from .diagnostics import (
     CoherenceReport,
     SmaaResult,
+    ViolationRates,
     bootstrap_rank_stability,
     borda_rank,
     cluster_methods,
     compute_coherence_report,
     copeland_rank,
     dominance_violation_rate,
+    front_rank_summary,
     kemeny_rank,
     kendall_tau_b_matrix,
     kendall_w,
@@ -88,6 +90,7 @@ from .diagnostics import (
     rank_biased_overlap,
     smaa_rank_acceptability,
     topk_overlap,
+    weighted_tau_matrix,
 )
 # Transport optimal (dépendance optionnelle jax/ott-jax, import paresseux)
 from .optimal_transport import (
@@ -169,12 +172,14 @@ __all__ = [
     # Diagnostics / comparaison / consensus
     "CoherenceReport",
     "SmaaResult",
+    "ViolationRates",
     "bootstrap_rank_stability",
     "borda_rank",
     "cluster_methods",
     "compute_coherence_report",
     "copeland_rank",
     "dominance_violation_rate",
+    "front_rank_summary",
     "kemeny_rank",
     "kendall_tau_b_matrix",
     "kendall_w",
@@ -182,6 +187,7 @@ __all__ = [
     "rank_biased_overlap",
     "smaa_rank_acceptability",
     "topk_overlap",
+    "weighted_tau_matrix",
     # Transport optimal
     "OrientedKantorovichReport",
     "OrientedKantorovichScorer",

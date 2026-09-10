@@ -1,8 +1,8 @@
 """Tests du prétraitement (``macroforecast.trade.aggregation.preprocessing``).
 
 Polarité, winsorisation, normalisations (rang, médiane/MAD) et diagnostics de
-corrélation (KMO, Bartlett). Un ``xfail`` documente I-11 (``Winsorizer`` ne
-supporte pas ``quantile=None`` alors que ce doit devenir le défaut).
+corrélation (KMO, Bartlett). I-11 est corrigé : ``Winsorizer(quantile=None)``
+est l'identité, et c'est désormais le défaut (M-08 / D-12).
 """
 
 from __future__ import annotations
@@ -92,11 +92,19 @@ def test_winsorizer_preserves_order_below_the_cap() -> None:
     assert np.all(diffs > 0)
 
 
-@pytest.mark.xfail(strict=True, reason="I-11 : quantile=None doit agir comme l'identité (défaut cible)")
 def test_winsorizer_none_quantile_is_identity(X_uniform: np.ndarray) -> None:
-    """I-11 : ``Winsorizer(quantile=None)`` doit devenir une identité."""
+    """I-11 : ``Winsorizer(quantile=None)`` est une identité, et le défaut."""
     out = Winsorizer(quantile=None).fit_transform(X_uniform)
     np.testing.assert_array_equal(out, X_uniform)
+    np.testing.assert_array_equal(Winsorizer().fit_transform(X_uniform), X_uniform)
+
+
+def test_winsorizer_none_quantile_transforms_new_data_unchanged() -> None:
+    """Identité aussi hors échantillon : aucune borne n'est mémorisée."""
+    winsorizer = Winsorizer().fit(np.array([[1.0], [2.0], [3.0]]))
+    new_data = np.array([[100.0], [-50.0]])
+    np.testing.assert_array_equal(winsorizer.transform(new_data), new_data)
+    assert winsorizer.upper_ is None
 
 
 # ──────────────────────────────────────────────────────────────────────

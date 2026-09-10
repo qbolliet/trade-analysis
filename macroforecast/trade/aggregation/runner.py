@@ -112,8 +112,8 @@ def default_pipeline(
     config: AggregationConfig,
     *,
     normalization: str = "minmax",
-    winsorize_quantile: float = 0.99,
-    weighting: str = "entropy",
+    winsorize_quantile: Optional[float] = None,
+    weighting: str = "auto",
     aggregation: str = "weighted_sum",
     weighting_params: Optional[Dict[str, Any]] = None,
     aggregation_params: Optional[Dict[str, Any]] = None,
@@ -124,6 +124,11 @@ def default_pipeline(
     string or a number a caller can source from a YAML file, following the
     project's convention of leaving methodological choices to configuration
     rather than to hardcoded code paths.
+
+    The default weighting is the meta-selection ``"auto"``
+    (:func:`~macroforecast.trade.aggregation.weights.auto_weights`), which
+    picks the scheme fitting the group's own diagnostics rather than
+    imposing one on every group.
 
     ``"minmax"`` is the default rather than ``"robust"`` (median/MAD, which
     can be negative) because it is the one scheme every default weighting and
@@ -140,6 +145,10 @@ def default_pipeline(
             :func:`~macroforecast.trade.aggregation.preprocessing.make_normalizer`.
         winsorize_quantile: Upper quantile capped by
             :class:`~macroforecast.trade.aggregation.preprocessing.Winsorizer`.
+            ``None`` (the default) disables the capping: winsorising before a
+            min-max scaling ties the top 1% of every metric at the value 1,
+            i.e. 50 products out of 5 000 tied at the maximum, precisely
+            where the ranking matters most (M-08, D-12).
         weighting: Name forwarded to
             :class:`~macroforecast.trade.aggregation.estimators.WeightedAggregator`.
         aggregation: Name forwarded to
@@ -185,7 +194,8 @@ def run_aggregation(
     config: AggregationConfig,
     methods: Mapping[str, Any],
     *,
-    dispute_threshold: int = 50,
+    dispute_fraction: float = 0.01,
+    random_state: Optional[int] = None,
 ) -> Tuple[pd.DataFrame, AggregationReport]:
     """Apply every named method to the same metric matrix and compare them.
 
@@ -197,8 +207,12 @@ def run_aggregation(
             ``fit(X).predict(X)`` — typically built with
             :func:`default_pipeline`, or any ``sklearn.pipeline.Pipeline`` /
             :class:`~macroforecast.trade.aggregation.estimators.WeightedAggregator`.
-        dispute_threshold: Rank-spread above which a product is flagged as
-            disputed in the coherence report.
+        dispute_fraction: Fraction of the group size above which a rank
+            spread flags a product as disputed in the coherence report
+            (M-10); the effective threshold is
+            ``max(1, round(dispute_fraction * n))``.
+        random_state: Seed of the pair sampler used by the
+            dominance-violation rates on large groups.
 
     Returns:
         Tuple ``(df_scores, report)``: a wide table (one column per method,
@@ -231,14 +245,20 @@ def run_aggregation(
         scores[name] = attach_scores(values, index, name)
     df_scores = pd.concat(scores.values(), axis=1)
 
+    # Front calculé une seule fois : partagé par le rapport et le contrôle de rang
+    front_mask = pareto_front(X_oriented)
     coherence = compute_coherence_report(
-        scores, X_oriented, dispute_threshold=dispute_threshold
+        scores,
+        X_oriented,
+        dispute_fraction=dispute_fraction,
+        front_mask=front_mask,
+        random_state=random_state,
     )
     report = AggregationReport(
         n_products=len(index),
         methods=list(methods),
         coherence=coherence,
-        pareto_front_size=int(pareto_front(X_oriented).sum()),
+        pareto_front_size=int(front_mask.sum()),
     )
     return df_scores, report
 
@@ -253,11 +273,13 @@ def recommended_workflow(
     config: AggregationConfig,
     *,
     normalization: str = "minmax",
-    winsorize_quantile: float = 0.99,
+    winsorize_quantile: Optional[float] = None,
+    weighting: str = "auto",
     smaa_n_draws: int = 10_000,
     smaa_k: int = 50,
-    bootstrap_n: int = 200,
-    dispute_threshold: int = 50,
+    smaa_batch_size: int = 256,
+    bootstrap_n: int = 50,
+    dispute_fraction: float = 0.01,
     consider_optimal_transport: bool = True,
     ot_dimension_limit: int = 6,
     ot_min_group_size: int = 500,
@@ -266,11 +288,12 @@ def recommended_workflow(
     """Run the note's priority-ordered workflow (§7): decreasing marginal value.
 
     1. Pareto front and dominance count — zero cost, zero assumption.
-    2. SMAA on a weighted sum with entropy weights — answers the impossibility
-       of ranking criteria with probabilised statements rather than a single
-       fragile ranking.
-    3. Two or three contrasted scores (CRITIC-weighted sum, geometric mean,
-       TOPSIS) plus the coherence dashboard.
+    2. SMAA on a weighted sum over the whole weight simplex — answers the
+       impossibility of ranking criteria with probabilised statements rather
+       than a single fragile ranking.
+    3. Two or three scores contrasted by their aggregation function
+       (weighted sum, geometric mean, TOPSIS) over a shared pivot weighting,
+       plus the coherence dashboard.
     4. Bootstrap of rank stability.
     5. The oriented Kantorovitch score, as soon as the group is large enough
        (``n >= ot_min_group_size``) and low-dimensional enough
@@ -283,12 +306,18 @@ def recommended_workflow(
         df_data: Wide metric table.
         config: Column conventions.
         normalization: Scheme forwarded to :func:`default_pipeline`.
-        winsorize_quantile: Quantile forwarded to :func:`default_pipeline`.
+        winsorize_quantile: Quantile forwarded to :func:`default_pipeline`;
+            ``None`` by default (M-08).
+        weighting: Pivot weighting scheme shared by the three contrasted
+            scores of step 3 and by the bootstrap of step 4; ``"auto"`` by
+            default, the meta-selection of S-1.5, so the contrast between the
+            three lies in the aggregation function alone.
         smaa_n_draws: Number of Dirichlet weight draws for step 2.
-        smaa_k: Rank depth of the SMAA confidence factor.
+        smaa_k: Rank depth stored and reported by the SMAA step.
+        smaa_batch_size: Number of SMAA draws scored and ranked at once.
         bootstrap_n: Number of bootstrap draws for step 4.
-        dispute_threshold: Rank-spread above which a product is flagged as
-            disputed.
+        dispute_fraction: Fraction of the group size above which a rank
+            spread flags a product as disputed (M-10).
         consider_optimal_transport: Whether to attempt step 5 at all.
         ot_dimension_limit: Maximum ``d`` for which optimal transport is
             attempted — the map degrades with the dimension (M-17).
@@ -323,7 +352,7 @@ def recommended_workflow(
     front_mask = pareto_front(X_oriented)
     dominance = dominance_count(X_oriented)
 
-    # Etape 2 : SMAA sur une somme pondérée, poids entropiques comme pivot
+    # Etape 2 : SMAA sur une somme pondérée, tout le simplexe des poids exploré
     preprocessing = Pipeline(
         [
             ("orient", PolarityOrienter(polarity_vector(config))),
@@ -337,45 +366,42 @@ def recommended_workflow(
         weighted_sum_score,
         k=smaa_k,
         n_draws=smaa_n_draws,
+        batch_size=smaa_batch_size,
         random_state=random_state,
     )
 
     # Etape 3 : deux à trois scores contrastés, plus le tableau de bord de cohérence
     methods = {
-        "critic_weighted_sum": default_pipeline(
+        name: default_pipeline(
             config,
             normalization=normalization,
             winsorize_quantile=winsorize_quantile,
-            weighting="critic",
-            aggregation="weighted_sum",
-        ),
-        "geometric_mean": default_pipeline(
-            config,
-            normalization=normalization,
-            winsorize_quantile=winsorize_quantile,
-            weighting="critic",
-            aggregation="geometric_mean",
-        ),
-        "topsis": default_pipeline(
-            config,
-            normalization=normalization,
-            winsorize_quantile=winsorize_quantile,
-            weighting="critic",
-            aggregation="topsis",
-        ),
+            weighting=weighting,
+            aggregation=name,
+        )
+        for name in ("weighted_sum", "geometric_mean", "topsis")
     }
     df_scores, report = run_aggregation(
-        df_data, config, methods, dispute_threshold=dispute_threshold
+        df_data,
+        config,
+        methods,
+        dispute_fraction=dispute_fraction,
+        random_state=random_state,
     )
     df_scores.insert(0, "dominance_count", pd.Series(dominance, index=index))
     report.pareto_front_size = int(front_mask.sum())
     report.smaa = smaa
 
-    # Etape 4 : bootstrap de la stabilité des rangs, sur la somme pondérée CRITIC
+    # Etape 4 : bootstrap de la stabilité des rangs, sur la somme pondérée pivot
     report.bootstrap = bootstrap_rank_stability(
         df_data,
         config,
-        lambda cfg: default_pipeline(cfg, normalization=normalization, weighting="critic"),
+        lambda cfg: default_pipeline(
+            cfg,
+            normalization=normalization,
+            winsorize_quantile=winsorize_quantile,
+            weighting=weighting,
+        ),
         n_boot=bootstrap_n,
         random_state=random_state,
     )

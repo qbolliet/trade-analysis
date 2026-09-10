@@ -9,9 +9,9 @@ questions structure the protocol:
 * Q1 — global concordance between rankings (:func:`kendall_tau_b_matrix`,
   :func:`kendall_w`, :func:`cluster_methods`);
 * Q2 — concordance at the top of the ranking (:func:`rank_biased_overlap`,
-  :func:`topk_overlap`);
+  :func:`topk_overlap`, :func:`weighted_tau_matrix`);
 * Q3 — coherence with Pareto dominance, the one hard test
-  (:func:`dominance_violation_rate`);
+  (:func:`dominance_violation_rate`, :func:`front_rank_summary`);
 * Q4 — stability under resampling (:func:`bootstrap_rank_stability`,
   :func:`smaa_rank_acceptability`);
 * Q5 — is the score reducible to a single metric?
@@ -43,7 +43,7 @@ from scipy.optimize import Bounds, LinearConstraint, milp
 from scipy.spatial.distance import squareform
 # Modules du package
 from .base import AggregationConfig, split_frame
-from .pareto import pareto_dominance_matrix
+from .pareto import pareto_dominance_matrix, pareto_front_sweep
 from .weights import dirichlet_weights
 
 
@@ -80,6 +80,53 @@ def kendall_tau_b_matrix(scores_by_method: Mapping[str, np.ndarray]) -> pd.DataF
     for row, col in combinations(range(n_methods), 2):
         tau, _ = stats.kendalltau(
             scores_by_method[names[row]], scores_by_method[names[col]]
+        )
+        matrix[row, col] = matrix[col, row] = tau
+    return pd.DataFrame(matrix, index=names, columns=names)
+
+
+# Fonction de calcul de la matrice des tau de Kendall pondérés entre méthodes
+def weighted_tau_matrix(
+    scores_by_method: Mapping[str, np.ndarray], *, rank: bool = True
+) -> pd.DataFrame:
+    """Compute the pairwise weighted Kendall τ between every pair of methods.
+
+    Vigna's (2015) weighted τ gives a concordant or discordant pair a
+    hyperbolic weight in the ranks of its two elements, so a disagreement
+    among the most vulnerable products weighs far more than one deep in the
+    tail — the same concern as the RBO, but symmetric and free of any depth
+    parameter (A-06). Reported alongside :func:`kendall_tau_b_matrix`, whose
+    uniform weighting answers the different, global question.
+
+    Args:
+        scores_by_method: Mapping of method name to its score vector, every
+            vector of the same length and in the same row order, higher
+            meaning more vulnerable.
+        rank: Forwarded to :func:`scipy.stats.weightedtau`; ``True`` averages
+            the coefficient over the two rankings induced by the two score
+            vectors, which is what makes the result symmetric.
+
+    Returns:
+        Symmetric ``DataFrame`` of shape ``(K, K)``, indexed and columned by
+        method name, diagonal 1.
+
+    Examples:
+        >>> import numpy as np
+        >>> scores = {"a": np.array([3.0, 2.0, 1.0]), "b": np.array([3.0, 1.0, 2.0])}
+        >>> matrix = weighted_tau_matrix(scores)
+        >>> bool(matrix.loc["a", "b"] < 1.0)
+        True
+        >>> float(matrix.loc["a", "a"])
+        1.0
+    """
+    names = list(scores_by_method)
+    n_methods = len(names)
+    matrix = np.eye(n_methods)
+    for row, col in combinations(range(n_methods), 2):
+        tau, _ = stats.weightedtau(
+            np.asarray(scores_by_method[names[row]], dtype=float),
+            np.asarray(scores_by_method[names[col]], dtype=float),
+            rank=rank,
         )
         matrix[row, col] = matrix[col, row] = tau
     return pd.DataFrame(matrix, index=names, columns=names)
@@ -223,38 +270,180 @@ def rank_biased_overlap(
 # Q3 — Cohérence avec la dominance
 # ──────────────────────────────────────────────────────────────────────
 
-# Fonction de calcul du taux de violation de la dominance
-def dominance_violation_rate(X: np.ndarray, scores: np.ndarray) -> float:
-    """Compute the dominance-violation rate ``V(s)`` of a score.
+# Taux de violation de la dominance, inversions strictes et ex æquo distingués
+@dataclass(frozen=True)
+class ViolationRates:
+    """Dominance-violation rates of a score, ties told apart from inversions.
+
+    Counting an equality as an inversion penalises every method producing
+    legitimate ties (benefit of the doubt saturating at 1, discrete scores),
+    which is why the two are reported separately (M-10): only ``strict > 0``
+    invalidates a score on its own, ``tie > 0`` merely measures how much of
+    the dominance order the score leaves undecided.
+
+    Attributes:
+        strict: Share of dominant pairs ``(i, k)`` — ``i`` dominating ``k`` —
+            with ``s_i < s_k``, i.e. genuinely reversed. ``NaN`` when no pair
+            is comparable.
+        tie: Share of dominant pairs with ``s_i == s_k``. ``NaN`` when no
+            pair is comparable.
+        n_pairs: Number of dominant pairs the rates were computed on — the
+            whole relation for an exact computation, the dominant pairs found
+            in the random sample for an estimated one.
+    """
+    strict: float
+    tie: float
+    n_pairs: int
+
+
+# Comptage des violations sur un échantillon aléatoire de paires
+def _sampled_violation_counts(
+    X: np.ndarray,
+    scores: np.ndarray,
+    n_pairs_sample: int,
+    random_state: Optional[int],
+    chunk_size: int = 50_000,
+) -> Tuple[int, int, int]:
+    """Count dominant pairs and their violations on a random sample of pairs.
+
+    Args:
+        X: Metric matrix of shape ``(n, d)``, positive polarity.
+        scores: Score vector of shape ``(n,)``.
+        n_pairs_sample: Number of ordered pairs drawn uniformly with
+            replacement (self-pairs discarded).
+        random_state: Seed of the pair sampler.
+        chunk_size: Number of pairs materialised at once, bounding the memory
+            of the comparison to ``O(chunk_size · d)``.
+
+    Returns:
+        Tuple ``(n_dominant, n_strict, n_tie)`` counted over the sample.
+    """
+    rng = np.random.default_rng(random_state)
+    n = X.shape[0]
+    n_dominant = n_strict = n_tie = 0
+    drawn = 0
+    while drawn < n_pairs_sample:
+        size = min(chunk_size, n_pairs_sample - drawn)
+        drawn += size
+        left = rng.integers(0, n, size=size)
+        right = rng.integers(0, n, size=size)
+        # Elimination des paires dégénérées (un point ne se domine pas lui-même)
+        keep = left != right
+        left, right = left[keep], right[keep]
+        difference = X[left] - X[right]
+        dominant = np.all(difference >= 0, axis=1) & np.any(difference > 0, axis=1)
+        if not dominant.any():
+            continue
+        gap = scores[left[dominant]] - scores[right[dominant]]
+        n_dominant += int(dominant.sum())
+        n_strict += int(np.sum(gap < 0))
+        n_tie += int(np.sum(gap == 0))
+    return n_dominant, n_strict, n_tie
+
+
+# Fonction de calcul des taux de violation de la dominance
+def dominance_violation_rate(
+    X: np.ndarray,
+    scores: np.ndarray,
+    *,
+    large_n_threshold: int = 20_000,
+    n_pairs_sample: int = 1_000_000,
+    random_state: Optional[int] = None,
+) -> ViolationRates:
+    """Compute the dominance-violation rates ``V(s)`` of a score.
 
     The one control resting on no convention, capable of invalidating a
-    method on its own: ``V(s) > 0`` reverses at least one pair on which
-    *every* metric agrees.
+    method on its own: a strict violation reverses a pair on which *every*
+    metric agrees. Equalities are reported apart (:class:`ViolationRates`,
+    M-10).
+
+    The exact computation materialises the ``(n, n)`` dominance matrix, out
+    of reach at the global level (``n ≈ 2·10⁵`` → 40 Gb). Above
+    ``large_n_threshold`` rows the rates are therefore *estimated* on
+    ``n_pairs_sample`` ordered pairs drawn uniformly with replacement: each
+    rate is the ratio of two sample counts, consistent for the corresponding
+    population ratio, and its precision is driven by the number of dominant
+    pairs actually drawn (``ViolationRates.n_pairs``, which the caller should
+    read before trusting a rate — a nearly empty dominance relation yields
+    few of them).
 
     Args:
         X: Metric matrix of shape ``(n, d)``, positive polarity.
         scores: Score vector of shape ``(n,)``, higher meaning more
             vulnerable.
+        large_n_threshold: Number of rows above which the rates are estimated
+            on a random sample of pairs rather than computed exactly.
+        n_pairs_sample: Number of ordered pairs drawn when sampling.
+        random_state: Seed of the pair sampler; ignored below the threshold,
+            where the computation is exact and deterministic.
 
     Returns:
-        Share of Pareto-comparable pairs the score inverts, ``NaN`` when no
-        pair is comparable (an empty dominance relation).
+        The :class:`ViolationRates` of the score; both rates ``NaN`` and
+        ``n_pairs`` zero when no pair is comparable (an empty dominance
+        relation).
 
     Examples:
         >>> import numpy as np
         >>> X = np.array([[2.0, 2.0], [1.0, 1.0]])
         >>> dominance_violation_rate(X, np.array([1.0, 2.0]))
-        1.0
+        ViolationRates(strict=1.0, tie=0.0, n_pairs=1)
         >>> dominance_violation_rate(X, np.array([2.0, 1.0]))
-        0.0
+        ViolationRates(strict=0.0, tie=0.0, n_pairs=1)
+        >>> dominance_violation_rate(X, np.array([1.0, 1.0]))
+        ViolationRates(strict=0.0, tie=1.0, n_pairs=1)
     """
-    dominance = pareto_dominance_matrix(X)
-    n_pairs = dominance.sum()
+    X = np.asarray(X, dtype=float)
+    scores = np.asarray(scores, dtype=float)
+    if X.shape[0] > large_n_threshold:
+        n_pairs, n_strict, n_tie = _sampled_violation_counts(
+            X, scores, n_pairs_sample, random_state
+        )
+    else:
+        dominance = pareto_dominance_matrix(X)
+        n_pairs = int(dominance.sum())
+        n_strict = int(np.sum(dominance & (scores[:, None] < scores[None, :])))
+        n_tie = int(np.sum(dominance & (scores[:, None] == scores[None, :])))
     if n_pairs == 0:
-        return float("nan")
-    scores = np.asarray(scores)
-    violations = np.sum(dominance & (scores[:, None] <= scores[None, :]))
-    return float(violations / n_pairs)
+        return ViolationRates(float("nan"), float("nan"), 0)
+    return ViolationRates(n_strict / n_pairs, n_tie / n_pairs, n_pairs)
+
+
+# Fonction de résumé du rang des membres du front de Pareto
+def front_rank_summary(
+    front_mask: np.ndarray, scores: np.ndarray
+) -> Tuple[float, float]:
+    """Summarise where a score places the members of the Pareto front.
+
+    The control associated with the dominance check (§7.3 of the note): a
+    non-dominated product deserves a high rank, and a front member ranked
+    3 000th signals a score whose weighting has neutralised the very metric
+    on which that product stands out. Reported rather than enforced — a
+    large front (many metrics, few products) mechanically pushes its median
+    rank down.
+
+    Args:
+        front_mask: Boolean mask of shape ``(n,)`` flagging the non-dominated
+            products (:func:`~macroforecast.trade.aggregation.pareto.pareto_front`).
+        scores: Score vector of shape ``(n,)``, higher meaning more
+            vulnerable.
+
+    Returns:
+        Tuple ``(median_rank, max_rank)`` over the front members, ranks
+        following the ``1`` = most vulnerable convention; ``(NaN, NaN)`` for
+        an empty front.
+
+    Examples:
+        >>> import numpy as np
+        >>> mask = np.array([True, False, True, False])
+        >>> front_rank_summary(mask, np.array([0.9, 0.4, 0.7, 0.1]))
+        (1.5, 2.0)
+    """
+    front_mask = np.asarray(front_mask, dtype=bool)
+    scores = np.asarray(scores, dtype=float)
+    if not front_mask.any():
+        return float("nan"), float("nan")
+    ranks = stats.rankdata(-scores, method="average")[front_mask]
+    return float(np.median(ranks)), float(ranks.max())
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -267,16 +456,33 @@ def bootstrap_rank_stability(
     config: AggregationConfig,
     pipeline_factory: Callable[[AggregationConfig], Any],
     *,
-    n_boot: int = 200,
+    n_boot: int = 50,
     ci: float = 0.9,
     random_state: Optional[int] = None,
 ) -> pd.DataFrame:
-    """Resample products with replacement and collect their rank distribution.
+    """Bootstrap the estimation of a method and rank the whole population.
 
-    The full chain is refit on every draw — *including the weights*, since
-    that they are estimated is precisely the point (algorithm/§6.4 of the
-    note). A product whose 90% interval spans ``[3, 412]`` should never be
-    reported as "third most vulnerable".
+    Each draw resamples the rows with replacement, **fits** the whole chain
+    on the resample — *including the weights*, since that they are estimated
+    is precisely the point (§6.4 of the note) — then **scores and ranks the
+    original, complete population** (D-08). Ranking inside the resample
+    instead, as an earlier version did, produces ranks living on a different
+    support from draw to draw and leaves the products absent from a draw
+    without any rank at all; here every identifier receives exactly
+    ``n_boot`` comparable ranks.
+
+    Only the estimation uncertainty of the method is covered. The uncertainty
+    of the metrics themselves (``x_ij`` measured with error) would require
+    per-cell standard errors, unavailable at the aggregation step (M-11), and
+    is documented as an extension rather than implemented.
+
+    A rank is a statistic of the whole sample, and its interval reads as in
+    the *league tables* literature (Goldstein & Spiegelhalter, 1996): a
+    product whose 90% interval spans ``[3, 412]`` must never be reported as
+    "third most vulnerable". Percentile intervals on a rank are conservative
+    in the middle of the ranking and their coverage is only approximate for
+    near-tied products, the discreteness of the rank statistic being the
+    reason (Xie, Singh & Zhang, 2009).
 
     Args:
         df_data: Wide metric table (``config.id_columns`` +
@@ -286,17 +492,18 @@ def bootstrap_rank_stability(
             estimator exposing ``fit(X).predict(X)`` (a
             ``sklearn.pipeline.Pipeline`` or a
             :class:`~macroforecast.trade.aggregation.estimators.WeightedAggregator`),
-            given the (unchanged, here) configuration.
-        n_boot: Number of bootstrap draws.
+            given the (unchanged, here) configuration. Methods with no fitted
+            state (Pareto, MPI) have no bootstrap of this kind.
+        n_boot: Number of bootstrap draws, kept small by default: the whole
+            chain is refit on each one.
         ci: Width of the reported rank interval (0.9 → the 5th-95th
             percentile).
         random_state: Seed of the resampling generator.
 
     Returns:
         ``DataFrame`` indexed by product id, with ``rank_median``,
-        ``rank_low``, ``rank_high`` and ``n_draws_observed`` (how many draws
-        actually included that id, resampling with replacement leaving some
-        ids absent from a given draw).
+        ``rank_low``, ``rank_high`` and ``rank_sd``, every statistic computed
+        on the same ``n_boot`` ranks per product.
 
     Examples:
         >>> import pandas as pd
@@ -309,37 +516,34 @@ def bootstrap_rank_stability(
         ...     n_boot=20, random_state=0,
         ... )
         >>> sorted(result.columns)
-        ['n_draws_observed', 'rank_high', 'rank_low', 'rank_median']
+        ['rank_high', 'rank_low', 'rank_median', 'rank_sd']
+        >>> float(result.loc["a", "rank_median"])
+        1.0
     """
     rng = np.random.default_rng(random_state)
     X_full, index_full = split_frame(df_data, config)
     n = X_full.shape[0]
     alpha = (1.0 - ci) / 2.0
 
-    rank_samples: Dict[Any, List[float]] = defaultdict(list)
-    for _ in range(n_boot):
+    # Une ligne par tirage, une colonne par produit : rangs sur la population complète
+    ranks_by_draw = np.empty((n_boot, n), dtype=float)
+    for draw_id in range(n_boot):
         draw = rng.integers(0, n, size=n)
-        X_boot = X_full[draw]
-        ids_boot = index_full[draw]
         estimator = pipeline_factory(config)
-        scores = estimator.fit(X_boot).predict(X_boot)
-        ranks = stats.rankdata(-scores, method="average")
-        for identifier, rank in zip(ids_boot, ranks):
-            rank_samples[identifier].append(rank)
+        scores = estimator.fit(X_full[draw]).predict(X_full)
+        ranks_by_draw[draw_id] = stats.rankdata(-np.asarray(scores), method="average")
 
-    records = []
-    for identifier, ranks in rank_samples.items():
-        ranks_array = np.asarray(ranks)
-        records.append(
-            {
-                "id": identifier,
-                "rank_median": float(np.median(ranks_array)),
-                "rank_low": float(np.quantile(ranks_array, alpha)),
-                "rank_high": float(np.quantile(ranks_array, 1.0 - alpha)),
-                "n_draws_observed": len(ranks),
-            }
-        )
-    return pd.DataFrame.from_records(records).set_index("id")
+    return pd.DataFrame(
+        {
+            "rank_median": np.median(ranks_by_draw, axis=0),
+            "rank_low": np.quantile(ranks_by_draw, alpha, axis=0),
+            "rank_high": np.quantile(ranks_by_draw, 1.0 - alpha, axis=0),
+            "rank_sd": (
+                ranks_by_draw.std(axis=0, ddof=1) if n_boot > 1 else np.zeros(n)
+            ),
+        },
+        index=index_full,
+    )
 
 
 # Résultat de l'exploration SMAA
@@ -348,20 +552,27 @@ class SmaaResult:
     """Stochastic multicriteria acceptability analysis result.
 
     Attributes:
-        rank_acceptability: Array of shape ``(n, n)``; entry ``[i, r]`` is
+        rank_acceptability: Array of shape ``(n, k)``; entry ``[i, r]`` is
             the share of weight draws under which product ``i`` ranked
-            ``r + 1``.
+            ``r + 1``. Only the first ``k`` ranks are stored — a full
+            ``(n, n)`` matrix reaches 200 Mb at ``n = 5 000`` and is out of
+            reach at the global level (I-09) — so a row sums to *at most* 1,
+            the missing mass being the draws placing the product beyond rank
+            ``k``.
         central_weight: Array of shape ``(n, d)``; row ``i`` is the average
             weight vector among the draws where product ``i`` ranked first
             (``NaN`` row when it never did).
         confidence_factor: Array of shape ``(n,)``; share of weight draws
             under which product ``i`` ranked within the top ``k`` — the
             statement fit for an administrative report ("in the top 50
-            under 94% of admissible weightings").
+            under 94% of admissible weightings"). Equal to the row sums of
+            ``rank_acceptability``.
+        k: Rank depth actually stored, ``min(k, n)``.
     """
     rank_acceptability: np.ndarray
     central_weight: np.ndarray
     confidence_factor: np.ndarray
+    k: int = 0
 
 
 # Fonction d'exploration SMAA sur le simplexe des poids
@@ -372,6 +583,7 @@ def smaa_rank_acceptability(
     aggregation_params: Optional[Dict[str, Any]] = None,
     k: int = 50,
     n_draws: int = 10_000,
+    batch_size: int = 256,
     random_state: Optional[int] = None,
     weight_draws: Optional[np.ndarray] = None,
 ) -> SmaaResult:
@@ -383,6 +595,12 @@ def smaa_rank_acceptability(
     induced ranking is computed for each, and the rank distribution of every
     product is accumulated (algorithm 5 of the note).
 
+    Draws are processed in batches: the scores of a batch form an
+    ``(n, T_b)`` matrix ranked column by column by a single ``argsort``, and
+    only ranks ``1..k`` are accumulated, holding memory at
+    ``O(n · k + n · batch_size)`` instead of the ``O(n²)`` of a full rank
+    matrix.
+
     Args:
         X: Metric matrix of shape ``(n, d)``, already preprocessed
             (oriented, winsorised, normalised).
@@ -391,9 +609,11 @@ def smaa_rank_acceptability(
             :func:`~macroforecast.trade.aggregation.functions.weighted_sum_score`).
         aggregation_params: Extra keyword arguments forwarded to
             ``aggregation_fn``.
-        k: Rank depth of the reported confidence factor.
+        k: Rank depth stored and depth of the reported confidence factor,
+            clipped to ``n``.
         n_draws: Number of Dirichlet weight draws; ignored when
             ``weight_draws`` is supplied.
+        batch_size: Number of draws scored and ranked at once.
         random_state: Seed of the weight sampler; ignored when
             ``weight_draws`` is supplied.
         weight_draws: Pre-drawn simplex sample of shape ``(T, d)`` to reuse
@@ -415,6 +635,8 @@ def smaa_rank_acceptability(
         >>> X = np.array([[0.8, 0.2], [0.1, 0.9], [0.5, 0.5]])
         >>> result = smaa_rank_acceptability(
         ...     X, weighted_sum_score, k=1, n_draws=200, random_state=0)
+        >>> result.rank_acceptability.shape
+        (3, 1)
         >>> result.confidence_factor.shape
         (3,)
     """
@@ -431,26 +653,36 @@ def smaa_rank_acceptability(
             )
         n_draws = weight_draws.shape[0]
 
-    rank_counts = np.zeros((n, n), dtype=np.int64)
+    k_stored = int(min(k, n))
+    rank_counts = np.zeros((n, k_stored), dtype=np.int64)
     weight_sum_top1 = np.zeros((n, d))
     n_top1 = np.zeros(n, dtype=np.int64)
-    n_within_k = np.zeros(n, dtype=np.int64)
+    positions = np.arange(1, n + 1)[:, None]
 
-    for weight in weight_draws:
-        scores = aggregation_fn(X, weight, **params)
-        ranks = stats.rankdata(-scores, method="ordinal").astype(int)
-        rank_counts[np.arange(n), ranks - 1] += 1
-        n_within_k += ranks <= k
-        top1_index = int(np.flatnonzero(ranks == 1)[0])
-        weight_sum_top1[top1_index] += weight
-        n_top1[top1_index] += 1
+    for start in range(0, n_draws, batch_size):
+        batch = weight_draws[start : start + batch_size]
+        # Scores du lot : une colonne par tirage
+        score_batch = np.column_stack(
+            [aggregation_fn(X, weight, **params) for weight in batch]
+        )
+        # Rangs ordinaux par colonne, ex æquo départagés par l'ordre des lignes
+        order = np.argsort(-score_batch, axis=0, kind="stable")
+        ranks = np.empty_like(order)
+        np.put_along_axis(ranks, order, np.broadcast_to(positions, order.shape), axis=0)
+        # Accumulation des seuls rangs de tête (stockage (n, k))
+        rows, columns = np.nonzero(ranks <= k_stored)
+        np.add.at(rank_counts, (rows, ranks[rows, columns] - 1), 1)
+        # Poids centraux : moyenne des tirages plaçant le produit en tête
+        top1 = order[0]
+        np.add.at(weight_sum_top1, top1, batch)
+        np.add.at(n_top1, top1, 1)
 
     rank_acceptability = rank_counts / n_draws
-    confidence_factor = n_within_k / n_draws
+    confidence_factor = rank_acceptability.sum(axis=1)
     with np.errstate(invalid="ignore", divide="ignore"):
         central_weight = weight_sum_top1 / n_top1[:, None]
     central_weight[n_top1 == 0] = np.nan
-    return SmaaResult(rank_acceptability, central_weight, confidence_factor)
+    return SmaaResult(rank_acceptability, central_weight, confidence_factor, k_stored)
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -560,15 +792,26 @@ def borda_rank(scores_by_method: Mapping[str, np.ndarray]) -> np.ndarray:
 
 
 # Fonction de classement consensus de Copeland
-def copeland_rank(scores_by_method: Mapping[str, np.ndarray]) -> np.ndarray:
+def copeland_rank(
+    scores_by_method: Mapping[str, np.ndarray], *, top_n: Optional[int] = None
+) -> np.ndarray:
     """Rank products by net pairwise-majority wins (Copeland consensus).
 
     For every ordered pair, count the methods placing ``i`` ahead of ``k``;
     ``i`` wins the duel on majority. The Copeland score is the count of duels
     won minus duels lost — more robust to extreme rank values than Borda.
 
+    Every duel of the group is an entry of an ``(n, n)`` vote matrix, out of
+    reach at the global level (I-17), hence the same preselection contract as
+    :func:`kemeny_rank`: with ``top_n`` set, the duels are solved exactly on
+    the ``top_n`` first products of the Borda consensus and the remainder
+    keeps its Borda order, appended after that core.
+
     Args:
         scores_by_method: Mapping of method name to its score vector.
+        top_n: Size of the Borda preselection the duels are restricted to.
+            ``None`` (the default) runs every duel, which is exact but
+            quadratic in memory.
 
     Returns:
         Rank array of shape ``(n,)``, ``1`` = most vulnerable.
@@ -578,16 +821,32 @@ def copeland_rank(scores_by_method: Mapping[str, np.ndarray]) -> np.ndarray:
         >>> scores = {"a": np.array([3.0, 1.0, 2.0]), "b": np.array([3.0, 2.0, 1.0])}
         >>> copeland_rank(scores)
         array([1. , 2.5, 2.5])
+        >>> copeland_rank(scores, top_n=1)
+        array([1., 2., 3.])
     """
     methods = [np.asarray(s) for s in scores_by_method.values()]
-    n = methods[0].shape[0]
+    n_total = methods[0].shape[0]
+
+    borda = borda_rank(scores_by_method)
+    order = np.argsort(borda, kind="stable")
+    n = n_total if top_n is None else min(top_n, n_total)
+    preselected = order[:n]
+    remainder = order[n:]
+
+    sub_methods = [s[preselected] for s in methods]
     votes_i_over_k = np.zeros((n, n))
-    for scores in methods:
+    for scores in sub_methods:
         votes_i_over_k += (scores[:, None] > scores[None, :]).astype(int)
 
     majority = votes_i_over_k > (len(methods) / 2.0)
-    net_wins = majority.sum(axis=1).astype(float) - majority.T.sum(axis=1).astype(float)
-    return stats.rankdata(-net_wins, method="average")
+    net_wins = majority.sum(axis=1).astype(float) - majority.sum(axis=0).astype(float)
+    consensus_local = stats.rankdata(-net_wins, method="average")
+
+    final_rank = np.empty(n_total)
+    final_rank[preselected] = consensus_local
+    # Hors présélection : ordre de Borda, à la suite du noyau résolu exactement
+    final_rank[remainder] = n + np.arange(1, len(remainder) + 1)
+    return final_rank
 
 
 # Fonction de classement consensus par médiane de Kemeny
@@ -707,20 +966,31 @@ class CoherenceReport:
 
     Attributes:
         tau_matrix: Pairwise Kendall τ_b between methods (Q1).
+        weighted_tau_matrix: Pairwise weighted Kendall τ between methods,
+            hyperbolically weighted towards the top of the ranking (Q2,
+            A-06) — the parameter-free complement of the RBO.
         kendall_w: Kendall's coefficient of concordance across methods (Q1).
-        violation_rate: Dominance-violation rate ``V(s)`` per method (Q3).
+        violation_rate: :class:`ViolationRates` per method — strict
+            inversions and ties told apart (Q3, M-10).
+        front_rank: Per method, the ``(median_rank, max_rank)`` of the Pareto
+            front members (:func:`front_rank_summary`).
         consensus_rank: Borda-consensus rank, indexed like the input scores
             (§6.6).
-        disputed_ids: Ids whose rank spread across methods exceeds the
-            configured threshold — the note's own most informative output,
+        disputed_ids: Ids whose rank spread across methods exceeds
+            ``dispute_threshold`` — the note's own most informative output,
             not a weakness: it names exactly the products needing individual
             human review.
+        dispute_threshold: Rank spread actually used to flag a product,
+            derived from the requested fraction of the group size.
     """
     tau_matrix: pd.DataFrame = field(default_factory=pd.DataFrame)
+    weighted_tau_matrix: pd.DataFrame = field(default_factory=pd.DataFrame)
     kendall_w: float = float("nan")
-    violation_rate: Dict[str, float] = field(default_factory=dict)
+    violation_rate: Dict[str, ViolationRates] = field(default_factory=dict)
+    front_rank: Dict[str, Tuple[float, float]] = field(default_factory=dict)
     consensus_rank: pd.Series = field(default_factory=pd.Series)
     disputed_ids: List[Any] = field(default_factory=list)
+    dispute_threshold: int = 0
 
     # Mise en forme des indicateurs numériques (style VulnerabilityReport.to_metrics)
     def to_metrics(self, prefix: str = "aggregation.coherence") -> Dict[str, float]:
@@ -734,17 +1004,29 @@ class CoherenceReport:
             infinite values dropped, e.g. for an MLflow tracker).
 
         Examples:
-            >>> report = CoherenceReport(kendall_w=0.8, violation_rate={"HHI": 0.0})
+            >>> rates = ViolationRates(strict=0.0, tie=0.25, n_pairs=4)
+            >>> report = CoherenceReport(kendall_w=0.8, violation_rate={"HHI": rates})
             >>> report.to_metrics()["aggregation.coherence.kendall_w"]
             0.8
+            >>> report.to_metrics()["aggregation.coherence.violation_tie_HHI"]
+            0.25
         """
         metrics: Dict[str, float] = {}
         if np.isfinite(self.kendall_w):
             metrics[f"{prefix}.kendall_w"] = float(self.kendall_w)
-        for name, value in self.violation_rate.items():
-            if np.isfinite(value):
-                metrics[f"{prefix}.violation_rate_{name}"] = float(value)
+        for name, rates in self.violation_rate.items():
+            if np.isfinite(rates.strict):
+                metrics[f"{prefix}.violation_strict_{name}"] = float(rates.strict)
+            if np.isfinite(rates.tie):
+                metrics[f"{prefix}.violation_tie_{name}"] = float(rates.tie)
+            metrics[f"{prefix}.violation_n_pairs_{name}"] = float(rates.n_pairs)
+        for name, (median_rank, max_rank) in self.front_rank.items():
+            if np.isfinite(median_rank):
+                metrics[f"{prefix}.front_rank_median_{name}"] = float(median_rank)
+            if np.isfinite(max_rank):
+                metrics[f"{prefix}.front_rank_max_{name}"] = float(max_rank)
         metrics[f"{prefix}.n_disputed"] = float(len(self.disputed_ids))
+        metrics[f"{prefix}.dispute_threshold"] = float(self.dispute_threshold)
         return metrics
 
 
@@ -753,7 +1035,11 @@ def compute_coherence_report(
     scores_by_method: Mapping[str, pd.Series],
     X: np.ndarray,
     *,
-    dispute_threshold: int = 50,
+    dispute_fraction: float = 0.01,
+    front_mask: Optional[np.ndarray] = None,
+    large_n_threshold: int = 20_000,
+    n_pairs_sample: int = 1_000_000,
+    random_state: Optional[int] = None,
 ) -> CoherenceReport:
     """Assemble the coherence dashboard of algorithm 6 from a set of scores.
 
@@ -762,9 +1048,20 @@ def compute_coherence_report(
             series sharing the same index (product identity) and order.
         X: Metric matrix of shape ``(n, d)``, positive polarity, aligned row
             for row with the scores — the basis of the dominance-violation
-            check (Q3).
-        dispute_threshold: Rank-spread above which a product is flagged as
-            disputed.
+            check (Q3) and of the Pareto front.
+        dispute_fraction: Fraction of the group size above which a rank
+            spread flags a product as disputed. Expressed as a fraction and
+            not as an absolute number of ranks, groups ranging from 27
+            (reporters) to 2·10⁵ rows (global) — a 50-rank spread means
+            everything in the first and nothing in the second (M-10). The
+            effective threshold is ``max(1, round(dispute_fraction · n))``.
+        front_mask: Boolean mask of the non-dominated products; computed with
+            :func:`~macroforecast.trade.aggregation.pareto.pareto_front_sweep`
+            when omitted, and worth passing whenever the caller has already
+            computed the front.
+        large_n_threshold: Forwarded to :func:`dominance_violation_rate`.
+        n_pairs_sample: Forwarded to :func:`dominance_violation_rate`.
+        random_state: Forwarded to :func:`dominance_violation_rate`.
 
     Returns:
         The :class:`CoherenceReport`.
@@ -781,14 +1078,35 @@ def compute_coherence_report(
         >>> report = compute_coherence_report(scores, X)
         >>> report.kendall_w
         1.0
+        >>> report.violation_rate["sum"].strict
+        0.0
+        >>> report.front_rank["sum"]
+        (1.0, 1.0)
     """
     index = next(iter(scores_by_method.values())).index
-    arrays = {name: series.reindex(index).to_numpy() for name, series in scores_by_method.items()}
+    arrays = {
+        name: series.reindex(index).to_numpy()
+        for name, series in scores_by_method.items()
+    }
+    X = np.asarray(X, dtype=float)
+    if front_mask is None:
+        front_mask = pareto_front_sweep(X)
 
     tau_matrix = kendall_tau_b_matrix(arrays)
+    weighted_tau = weighted_tau_matrix(arrays)
     w = kendall_w(arrays)
     violation_rate = {
-        name: dominance_violation_rate(X, scores) for name, scores in arrays.items()
+        name: dominance_violation_rate(
+            X,
+            scores,
+            large_n_threshold=large_n_threshold,
+            n_pairs_sample=n_pairs_sample,
+            random_state=random_state,
+        )
+        for name, scores in arrays.items()
+    }
+    front_rank = {
+        name: front_rank_summary(front_mask, scores) for name, scores in arrays.items()
     }
 
     consensus = borda_rank(arrays)
@@ -797,13 +1115,18 @@ def compute_coherence_report(
     ranks = np.column_stack(
         [stats.rankdata(-scores, method="average") for scores in arrays.values()]
     )
+    # Seuil de litige relatif à la taille du groupe, plancher d'un rang (I-08)
+    dispute_threshold = max(1, int(round(dispute_fraction * len(index))))
     spread = ranks.max(axis=1) - ranks.min(axis=1)
     disputed_ids = list(index[spread > dispute_threshold])
 
     return CoherenceReport(
         tau_matrix=tau_matrix,
+        weighted_tau_matrix=weighted_tau,
         kendall_w=w,
         violation_rate=violation_rate,
+        front_rank=front_rank,
         consensus_rank=consensus_series,
         disputed_ids=disputed_ids,
+        dispute_threshold=dispute_threshold,
     )
