@@ -1,7 +1,7 @@
 """Tests de l'orchestration (``macroforecast.trade.aggregation.runner``).
 
-Un ``xfail`` documente I-01 : ``run_aggregation`` calcule le front de Pareto
-sur la matrice brute, avant orientation des polarités.
+I-01 est corrigé : ``run_aggregation`` oriente ``X`` une seule fois en tête et
+utilise cette matrice pour le front, le comptage et le rapport de cohérence.
 """
 
 from __future__ import annotations
@@ -46,10 +46,6 @@ def test_run_aggregation_scores_every_method(_polarised_frame) -> None:
     assert report.methods == ["sum", "geo"]
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="I-01 : le front est calculé sur X non orienté (avant PolarityOrienter)",
-)
 def test_run_aggregation_front_size_uses_oriented_matrix(_polarised_frame) -> None:
     """I-01 : ``pareto_front_size`` doit correspondre au front de la matrice
     orientée en polarité positive."""

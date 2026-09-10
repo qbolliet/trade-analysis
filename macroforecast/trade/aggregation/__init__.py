@@ -23,12 +23,18 @@ from .preprocessing import (
 )
 # Dominance de Pareto
 from .pareto import (
+    MetricReducer,
+    ParetoScorer,
     dominance_count,
+    dominance_count_chunked,
     epsilon_pareto_front,
+    epsilon_pareto_set,
     non_dominated_sort,
+    non_dominated_sort_sweep,
     normalized_dominance_depth,
     pareto_dominance_matrix,
     pareto_front,
+    pareto_front_sweep,
 )
 # Pondérations endogènes
 from .weights import (
@@ -108,12 +114,18 @@ __all__ = [
     "make_normalizer",
     "spearman_correlation_matrix",
     # Pareto
+    "MetricReducer",
+    "ParetoScorer",
     "dominance_count",
+    "dominance_count_chunked",
     "epsilon_pareto_front",
+    "epsilon_pareto_set",
     "non_dominated_sort",
+    "non_dominated_sort_sweep",
     "normalized_dominance_depth",
     "pareto_dominance_matrix",
     "pareto_front",
+    "pareto_front_sweep",
     # Pondérations
     "PcaWeightingReport",
     "benefit_of_doubt_weights",

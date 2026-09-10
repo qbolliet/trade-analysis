@@ -33,7 +33,7 @@ from sklearn.base import BaseEstimator
 from sklearn.utils.validation import check_array, check_is_fitted
 # Modules du package
 from . import functions, weights
-from .pareto import dominance_count
+from .pareto import ParetoScorer, dominance_count
 
 # Registre des pondérations, point d'entrée piloté par configuration
 WEIGHTING_REGISTRY: Dict[str, Callable[..., Any]] = {

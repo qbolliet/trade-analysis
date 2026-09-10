@@ -214,6 +214,9 @@ def run_aggregation(
         3
     """
     X, index = split_frame(df_data, config)
+    # I-01 : dominance et cohérence exigent la matrice orientée (haut = vulnérable) ;
+    # les estimateurs, eux, reçoivent X brut et s'orientent via leur propre étape
+    X_oriented = PolarityOrienter(polarity_vector(config)).fit_transform(X)
 
     scores: Dict[str, pd.Series] = {}
     for name, estimator in methods.items():
@@ -222,13 +225,13 @@ def run_aggregation(
     df_scores = pd.concat(scores.values(), axis=1)
 
     coherence = compute_coherence_report(
-        scores, X, dispute_threshold=dispute_threshold
+        scores, X_oriented, dispute_threshold=dispute_threshold
     )
     report = AggregationReport(
         n_products=len(index),
         methods=list(methods),
         coherence=coherence,
-        pareto_front_size=int(pareto_front(X).sum()),
+        pareto_front_size=int(pareto_front(X_oriented).sum()),
     )
     return df_scores, report
 
@@ -306,10 +309,12 @@ def recommended_workflow(
         True
     """
     X, index = split_frame(df_data, config)
+    # I-01 : orientation unique, préalable à tout calcul de dominance
+    X_oriented = PolarityOrienter(polarity_vector(config)).fit_transform(X)
 
     # Etape 1 : front de Pareto et comptage de dominance, sans coût ni hypothèse
-    front_mask = pareto_front(X)
-    dominance = dominance_count(X)
+    front_mask = pareto_front(X_oriented)
+    dominance = dominance_count(X_oriented)
 
     # Etape 2 : SMAA sur une somme pondérée, poids entropiques comme pivot
     preprocessing = Pipeline(
