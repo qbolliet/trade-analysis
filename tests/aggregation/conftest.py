@@ -91,3 +91,38 @@ def df_metrics_toy() -> pd.DataFrame:
     df.loc[17, "HHI"] = np.nan
     df.loc[31, "CDI3"] = np.nan
     return df
+
+
+@pytest.fixture
+def df_synthesis_toy() -> pd.DataFrame:
+    """Table de cellules jouet : 2 contextes x 3 pays x 20 produits, 4 métriques.
+
+    Reproduit la forme de la table d'entrée de la synthèse (S-2.3) : les
+    quatre clés de contexte, ``reporter``, ``product``, puis quatre métriques
+    de polarité positive. La métrique ``EXPORT_HHI`` porte des valeurs
+    manquantes (jointure réseau incomplète), support des tests de la règle
+    « lignes complètes par méthode » (D-15).
+    """
+    rng = np.random.default_rng(0)
+    reporters = ("FR", "DE", "IT")
+    products = tuple(f"P{index:02d}" for index in range(20))
+    keys = [
+        {
+            "freq": "A",
+            "flow": 1,
+            "indicators": "VALUE_IN_EUROS",
+            "TIME_PERIOD": period,
+            "reporter": reporter,
+            "product": product,
+        }
+        for period in ("2023", "2024")
+        for reporter in reporters
+        for product in products
+    ]
+    df_cells = pd.DataFrame(keys)
+    n = len(df_cells)
+    for metric in ("HHI", "CDI2", "CDI3", "EXPORT_HHI"):
+        df_cells[metric] = rng.random(n)
+    # Cellules privées de la métrique de réseau : lignes incomplètes (D-15)
+    df_cells.loc[[3, 7, 42, 61, 95, 110], "EXPORT_HHI"] = np.nan
+    return df_cells

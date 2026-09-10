@@ -99,6 +99,30 @@ from .optimal_transport import (
     ellipticity_screen,
     spherical_uniform_grid,
 )
+# Registre déclaratif des méthodes (configuration -> pipeline sklearn)
+from .methods import (
+    METHOD_REGISTRY,
+    MethodRegistryEntry,
+    MethodSpec,
+    build_method,
+    method_metrics,
+    method_spec_from_mapping,
+    registry_entry,
+    resolve_normalization,
+)
+# Synthèse multiniveau (contexte x niveau x groupe x méthode)
+from .synthesis import (
+    DEFAULT_METHODS,
+    LEVELS,
+    LevelReport,
+    SynthesisConfig,
+    SynthesisReport,
+    group_keys,
+    iter_groups,
+    log_synthesis_artifacts,
+    run_synthesis,
+    score_columns,
+)
 # Orchestration
 from .runner import (
     AggregationReport,
@@ -193,6 +217,26 @@ __all__ = [
     "OrientedKantorovichScorer",
     "ellipticity_screen",
     "spherical_uniform_grid",
+    # Méthodes déclaratives
+    "METHOD_REGISTRY",
+    "MethodRegistryEntry",
+    "MethodSpec",
+    "build_method",
+    "method_metrics",
+    "method_spec_from_mapping",
+    "registry_entry",
+    "resolve_normalization",
+    # Synthèse multiniveau
+    "DEFAULT_METHODS",
+    "LEVELS",
+    "LevelReport",
+    "SynthesisConfig",
+    "SynthesisReport",
+    "group_keys",
+    "iter_groups",
+    "log_synthesis_artifacts",
+    "run_synthesis",
+    "score_columns",
     # Orchestration
     "AggregationReport",
     "default_pipeline",
