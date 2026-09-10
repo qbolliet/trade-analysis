@@ -1,0 +1,190 @@
+# Synthèse des métriques de vulnérabilité (scores synthétiques) et cohérence.
+#
+# Même catalogue DuckLake que les métriques (VULNERABILITIES.DBNAME /
+# VULNERABILITIES.CATALOG_ALIAS de config/vulnerabilities.yaml) ; deux schémas
+# résultat distincts, jamais fusionnés avec la table des métriques (D-01) :
+#   - compute_synthetic_scores.py   : scores synthétiques par cellule x méthode
+#     x niveau                                  -> bloc SYNTHESIS (schéma « synthesis »)
+#   - compute_synthesis_coherence.py : diagnostics de cohérence des métriques et
+#     des synthèses                             -> bloc COHERENCE (schéma « synthesis_diagnostics »)
+#
+# Place dans le pipeline (ordre Argo) :
+#   download -> process_baci_hs -> compute_trade_vulnerabilities
+#   || compute_network_vulnerabilities -> compute_synthetic_scores
+#   -> compute_synthesis_coherence
+
+# ──────────────────────────────────────────────────────────────────────
+# Scores synthétiques
+# ──────────────────────────────────────────────────────────────────────
+SYNTHESIS:
+  # Bucket S3 où sont stockées les données de la table de faits « synthesis »
+  BUCKET: "qbollietdgddi"
+  # Schéma résultat des scores dans le catalogue « vulnerabilities »
+  RESULT_SCHEMA: "synthesis"
+  PATHS:
+    # Emplacement des données de la table de faits « synthesis » (sous BUCKET)
+    DATA_PATH: "trade/datasets/vulnerabilities/synthesis/"
+    # Registre JSON des dates de dernier calcul de synthèse (racine « SYNTHESIS »),
+    # confronté aux registres amont (partenaires et réseau) pour décider du recalcul
+    LAST_COMPUTATION_PATH: "trade/vulnerabilities/synthesis/last_computation.json"
+  # Recalcul forcé de tous les contextes, quelle que soit la fraîcheur des amonts
+  FORCE: false
+
+  # Sources DuckLake combinées en une seule requête (S-2.3).
+  # La première source est la GRILLE : elle fixe les cellules à scorer et toutes
+  # les clés (contexte, reporter, produit) sont conservées telles quelles.
+  # Les suivantes sont jointes à GAUCHE par des expressions SQL DuckDB évaluées
+  # dans le catalogue (aucune logique de jointure en Python) ; leurs lignes sans
+  # correspondance produisent des NULL, traités par méthode (D-15).
+  SOURCES:
+    # Grille : famille partenaires (indices Eurostat Comext)
+    - SCHEMA: "indicators"                       # schéma résultat de compute_trade_vulnerabilities.py
+      ALIAS: "p"                                 # alias de la grille dans la requête
+      COLUMNS: ["HHI", "CDI2", "CDI3"]           # métriques partenaires alimentant les méthodes
+    # Source jointe : famille réseau (indices BACI)
+    - SCHEMA: "network_indicators"               # schéma résultat de compute_network_vulnerabilities.py
+      ALIAS: "n"                                 # alias de la source jointe
+      COLUMNS: ["EXPORT_HHI", "CENTRALITY_RISK", "CLUSTERING_W"]  # métriques réseau retenues
+      JOIN:
+        # Conditions de correspondance grille -> réseau (CN8 -> HS6, période -> année).
+        "ON":
+          - 'substr(p."product", 1, 6) = n."product"'
+          - 'CAST(substr(p."TIME_PERIOD", 1, 4) AS INTEGER) = n."year"'
+        # Filtre sur la source jointe, placé dans le ON (jointure gauche) :
+        # un seul millésime de nomenclature réseau
+        WHERE: 'n."classification" = ''HS2022'''
+
+  # Contextes retenus : prédicat SQL évalué sur la grille p.
+  FILTERS:
+    # Flux import, indicateur en valeur, fréquence annuelle (modalités à vérifier
+    # contre les données réelles de DS-045409, cf. §11 de l'architecture)
+    WHERE: 'p."flow" = 1 AND p."indicators" = ''VALUE_IN_EUROS'' AND p."freq" = ''A'''
+    # Nombre de dernières périodes conservées (sous-requête sur les TIME_PERIOD
+    # distincts) ; null => toutes les périodes
+    LAST_N_PERIODS: 5
+
+  # Suivi d'exécution MLflow : un seul run par exécution du script (D-14).
+  MLFLOW:
+    # URI du serveur ou du magasin MLflow. null => aucun suivi, exécution
+    # inchangée. Surchargeable par la variable d'environnement MLFLOW_TRACKING_URI
+    TRACKING_URI: null
+    # Expérience de destination, créée à la volée si absente
+    EXPERIMENT: "vulnerabilities-synthesis"
+    # Publication des artefacts de synthèse (palmarès par niveau et méthode,
+    # poids ajustés, rapports de sélection « auto », rapport de transport optimal)
+    LOG_ARTIFACTS: true
+
+  # Paramètres méthodologiques : toute clé portant le nom d'un champ de
+  # SynthesisConfig surcharge le défaut correspondant (listes YAML -> tuples) ;
+  # les clés inconnues sont ignorées avec un avertissement.
+  PARAMETERS:
+    # Clés définissant un univers de comparaison ; deux contextes ne sont jamais comparés
+    context_columns: ["freq", "flow", "indicators", "TIME_PERIOD"]
+    # Colonne du pays déclarant (cellule)
+    reporter_col: "reporter"
+    # Colonne du produit (cellule)
+    product_col: "product"
+    # Colonnes de métriques mises à disposition des méthodes
+    metric_columns: ["HHI", "CDI2", "CDI3", "EXPORT_HHI", "CENTRALITY_RISK", "CLUSTERING_W"]
+    # Paires (métrique, +/-1) ; toute métrique non listée a une polarité positive
+    polarities: []
+    # Niveaux de comparaison à l'intérieur d'un contexte (D-09)
+    levels: ["by_product", "by_reporter", "global"]
+    # Normalisation par défaut, appliquée à toute méthode qui l'admet (D-13)
+    normalization: "minmax"
+    # Quantile haut de winsorisation ; null => désactivée (M-08, D-12)
+    winsorize_quantile: null
+    # Plancher de taille de groupe, en plus du défaut propre à chaque méthode
+    min_group_size: 30
+    # Règles de consensus transformées en pseudo-méthodes
+    consensus: ["borda", "copeland"]
+    # Présélection Borda sur laquelle Copeland (et Kemeny) sont résolus
+    consensus_top_n: 100
+    # Nombre de tirages de Dirichlet partagés par SMAA et le quantile de cône
+    smaa_n_draws: 2000
+    # Profondeur du facteur de confiance SMAA
+    smaa_k: 50
+    # Méthodes pour lesquelles un intervalle de rang est bootstrappé (D-08)
+    bootstrap_methods: ["critic_sum", "auto_sum"]
+    # Nombre de rééchantillons bootstrap
+    bootstrap_n: 50
+    # Niveaux auxquels le bootstrap tourne (le niveau global est exclu, D-11)
+    bootstrap_levels: ["by_product", "by_reporter"]
+    # Graine d'où sont dérivées les graines par groupe
+    random_state: 0
+    # Liste de méthodes ; chaque entrée -> un MethodSpec (name et kind obligatoires,
+    # kind = clé du registre S-1.4, params transmis à la fabrique d'estimateur)
+    methods:
+      # Dominance de Pareto : front epsilon glouton, couches, réduction préalable de d
+      - {name: "pareto", kind: "pareto",
+         params: {epsilon: 0.1, epsilon_scale: "mad", reduce: {threshold: 0.3}, layers: true}}
+      # Pareto au niveau global uniquement : front exact, sans couches
+      - {name: "pareto_global", kind: "pareto", levels: ["global"],
+         params: {epsilon: 0.1, reduce: {threshold: 0.3}, layers: false}}
+      # Moyenne des rangs normalisés (Borda sur métriques)
+      - {name: "rank_mean", kind: "rank_mean"}
+      # Somme pondérée, poids par entropie de Shannon
+      - {name: "entropy_sum", kind: "weighted", params: {weighting: "entropy", aggregation: "weighted_sum"}}
+      # Somme pondérée, poids CRITIC (corrélation de Spearman, échelle MAD)
+      - {name: "critic_sum", kind: "weighted", params: {weighting: "critic", aggregation: "weighted_sum",
+                                                        weighting_params: {method: "spearman", scale: "mad"}}}
+      # Somme pondérée, méta-sélection automatique du schéma de poids (A-05)
+      - {name: "auto_sum", kind: "weighted", params: {weighting: "auto", aggregation: "weighted_sum"}}
+      # Moyenne géométrique pondérée, poids sélectionnés automatiquement
+      - {name: "auto_geo", kind: "weighted", params: {weighting: "auto", aggregation: "geometric_mean",
+                                                      aggregation_params: {epsilon: 1.0e-3}}}
+      # Mazziotta-Pareto Index (pénalité d'incohérence horizontale)
+      - {name: "mpi", kind: "mpi"}
+      # TOPSIS, poids CRITIC, variante robuste
+      - {name: "topsis_critic", kind: "topsis", params: {weighting: "critic", robust: true}}
+      # VIKOR, poids CRITIC, compromis v = 0,5
+      - {name: "vikor_critic", kind: "vikor", params: {weighting: "critic", v: 0.5}}
+      # Benefit of the doubt, rapports de poids bornés (région d'assurance, D-05)
+      - {name: "bod", kind: "bod", params: {rho: 4.0, restriction: "assurance_region"}}
+      # Projection blanchie orientée, covariance robuste (MCD)
+      - {name: "whitened", kind: "whitened_projection", params: {covariance_estimator: "mcd"}}
+      # Score de Kantorovitch orienté (transport optimal) sur un sous-ensemble de
+      # métriques (M-17) ; calibration conforme par découpage, alerte projetée
+      - {name: "kantorovich", kind: "kantorovich",
+         metrics: ["HHI", "CDI2", "CDI3", "EXPORT_HHI"],
+         params: {epsilon: 0.1, n_target: 4096, fit_sample_size: 20000, alpha: 0.05,
+                  theta0_degrees: 60.0, conformal: "split", alert: "projected"}}
+      # SMAA sur une somme pondérée (acceptabilité de rang par tirages de poids)
+      - {name: "smaa", kind: "smaa", params: {aggregation: "weighted_sum"}}
+      # Quantile de cône (Hamel & Kostner 2018)
+      - {name: "cone_quantile", kind: "cone_quantile"}
+
+# ──────────────────────────────────────────────────────────────────────
+# Cohérence des métriques et des synthèses
+# ──────────────────────────────────────────────────────────────────────
+COHERENCE:
+  # Schéma résultat des diagnostics dans le catalogue « vulnerabilities »
+  RESULT_SCHEMA: "synthesis_diagnostics"
+  PATHS:
+    # Emplacement des données de la table de faits « synthesis_diagnostics »
+    DATA_PATH: "trade/datasets/vulnerabilities/synthesis_diagnostics/"
+    # Registre JSON des dates de dernier calcul de cohérence (racine « COHERENCE »),
+    # confronté au registre de synthèse
+    LAST_COMPUTATION_PATH: "trade/vulnerabilities/synthesis/last_coherence.json"
+  # Recalcul forcé, quelle que soit la fraîcheur du registre de synthèse
+  FORCE: false
+  # Suivi d'exécution MLflow : un seul run par exécution du script de cohérence
+  MLFLOW:
+    TRACKING_URI: null
+    EXPERIMENT: "vulnerabilities-coherence"
+    LOG_ARTIFACTS: true
+  # Paramètres méthodologiques : toute clé portant le nom d'un champ de
+  # CoherenceConfig surcharge le défaut correspondant.
+  PARAMETERS:
+    # Profondeurs k des recouvrements de tête (topk_overlap)
+    topk_depths: [10, 50, 100]
+    # Paramètre de persistance p du rank-biased overlap
+    rbo_p: 0.98
+    # Fraction de n au-delà de laquelle l'étendue de rang rend une cellule « disputée »
+    dispute_fraction: 0.01
+    # Sensibilité « leave-one-metric-out »
+    lomo: true
+    # Méthodes soumises au leave-one-metric-out
+    lomo_methods: ["critic_sum", "auto_sum"]
+    # Corrélations de rang entre paires de métriques
+    metric_pairs: true
