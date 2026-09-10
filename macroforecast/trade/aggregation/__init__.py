@@ -38,7 +38,9 @@ from .pareto import (
 )
 # Pondérations endogènes
 from .weights import (
+    AutoWeightingReport,
     PcaWeightingReport,
+    auto_weights,
     benefit_of_doubt_weights,
     critic_weights,
     dirichlet_weights,
@@ -57,7 +59,9 @@ from .functions import (
 from .estimators import (
     AGGREGATION_REGISTRY,
     WEIGHTING_REGISTRY,
+    BenefitOfDoubtScorer,
     DominanceCountScorer,
+    PcaProjectionScorer,
     WeightedAggregator,
 )
 # Protocole de comparaison/robustesse et classements consensus
@@ -127,7 +131,9 @@ __all__ = [
     "pareto_front",
     "pareto_front_sweep",
     # Pondérations
+    "AutoWeightingReport",
     "PcaWeightingReport",
+    "auto_weights",
     "benefit_of_doubt_weights",
     "critic_weights",
     "dirichlet_weights",
@@ -142,7 +148,9 @@ __all__ = [
     # Estimateurs
     "AGGREGATION_REGISTRY",
     "WEIGHTING_REGISTRY",
+    "BenefitOfDoubtScorer",
     "DominanceCountScorer",
+    "PcaProjectionScorer",
     "WeightedAggregator",
     # Diagnostics / comparaison / consensus
     "CoherenceReport",
