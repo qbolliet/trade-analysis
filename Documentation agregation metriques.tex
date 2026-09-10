@@ -1,0 +1,2007 @@
+\documentclass[11pt,a4paper]{article}
+
+\usepackage[T1]{fontenc}
+\usepackage[utf8]{inputenc}
+\usepackage[french]{babel}
+\usepackage{lmodern}
+\usepackage{microtype}
+\usepackage[margin=2.4cm]{geometry}
+\usepackage{amsmath,amssymb,amsthm,mathtools}
+\usepackage{booktabs}
+\usepackage{tabularx}
+\usepackage{enumitem}
+\usepackage{xcolor}
+\usepackage{tikz}
+\usetikzlibrary{arrows.meta,positioning,shapes.geometric,calc,fit,backgrounds}
+\usepackage{algorithm}
+\usepackage{algpseudocode}
+\usepackage{listings}
+\usepackage[hidelinks,colorlinks=true,linkcolor=Bleu,citecolor=Bleu,urlcolor=Bleu]{hyperref}
+
+\definecolor{Bleu}{HTML}{1F4E79}
+\definecolor{Gris}{HTML}{6B7280}
+\definecolor{GrisClair}{HTML}{F1F2F4}
+\definecolor{Rouge}{HTML}{A83232}
+\definecolor{Vert}{HTML}{2E6B4F}
+
+% --- Environnements de theoremes ---
+\theoremstyle{definition}
+\newtheorem{definition}{Définition}[section]
+\newtheorem{propriete}{Propriété}[section]
+\theoremstyle{remark}
+\newtheorem{remarque}{Remarque}[section]
+\newtheorem{avertissement}{Avertissement}[section]
+
+% --- Algorithmes en francais ---
+\floatname{algorithm}{Algorithme}
+\renewcommand{\listalgorithmname}{Liste des algorithmes}
+\algrenewcommand\algorithmicrequire{\textbf{Entrées :}}
+\algrenewcommand\algorithmicensure{\textbf{Sortie :}}
+\algrenewcommand\algorithmicfor{\textbf{pour}}
+\algrenewcommand\algorithmicforall{\textbf{pour tout}}
+\algrenewcommand\algorithmicdo{\textbf{faire}}
+\algrenewcommand\algorithmicwhile{\textbf{tant que}}
+\algrenewcommand\algorithmicend{\textbf{fin}}
+\algrenewcommand\algorithmicif{\textbf{si}}
+\algrenewcommand\algorithmicthen{\textbf{alors}}
+\algrenewcommand\algorithmicelse{\textbf{sinon}}
+\algrenewcommand\algorithmicreturn{\textbf{retourner}}
+
+% --- Listings Python ---
+\lstset{
+  language=Python,
+  basicstyle=\ttfamily\footnotesize,
+  keywordstyle=\color{Bleu}\bfseries,
+  commentstyle=\color{Vert}\itshape,
+  stringstyle=\color{Rouge},
+  backgroundcolor=\color{GrisClair},
+  frame=single,
+  rulecolor=\color{Gris},
+  breaklines=true,
+  showstringspaces=false,
+  columns=fullflexible,
+  extendedchars=true,
+  literate=%
+    {é}{{\'e}}1 {è}{{\`e}}1 {ê}{{\^e}}1 {à}{{\`a}}1 {ù}{{\`u}}1
+    {ç}{{\c c}}1 {î}{{\^i}}1 {ô}{{\^o}}1 {û}{{\^u}}1 {É}{{\'E}}1
+    {â}{{\^a}}1 {ë}{{\"e}}1 {ï}{{\"i}}1 {°}{{$^\circ$}}1 {œ}{{\oe}}1
+}
+
+% --- Raccourcis mathematiques ---
+\newcommand{\R}{\mathbb{R}}
+\newcommand{\N}{\mathbb{N}}
+\newcommand{\Z}{\mathbb{Z}}
+\newcommand{\PP}{\mathbb{P}}
+\newcommand{\EE}{\mathbb{E}}
+\newcommand{\Unif}{\mathcal{U}}
+\newcommand{\Bball}{\mathbb{B}}
+\newcommand{\Sphere}{\mathbb{S}}
+\newcommand{\norm}[1]{\left\lVert #1 \right\rVert}
+\newcommand{\abs}[1]{\left\lvert #1 \right\rvert}
+\newcommand{\scal}[2]{\left\langle #1 ,\, #2 \right\rangle}
+\newcommand{\ind}[1]{\mathbf{1}\{#1\}}
+\newcommand{\simplex}{\Delta^{d-1}}
+\newcommand{\Tmap}{\mathbf{T}}
+\newcommand{\pareto}{\succ_{\mathrm{P}}}
+
+\title{\textbf{Agrégation empirique de métriques de vulnérabilité}\\[0.3em]
+\large Construction, estimation et validation d'un score synthétique\\ sur les produits de la nomenclature combinée}
+\author{Note méthodologique}
+\date{\today}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+\noindent
+Ce document recense les méthodes permettant d'ordonner un ensemble de vecteurs de $\R^d$ (par exemple dont les composantes représentent des métriques de vulnérabilité calculées pour chaque nomenclature), sous la contrainte que \emph{tous} les
+coefficients de la synthèse soient déterminés empiriquement, sans hiérarchisation \emph{a priori}
+des composantes des vecteurs. Trois familles de méthodes sont explorées : les ordres partiels sans aucun poids (dominance de
+Pareto), les pondérations endogènes (entropie, CRITIC, ACP, \emph{benefit of the doubt}) associées
+à différentes fonctions d'agrégation, et les approches géométriques multivariées, dont les rangs
+de Kantorovitch fondés.
+Une dernière section propose un protocole de comparaison et de contrôle de cohérence entre
+agrégations.
+\end{abstract}
+
+\vspace{0.5em}
+{\small\tableofcontents}
+\newpage
+
+%=======================================================================
+\section{Cadrage et notations}
+%=======================================================================
+
+\subsection{Le problème}
+
+\medskip
+
+On dispose de $n$ produits de la nomenclature combinée, indexés par $i \in [n] := \{1,\dots,n\}$,
+et de $d$ métriques de vulnérabilité (indice de Herfindahl--Hirschman de concentration des
+fournisseurs, indices de dépendance, etc.), indexées par $j \in [d]$. Chaque produit est décrit
+par un vecteur ligne $x_i = (x_{i1},\dots,x_{id}) \in \R^d$, et l'ensemble des observations forme
+la matrice
+\[
+X = (x_{ij})_{i\in[n],\,j\in[d]} \in \R^{n\times d}.
+\]
+L'objectif est de construire une application de score $s : \R^d \to \R$ (ou, plus généralement,
+un ordre sur $\{x_1,\dots,x_n\}$) permettant de désigner les produits les plus vulnérables, en
+imposant que tout paramètre de $s$ soit \emph{estimé à partir de $X$} et non fixé par jugement
+d'expert.
+
+\bigskip
+
+\subsection{L'obstacle théorique}
+
+\medskip
+
+Il n'existe pas d'ordre canonique sur $\R^d$ pour $d \ge 2$ : aucun ordre total ne peut
+simultanément être compatible avec la structure d'espace vectoriel et invariant par permutation
+des coordonnées. Tout classement linéaire des produits repose donc nécessairement sur une
+hypothèse supplémentaire. Refuser de fixer des poids \emph{a priori} ne fait pas disparaître cette
+hypothèse : cela la déplace vers une propriété statistique des données, qui joue alors le rôle du
+jugement de valeur.
+
+\medskip
+
+\begin{avertissement}[Le coût caché de la pondération endogène]
+  \label{av:cout}
+  Chaque méthode « objective » substitue au jugement d'expert un postulat implicite :
+  \begin{itemize}[nosep,leftmargin=1.4em]
+    \item \textbf{entropie, CRITIC, ACP} : \emph{l'information utile est la variance}. Une métrique
+    qui discrimine peu entre produits reçoit un poids faible --- même si elle capture le mécanisme
+    de vulnérabilité le plus grave. Si toutes les positions NC sont exposées de la même manière à un
+    risque majeur, ce risque sera mécaniquement neutralisé par le score.
+    \item \textbf{ACP}: \emph{la vulnérabilité est la direction de plus grande dispersion}. Rien ne
+    garantit que le premier axe factoriel soit un axe de vulnérabilité plutôt que, par exemple, un
+    axe de volume d'échange ou un artefact d'échelle.
+    \item \textbf{\emph{benefit of the doubt}}: \emph{chaque produit doit être jugé sous la
+    pondération qui lui est la plus favorable}, ce qui, pour un indice de vulnérabilité, revient à
+    une lecture de précaution (voir §\ref{sec:bod}).
+    \item \textbf{transport optimal}: \emph{la position dans le nuage résume l'information}, avec
+    une notion de centralité \emph{multivariée} qui absorbe corrélations et échelles.
+  \end{itemize}
+\end{avertissement}
+
+\subsection{Vocabulaire}
+
+\begin{definition}[Compensation]
+  Une fonction d'agrégation $s$ est dite \emph{compensatoire} si une dégradation sur une coordonnée
+  peut être intégralement compensée par une amélioration sur une autre. Par exemple :
+  medskip
+  \begin{itemize}
+    \item La somme pondérée est totalement compensatoire ; 
+    \item l'ordre lexicographique ne est pas du tout compensatoire ;
+    \item la moyenne géométrique et les indices à pénalité occupent des positions intermédiaires.
+  \end{itemize}
+\end{definition}
+
+\bigskip
+
+\begin{definition}[Polarité]
+  Une métrique est de polarité \emph{positive} si une valeur élevée signale une vulnérabilité
+  élevée, et de polarité \emph{négative} dans le cas contraire.
+\end{definition}
+
+\bigskip
+
+\begin{definition}[Dominance de Pareto]
+  \label{def:pareto}
+  Après orientation de toutes les métriques en polarité positive, le produit $i$ \emph{domine} le
+  produit $k$, noté $x_i \pareto x_k$, si :
+
+  \medskip
+
+  \[
+  \forall j \in [d],\ x_{ij} \ge x_{kj}
+  \quad\text{et}\quad
+  \exists j_0 \in [d],\ x_{ij_0} > x_{kj_0}.
+  \]
+\end{definition}
+
+\bigskip
+
+\begin{propriete}[Monotonie, ou compatibilité paretienne]
+  \label{prop:monotonie}
+  Une fonction de score $s$ est \emph{compatible avec la dominance} si
+  $x_i \pareto x_k \Rightarrow s(x_i) > s(x_k)$.
+\end{propriete}
+
+La propriété \ref{prop:monotonie} est le seul axiome que l'on peut exiger sans engager de
+jugement de valeur. Elle fournit à ce titre le test de cohérence le plus discriminant du
+protocole de validation (§\ref{sec:violation}).
+
+\subsection{Présentation synthétique des méthodes}
+
+\medskip
+
+\begin{table}[htbp]
+  \centering
+  \small
+  \renewcommand{\arraystretch}{1.25}
+  \begin{tabularx}{\textwidth}{@{}l l c c X@{}}
+  \toprule
+  \textbf{Méthode} & \textbf{§} & \textbf{Poids} & \textbf{Compens.} & \textbf{Postulat implicite} \\
+  \midrule
+  Dominance de Pareto        & \ref{sec:pareto} & aucun      & non      & aucun (ordre partiel) \\
+  Tri non dominé             & \ref{sec:tri}    & aucun      & non      & les fronts successifs sont ordonnés \\
+  Entropie de Shannon        & \ref{sec:entropie} & endogène & variable & information $=$ dispersion \\
+  CRITIC                     & \ref{sec:critic} & endogène   & variable & information $=$ dispersion $\times$ originalité \\
+  ACP / axe 1                & \ref{sec:acp}    & endogène   & oui      & vulnérabilité $=$ axe de plus grande variance \\
+  \emph{Benefit of the doubt}& \ref{sec:bod}    & endogène, individualisée & oui & jugement sous la pondération la plus favorable \\
+  Moyenne géométrique        & \ref{sec:geo}    & endogène   & partielle& les profils déséquilibrés sont pénalisés \\
+  Indice MPI                 & \ref{sec:mpi}    & aucun      & partielle& idem, avec pénalité explicite \\
+  TOPSIS                     & \ref{sec:topsis} & endogène   & oui      & proximité à un pôle idéal empirique \\
+  Mahalanobis                & \ref{sec:maha}   & endogène   & oui      & la corrélation mesure la redondance \\
+  Rang de Kantorovitch       & \ref{sec:ot}     & endogène   & oui      & vulnérabilité $=$ position dans le nuage \\
+  SMAA                       & \ref{sec:smaa}   & aléatoires & --       & ignorance $=$ loi uniforme sur le simplexe \\
+  \bottomrule
+  \end{tabularx}
+  \caption{Vue d'ensemble. La colonne « Poids » indique si la méthode requiert des coefficients et,
+  le cas échéant, comment ils sont obtenus.}
+\end{table}
+
+%=======================================================================
+\section{Préalables : polarité, normalisation, diagnostic}
+\label{sec:prealables}
+%=======================================================================
+
+\medskip
+
+Le choix de normalisation influence le
+classement final ; il doit
+être traité comme une décision méthodologique à part entière et versé à l'analyse de sensibilité.
+
+\bigskip
+
+\subsection{Orientation des métriques}
+
+\medskip
+
+Toutes les coordonnées doivent être mises en polarité positive. Pour une métrique de polarité
+négative, on applique $x_{ij} \mapsto -x_{ij}$, ou $x_{ij} \mapsto \max_k x_{kj} - x_{ij}$, ou
+encore $x_{ij}\mapsto 1/x_{ij}$ si la métrique est strictement positive et que l'inversion a un
+sens économique. Ces trois transformations ne sont pas équivalentes : seule la première est
+affine, donc seule elle laisse invariants les résultats des méthodes fondées sur la covariance
+(ACP, Mahalanobis, transport optimal dans le cas elliptique).
+
+\bigskip
+
+\subsection{Traitement des queues de distribution}
+
+\medskip
+
+Les indices de concentration (HHI et apparentés) produisent typiquement des distributions très
+asymétriques : une poignée de positions NC atteignent des valeurs extrêmes tandis que la masse est
+concentrée près de $0$. Trois attitudes possibles, à documenter :
+
+\medskip
+
+\begin{enumerate}[nosep,leftmargin=1.6em]
+  \item \textbf{Ne rien faire.} Les extrêmes sont précisément les produits que l'on cherche à
+  identifier. Cohérent, mais la normalisation min--max sera pilotée par un unique produit, et
+  l'ACP par quelques points de levier.
+  \item \textbf{Winsorisation} au quantile $q$ (typiquement $q = 0{,}99$) : $x_{ij} \mapsto
+  \min(x_{ij}, F_j^{-1}(q))$. Stabilise les statistiques d'échelle sans écraser l'ordre.
+  \item \textbf{Transformation monotone} ($\log(1+x)$, racine, transformation de Box--Cox
+  ajustée par maximum de vraisemblance). Le paramètre de Box--Cox est estimé sur les données.
+\end{enumerate}
+
+\medskip
+
+\begin{remarque}
+  Une transformation strictement croissante appliquée coordonnée par coordonnée laisse la relation
+  de dominance $\pareto$ \emph{invariante}: le front de Pareto est donc insensible à ce choix.
+  C'est un argument fort en faveur du calcul systématique de ce front comme point de référence
+  (§\ref{sec:pareto}).
+\end{remarque}
+
+\bigskip
+
+\subsection{Familles de normalisation}
+
+\medskip
+
+\begin{table}[htbp]
+  \centering
+  \small
+  \renewcommand{\arraystretch}{1.4}
+  \begin{tabularx}{\textwidth}{@{}l l X@{}}
+    \toprule
+    \textbf{Schéma} & \textbf{Formule} & \textbf{Effet sur le classement} \\
+    \midrule
+    Min--max &
+    $\tilde{x}_{ij} = \dfrac{x_{ij}-\min_k x_{kj}}{\max_k x_{kj}-\min_k x_{kj}}$ &
+    Borne dans $[0,1]$, conserve les écarts relatifs. Très sensible aux deux valeurs extrêmes:
+    un seul produit atypique comprime toute la métrique. \\
+    Centrage--réduction &
+    $\tilde{x}_{ij} = \dfrac{x_{ij}-\bar{x}_j}{\sigma_j}$ &
+    Égalise les variances, donc \emph{égalise implicitement les poids} dans une somme. Non borné ;
+    conserve l'asymétrie. \\
+    Robuste &
+    $\tilde{x}_{ij} = \dfrac{x_{ij}-\mathrm{med}_j}{\mathrm{MAD}_j}$ &
+    Idem, insensible aux extrêmes. Recommandé avec des HHI. \\
+    Rangs &
+    $\tilde{x}_{ij} = \dfrac{\mathrm{rg}(x_{ij})-1}{n-1}$ &
+    Détruit toute information cardinale (un écart énorme et un écart infime deviennent identiques),
+    mais rend le score invariant à toute transformation monotone. \\
+    Quantile gaussien &
+    $\tilde{x}_{ij} = \Phi^{-1}\!\big(\tfrac{\mathrm{rg}(x_{ij})-1/2}{n}\big)$ &
+    Marges gaussiennes, corrélations préservées en structure (copule). Utile en amont d'une ACP ou
+    d'un transport optimal. \\
+    \bottomrule
+  \end{tabularx}
+  \caption{Schémas de normalisation. Aucun n'est neutre; le centrage--réduction en particulier
+  constitue déjà une pondération déguisée.}
+  \label{tab:normalisation}
+\end{table}
+
+\bigskip
+
+\subsection{Diagnostic de corrélation}
+
+\medskip
+
+Avant toute agrégation, examiner la matrice de corrélation $R = (r_{jk})$ des métriques
+normalisées, de préférence par corrélation de Spearman (monotone, robuste). Ce diagnostic
+conditionne le choix de la famille de méthodes :
+
+\medskip
+
+\begin{itemize}[nosep,leftmargin=1.4em]
+  \item \textbf{Métriques fortement corrélées} ($\abs{r_{jk}}$ élevés): une somme pondérée compte
+  plusieurs fois la même information sous-jacente. Privilégier ACP, Mahalanobis, CRITIC ou
+  transport optimal, qui décorrèlent explicitement.
+  \item \textbf{Métriques quasi indépendantes}: l'ACP n'a pas d'axe dominant, son premier axe est
+  arbitraire et instable. Privilégier les pondérations par dispersion ou les ordres partiels.
+  \item \textbf{Corrélations négatives}: signale des mécanismes de vulnérabilité antagonistes.
+  L'agrégation en un score unique perd alors beaucoup d'information; envisager plusieurs scores
+  thématiques, ou une méthode acceptant l'incomparabilité.
+\end{itemize}
+
+\bigskip
+
+On peut compléter cette première analyse par le calcul de l'indice KMO et le test de sphéricité de Bartlett pour évaluer si une structure
+factorielle est seulement plausible.
+
+\bigskip
+
+\begin{algorithm}[htbp]
+  \caption{Prétraitement}
+  \label{algo:pretraitement}
+  \begin{algorithmic}[1]
+    \Require matrice brute $X\in\R^{n\times d}$, vecteur de polarités $p\in\{-1,+1\}^d$,
+    quantile de winsorisation $q$, schéma de normalisation $\nu$
+    \Ensure matrice normalisée $\tilde{X}$, matrice de corrélation $R$
+    \For{$j = 1$ \textbf{à} $d$}
+      \If{$p_j = -1$} $x_{\cdot j} \gets -x_{\cdot j}$ \Comment{Orientation en polarité positive}
+      \EndIf
+      \State $x_{\cdot j} \gets \min\!\big(x_{\cdot j},\, \hat{F}_j^{-1}(q)\big)$
+            \Comment{Winsorisation des valeurs extrêmes}
+      \State $\tilde{x}_{\cdot j} \gets \nu(x_{\cdot j})$
+            \Comment{Application du schéma retenu, cf. table~\ref{tab:normalisation}}
+    \EndFor
+    \State $R \gets \operatorname{corr}_{\text{Spearman}}(\tilde{X})$
+    \State \textbf{Contrôle :} valeurs manquantes, colonnes constantes, produits dupliqués
+    \State \Return $\tilde{X}$, $R$
+  \end{algorithmic}
+\end{algorithm}
+
+\bigskip
+
+\begin{avertissement}
+  Les positions NC auxuqelles sont associées de très faibles volumes produisent des métriques de concentration numériquement
+  extrêmes mais statistiquement non significatives (un HHI calculé sur trois déclarations vaut
+  mécaniquement près de $1$). Il est préférable de \emph{filtrer explicitement} ces positions,
+  ou de leur associer un intervalle de confiance et de propager cette incertitude dans le
+  classement (§\ref{sec:bootstrap}), plutôt que de laisser le score les hisser en tête.
+\end{avertissement}
+
+\bigskip
+
+%=======================================================================
+\section{Ordres partiels : classer sans aucun coefficient}
+\label{sec:pareto}
+%=======================================================================
+
+\subsection{Idée}
+
+C'est la seule construction totalement dépourvue d'hypothèse. On n'ordonne que les paires de
+produits pour lesquelles \emph{toutes} les métriques concordent (définition \ref{def:pareto}).
+Le résultat n'est pas un classement complet mais un ordre partiel, dont l'élément saillant est
+le \emph{front de Pareto} :
+
+\medskip
+
+\[
+\mathcal{F}_1 = \big\{ i \in [n] \;:\; \nexists\, k \in [n],\ x_k \pareto x_i \big\},
+\]
+
+\bigskip
+
+l'ensemble des produits non dominés, c'est-à-dire ceux que l'on ne peut écarter du haut du
+classement sans déclarer arbitrairement qu'un critère prime sur un autre.
+
+\bigskip
+
+\begin{figure}[htbp]
+  \centering
+  \begin{tikzpicture}[scale=1.0]
+    \draw[->,thick,Gris] (0,0) -- (7.2,0) node[right,black,font=\small] {métrique 1};
+    \draw[->,thick,Gris] (0,0) -- (0,5.0) node[above,black,font=\small] {métrique 2};
+    % points domines
+    \foreach \x/\y in {0.8/1.0, 1.5/0.6, 2.0/1.9, 1.2/2.4, 2.9/1.2, 3.5/2.2, 2.4/3.0,
+                      4.2/1.0, 4.9/1.8, 3.1/0.5, 5.4/1.1, 2.6/2.2, 0.6/3.0, 4.0/2.9}
+      \fill[Gris] (\x,\y) circle (2.1pt);
+    % front de Pareto
+    \foreach \x/\y in {0.9/4.4, 2.2/4.1, 3.6/3.7, 5.0/3.3, 6.1/2.4, 6.6/1.4}
+      \fill[Rouge] (\x,\y) circle (3pt);
+    \draw[Rouge,thick,dashed] (0.9,4.4) -- (2.2,4.1) -- (3.6,3.7) -- (5.0,3.3) -- (6.1,2.4) -- (6.6,1.4);
+    \node[Rouge,font=\small\bfseries] at (3.0,4.65) {front de Pareto $\mathcal{F}_1$};
+    % cone de dominance
+    \begin{scope}[opacity=0.18]
+      \fill[Bleu] (3.5,2.2) rectangle (7.0,4.8);
+    \end{scope}
+    \draw[Bleu,thick,-{Stealth}] (3.5,2.2) -- (4.6,2.2);
+    \draw[Bleu,thick,-{Stealth}] (3.5,2.2) -- (3.5,3.3);
+    \node[Bleu,font=\scriptsize,align=center] at (5.7,4.15) {cône des points\\ qui dominent $x_i$};
+    \fill[Bleu] (3.5,2.2) circle (2.5pt) node[below left,font=\scriptsize,black] {$x_i$};
+  \end{tikzpicture}
+  \caption{Dominance de Pareto en dimension $2$, les deux métriques étant orientées en polarité
+  positive. Un produit est dominé s'il existe au moins un point dans le cône supérieur droit issu
+  de lui.}
+\end{figure}
+
+\bigskip
+
+\subsection{Tri non dominé et raffinements ordinaux}
+\label{sec:tri}
+
+\medskip
+
+Le front seul ne discrimine pas à l'intérieur de l'ensemble qu'il détermine, aussi trois raffinements, tous sans pondération, peuvent leur être associés:
+
+\medskip
+
+\paragraph{Tri non dominé par couches.} On retire $\mathcal{F}_1$, on recalcule le front sur le
+reste pour obtenir $\mathcal{F}_2$, et ainsi de suite. Le rang de couche $\ell(i)$ définit un
+classement ordinal grossier. C'est la procédure de tri de NSGA-II (algorithme \ref{algo:nds}), de
+complexité $O(d\,n^2)$ dans sa version naïve.
+
+\bigskip
+
+\paragraph{Comptage de dominance.} Pour chaque produit,
+\[
+\delta(i) = \underbrace{\#\{k : x_i \pareto x_k\}}_{\text{ce qu'il domine}}
+          - \underbrace{\#\{k : x_k \pareto x_i\}}_{\text{ce qui le domine}},
+\]
+qui fournit un score entier plus finement discriminant que la couche. C'est un raffinement de
+l'ordre partiel : si $x_i \pareto x_k$ alors $\delta(i) > \delta(k)$, la
+propriété \ref{prop:monotonie} est donc satisfaite par construction.
+
+\bigskip
+
+\paragraph{Profondeur de dominance normalisée.} $\delta(i)/(n-1) \in [-1,1]$, directement
+comparable entre jeux de données de tailles différentes.
+
+\medskip
+
+\begin{algorithm}[htbp]
+  \caption{Tri non dominé et comptage de dominance}
+  \label{algo:nds}
+  \begin{algorithmic}[1]
+  \Require $\tilde{X}\in\R^{n\times d}$ (métriques orientées en polarité positive)
+  \Ensure couches $(\mathcal{F}_\ell)_\ell$, comptage $\delta \in \Z^n$
+  \For{$i = 1$ \textbf{à} $n$}
+    \State $S_i \gets \emptyset$ \Comment{Ensemble des produits dominés par $i$}
+    \State $c_i \gets 0$ \Comment{Nombre de produits dominant $i$}
+    \For{$k = 1$ \textbf{à} $n$, $k \neq i$}
+      \If{$\tilde{x}_i \pareto \tilde{x}_k$} $S_i \gets S_i \cup \{k\}$
+      \ElsIf{$\tilde{x}_k \pareto \tilde{x}_i$} $c_i \gets c_i + 1$
+      \EndIf
+    \EndFor
+    \State $\delta_i \gets \abs{S_i} - c_i$
+  \EndFor
+  \State $\ell \gets 1$~;\quad $\mathcal{F}_1 \gets \{i : c_i = 0\}$
+  \While{$\mathcal{F}_\ell \neq \emptyset$}
+    \State $\mathcal{Q} \gets \emptyset$
+    \ForAll{$i \in \mathcal{F}_\ell$}
+      \ForAll{$k \in S_i$}
+        \State $c_k \gets c_k - 1$
+        \If{$c_k = 0$} $\mathcal{Q} \gets \mathcal{Q}\cup\{k\}$ \Comment{Le produit affleure la couche suivante}
+        \EndIf
+      \EndFor
+    \EndFor
+    \State $\ell \gets \ell + 1$~;\quad $\mathcal{F}_\ell \gets \mathcal{Q}$
+  \EndWhile
+  \State \Return $(\mathcal{F}_\ell)_\ell$, $\delta$
+  \end{algorithmic}
+\end{algorithm}
+
+\bigskip
+
+\subsection{Limites et stratégies de résolution}
+
+\medskip
+
+La proportion attendue de points non dominés croît très vite avec $d$ : pour $n$ points de
+coordonnées indépendantes, l'espérance du cardinal du front est de l'ordre de
+$(\ln n)^{d-1}/(d-1)!$. Avec $d = 3$ et $n = 5\,000$, cela reste modeste ; avec $d \ge 8$ le front
+absorbe une part importante de la nomenclature et cesse d'être informatif. Il existe deux moyens de pallier ce comportement :
+
+\medskip
+
+\begin{itemize}[nosep,leftmargin=1.4em]
+  \item \textbf{Cône élargi} ($\varepsilon$-dominance): on remplace $\pareto$ par
+  $x_i \pareto^{\varepsilon} x_k \iff \forall j,\ x_{ij} \ge x_{kj} - \varepsilon_j$, ce qui
+  élargit le cône de dominance et réduit le front. Le vecteur $\varepsilon$ peut être calibré
+  empiriquement, par exemple comme l'écart-type du bruit d'estimation de chaque métrique (obtenu
+  par bootstrap), ce qui lui donne une interprétation statistique plutôt qu'arbitraire.
+  \item \textbf{Réduction préalable de $d$} par regroupement des métriques redondantes (classification
+  ascendante hiérarchique sur $1-\abs{r_{jk}}$), le front étant ensuite calculé sur les
+  représentants de groupes.
+\end{itemize}
+
+\bigskip
+
+\begin{remarque}[Rôle dans le dispositif]
+  Le front de Pareto ne suffit jamais à conclure, mais il constitue un \emph{invariant} précieux :
+  il ne dépend ni de la normalisation monotone, ni des poids, ni de la fonction d'agrégation.
+  Tout score synthétique qui ne placerait pas les éléments de $\mathcal{F}_1$ en haut du classement
+  doit être considéré comme suspect (§\ref{sec:violation}).
+\end{remarque}
+
+\bigskip
+
+%=======================================================================
+\section{Pondérations endogènes}
+\label{sec:poids}
+%=======================================================================
+
+\medskip
+
+On cherche ici un vecteur de poids $w = (w_1,\dots,w_d)$ appartenant au simplexe :
+
+\medskip
+
+\[
+\simplex = \Big\{ w \in \R^d_+ \;:\; \textstyle\sum_{j=1}^d w_j = 1 \Big\},
+\]
+
+\bigskip
+
+entièrement déterminé par $X$. Les quatre méthodes ci-dessous diffèrent par la statistique de $X$
+qu'elles convertissent en poids.
+
+%-----------------------------------------------------------------------
+\subsection{Pondération par l'entropie de Shannon}
+\label{sec:entropie}
+
+\paragraph{Idée.} Une métrique dont les valeurs sont quasi identiques sur tous les produits
+n'aide pas à les distinguer : elle porte peu d'\emph{information} au sens de Shannon, et reçoit
+donc un poids faible. Une métrique dont les valeurs sont très étalées reçoit un poids fort.
+
+\paragraph{Construction.} On normalise chaque colonne (positive) en distribution de probabilité,
+\[
+p_{ij} = \frac{\tilde{x}_{ij}}{\sum_{k=1}^n \tilde{x}_{kj}},
+\]
+puis on calcule l'entropie normalisée de la colonne $j$ et son degré de divergence:
+\[
+E_j = -\frac{1}{\ln n}\sum_{i=1}^n p_{ij}\ln p_{ij} \in [0,1],
+\qquad
+g_j = 1 - E_j,
+\qquad
+w_j = \frac{g_j}{\sum_{k=1}^d g_k}.
+\]
+Par convention $p_{ij}\ln p_{ij} = 0$ lorsque $p_{ij}=0$. Le maximum $E_j = 1$ est atteint quand la
+métrique est constante ; on a alors $w_j = 0$.
+
+\bigskip
+
+\begin{avertissement}
+  La méthode exige $\tilde{x}_{ij} \ge 0$ et est \emph{non invariante par translation} : ajouter une
+  constante à une colonne modifie ses poids. Elle doit donc impérativement être appliquée après une
+  normalisation min--max, et le résultat rapporté conjointement avec le schéma de normalisation
+  utilisé. C'est un des points où l'analyse de sensibilité de la section \ref{sec:comparaison} est
+  la plus instructive.
+\end{avertissement}
+
+\bigskip
+
+%-----------------------------------------------------------------------
+\subsection{CRITIC}
+\label{sec:critic}
+
+\medskip
+
+\paragraph{Idée.} L'entropie ne regarde qu'une colonne à la fois et ignore la redondance : deux
+métriques quasi identiques reçoivent chacune un poids plein, et le mécanisme qu'elles capturent
+pèse donc double. CRITIC (\emph{CRiteria Importance Through Intercriteria Correlation}) corrige
+cela en pondérant chaque métrique par le produit de sa \emph{dispersion} et de son
+\emph{originalité} vis-à-vis des autres.
+
+\medskip
+
+\paragraph{Construction.} Sur données min--max normalisées, avec $\sigma_j$ l'écart-type de la
+colonne $j$ et $r_{jk}$ la corrélation entre colonnes $j$ et $k$ :
+\[
+C_j = \sigma_j \sum_{k=1}^{d} \big(1 - r_{jk}\big),
+\qquad
+w_j = \frac{C_j}{\sum_{m=1}^d C_m}.
+\]
+Le terme $\sum_k (1 - r_{jk})$ est maximal lorsque $j$ est anticorrélée à toutes les autres
+métriques, minimal lorsqu'elle en est une réplique. Une variante robuste remplace $\sigma_j$ par
+le MAD et $r$ par la corrélation de Spearman ; elle est préférable ici.
+
+\medskip
+
+\begin{algorithm}[htbp]
+  \caption{Poids par entropie et par CRITIC}
+  \label{algo:poids}
+  \begin{algorithmic}[1]
+    \Require $\tilde{X}\in[0,1]^{n\times d}$ (normalisation min--max, polarité positive)
+    \Ensure $w^{\mathrm{ent}}, w^{\mathrm{cri}} \in \simplex$
+    \Statex \textbf{-- Entropie --}
+    \For{$j = 1$ \textbf{à} $d$}
+      \State $p_{\cdot j} \gets \tilde{x}_{\cdot j} / \sum_i \tilde{x}_{ij}$
+            \Comment{Conversion de la colonne en distribution}
+      \State $E_j \gets -\frac{1}{\ln n}\sum_i p_{ij}\ln p_{ij}$ \Comment{Convention $0\ln 0 = 0$}
+      \State $g_j \gets 1 - E_j$
+    \EndFor
+    \State $w^{\mathrm{ent}} \gets g / \sum_j g_j$
+    \Statex \textbf{-- CRITIC --}
+    \State $R \gets \operatorname{corr}(\tilde{X})$~;\quad $\sigma \gets \operatorname{sd}(\tilde{X})$
+    \For{$j = 1$ \textbf{à} $d$}
+      \State $C_j \gets \sigma_j \sum_{k} (1 - r_{jk})$
+            \Comment{Dispersion pondérée par l'originalité du critère}
+    \EndFor
+    \State $w^{\mathrm{cri}} \gets C / \sum_j C_j$
+    \State \Return $w^{\mathrm{ent}}, w^{\mathrm{cri}}$
+  \end{algorithmic}
+\end{algorithm}
+
+\bigskip
+
+%-----------------------------------------------------------------------
+\subsection{Analyse en composantes principales}
+\label{sec:acp}
+
+\paragraph{Idée.} Si les métriques sont corrélées, c'est qu'elles mesurent en partie une même
+grandeur latente. L'ACP identifie cette grandeur comme la direction de variance maximale et
+l'utilise comme indice composite.
+
+\paragraph{Construction.} Sur données centrées-réduites $Z$, on diagonalise la matrice de
+corrélation $R = \frac{1}{n-1}Z^\top Z$ :
+\[
+R = \sum_{m=1}^{d}\lambda_m\, a_m a_m^\top,
+\qquad \lambda_1 \ge \dots \ge \lambda_d \ge 0,
+\qquad \norm{a_m} = 1.
+\]
+Le score du premier axe est $s^{\mathrm{ACP}}(x_i) = \scal{a_1}{z_i}$. Trois précautions
+indispensables :
+\begin{enumerate}[nosep,leftmargin=1.6em]
+  \item \textbf{Signe.} $a_1$ n'est défini qu'au signe près. On fixe la convention en imposant
+  $\sum_j a_{1j} > 0$, de sorte qu'un score élevé corresponde bien à des métriques élevées.
+  \item \textbf{Positivité des saturations.} Si certaines composantes de $a_1$ sont négatives, le
+  score \emph{viole la monotonie} (propriété \ref{prop:monotonie}) : augmenter une vulnérabilité
+  peut faire baisser l'indice. C'est rédhibitoire pour un usage administratif. On rapporte alors
+  la part de variance du premier axe et l'on envisage soit une contrainte de positivité (ACP non
+  négative, \emph{NMF}), soit une autre méthode.
+  \item \textbf{Part de variance.} Si $\lambda_1/d$ est faible (disons $< 0{,}5$), il n'existe pas
+  de facteur dominant ; le premier axe n'est alors qu'une direction parmi d'autres, et son
+  instabilité par rééchantillonnage sera visible au bootstrap.
+\end{enumerate}
+
+\bigskip
+
+\paragraph{Variante multi-axes (procédure OCDE--JRC).} Plutôt que le seul premier axe, on retient
+les $M$ composantes de valeur propre $\lambda_m > 1$, on leur applique une rotation varimax pour
+obtenir des saturations $\ell_{jm}$ interprétables, puis on définit :
+
+\medskip
+
+\[
+w_j \;\propto\; \max_{m \le M} \ell_{jm}^2 \cdot \frac{\lambda_m}{\sum_{m'\le M}\lambda_{m'}} .
+\]
+
+\bigskip
+
+Chaque métrique est ainsi rattachée au facteur qu'elle sature le plus, et chaque facteur pèse à
+proportion de la variance qu'il explique. C'est la procédure de référence du \emph{Handbook on
+Constructing Composite Indicators}.
+
+\bigskip
+
+%-----------------------------------------------------------------------
+\subsection{\emph{Benefit of the doubt} : une pondération par produit}
+\label{sec:bod}
+
+\paragraph{Idée.} Les méthodes précédentes cherchent \emph{un} vecteur de poids valable pour tous.
+L'approche \emph{benefit of the doubt} (BoD) attribue à chaque produit la pondération qui lui est la
+plus favorable, sous la seule contrainte que cette pondération, appliquée à tous les autres
+produits, ne produise aucun score supérieur à $1$.
+
+\paragraph{Construction.} Pour chaque produit $o \in [n]$, on résout le programme linéaire
+
+\medskip
+
+\[
+\begin{aligned}
+s^{\mathrm{BoD}}(x_o) \;=\; \max_{w^{(o)} \in \R^d_+} \quad & \sum_{j=1}^d w^{(o)}_j \tilde{x}_{oj} \\
+\text{s.c.} \quad & \sum_{j=1}^d w^{(o)}_j \tilde{x}_{ij} \le 1, \quad \forall i \in [n], \\
+& w^{(o)}_j \ge 0, \quad \forall j \in [d].
+\end{aligned}
+\tag{BoD}
+\]
+
+\bigskip
+
+Le score obtenu appartient à $(0,1]$ et vaut $1$ si et seulement s'il existe une pondération
+positive sous laquelle le produit $o$ est le meilleur de tous.
+
+\bigskip
+
+\paragraph{Interprétation pour un indice de vulnérabilité.} Le sens du « bénéfice du doute »
+mérite d'être explicité, car il s'inverse par rapport à l'usage habituel. Dans un indice de
+performance, BoD est bienveillant: il donne à chaque unité sa meilleure chance. Ici, l'objet
+mesuré est une vulnérabilité: l'optimum retenu est donc celui qui rend le produit \emph{aussi
+vulnérable que possible}. La lecture est celle de la précaution: \emph{un produit est signalé
+dès lors qu'il existe au moins une pondération admissible sous laquelle il est en tête}. Cela permet de mettre en évidence des vulnérabilités en étant averse au risque.
+
+\bigskip
+
+\begin{propriete}[Lien avec la dominance]
+  $s^{\mathrm{BoD}}(x_o) = 1$ implique que $x_o$ n'est dominé par aucun autre produit. La réciproque
+  est fausse: un produit du front de Pareto situé dans une « concavité » du front peut obtenir un
+  score strictement inférieur à $1$. Le score BoD est donc un raffinement \emph{convexe} du front de
+  Pareto, et il satisfait la monotonie de la propriété~\ref{prop:monotonie}.
+\end{propriete}
+
+\begin{avertissement}[Solutions dégénérées]
+  Sans contrainte supplémentaire, le programme (BoD) attribue fréquemment tout le poids à une seule
+  métrique et ignore les autres, ce qui vide l'indice
+  composite de son sens. Le remède standard consiste à ajouter des \emph{restrictions de poids}
+  proportionnelles, elles-mêmes calibrées empiriquement :
+
+  \medskip
+
+  \[
+  \underline{\pi} \;\le\; \frac{w^{(o)}_j \tilde{x}_{oj}}{\sum_{k} w^{(o)}_k \tilde{x}_{ok}} \;\le\; \overline{\pi},
+  \qquad \forall j \in [d],
+  \]
+
+  \bigskip
+
+  où $\underline{\pi} = \kappa/d$ et $\overline{\pi} = 1/(\kappa d)$ avec, par exemple,
+  $\kappa = 1/2$: aucune métrique ne peut contribuer à moins de la moitié ni à plus du double de sa
+  part uniforme. Ces bornes restent des paramètres, mais elles portent sur la \emph{structure} de la
+  pondération et non sur la hiérarchie des critères ; elles se prêtent bien à un test de robustesse
+  en faisant varier $\kappa$.
+\end{avertissement}
+
+\bigskip
+
+\begin{algorithm}[htbp]
+\caption{Score \emph{benefit of the doubt} avec restrictions de poids}
+\label{algo:bod}
+\begin{algorithmic}[1]
+\Require $\tilde{X}\in[0,1]^{n\times d}$, paramètre de restriction $\kappa \in (0,1]$
+\Ensure scores $s^{\mathrm{BoD}} \in (0,1]^n$, pondérations individuelles $(w^{(o)})_{o\in[n]}$
+\For{$o = 1$ \textbf{à} $n$}
+  \State Construire l'objectif $\max_w \; \tilde{x}_o^\top w$
+  \State Contraintes de non-domination : $\tilde{X} w \le \mathbf{1}_n$
+  \State Contraintes de part : $\kappa/d \le (w_j \tilde{x}_{oj})/(\tilde{x}_o^\top w) \le 1/(\kappa d)$
+         \Comment{Linéarisation immédiate en multipliant par $\tilde{x}_o^\top w > 0$}
+  \State $(s^{\mathrm{BoD}}_o, w^{(o)}) \gets$ résolution du programme linéaire
+\EndFor
+\State \Return $s^{\mathrm{BoD}}$, $(w^{(o)})_o$
+\end{algorithmic}
+\end{algorithm}
+
+\bigskip
+
+\begin{remarque}[Coût]
+  Le programme est résolu $n$ fois, chacun avec $n$ contraintes. Avec $n \sim 5\,000$ positions NC,
+  c'est faisable mais non trivia ~: on réduit fortement le coût en n'imposant les contraintes de
+  non-domination que sur l'enveloppe convexe supérieure du nuage (les seules contraintes actives),
+  identifiable au préalable par calcul de l'enveloppe convexe ou du front de Pareto.
+\end{remarque}
+
+\bigskip
+
+%-----------------------------------------------------------------------
+\subsection{Récapitulatif : que produisent ces pondérations ?}
+
+\medskip
+
+Les quatre méthodes livrent des vecteurs de poids qui n'ont aucune raison de coïncider. Il ne
+faut pas y voir un défaut mais un résultat: l'écart entre eux mesure exactement l'indétermination
+que la contrainte « pas de poids \emph{a priori} » laisse subsister. Le protocole de la
+section~\ref{sec:comparaison} est conçu pour exploiter cet écart plutôt que pour le masquer par le
+choix d'un gagnant.
+
+\bigskip
+
+%=======================================================================
+\section{Fonctions d'agrégation}
+\label{sec:agregation}
+%=======================================================================
+
+\medskip
+
+Une fois les poids obtenus, il reste à choisir comment les combiner. Ce choix est indépendant du
+précédent et porte sur une question différente : \emph{jusqu'où une métrique favorable peut-elle
+racheter une métrique défavorable ?}
+
+\medskip
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[scale=1.6]
+  \foreach \dx/\titre/\type in {0/{Somme pondérée}/lin, 3.4/{Moyenne géométrique}/geo, 6.8/{Indice à pénalité}/pen}{
+    \begin{scope}[xshift=\dx cm]
+      \draw[->,Gris] (0,0) -- (2.3,0) node[right,black,font=\scriptsize] {$m_1$};
+      \draw[->,Gris] (0,0) -- (0,2.3) node[above,black,font=\scriptsize] {$m_2$};
+      \node[font=\scriptsize\bfseries,black] at (1.15,2.6) {\titre};
+    \end{scope}
+  }
+  % iso-lignes lineaires
+  \begin{scope}
+    \foreach \c in {0.8,1.4,2.0} \draw[Bleu,thick] (\c,0.05) -- (0.05,\c);
+  \end{scope}
+  % iso-lignes geometriques (hyperboles)
+  \begin{scope}[xshift=3.4cm]
+    \foreach \c in {0.16,0.49,1.0}
+      \draw[Bleu,thick,domain=0.08:2.2,samples=80,variable=\x] plot ({\x},{min(\c/\x,2.2)});
+  \end{scope}
+  % iso-lignes penalisees (encore plus courbees)
+  \begin{scope}[xshift=6.8cm]
+    \foreach \c in {0.35,0.75,1.25}
+      \draw[Bleu,thick,domain=0.16:2.2,samples=80,variable=\x] plot ({\x},{min((\c/\x)^1.6,2.2)});
+  \end{scope}
+  \node[font=\scriptsize,Gris,align=center] at (1.15,-0.55) {compensation\\totale};
+  \node[font=\scriptsize,Gris,align=center] at (4.55,-0.55) {compensation\\partielle};
+  \node[font=\scriptsize,Gris,align=center] at (7.95,-0.55) {compensation\\faible};
+\end{tikzpicture}
+\vspace{0.6em}
+\caption{Courbes d'iso-score pour trois familles d'agrégation, avec deux métriques. Plus les
+courbes sont incurvées vers l'origine, plus un profil déséquilibré est pénalisé à somme égale.}
+\end{figure}
+
+\bigskip
+
+%-----------------------------------------------------------------------
+\subsection{Somme pondérée}
+
+\medskip
+
+\[
+s^{\mathrm{lin}}(x_i) = \sum_{j=1}^d w_j\,\tilde{x}_{ij}.
+\]
+Totalement compensatoire, monotone, immédiate à expliquer et à auditer. Son défaut est aussi sa
+propriété : un produit médiocre partout et un produit catastrophique sur une seule dimension
+peuvent obtenir le même score. Si la vulnérabilité opérationnelle relève d'un « maillon faible »,
+cette agrégation est mal spécifiée.
+
+%-----------------------------------------------------------------------
+\subsection{Moyenne géométrique pondérée}
+\label{sec:geo}
+
+\medskip
+
+\[
+s^{\mathrm{geo}}(x_i) = \prod_{j=1}^d \tilde{x}_{ij}^{\,w_j}
+= \exp\Big(\sum_{j=1}^d w_j \ln \tilde{x}_{ij}\Big),
+\qquad \tilde{x}_{ij} > 0.
+\]
+
+\bigskip
+
+Le passage au logarithme montre qu'il s'agit d'une somme pondérée sur une échelle logarithmique :
+la substituabilité entre métriques devient limitée, et une valeur proche de zéro tire tout le
+score vers le bas. Deux précautions : décaler les données ($\tilde{x} \mapsto \tilde{x} + \epsilon$
+avec $\epsilon$ petit, par exemple $10^{-3}$) pour éviter les zéros, et vérifier que le résultat
+n'est pas piloté par ce décalage --- c'est un test de sensibilité à part entière.
+
+\bigskip
+
+%-----------------------------------------------------------------------
+\subsection{Indice à pénalité de déséquilibre (Mazziotta--Pareto)}
+\label{sec:mpi}
+
+\medskip
+
+\paragraph{Idée.} Pénaliser explicitement l'hétérogénéité du profil d'un produit, sans introduire
+de poids : à moyenne égale, un produit vulnérable sur une seule dimension et sûr ailleurs est
+jugé plus sévèrement qu'un produit uniformément moyen.
+
+\bigskip
+
+\paragraph{Construction.} On normalise en scores standardisés recalés sur une moyenne de $100$ et
+un écart-type de $10$:
+
+\medskip
+
+\[
+z_{ij} = 100 + 10\,\frac{\tilde{x}_{ij} - \bar{x}_j}{\sigma_j}.
+\]
+
+\bigskip
+
+Pour chaque produit, on note $M_i$ et $S_i$ la moyenne et l'écart-type \emph{en ligne} des
+$(z_{ij})_j$, et $\mathrm{cv}_i = S_i/M_i$ le coefficient de variation horizontal. L'indice
+s'écrit alors, dans sa version adaptée à une grandeur dont l'augmentation est défavorable:
+
+\medskip
+
+\[
+\mathrm{MPI}^{+}_i = M_i + S_i \cdot \mathrm{cv}_i = M_i + \frac{S_i^2}{M_i}.
+\]
+
+\bigskip
+
+Le terme $S_i^2/M_i$ est la pénalité: nulle pour un profil parfaitement équilibré, croissante
+avec la dispersion des métriques du produit. Aucun coefficient n'est à fixer, ce qui en fait une
+des rares agrégations scalaires entièrement dépourvue de paramètre libre.
+
+\bigskip
+
+\begin{avertissement}
+  $\mathrm{MPI}^{+}$ \emph{n'est pas monotone} au sens de la propriété~\ref{prop:monotonie}:
+  augmenter la plus faible des métriques d'un produit réduit $S_i$, et peut donc faire baisser
+  l'indice. Cette violation est intrinsèque à toute pénalité de déséquilibre. Elle doit être
+  mesurée (§\ref{sec:violation}) et assumée, ou la méthode écartée.
+\end{avertissement}
+
+\bigskip
+
+%-----------------------------------------------------------------------
+\subsection{TOPSIS}
+\label{sec:topsis}
+
+\paragraph{Idée.} Classer les produits par leur proximité relative à un pôle « idéal » et leur
+éloignement d'un pôle « anti-idéal », tous deux construits empiriquement à partir des données.
+Ici, le pôle idéal est le produit fictif maximalement vulnérable.
+
+\paragraph{Construction.} Sur la matrice normalisée par colonne
+$v_{ij} = w_j\, \tilde{x}_{ij} / \sqrt{\sum_k \tilde{x}_{kj}^2}$, on pose
+
+\medskip
+
+\[
+A^{+}_j = \max_i v_{ij},
+\qquad
+A^{-}_j = \min_i v_{ij},
+\]
+\[
+D^{\pm}_i = \Big(\sum_{j=1}^d (v_{ij}-A^{\pm}_j)^2\Big)^{1/2},
+\qquad
+s^{\mathrm{TOPSIS}}(x_i) = \frac{D^{-}_i}{D^{+}_i + D^{-}_i} \in [0,1].
+\]
+
+\bigskip
+
+Associée à des poids issus de l'entropie ou de CRITIC, la procédure devient entièrement
+empirique. Elle reste sensible aux points extrêmes, puisque $A^{\pm}$ sont des minima et maxima;
+une variante robuste utilise les quantiles $\hat F_j^{-1}(0{,}99)$ et $\hat F_j^{-1}(0{,}01)$.
+
+\bigskip
+
+%-----------------------------------------------------------------------
+\subsection{Distance de Mahalanobis à l'anti-idéal}
+\label{sec:maha}
+
+\medskip
+
+\paragraph{Idée.} Si les métriques sont corrélées, une distance euclidienne compte plusieurs fois
+la même information. La distance de Mahalanobis corrige cet effet en blanchissant l'espace:
+elle mesure les écarts en unités de dispersion \emph{du nuage}, dans chaque direction.
+
+\medskip
+
+\paragraph{Construction.} Soit $\Sigma$ la matrice de covariance des métriques et
+$x^{-} = \big(\hat F_1^{-1}(0{,}01),\dots,\hat F_d^{-1}(0{,}01)\big)$ le pôle anti-idéal
+(produit fictif le moins vulnérable):
+\[
+s^{\mathrm{Mah}}(x_i) = \sqrt{(x_i - x^{-})^\top \Sigma^{-1} (x_i - x^{-})}.
+\]
+
+\bigskip
+
+En pratique, estimer $\Sigma$ par un estimateur robuste (déterminant de covariance minimum, MCD,
+ou estimateur à rétrécissement de Ledoit--Wolf si $d$ est grand devant $n$), sans quoi les
+produits extrêmes contamineront leur propre référence.
+
+\bigskip
+
+\begin{remarque}[Une somme pondérée déguisée]
+  Écrire $\Sigma^{-1} = \Sigma^{-1/2}\Sigma^{-1/2}$ montre que $s^{\mathrm{Mah}}$ est une norme
+  euclidienne sur les données blanchies $u_i = \Sigma^{-1/2}(x_i - x^{-})$. La méthode revient donc
+  à donner un poids égal à chaque \emph{direction décorrélée}, et non à chaque métrique~: les poids
+  implicites sur les métriques d'origine sont lus dans $\Sigma^{-1/2}$. Ils sont entièrement
+  estimés sur les données, ce qui satisfait la contrainte, mais ils peuvent être négatifs --- avec
+  la même conséquence sur la monotonie que dans le cas de l'ACP. C'est un point à vérifier
+  systématiquement.
+\end{remarque}
+
+\bigskip
+
+Cette remarque est aussi la porte d'entrée de la section suivante : la distance de Mahalanobis
+est le cas particulier « elliptique » d'une construction plus générale fondée sur le transport
+optimal.
+
+\bigskip
+
+%=======================================================================
+\section{Rangs de Kantorovitch et transport optimal}
+\label{sec:ot}
+%=======================================================================
+
+\medskip
+
+Cette section répond à la question posée sur l'article de Klein, Bethune, Ndiaye et
+Cuturi~\cite{klein2025}. La réponse tient en trois temps~: le cadre des rangs \emph{center-outward}
+est effectivement transposable, mais la partie « prédiction conforme » de l'article ne l'est pas
+directement, et le rang tel qu'il est défini dans l'article mesure l'\emph{atypicité}, pas la
+vulnérabilité --- il faut le réorienter.
+
+%-----------------------------------------------------------------------
+\subsection{Le cadre \emph{center-outward}}
+
+\medskip
+
+\paragraph{Idée.} En dimension $1$, la fonction de répartition $F$ est l'unique application
+croissante qui transporte la loi $P$ sur la loi uniforme : c'est ce qui fait du rang une notion
+canonique. En dimension $d$, la généralisation de la monotonie est le gradient d'une fonction
+convexe, et le théorème de Brenier fournit exactement cet objet. On transporte donc la loi des
+observations sur la loi uniforme de la \emph{boule unité}, choisie comme référence parce qu'elle
+est centrée, symétrique et bornée.
+
+\bigskip
+
+\begin{definition}[Loi \emph{center-outward}, rang et signe]
+  \label{def:co}
+  Soit $Z \sim P$ à valeurs dans $\R^d$, $P$ absolument continue. La \emph{fonction de répartition
+  center-outward} de $P$ est l'application $\Tmap = \nabla\varphi$, gradient d'une fonction convexe,
+  qui pousse $P$ sur la loi uniforme $\Unif$ de la boule unité $\Bball(0,1)$. On définit
+  \[
+  \underbrace{\mathrm{R}(z) = \norm{\Tmap(z)} \in [0,1]}_{\text{rang}},
+  \qquad
+  \underbrace{\mathrm{S}(z) = \Tmap(z)/\norm{\Tmap(z)} \in \Sphere^{d-1}}_{\text{signe}}.
+  \]
+  Les régions quantiles sont les images réciproques des boules,
+  $\mathcal{R}_\alpha = \{z : \norm{\Tmap(z)} \le 1-\alpha\}$, et vérifient
+  $\PP(Z \in \mathcal{R}_\alpha) = 1-\alpha$.
+\end{definition}
+
+\bigskip
+
+\paragraph{Ce que cela apporte réellement.} Deux propriétés, et elles sont fortes :
+
+\medskip
+
+\begin{itemize}[nosep,leftmargin=1.4em]
+  \item \textbf{Absence de distribution.} Les rangs empiriques $\norm{\Tmap_n(z_i)}$ sont
+  uniformément répartis sur la grille $\{1/n_R, 2/n_R,\dots,1\}$ \emph{quelle que soit} la loi
+  $P$. C'est l'analogue multivarié exact de la transformation en rangs : échelles hétérogènes,
+  asymétries, queues lourdes et corrélations sont neutralisées d'un seul coup, sans qu'aucune
+  décision de normalisation n'ait à être prise coordonnée par coordonnée.
+  \item \textbf{Prise en compte de la géométrie.} Contrairement à une normalisation marginale
+  suivie d'une norme, la construction tient compte de la forme du nuage : une valeur élevée dans
+  une direction où le nuage est étalé est jugée moins remarquable que la même valeur dans une
+  direction où il est resserré.
+\end{itemize}
+
+\bigskip
+
+%-----------------------------------------------------------------------
+\subsection{L'objection décisive : le rang mesure l'atypicité}
+\label{sec:objection}
+
+\medskip
+
+Le rang $\norm{\Tmap(z)}$ est \emph{non orienté}. Il croît du centre du nuage vers sa périphérie,
+dans \emph{toutes} les directions à la fois. Un produit très vulnérable sur toutes les métriques
+et un produit remarquablement peu vulnérable sur toutes les métriques sont tous deux à la
+périphérie du nuage : ils reçoivent le même rang. Utilisé tel quel, $\norm{\Tmap(z)}$ classe donc
+les produits par \emph{singularité}, ce qui ne coïncide avec la vulnérabilité que si l'on postule
+« vulnérable $=$ atypique » --- un postulat rarement défendable pour une nomenclature douanière,
+où l'on cherche des valeurs élevées dans une direction privilégiée.
+
+\medskip
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[scale=1.0]
+  % panneau gauche : nuage et contours center-outward
+  \begin{scope}
+    \node[font=\small\bfseries] at (2.4,5.0) {Rang non orienté $\norm{\Tmap(z)}$};
+    \draw[->,Gris] (-0.3,0) -- (4.7,0) node[right,black,font=\scriptsize] {$m_1$};
+    \draw[->,Gris] (0,-0.3) -- (0,4.2) node[above,black,font=\scriptsize] {$m_2$};
+    \foreach \r in {0.55,1.05,1.55} {
+      \draw[Gris,rotate around={32:(2.2,2.0)}] (2.2,2.0) ellipse ({\r*1.5} and {\r*0.75});
+    }
+    \foreach \x/\y in {1.5/1.4, 2.6/2.4, 2.0/1.8, 2.9/2.6, 1.9/1.5, 2.5/2.1, 3.0/2.9,
+                       1.6/1.7, 2.3/2.3, 2.8/2.2, 1.8/1.3, 2.4/2.6}
+      \fill[Gris] (\x,\y) circle (1.7pt);
+    \fill[Rouge] (3.9,3.2) circle (3pt) node[right,font=\scriptsize,black] {$a$};
+    \fill[Rouge] (0.5,0.8) circle (3pt) node[left,font=\scriptsize,black] {$b$};
+    \node[font=\scriptsize,align=center,Rouge] at (2.2,-0.85)
+      {$\norm{\Tmap(a)} = \norm{\Tmap(b)}$ : \\ indiscernables};
+  \end{scope}
+  % panneau droit : score oriente
+  \begin{scope}[xshift=7.2cm]
+    \node[font=\small\bfseries] at (2.4,5.0) {Score orienté $\scal{\Tmap(z)}{u^\star}$};
+    \draw[->,Gris] (-0.3,0) -- (4.7,0) node[right,black,font=\scriptsize] {$m_1$};
+    \draw[->,Gris] (0,-0.3) -- (0,4.2) node[above,black,font=\scriptsize] {$m_2$};
+    \foreach \x/\y in {1.5/1.4, 2.6/2.4, 2.0/1.8, 2.9/2.6, 1.9/1.5, 2.5/2.1, 3.0/2.9,
+                       1.6/1.7, 2.3/2.3, 2.8/2.2, 1.8/1.3, 2.4/2.6}
+      \fill[Gris] (\x,\y) circle (1.7pt);
+    \draw[Vert,very thick,-{Stealth}] (2.2,2.0) -- (3.5,3.3) node[above left,font=\scriptsize,black] {$u^\star$};
+    \foreach \c in {-0.9,0,0.9,1.8} {
+      \draw[Bleu,dashed,shift={(\c*0.7071,\c*0.7071)}] (0.3,3.9) -- (3.9,0.3);
+    }
+    \fill[Rouge] (3.9,3.2) circle (3pt) node[right,font=\scriptsize,black] {$a$};
+    \fill[Rouge] (0.5,0.8) circle (3pt) node[left,font=\scriptsize,black] {$b$};
+    \node[font=\scriptsize,align=center,Vert] at (2.2,-0.85)
+      {$\scal{\Tmap(a)}{u^\star} \gg \scal{\Tmap(b)}{u^\star}$ : \\ ordre restauré};
+  \end{scope}
+\end{tikzpicture}
+\caption{À gauche, les régions quantiles \emph{center-outward} et deux produits diamétralement
+opposés qui reçoivent le même rang. À droite, la projection sur la direction de vulnérabilité
+$u^\star$ rétablit l'orientation.}
+\label{fig:orientation}
+\end{figure}
+
+%-----------------------------------------------------------------------
+\subsection{Score de Kantorovitch orienté}
+\label{sec:otscore}
+
+\medskip
+
+Le remède est fourni par la définition \ref{def:co} elle-même : la construction de Hallin
+\emph{et al.} produit un rang \emph{et} un signe, et l'article n'exploite que le rang parce qu'il
+construit des régions de couverture symétriques. Un problème de classement doit au contraire
+utiliser les deux.
+
+\medskip
+
+\paragraph{Étape 1 --- Déterminer la direction de vulnérabilité.} On construit un produit fictif
+« maximalement vulnérable » $x^{+}$, par exemple $x^{+}_j = \hat F_j^{-1}(0{,}99)$ pour tout $j$,
+et l'on définit
+\[
+u^\star = \frac{\bar{\Tmap}(x^{+})}{\norm{\bar{\Tmap}(x^{+})}} \in \Sphere^{d-1},
+\]
+où $\bar{\Tmap}$ est l'extension hors échantillon de la carte de transport (§\ref{sec:entropique}).
+Cette direction est \emph{entièrement estimée sur les données}~: aucune hiérarchie entre critères
+n'est introduite, seul le sens commun « plus vulnérable est plus vulnérable » est utilisé.
+
+\medskip
+
+\paragraph{Étape 2 --- Projeter.} Trois scores possibles, par ordre croissant de sévérité:
+
+\medskip
+
+\begin{align*}
+  \text{projection signée} \qquad
+  & s^{\mathrm{OT}}_{\mathrm{proj}}(x_i) = \scal{\Tmap(x_i)}{u^\star}, \\[0.3em]
+  \text{rang restreint à un cône} \qquad
+  & s^{\mathrm{OT}}_{\mathrm{cone}}(x_i) = \norm{\Tmap(x_i)}\cdot
+    \ind{\scal{\mathrm{S}(x_i)}{u^\star} \ge \cos\theta_0}, \\[0.3em]
+  \text{rang modulé par le signe} \qquad
+  & s^{\mathrm{OT}}_{\mathrm{mult}}(x_i) = \norm{\Tmap(x_i)}\cdot
+    \frac{1+\scal{\mathrm{S}(x_i)}{u^\star}}{2}.
+\end{align*}
+
+\bigskip
+
+Le premier est le plus simple et se lit comme une somme pondérée dans l'espace transporté, à
+coefficients $u^\star$ estimés. Le deuxième donne un ensemble d'alerte plutôt qu'un classement, en
+ne retenant que les produits périphériques \emph{du bon côté}, avec un demi-angle $\theta_0$
+paramétrable. Le troisième interpole continûment entre les deux.
+
+\medskip
+
+\begin{algorithm}[htbp]
+  \caption{Score de Kantorovitch orienté}
+  \label{algo:otscore}
+  \begin{algorithmic}[1]
+    \Require $\tilde{X}\in\R^{n\times d}$, régularisation $\varepsilon$, taille de grille $m$, quantile de pôle $q$
+    \Ensure scores $s^{\mathrm{OT}} \in \R^n$
+    \State \textbf{Grille sphérique.} Tirer $w_1,\dots,w_m$ suite à faible discrépance sur $[0,1]^d$ (Sobol)
+    \State $\theta_\ell \gets \Phi^{-1}(w_\ell)/\norm{\Phi^{-1}(w_\ell)}_2$
+          \Comment{Directions quasi uniformes sur $\Sphere^{d-1}$}
+    \State Tirer les rayons $\rho_\ell$ par échantillonnage stratifié sur $[0,1]$
+    \State $u_\ell \gets \rho_\ell^{1/d}\,\theta_\ell$
+          \Comment{Loi uniforme sur la boule, et non sur la sphère}
+    \State \textbf{Carte de transport.} Résoudre le problème de Sinkhorn entre $\{\tilde{x}_i\}_{i\in[n]}$ et $\{u_\ell\}_{\ell\in[m]}$
+          à la régularisation $\varepsilon$, obtenir les potentiels duaux $f^\star, g^\star$
+    \State $\bar{\Tmap}(z) \gets \sum_{\ell=1}^m p_\ell(z)\, u_\ell$ \textbf{avec}
+          $p_\ell(z) \propto \exp\!\big(-(\norm{z-u_\ell}^2 - g^\star_\ell)/\varepsilon\big)$
+          \Comment{Carte entropique, valide hors échantillon}
+    \State \textbf{Direction de vulnérabilité.} $x^{+}_j \gets \hat F_j^{-1}(q)$ pour tout $j$~;\quad
+          $u^\star \gets \bar{\Tmap}(x^{+})/\norm{\bar{\Tmap}(x^{+})}$
+    \For{$i = 1$ \textbf{à} $n$}
+      \State $s^{\mathrm{OT}}_i \gets \scal{\bar{\Tmap}(\tilde{x}_i)}{u^\star}$
+    \EndFor
+    \State \textbf{Contrôle.} Vérifier que $\{\norm{\bar{\Tmap}(\tilde{x}_i)}\}_i$ est approximativement
+          uniforme sur $[0,1]$ (test de Kolmogorov--Smirnov)
+    \State \Return $s^{\mathrm{OT}}$
+  \end{algorithmic}
+\end{algorithm}
+
+%-----------------------------------------------------------------------
+\subsection{Quand cette approche apporte-t-elle quelque chose ?}
+\label{sec:otvsmaha}
+
+La remarque 3.4 de l'article donne le critère de décision, et il est très opérationnel: si la
+loi source et la loi cible sont toutes deux elliptiques, la carte de Brenier est \emph{affine},
+et le score de transport optimal se réduit exactement à une distance de Mahalanobis.
+
+\medskip
+
+\begin{remarque}[Critère de décision empirique]
+  Le transport optimal n'apporte rien de plus que le §\ref{sec:maha} lorsque le nuage des métriques
+  est approximativement elliptique. Il n'apporte quelque chose que si ce nuage est nettement
+  non elliptique : asymétrie marquée, multimodalité (par exemple des régimes distincts selon les
+  chapitres de la nomenclature), dépendance de queue asymétrique entre HHI et indices de
+  dépendance. \textbf{Ce point se teste avant de payer le coût d'implémentation} : test d'ellipticité
+  de la loi jointe, examen des projections bivariées, comparaison de la corrélation de rangs entre
+  $s^{\mathrm{OT}}_{\mathrm{proj}}$ et $s^{\mathrm{Mah}}$. Si le $\tau$ de Kendall entre les deux
+  dépasse, disons, $0{,}95$, la complexité supplémentaire n'est pas justifiable.
+\end{remarque}
+% /!\ Je ne sais pas si je suis d'accord avec cette remarque, si la méthode la plus complexe est plus généralement juste, alors, même si elle est computationnellement plus couteuse, je souhaite la conserver.
+
+\bigskip
+
+%-----------------------------------------------------------------------
+\subsection{Estimation : carte entropique et hyperparamètres}
+\label{sec:entropique}
+
+\medskip
+
+Le calcul exact de $\Tmap_n$ passe par un problème d'affectation optimale, résolu par l'algorithme
+hongrois en $O(n^3)$, et impose une cible de même taille que l'échantillon. L'article contourne
+les deux difficultés par la \emph{carte entropique} de Pooladian et Niles-Weed. On résout le
+problème de Sinkhorn régularisé :
+
+\medskip
+
+\[
+f^\star, g^\star = \arg\max_{f \in \R^n, g \in \R^m}\;
+\scal{f}{\tfrac{\mathbf{1}_n}{n}} + \scal{g}{\tfrac{\mathbf{1}_m}{m}}
+- \varepsilon \scal{e^{f/\varepsilon}}{K e^{g/\varepsilon}},
+\qquad K_{i\ell} = e^{-\norm{z_i - u_\ell}^2/\varepsilon},
+\]
+
+\bigskip
+
+puis on définit l'estimateur, valide hors échantillon,
+\[
+\bar{\Tmap}_\varepsilon(z) = \sum_{\ell=1}^{m} p_\ell(z)\, u_\ell,
+\qquad
+p_\ell(z) = \frac{\exp\!\big(-(\norm{z - u_\ell}^2 - g^\star_\ell)/\varepsilon\big)}
+{\sum_{k=1}^{m}\exp\!\big(-(\norm{z - u_k}^2 - g^\star_k)/\varepsilon\big)}.
+\]
+
+\bigskip
+
+Le coût est $O(nm)$ à l'ajustement et $O(m)$ par point à transporter.
+
+\paragraph{Choix des hyperparamètres.} Les résultats empiriques de l'article convergent :
+$\varepsilon = 0{,}1$ avec les normalisations automatiques d'OTT-JAX est un réglage robuste, et
+$m$ entre $2^{12}$ et $2^{15}$ points de grille. Les deux paramètres doivent être \emph{augmentés
+avec la dimension}. Le compromis est clair : $\varepsilon$ trop petit reproduit les mauvaises
+propriétés statistiques du transport non régularisé, $\varepsilon$ trop grand fait s'effondrer la
+carte estimée vers une image floue de la sphère. Le débiaisage des sorties de Sinkhorn n'améliore
+pas les résultats.
+
+\bigskip
+
+\paragraph{Grille sphérique.} La qualité de la cible compte. On suit l'approche gaussienne : à
+partir d'une suite à faible discrépance $w_1,\dots,w_m$ sur $[0,1]^d$, on pose
+$\theta_\ell = \Phi^{-1}(w_\ell)/\norm{\Phi^{-1}(w_\ell)}_2$, qui fournit des directions quasi
+uniformes sur $\Sphere^{d-1}$, combinées à des rayons stratifiés.
+
+\bigskip
+
+\begin{avertissement}[Malédiction de la dimension]
+  L'estimation de cartes de transport se dégrade rapidement avec $d$. Les résultats de l'article
+  montrent un avantage net jusqu'à $d \le 6$ et un avantage qui s'évanouit pour $14 \le d \le 16$.
+  Un dispositif à trois ou quatre métriques (HHI, indices de dépendance) est donc exactement dans
+  le régime favorable ; au-delà de six ou sept métriques, il faudra réduire la dimension au
+  préalable ou renoncer.
+\end{avertissement}
+
+\bigskip
+
+%-----------------------------------------------------------------------
+\subsection{Ce qui n'est pas transposable, et ce qui l'est quand même}
+
+\medskip
+
+\paragraph{La prédiction conforme, telle quelle, ne s'applique pas.} L'article construit des
+ensembles de prédiction pour la réponse $y_{n+1}$ d'un modèle $\hat y$, à partir de scores de
+non-conformité $S(x,y,\hat y)$ --- typiquement des résidus. La garantie de couverture porte sur
+une observation \emph{future}, sous hypothèse d'échangeabilité. Or le problème posé ici est
+descriptif~: on dispose de la population complète des positions NC et on souhaite les ordonner.
+Il n'y a ni modèle prédictif, ni observation future, ni résidus. La partie « conformalisation »
+(propositions 3.2 et 3.6 de l'article) est donc hors sujet pour le classement lui-même.
+
+\paragraph{Elle redevient pertinente pour calibrer un seuil.} Il existe toutefois un usage
+légitime, et il est intéressant. Si l'on veut définir un \emph{seuil d'alerte} plutôt qu'un
+palmarès --- « quels produits sont anormalement vulnérables ? » --- alors la région quantile
+calibrée fournit exactement cela, avec une garantie valable à distance finie et sans hypothèse de
+loi :
+
+\medskip
+
+\[
+\widehat{\mathcal{R}}_\alpha = \big\{z : \norm{\bar{\Tmap}(z)} \le \hat r_\alpha \big\},
+\qquad
+\hat r_\alpha = \inf\big\{ r \ge 0 : \widehat{\Unif}(\Bball(0,r)) \ge 1 - \alpha \big\},
+\]
+
+\bigskip
+
+l'ensemble d'alerte étant le complémentaire de $\widehat{\mathcal{R}}_\alpha$ \emph{intersecté}
+avec le demi-espace $\scal{\mathrm{S}(z)}{u^\star} > 0$. L'intérêt est réel dans un contexte
+administratif : le seuil n'est plus un « top~50 » arbitraire, mais un niveau $\alpha$ explicite,
+avec une couverture garantie. Les usages où cette garantie a une vraie valeur :
+
+\medskip
+
+\begin{itemize}[nosep,leftmargin=1.4em]
+  \item \textbf{Suivi temporel.} La carte est estimée sur l'année $t$, et l'on classe les produits
+  de l'année $t+1$~: la garantie de couverture s'applique alors, l'échangeabilité étant l'hypothèse
+  explicite (et testable) que la structure de vulnérabilité n'a pas changé. Un dépassement
+  significatif du taux d'alerte attendu devient un signal de rupture de régime.
+  \item \textbf{Nouvelles positions NC.} Une position créée en cours d'année reçoit un score et un
+  statut d'alerte calibrés sur l'existant, sans réestimation.
+\end{itemize}
+
+\bigskip
+
+%=======================================================================
+\section{Comparer les agrégations et contrôler leur cohérence}
+\label{sec:comparaison}
+%=======================================================================
+
+\medskip
+
+Chaque méthode des sections précédentes produit un classement. Rien ne garantit qu'ils
+concordent, et c'est justement ce désaccord qui porte l'information la plus utile : il délimite
+la part du résultat qui tient aux données et la part qui tient au choix méthodologique. Cette
+section propose un protocole en cinq questions.
+
+\medskip
+
+\begin{figure}[htbp]
+  \centering
+  \begin{tikzpicture}[
+    node distance=0.6cm and 1.0cm,
+    bloc/.style={draw=Bleu,fill=Bleu!6,rounded corners=2pt,align=center,font=\small,
+                minimum height=1.0cm,text width=3.4cm,inner sep=4pt},
+    outil/.style={font=\scriptsize,Gris,text width=3.0cm,align=right},
+    fl/.style={-{Stealth[length=2.5mm]},Gris,thick}
+  ]
+    \node[bloc] (q1) {\textbf{Q1} --- Les classements\\ sont-ils d'accord ?};
+    \node[bloc,below=of q1] (q2) {\textbf{Q2} --- D'accord\\ \emph{en tête} ?};
+    \node[bloc,below=of q2] (q3) {\textbf{Q3} --- Cohérents avec\\ la dominance ?};
+    \node[bloc,below=of q3] (q4) {\textbf{Q4} --- Stables au\\ rééchantillonnage ?};
+    \node[bloc,below=of q4] (q5) {\textbf{Q5} --- Non réductibles\\ à une seule métrique ?};
+    \foreach \a/\b in {q1/q2,q2/q3,q3/q4,q4/q5} \draw[fl] (\a) -- (\b);
+
+    \node[outil,left=0.35cm of q1] {$\tau_b$ et $W$ de Kendall};
+    \node[outil,left=0.35cm of q2] {RBO, Jaccard sur le top-$k$};
+    \node[outil,left=0.35cm of q3] {taux de violation $V(s)$};
+    \node[outil,left=0.35cm of q4] {bootstrap, SMAA};
+    \node[outil,left=0.35cm of q5] {\emph{leave-one-metric-out}};
+
+    \node[bloc,fill=Vert!8,draw=Vert,right=1.9cm of q3,text width=3.8cm]
+        (res) {\textbf{Synthèse}\\ classement consensus\\ $+$ intervalles de rang\\ $+$ cas litigieux};
+    \draw[fl] (q1.east) to[out=0,in=90] (res.north);
+    \draw[fl] (q3.east) -- (res.west);
+    \draw[fl] (q5.east) to[out=0,in=270] (res.south);
+  \end{tikzpicture}
+  \caption{Protocole de contrôle de cohérence.}
+\end{figure}
+
+\bigskip
+
+%-----------------------------------------------------------------------
+\subsection{Q1 --- Concordance globale des classements}
+
+\medskip
+
+Soit $r^{(A)}, r^{(B)} \in [n]^n$ les vecteurs de rangs produits par deux méthodes $A$ et $B$.
+
+\paragraph{Corrélations de rangs.} Le $\tau_b$ de Kendall est préférable au $\rho$ de Spearman
+ici : il s'interprète directement en proportion de paires concordantes, gère les ex \ae quo et est
+moins sensible aux écarts sur les rangs médians, dont on se soucie peu. On produit la matrice
+$T = (\tau_b(r^{(A)}, r^{(B)}))_{A,B}$ pour toutes les paires de méthodes, visualisée en carte de
+chaleur et complétée par une classification ascendante hiérarchique sur $1-\tau_b$ : les groupes
+de méthodes ainsi révélés correspondent en général aux grandes options méthodologiques
+(compensatoire ou non, décorrélée ou non).
+
+\bigskip
+
+\paragraph{Concordance d'ensemble.} Le coefficient $W$ de Kendall mesure l'accord simultané de
+$K$ classements :
+\[
+W = \frac{12 \sum_{i=1}^n \big(R^{\Sigma}_i - \tfrac{K(n+1)}{2}\big)^2}{K^2 n (n^2-1)}
+\;\in [0,1],
+\qquad R^{\Sigma}_i = \sum_{k=1}^K r^{(k)}_i,
+\]
+
+\bigskip
+
+avec $W = 1$ pour un accord parfait. Un $W$ élevé signifie que la question du choix de méthode est
+secondaire ; un $W$ faible signifie qu'aucun classement unique ne devrait être publié sans
+mention de son incertitude.
+
+\bigskip
+
+\paragraph{Déplacement moyen de rang.} La mesure la plus lisible pour un lecteur non
+statisticien, recommandée par le \emph{Handbook} de l'OCDE :
+
+\medskip
+
+\[
+\bar{R}_{A\to B} = \frac{1}{n}\sum_{i=1}^n \abs{r^{(A)}_i - r^{(B)}_i},
+\]
+« en changeant de méthode, un produit se déplace en moyenne de tant de places ».
+
+\bigskip
+
+%-----------------------------------------------------------------------
+\subsection{Q2 --- Concordance en tête de classement}
+
+\medskip
+
+Le $\tau$ global est trompeur pour un usage opérationnel : seuls les premiers rangs seront
+exploités, et deux classements peuvent avoir un $\tau$ de $0{,}9$ tout en partageant la moitié
+seulement de leur top 50.
+
+\medskip
+
+\paragraph{Recouvrement du top-$k$.} $J_k(A,B) = \abs{\mathcal{T}^{A}_k \cap \mathcal{T}^{B}_k}/k$,
+tracé en fonction de $k$ : la courbe montre à partir de quelle profondeur les méthodes commencent
+à s'accorder.
+
+\medskip
+
+\paragraph{\emph{Rank-biased overlap}.} Le RBO agrège ces recouvrements en pondérant
+géométriquement les profondeurs, ce qui donne beaucoup plus de poids aux premiers rangs :
+\[
+\mathrm{RBO}(A,B\,;\,p) = (1-p)\sum_{k=1}^{\infty} p^{\,k-1}\, J_k(A,B),
+\qquad p \in (0,1).
+\]
+
+\bigskip
+
+Le paramètre $p$ se règle par la profondeur d'intérêt : l'espérance du rang examiné vaut
+$1/(1-p)$, donc $p = 0{,}98$ pour une attention centrée sur les cinquante premiers.
+
+\bigskip
+
+%-----------------------------------------------------------------------
+\subsection{Q3 --- Cohérence avec la dominance : le test dur}
+\label{sec:violation}
+
+\medskip
+
+C'est le seul contrôle qui ne repose sur aucune convention et qui puisse invalider une méthode.
+
+\medskip
+
+\begin{definition}[Taux de violation de la dominance]
+  Soit $\mathcal{D} = \{(i,k) : x_i \pareto x_k\}$ l'ensemble des paires comparables au sens de
+  Pareto. Le taux de violation d'un score $s$ est :
+
+  \medskip
+
+  \[
+  V(s) = \frac{1}{\abs{\mathcal{D}}}
+  \sum_{(i,k)\in\mathcal{D}} \ind{s(x_i) \le s(x_k)}.
+  \]
+\end{definition}
+
+\bigskip
+
+Un score $V(s) > 0$ inverse des paires sur lesquelles toutes les métriques sont d'accord : c'est
+indéfendable devant un comité, quelle que soit la sophistication de la méthode. On attend :
+
+\medskip
+
+\begin{itemize}
+  \item $V = 0$ pour le comptage de dominance, la somme pondérée à poids positifs, la moyenne
+  géométrique, TOPSIS, BoD ;
+  \item $V > 0$ possible pour l'ACP et Mahalanobis dès qu'apparaît une saturation négative ;
+  \item $V > 0$ structurellement pour $\mathrm{MPI}^{+}$ (pénalité de déséquilibre) et pour le
+  score de transport optimal, dont la carte est monotone \emph{cycliquement} mais non
+  coordonnée par coordonnée.
+\end{itemize}
+
+\bigskip
+
+Il faut donc rapporter $V(s)$ pour chaque méthode et, pour celles qui violent, examiner les paires
+concernées : si les violations se concentrent sur des paires quasi indifférentes (écarts
+inférieurs à l'incertitude d'estimation des métriques), elles sont sans portée pratique~; si elles
+touchent des paires nettement séparées, la méthode doit être écartée.
+
+\bigskip
+
+\paragraph{Contrôle associé.} Vérifier que le front $\mathcal{F}_1$ est bien concentré dans le
+haut de chaque classement~: rapporter le rang médian et le rang maximal des produits non dominés.
+
+\medskip
+
+\begin{algorithm}[htbp]
+  \caption{Tableau de bord de cohérence}
+  \label{algo:coherence}
+  \begin{algorithmic}[1]
+    \Require $\tilde{X}$, ensemble de scores $\{s^{(1)},\dots,s^{(K)}\}$, profondeur $k$, paramètre RBO $p$
+    \Ensure matrices de concordance, taux de violation, classement consensus
+    \State $\mathcal{D} \gets$ paires en relation de dominance (algorithme~\ref{algo:nds})
+    \For{$a = 1$ \textbf{à} $K$}
+      \State $r^{(a)} \gets \operatorname{rang}(-s^{(a)})$ \Comment{Rang $1$ au plus vulnérable}
+      \State $V_a \gets \abs{\mathcal{D}}^{-1}\sum_{(i,k)\in\mathcal{D}} \ind{s^{(a)}_i \le s^{(a)}_k}$
+      \For{$b = 1$ \textbf{à} $K$}
+        \State $T_{ab} \gets \tau_b(r^{(a)}, r^{(b)})$~;\quad
+              $O_{ab} \gets \mathrm{RBO}(r^{(a)}, r^{(b)}; p)$
+      \EndFor
+    \EndFor
+    \State $W \gets$ coefficient de concordance de Kendall sur $\{r^{(a)}\}_a$
+    \State $\bar{R}_i \gets K^{-1}\sum_a r^{(a)}_i$ \Comment{Rang de Borda, classement consensus}
+    \State $\mathcal{L} \gets \{ i : \max_a r^{(a)}_i - \min_a r^{(a)}_i > \eta \}$
+          \Comment{Produits litigieux, à examiner individuellement}
+    \State \Return $T$, $O$, $V$, $W$, $\bar{R}$, $\mathcal{L}$
+  \end{algorithmic}
+\end{algorithm}
+
+%-----------------------------------------------------------------------
+\subsection{Q4 --- Stabilité}
+\label{sec:bootstrap}
+
+\medskip
+
+\paragraph{Bootstrap sur les produits.} Rééchantillonner $B$ fois (typiquement $B = 1\,000$) les
+$n$ produits avec remise, recalculer intégralement la chaîne --- \emph{y compris les poids}, dont
+c'est tout l'enjeu puisqu'ils sont estimés --- et collecter la distribution du rang de chaque
+produit. On rapporte un intervalle de rang à $90\,\%$ plutôt qu'un rang ponctuel. Un produit dont
+l'intervalle est $[3, 412]$ ne doit pas être présenté comme « troisième plus vulnérable ».
+% /!\ Comment introduire un intervalle de confiance autour du rang ?
+
+\medskip
+
+\paragraph{Propagation de l'incertitude des métriques.} Si les HHI et indices de dépendance sont
+eux-mêmes estimés sur un nombre fini de déclarations, leur erreur d'échantillonnage se propage.
+Simuler $x_{ij}^{(b)} \sim \mathcal{N}(\hat{x}_{ij}, \hat{\sigma}^2_{ij})$, ou rééchantillonner
+directement les déclarations sous-jacentes, et recalculer le classement. C'est souvent la source
+d'instabilité dominante pour les positions à faibles volumes.
+
+\medskip
+
+\paragraph{Stabilité aux choix méthodologiques.} Faire varier systématiquement le schéma de
+normalisation ($\times 5$), la méthode de pondération ($\times 4$) et la fonction d'agrégation
+($\times 5$), soit une centaine de variantes. Pour chaque produit, tracer la distribution des
+rangs obtenus. On peut aller plus loin et décomposer la variance du rang par indices de Sobol
+attribués à chacun des trois facteurs : le résultat --- « $62\,\%$ de la variance du rang vient du
+choix de normalisation » --- est précieux, car il indique où concentrer l'effort de justification.
+
+\bigskip
+
+%-----------------------------------------------------------------------
+\subsection{SMAA : formaliser l'ignorance sur les poids}
+\label{sec:smaa}
+
+\medskip
+
+\paragraph{Idée.} Plutôt que de choisir un vecteur de poids, on explore \emph{tout} l'espace des
+poids admissibles et l'on rapporte, pour chaque produit, la probabilité d'occuper chaque rang.
+C'est la formalisation exacte de la situation décrite : incapacité à hiérarchiser les critères,
+donc loi uniforme sur le simplexe.
+
+\medskip
+
+\paragraph{Construction.} On tire $w^{(t)} \sim \Unif(\simplex)$, ce qui s'obtient exactement par
+une loi de Dirichlet $\mathrm{Dir}(1,\dots,1)$, on calcule le classement induit, et l'on estime:
+
+\medskip
+
+\begin{align*}
+  \text{indice d'acceptabilité de rang} \quad & b^{\,r}_i = \PP\big(\text{rang}(i) = r\big), \\
+  \text{vecteur de poids central} \quad & w^{c}_i = \EE\big[w \mid \text{rang}(i) = 1\big], \\
+  \text{facteur de confiance} \quad & p_i = \PP\big(\text{rang}(i) \le k \mid w \sim \Unif(\simplex)\big).
+\end{align*}
+
+\bigskip
+
+La sortie utile pour un dossier administratif est $p_i$ avec $k$ fixé par la capacité d'action
+(par exemple $k=50$) : « ce produit figure dans les cinquante plus vulnérables sous $94\,\%$ des
+pondérations possibles ». Une telle affirmation est nettement plus solide, et plus honnête,
+qu'un rang ponctuel.
+
+\paragraph{Restrictions partielles.} SMAA accepte des contraintes d'ordre partiel sur les poids
+($w_1 \ge w_2$, ou $w_j \ge 0{,}05$) que l'on peut ajouter si un consensus minimal existe, en
+tirant uniformément dans le polytope ainsi défini par échantillonnage par rejet ou \emph{hit-and-run}.
+On peut alors mesurer combien d'information une hiérarchisation même faible ferait gagner.
+
+\medskip
+
+\begin{algorithm}[htbp]
+  \caption{SMAA --- indices d'acceptabilité de rang}
+  \label{algo:smaa}
+  \begin{algorithmic}[1]
+    \Require $\tilde{X}\in\R^{n\times d}$, nombre de tirages $T$, fonction d'agrégation $g$, seuil $k$
+    \Ensure indices $b \in [0,1]^{n\times n}$, poids centraux $w^c$, facteurs de confiance $p$
+    \State $b \gets 0$~;\quad $c \gets 0 \in \R^{n\times d}$~;\quad $\nu \gets 0 \in \N^n$
+    \For{$t = 1$ \textbf{à} $T$}
+      \State $w^{(t)} \sim \mathrm{Dir}(1,\dots,1)$ \Comment{Loi uniforme sur le simplexe}
+      \State $s^{(t)}_i \gets g(\tilde{x}_i ; w^{(t)})$ pour tout $i$
+      \State $r^{(t)} \gets \operatorname{rang}(-s^{(t)})$
+      \For{$i = 1$ \textbf{à} $n$}
+        \State $b_{i, r^{(t)}_i} \gets b_{i, r^{(t)}_i} + 1/T$
+        \If{$r^{(t)}_i = 1$} $c_i \gets c_i + w^{(t)}$~;\quad $\nu_i \gets \nu_i + 1$
+        \EndIf
+      \EndFor
+    \EndFor
+    \State $w^{c}_i \gets c_i / \max(\nu_i, 1)$~;\quad $p_i \gets \sum_{r \le k} b_{i r}$
+    \State \Return $b$, $w^c$, $p$
+  \end{algorithmic}
+\end{algorithm}
+
+\bigskip
+
+\begin{remarque}
+  Pour $n \sim 5\,000$ et $T \sim 10^4$, la matrice complète $b$ est de taille $5\times10^7$: ne
+  conserver que les rangs $r \le k$ et l'agrégat $p$. L'ensemble se vectorise entièrement en NumPy
+  (un produit matriciel $T \times d$ par $d \times n$, puis un \texttt{argsort} par ligne).
+\end{remarque}
+
+\bigskip
+
+%-----------------------------------------------------------------------
+\subsection{Q5 --- Le score est-il réductible à une seule métrique ?}
+
+\medskip
+
+Un risque courant des pondérations endogènes est de produire un score qui reproduit à peu de
+choses près l'une des métriques d'entrée --- auquel cas tout l'appareil méthodologique n'a servi
+à rien.
+
+\medskip
+
+\paragraph{Corrélations score--métrique.} Calculer $\tau_b(s, \tilde{x}_{\cdot j})$ pour tout $j$.
+Si l'une dépasse nettement les autres, examiner pourquoi (poids dominant, métrique très
+dispersée, corrélation avec toutes les autres).
+
+\medskip
+
+\paragraph{\emph{Leave-one-metric-out}.} Recalculer la chaîne complète en retirant chaque métrique
+à tour de rôle, et mesurer $\tau_b$ et le recouvrement du top-$k$ avec le classement complet. Une
+métrique dont le retrait ne change rien est soit redondante, soit neutralisée par la pondération~;
+une métrique dont le retrait bouleverse tout porte à elle seule le résultat. Les deux situations
+appellent un commentaire explicite dans la note de méthode.
+
+\medskip
+
+\paragraph{Décomposition des contributions.} Pour une agrégation linéaire, la contribution de la
+métrique $j$ au score du produit $i$ est $w_j \tilde{x}_{ij} / s_i$~; on peut en dresser un profil
+pour les produits de tête, ce qui rend le classement lisible et défendable individuellement.
+
+\bigskip
+
+%-----------------------------------------------------------------------
+\subsection{Classement consensus}
+
+Lorsqu'on doit tout de même publier un classement unique, trois constructions, toutes
+indépendantes des poids :
+
+\medskip
+
+\begin{itemize}[leftmargin=1.4em,itemsep=2pt]
+  \item \textbf{Borda} : $\bar{R}_i = \frac{1}{K}\sum_a r^{(a)}_i$. Immédiat, robuste, mais
+  sensible aux méthodes fortement corrélées entre elles, qui votent alors plusieurs fois pour la
+  même position. Corriger en pondérant chaque méthode par $1/(\text{taille de son groupe})$ dans
+  la classification de Q1.
+  \item \textbf{Copeland} : pour chaque paire $(i,k)$, compter le nombre de méthodes plaçant $i$
+  devant $k$~; le score est le nombre de duels gagnés. Plus robuste aux valeurs de rang extrêmes.
+  \item \textbf{Médiane de Kemeny} : le classement minimisant la somme des distances de Kendall aux
+  $K$ classements. C'est le consensus le mieux fondé axiomatiquement, mais le problème est
+  NP-difficile ; à $n \sim 5\,000$, on ne l'utilise que sur une présélection (les cent premiers du
+  classement de Borda), résolue par programmation linéaire en nombres entiers.
+\end{itemize}
+
+\bigskip
+
+\paragraph{Ce qu'il faut publier.} Un classement consensus, assorti pour chaque produit d'un
+intervalle de rang bootstrap et de son facteur de confiance SMAA, plus la liste explicite des
+produits litigieux $\mathcal{L}$ dont le rang dépend fortement de la méthode. Cette dernière liste
+n'est pas un aveu de faiblesse~: c'est le résultat le plus informatif du dispositif, puisqu'elle
+identifie exactement les produits pour lesquels une expertise humaine est nécessaire.
+
+\bigskip
+
+%-----------------------------------------------------------------------
+\subsection{Validation externe}
+
+Si l'on dispose d'un critère externe --- ruptures d'approvisionnement observées, alertes passées,
+mesures de sauvegarde effectivement déclenchées, épisodes de tension documentés --- la validation
+change de nature et devient une question de pouvoir prédictif~: AUC de la courbe ROC, précision
+au rang $k$, gain cumulé actualisé. C'est le seul argument capable de départager objectivement
+deux agrégations, et il vaut la peine de constituer un tel jeu d'événements même modeste
+(quelques dizaines de cas avérés suffisent à discriminer). En son absence, il faut se résoudre à
+ne conclure que sur la robustesse interne.
+
+%=======================================================================
+\section{Démarche recommandée}
+\label{sec:demarche}
+%=======================================================================
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[
+  node distance=0.75cm,
+  etape/.style={draw=Bleu,fill=Bleu!7,rounded corners=3pt,align=center,font=\small,
+                text width=10.5cm,minimum height=0.9cm,inner sep=5pt},
+  sortie/.style={draw=Vert,fill=Vert!8,rounded corners=3pt,align=center,font=\small,
+                 text width=10.5cm,minimum height=0.9cm,inner sep=5pt},
+  fl/.style={-{Stealth[length=3mm]},Gris,very thick}
+]
+  \node[etape] (e1) {\textbf{1. Prétraitement} --- orientation des polarités, winsorisation,
+        filtrage des positions à faible effectif, diagnostic de corrélation};
+  \node[etape,below=of e1] (e2) {\textbf{2. Invariant sans hypothèse} --- front de Pareto
+        $\mathcal{F}_1$ et comptage de dominance $\delta$};
+  \node[etape,below=of e2] (e3) {\textbf{3. Scores concurrents} --- grille
+        (normalisation $\times$ pondération endogène $\times$ agrégation), plus le score de
+        Kantorovitch orienté si le nuage est non elliptique};
+  \node[etape,below=of e3] (e4) {\textbf{4. Contrôles de cohérence} --- taux de violation de la
+        dominance, $\tau_b$ et RBO entre méthodes, \emph{leave-one-metric-out}};
+  \node[etape,below=of e4] (e5) {\textbf{5. Incertitude} --- bootstrap sur les produits et sur les
+        métriques, SMAA sur le simplexe des poids};
+  \node[sortie,below=of e5] (e6) {\textbf{Livrable} --- classement consensus, intervalles de rang,
+        facteurs de confiance, liste des produits litigieux};
+  \foreach \a/\b in {e1/e2,e2/e3,e3/e4,e4/e5,e5/e6} \draw[fl] (\a) -- (\b);
+\end{tikzpicture}
+\caption{Enchaînement recommandé. Les étapes 2 et 5 sont celles qui donnent au dispositif sa
+défendabilité~; l'étape 3, prise isolément, n'en a aucune.}
+\end{figure}
+
+\paragraph{Ordre de priorité, en pratique.} Si le temps disponible est limité, l'ordre de valeur
+marginale décroissante est le suivant~:
+\begin{enumerate}[leftmargin=1.6em,itemsep=2pt]
+  \item \textbf{Front de Pareto et comptage de dominance.} Coût nul, aucune hypothèse, résultat
+  immédiatement publiable.
+  \item \textbf{SMAA sur une somme pondérée.} Répond directement à l'impossibilité de hiérarchiser
+  les critères, et fournit des énoncés probabilisés plutôt qu'un classement fragile.
+  \item \textbf{Deux ou trois scores contrastés} --- par exemple somme pondérée par CRITIC,
+  moyenne géométrique, et TOPSIS --- avec le tableau de bord de cohérence de
+  l'algorithme~\ref{algo:coherence}.
+  \item \textbf{Bootstrap} sur les métriques, en priorité pour les positions à faible volume.
+  \item \textbf{Score de Kantorovitch orienté}, uniquement si le test d'ellipticité du
+  §\ref{sec:otvsmaha} conclut à une géométrie franchement non gaussienne, et si $d \le 6$.
+\end{enumerate}
+
+\paragraph{Sur le transport optimal, en résumé.} L'approche est légitime et techniquement
+transposable~; elle apporte une normalisation multivariée sans hypothèse de loi, ce qui est un
+argument méthodologique fort. Mais elle exige une réorientation (§\ref{sec:otscore}) sans laquelle
+elle mesure autre chose que ce qui est cherché, elle se réduit à une distance de Mahalanobis dès
+que le nuage est elliptique, et elle introduit deux hyperparamètres à régler là où les méthodes
+concurrentes n'en ont aucun. Elle mérite d'être testée, mais comme candidate parmi d'autres dans
+le protocole de comparaison --- et non comme méthode de référence choisie \emph{a priori} pour son
+élégance.
+
+%=======================================================================
+\section{Repères d'implémentation}
+%=======================================================================
+
+\begin{table}[htbp]
+\centering
+\small
+\renewcommand{\arraystretch}{1.25}
+\begin{tabularx}{\textwidth}{@{}l l X@{}}
+\toprule
+\textbf{Étape} & \textbf{Bibliothèque} & \textbf{Points d'attention} \\
+\midrule
+Normalisation & \texttt{scikit-learn} &
+\texttt{QuantileTransformer} en sortie gaussienne pour la normalisation par quantile~; \texttt{RobustScaler} pour la variante médiane/MAD. \\
+Front de Pareto & \texttt{paretoset}, \texttt{pymoo} &
+\texttt{pymoo.util.nds.fast\_non\_dominated\_sort} pour le tri par couches. Version vectorisée
+NumPy suffisante jusqu'à $n \sim 10^4$. \\
+MCDA & \texttt{pymcdm}, \texttt{scikit-criteria} &
+\texttt{pymcdm} implémente TOPSIS, PROMETHEE, ainsi que les pondérations par entropie et CRITIC. \\
+ACP robuste & \texttt{scikit-learn}, \texttt{statsmodels} &
+\texttt{MinCovDet} pour la covariance robuste~; \texttt{FactorAnalysis} $+$ rotation varimax pour
+la procédure OCDE--JRC. \\
+BoD / DEA & \texttt{scipy.optimize.linprog}, \texttt{PuLP} &
+Réutiliser une même fabrique de contraintes pour les $n$ programmes~; paralléliser par
+\texttt{joblib}. \\
+Transport optimal & \texttt{ott-jax}, \texttt{POT} &
+\texttt{ott-jax} offre directement les potentiels duaux et la carte entropique hors échantillon,
+et se compile en JIT sur la grille sphérique. \\
+Comparaison & \texttt{scipy.stats}, \texttt{rbo} &
+\texttt{kendalltau}, \texttt{spearmanr}, \texttt{friedmanchisquare}. Le $W$ de Kendall se déduit
+du $\chi^2$ de Friedman. \\
+\bottomrule
+\end{tabularx}
+\caption{Écosystème Python.}
+\end{table}
+
+\noindent
+Le score de Kantorovitch orienté est la seule brique sans implémentation directement disponible.
+Le squelette suivant en donne la structure~:
+
+\begin{lstlisting}
+import jax.numpy as jnp
+from jax.scipy.stats import norm
+from ott.geometry import pointcloud
+from ott.problems.linear import linear_problem
+from ott.solvers.linear import sinkhorn
+from scipy.stats import qmc
+
+
+def spherical_uniform_grid(n_points, dim, seed=0):
+    """Draw a low-discrepancy sample from the uniform measure on the unit ball.
+
+    Args:
+        n_points: Number of target points in the reference measure.
+        dim: Ambient dimension of the score space.
+        seed: Seed of the Sobol engine.
+
+    Returns:
+        Array of shape ``(n_points, dim)`` holding the reference grid.
+    """
+    # Suite de Sobol sur l'hypercube, puis transformation gaussienne
+    engine = qmc.Sobol(d=dim + 1, scramble=True, seed=seed)
+    sample = jnp.asarray(engine.random(n_points))
+    sample = jnp.clip(sample, 1e-6, 1.0 - 1e-6)
+
+    # Directions quasi uniformes sur la sphere unite
+    gaussians = norm.ppf(sample[:, :dim])
+    directions = gaussians / jnp.linalg.norm(gaussians, axis=1, keepdims=True)
+
+    # Rayons stratifies : la puissance 1/dim assure l'uniformite dans la boule
+    radii = sample[:, dim:] ** (1.0 / dim)
+    return directions * radii
+
+
+def oriented_kantorovich_score(x, epsilon=0.1, n_target=2**14, pole_quantile=0.99):
+    """Rank products by an orientation-corrected center-outward score.
+
+    The empirical distribution of the metrics is transported onto the uniform
+    measure on the unit ball. Ranks alone are not orientable, so the transported
+    points are projected on the image of a synthetic "maximally vulnerable"
+    product, which restores a meaningful direction.
+
+    Args:
+        x: Array of shape ``(n, d)`` with all metrics in positive polarity.
+        epsilon: Entropic regularisation strength.
+        n_target: Size of the reference grid on the unit ball.
+        pole_quantile: Marginal quantile defining the synthetic pole.
+
+    Returns:
+        Array of shape ``(n,)`` where a higher value means more vulnerable.
+    """
+    x = jnp.asarray(x)
+    grid = spherical_uniform_grid(n_target, x.shape[1])
+
+    # Resolution du probleme de Sinkhorn entre les scores et la boule uniforme
+    geom = pointcloud.PointCloud(x, grid, epsilon=epsilon)
+    solution = sinkhorn.Sinkhorn()(linear_problem.LinearProblem(geom))
+    if not solution.converged:
+        raise RuntimeError("Sinkhorn n'a pas converge : augmenter epsilon.")
+
+    # Carte entropique, valide hors echantillon
+    transport = solution.to_dual_potentials().transport
+
+    # Direction de vulnerabilite, estimee sur les donnees
+    pole = jnp.quantile(x, pole_quantile, axis=0)
+    pole_image = transport(pole[None, :])[0]
+    direction = pole_image / jnp.linalg.norm(pole_image)
+
+    # Projection signee : rang et signe combines
+    return transport(x) @ direction
+\end{lstlisting}
+
+\noindent
+Deux contrôles à ajouter systématiquement~: la vérification que les normes
+$\norm{\bar{\Tmap}(x_i)}$ suivent bien une loi uniforme sur $[0,1]$ (sans quoi la carte n'a pas
+convergé vers un transport valide), et la comparaison du classement obtenu avec celui de la
+distance de Mahalanobis, qui indique si le surcoût est justifié.
+
+%=======================================================================
+\begin{thebibliography}{99}
+\small
+
+\bibitem{klein2025}
+M.~Klein, L.~Bethune, E.~Ndiaye, M.~Cuturi.
+\emph{Multivariate Conformal Prediction using Optimal Transport}.
+arXiv:2502.03609, 2025.
+
+\bibitem{hallin2021}
+M.~Hallin, E.~del Barrio, J.~Cuesta-Albertos, C.~Matrán.
+\emph{Distribution and quantile functions, ranks and signs in dimension $d$: a measure
+transportation approach}.
+The Annals of Statistics, 49(2), 1139--1165, 2021.
+
+\bibitem{chernozhukov2017}
+V.~Chernozhukov, A.~Galichon, M.~Hallin, M.~Henry.
+\emph{Monge--Kantorovich depth, quantiles, ranks and signs}.
+The Annals of Statistics, 45(1), 223--256, 2017.
+
+\bibitem{cuturi2013}
+M.~Cuturi.
+\emph{Sinkhorn distances: lightspeed computation of optimal transport}.
+NeurIPS, 2292--2300, 2013.
+
+\bibitem{pooladian2021}
+A.-A.~Pooladian, J.~Niles-Weed.
+\emph{Entropic estimation of optimal transport maps}.
+arXiv:2109.12004, 2021.
+
+\bibitem{peyre2019}
+G.~Peyré, M.~Cuturi.
+\emph{Computational Optimal Transport}.
+Foundations and Trends in Machine Learning, 11(5--6), 2019.
+
+\bibitem{thurin2025}
+G.~Thurin, K.~Nadjahi, C.~Boyer.
+\emph{Optimal transport-based conformal prediction}.
+arXiv:2501.18991, 2025.
+
+\bibitem{nardo2008}
+M.~Nardo, M.~Saisana, A.~Saltelli, S.~Tarantola, A.~Hoffman, E.~Giovannini.
+\emph{Handbook on Constructing Composite Indicators: Methodology and User Guide}.
+OCDE et Centre commun de recherche de la Commission européenne, 2008.
+
+\bibitem{saisana2005}
+M.~Saisana, A.~Saltelli, S.~Tarantola.
+\emph{Uncertainty and sensitivity analysis techniques as tools for the quality assessment of
+composite indicators}.
+Journal of the Royal Statistical Society, Series A, 168(2), 307--323, 2005.
+
+\bibitem{diakoulaki1995}
+D.~Diakoulaki, G.~Mavrotas, L.~Papayannakis.
+\emph{Determining objective weights in multiple criteria problems: the CRITIC method}.
+Computers \& Operations Research, 22(7), 763--770, 1995.
+
+\bibitem{cherchye2007}
+L.~Cherchye, W.~Moesen, N.~Rogge, T.~Van Puyenbroeck.
+\emph{An introduction to `benefit of the doubt' composite indicators}.
+Social Indicators Research, 82(1), 111--145, 2007.
+
+\bibitem{mazziotta2016}
+M.~Mazziotta, A.~Pareto.
+\emph{On a generalized non-compensatory composite index for measuring socio-economic phenomena}.
+Social Indicators Research, 127(3), 983--1003, 2016.
+
+\bibitem{deb2002}
+K.~Deb, A.~Pratap, S.~Agarwal, T.~Meyarivan.
+\emph{A fast and elitist multiobjective genetic algorithm: NSGA-II}.
+IEEE Transactions on Evolutionary Computation, 6(2), 182--197, 2002.
+
+\bibitem{lahdelma2001}
+R.~Lahdelma, P.~Salminen.
+\emph{SMAA-2: stochastic multicriteria acceptability analysis for group decision making}.
+Operations Research, 49(3), 444--454, 2001.
+
+\bibitem{webber2010}
+W.~Webber, A.~Moffat, J.~Zobel.
+\emph{A similarity measure for indefinite rankings}.
+ACM Transactions on Information Systems, 28(4), 1--38, 2010.
+
+\bibitem{rousseeuw1999}
+P.~J.~Rousseeuw, K.~Van Driessen.
+\emph{A fast algorithm for the minimum covariance determinant estimator}.
+Technometrics, 41(3), 212--223, 1999.
+
+\bibitem{cuturi2022}
+M.~Cuturi, L.~Meng-Papaxanthos, Y.~Tian, C.~Bunne, G.~Davis, O.~Teboul.
+\emph{Optimal Transport Tools (OTT): a JAX toolbox for all things Wasserstein}.
+arXiv:2201.12324, 2022.
+
+\end{thebibliography}
+
+\end{document}
