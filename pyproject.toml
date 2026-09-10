@@ -42,6 +42,7 @@ baci-hs-script = "scripts.process_baci_hs:main"
 vulnerabilities-eurostat-script = "scripts.compute_trade_vulnerabilities:main"
 vulnerabilities-network-script = "scripts.compute_network_vulnerabilities:main"
 vulnerabilities-synthesis-script = "scripts.compute_synthetic_scores:main"
+vulnerabilities-coherence-script = "scripts.compute_synthesis_coherence:main"
 test-baci-script = "scripts.test_baci:main"
 
 [build-system]
