@@ -12,9 +12,9 @@ Two entry points:
   methodological note: the Pareto front and dominance count first (free, no
   assumption), SMAA on a weighted sum, two or three contrasted scores with
   the coherence dashboard, a bootstrap of rank stability, and the oriented
-  Kantorovitch score last, only when the metric cloud is markedly
-  non-elliptical and low-dimensional enough for it to be worth the extra
-  hyperparameters.
+  Kantorovitch score last, whenever the group is large enough and
+  low-dimensional enough for its estimation to make sense — its ellipticity
+  diagnostic being reported rather than used as a gate (D-07).
 """
 # Importation des modules
 from __future__ import annotations
@@ -35,7 +35,7 @@ from .diagnostics import (
     smaa_rank_acceptability,
 )
 from .estimators import WeightedAggregator
-from .functions import mahalanobis_score, weighted_sum_score
+from .functions import weighted_sum_score
 from .pareto import dominance_count, pareto_front
 from .preprocessing import PolarityOrienter, Winsorizer, make_normalizer
 
@@ -58,9 +58,13 @@ class AggregationReport:
             (:func:`~macroforecast.trade.aggregation.diagnostics.bootstrap_rank_stability`),
             ``None`` when not requested.
         smaa: SMAA rank-acceptability result, ``None`` when not requested.
-        ellipticity_tau: Kendall τ between the Mahalanobis and the oriented
-            Kantorovitch score, ``None`` when the optimal-transport step was
-            skipped.
+        ellipticity_tau_proj: Kendall τ_b between the oriented Kantorovitch
+            score and its linear counterpart, the whitened projection;
+            ``None`` when the optimal-transport step was skipped.
+        ellipticity_tau_rank: Kendall τ_b between the center-outward rank and
+            the Mahalanobis distance to the robust centre; ``None`` when the
+            optimal-transport step was skipped. Both are reported for
+            interpretation, neither gates the score (D-07).
     """
     n_products: int = 0
     methods: List[str] = field(default_factory=list)
@@ -68,7 +72,8 @@ class AggregationReport:
     pareto_front_size: int = 0
     bootstrap: Optional[pd.DataFrame] = None
     smaa: Optional[SmaaResult] = None
-    ellipticity_tau: Optional[float] = None
+    ellipticity_tau_proj: Optional[float] = None
+    ellipticity_tau_rank: Optional[float] = None
 
     # Mise en forme des indicateurs numériques (style VulnerabilityReport.to_metrics)
     def to_metrics(self, prefix: str = "aggregation") -> Dict[str, float]:
@@ -91,8 +96,10 @@ class AggregationReport:
         }
         if self.coherence is not None:
             metrics.update(self.coherence.to_metrics(prefix=f"{prefix}.coherence"))
-        if self.ellipticity_tau is not None:
-            metrics[f"{prefix}.ellipticity_tau"] = float(self.ellipticity_tau)
+        for name in ("ellipticity_tau_proj", "ellipticity_tau_rank"):
+            value = getattr(self, name)
+            if value is not None:
+                metrics[f"{prefix}.{name}"] = float(value)
         return metrics
 
 
@@ -252,8 +259,8 @@ def recommended_workflow(
     bootstrap_n: int = 200,
     dispute_threshold: int = 50,
     consider_optimal_transport: bool = True,
-    ellipticity_threshold: float = 0.95,
     ot_dimension_limit: int = 6,
+    ot_min_group_size: int = 500,
     random_state: Optional[int] = None,
 ) -> Tuple[pd.DataFrame, AggregationReport]:
     """Run the note's priority-ordered workflow (§7): decreasing marginal value.
@@ -265,11 +272,11 @@ def recommended_workflow(
     3. Two or three contrasted scores (CRITIC-weighted sum, geometric mean,
        TOPSIS) plus the coherence dashboard.
     4. Bootstrap of rank stability.
-    5. The oriented Kantorovitch score — **only** when
-       :func:`~macroforecast.trade.aggregation.optimal_transport.ellipticity_screen`
-       falls below ``ellipticity_threshold`` (the cloud is markedly
-       non-elliptical) and ``d <= ot_dimension_limit``. Skipped silently
-       (``report.ellipticity_tau`` stays ``None``) when the optional
+    5. The oriented Kantorovitch score, as soon as the group is large enough
+       (``n >= ot_min_group_size``) and low-dimensional enough
+       (``d <= ot_dimension_limit``) — the ellipticity diagnostic is
+       *reported*, not a gate (D-07). Skipped silently (both
+       ``report.ellipticity_tau_*`` stay ``None``) when the optional
        ``jax``/``ott-jax`` dependency is not installed.
 
     Args:
@@ -283,10 +290,10 @@ def recommended_workflow(
         dispute_threshold: Rank-spread above which a product is flagged as
             disputed.
         consider_optimal_transport: Whether to attempt step 5 at all.
-        ellipticity_threshold: Kendall τ above which optimal transport is
-            skipped as redundant with Mahalanobis.
         ot_dimension_limit: Maximum ``d`` for which optimal transport is
-            attempted.
+            attempted — the map degrades with the dimension (M-17).
+        ot_min_group_size: Minimum number of rows below which the transport is
+            not estimated (D-11).
         random_state: Seed shared by the SMAA and bootstrap draws.
 
     Returns:
@@ -373,21 +380,21 @@ def recommended_workflow(
         random_state=random_state,
     )
 
-    # Etape 5 : transport optimal, uniquement si le nuage est franchement non
-    # elliptique et de dimension raisonnable — dépendance optionnelle
-    d = X.shape[1]
-    if consider_optimal_transport and d <= ot_dimension_limit:
+    # Etape 5 : transport optimal, dès que la taille et la dimension du groupe le
+    # permettent (D-07 : l'ellipticité est un diagnostic) — dépendance optionnelle
+    n, d = X.shape
+    if consider_optimal_transport and d <= ot_dimension_limit and n >= ot_min_group_size:
         try:
             from .optimal_transport import OrientedKantorovichScorer, ellipticity_screen
 
-            mahalanobis_values = mahalanobis_score(X_scaled)
-            scorer = OrientedKantorovichScorer().fit(X_scaled)
-            ot_values = scorer.score_samples(X_scaled)
-            tau = ellipticity_screen(mahalanobis_values, ot_values)
-            report.ellipticity_tau = tau
-            if tau < ellipticity_threshold:
-                df_scores["oriented_kantorovich"] = pd.Series(ot_values, index=index)
-                report.methods.append("oriented_kantorovich")
+            scorer = OrientedKantorovichScorer(seed=random_state or 0).fit(X_scaled)
+            df_scores["oriented_kantorovich"] = pd.Series(
+                scorer.predict(X_scaled), index=index
+            )
+            report.methods.append("oriented_kantorovich")
+            screen = ellipticity_screen(X_scaled, scorer)
+            report.ellipticity_tau_proj = screen["tau_proj"]
+            report.ellipticity_tau_rank = screen["tau_rank"]
         except ImportError:
             # Dépendance optionnelle absente : étape silencieusement ignorée
             pass
