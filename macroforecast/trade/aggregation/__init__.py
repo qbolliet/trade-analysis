@@ -49,19 +49,26 @@ from .weights import (
 )
 # Fonctions d'agrégation
 from .functions import (
+    cone_quantile_bounds,
+    cone_quantile_score,
     geometric_mean_score,
     mahalanobis_score,
     mpi_score,
+    rank_mean_score,
     topsis_score,
+    vikor_score,
     weighted_sum_score,
+    whitened_projection_score,
 )
 # Estimateurs sklearn (pondération + agrégation)
 from .estimators import (
     AGGREGATION_REGISTRY,
     WEIGHTING_REGISTRY,
     BenefitOfDoubtScorer,
+    ConeQuantileScorer,
     DominanceCountScorer,
     PcaProjectionScorer,
+    SmaaScorer,
     WeightedAggregator,
 )
 # Protocole de comparaison/robustesse et classements consensus
@@ -140,17 +147,24 @@ __all__ = [
     "entropy_weights",
     "pca_weights",
     # Fonctions d'agrégation
+    "cone_quantile_bounds",
+    "cone_quantile_score",
     "geometric_mean_score",
     "mahalanobis_score",
     "mpi_score",
+    "rank_mean_score",
     "topsis_score",
+    "vikor_score",
     "weighted_sum_score",
+    "whitened_projection_score",
     # Estimateurs
     "AGGREGATION_REGISTRY",
     "WEIGHTING_REGISTRY",
     "BenefitOfDoubtScorer",
+    "ConeQuantileScorer",
     "DominanceCountScorer",
     "PcaProjectionScorer",
+    "SmaaScorer",
     "WeightedAggregator",
     # Diagnostics / comparaison / consensus
     "CoherenceReport",

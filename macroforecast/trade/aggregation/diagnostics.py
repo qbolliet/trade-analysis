@@ -373,6 +373,7 @@ def smaa_rank_acceptability(
     k: int = 50,
     n_draws: int = 10_000,
     random_state: Optional[int] = None,
+    weight_draws: Optional[np.ndarray] = None,
 ) -> SmaaResult:
     """Explore the whole admissible weight simplex instead of picking one vector.
 
@@ -391,11 +392,22 @@ def smaa_rank_acceptability(
         aggregation_params: Extra keyword arguments forwarded to
             ``aggregation_fn``.
         k: Rank depth of the reported confidence factor.
-        n_draws: Number of Dirichlet weight draws.
-        random_state: Seed of the weight sampler.
+        n_draws: Number of Dirichlet weight draws; ignored when
+            ``weight_draws`` is supplied.
+        random_state: Seed of the weight sampler; ignored when
+            ``weight_draws`` is supplied.
+        weight_draws: Pre-drawn simplex sample of shape ``(T, d)`` to reuse
+            instead of drawing a fresh one — how
+            :class:`~macroforecast.trade.aggregation.estimators.SmaaScorer`
+            keeps the draws fixed between ``fit`` and ``predict``, and how the
+            same sample is shared with the cone quantile (A-01).
 
     Returns:
         The :class:`SmaaResult` of the exploration.
+
+    Raises:
+        ValueError: If ``weight_draws`` does not match the number of columns
+            of ``X``.
 
     Examples:
         >>> import numpy as np
@@ -409,7 +421,15 @@ def smaa_rank_acceptability(
     X = np.asarray(X, dtype=float)
     n, d = X.shape
     params = aggregation_params or {}
-    weight_draws = dirichlet_weights(d, n_draws, random_state=random_state)
+    if weight_draws is None:
+        weight_draws = dirichlet_weights(d, n_draws, random_state=random_state)
+    else:
+        weight_draws = np.atleast_2d(np.asarray(weight_draws, dtype=float))
+        if weight_draws.shape[1] != d:
+            raise ValueError(
+                f"weight_draws must have shape (T, {d}), got {weight_draws.shape}."
+            )
+        n_draws = weight_draws.shape[0]
 
     rank_counts = np.zeros((n, n), dtype=np.int64)
     weight_sum_top1 = np.zeros((n, d))

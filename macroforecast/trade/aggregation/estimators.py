@@ -35,18 +35,26 @@ Three estimators live here, matching the three kinds of weighting of
   standardised data.
 * :class:`BenefitOfDoubtScorer` — the **individual** weightings, with the
   ``fit``/``predict`` separation the bare function cannot offer (I-04).
+
+Two more estimators refuse to pick a weighting at all and explore the whole
+simplex instead, drawing it once at ``fit`` time so that ``predict`` stays
+reproducible: :class:`ConeQuantileScorer` (worst-case one-dimensional rank,
+A-01) and :class:`SmaaScorer` (share of admissible weightings placing the
+product in the top ``k``).
 """
 # Importation des modules
 from __future__ import annotations
 # Modules de base
-from typing import Any, Callable, Dict, Optional
+from typing import Any, Callable, Dict, Optional, Tuple
 # Modules de manipulation de données
 import numpy as np
 from sklearn.base import BaseEstimator
 from sklearn.utils.validation import check_array, check_is_fitted
 # Modules du package
 from . import functions, weights
+from .diagnostics import smaa_rank_acceptability
 from .pareto import ParetoScorer, dominance_count, pareto_front
+from .weights import dirichlet_weights
 
 # Registre des pondérations, point d'entrée piloté par configuration
 WEIGHTING_REGISTRY: Dict[str, Callable[..., Any]] = {
@@ -64,7 +72,7 @@ WEIGHTING_REGISTRY: Dict[str, Callable[..., Any]] = {
 
 # Agrégations exigeant un vecteur du simplexe (poids >= 0 de somme 1, M-05)
 _SIMPLEX_AGGREGATIONS = frozenset(
-    {"weighted_sum", "geometric_mean", "topsis", "vikor"}
+    {"weighted_sum", "geometric_mean", "rank_mean", "topsis", "vikor"}
 )
 
 # Tolérance de la vérification de somme unitaire des poids
@@ -74,13 +82,18 @@ _SIMPLEX_TOLERANCE = 1e-8
 AGGREGATION_REGISTRY: Dict[str, Callable[..., np.ndarray]] = {
     "weighted_sum": functions.weighted_sum_score,
     "geometric_mean": functions.geometric_mean_score,
+    "rank_mean": functions.rank_mean_score,
     "mpi": functions.mpi_score,
     "topsis": functions.topsis_score,
+    "vikor": functions.vikor_score,
     "mahalanobis": functions.mahalanobis_score,
+    "whitened_projection": functions.whitened_projection_score,
 }
 
 # Fonctions d'agrégation n'exigeant aucun poids (score déjà défini sans `weighting`)
-_WEIGHT_FREE_AGGREGATIONS = frozenset({"mpi", "mahalanobis"})
+_WEIGHT_FREE_AGGREGATIONS = frozenset(
+    {"mpi", "mahalanobis", "whitened_projection"}
+)
 
 
 # Estimateur sklearn de pondération + agrégation
@@ -209,15 +222,17 @@ class WeightedAggregator(BaseEstimator):
         if np.any(weight < 0.0):
             raise ValueError(
                 f"The fitted weights hold a negative component (min = "
-                f"{float(weight.min()):.6g}); weighted_sum, geometric_mean, topsis "
-                "and vikor require non-negative weights summing to 1 (M-05)."
+                f"{float(weight.min()):.6g}); the aggregations "
+                f"{sorted(_SIMPLEX_AGGREGATIONS)} require non-negative weights "
+                "summing to 1 (M-05)."
             )
         total = float(weight.sum())
         if abs(total - 1.0) > _SIMPLEX_TOLERANCE:
             raise ValueError(
                 f"The fitted weights sum to {total:.12g} instead of 1 (tolerance "
-                f"{_SIMPLEX_TOLERANCE:g}); weighted_sum, geometric_mean, topsis and "
-                "vikor require a point of the simplex (M-05)."
+                f"{_SIMPLEX_TOLERANCE:g}); the aggregations "
+                f"{sorted(_SIMPLEX_AGGREGATIONS)} require a point of the simplex "
+                "(M-05)."
             )
 
     # Prédiction : application de la fonction d'agrégation avec les poids ajustés
@@ -545,6 +560,262 @@ class BenefitOfDoubtScorer(BaseEstimator):
         return np.array([score for score, _ in results], dtype=float)
 
     # Alias sklearn conventionnel : ajustement puis prediction
+    def fit_predict(self, X: np.ndarray, y: None = None) -> np.ndarray:
+        """Fit on ``X`` then predict on the same matrix.
+
+        Args:
+            X: Metric matrix of shape ``(n, d)``.
+            y: Ignored, present for sklearn API compatibility.
+
+        Returns:
+            Score vector of shape ``(n,)``.
+        """
+        return self.fit(X, y).predict(X)
+
+
+# Estimateur sklearn du quantile de cône (Hamel & Kostner)
+class ConeQuantileScorer(BaseEstimator):
+    """Score by the empirical cone distribution function (A-01).
+
+    The weight-free, fully non-compensatory counterpart of
+    :class:`WeightedAggregator`: instead of committing to one weight vector,
+    every product is judged under the admissible weighting *least* favourable
+    to it (``bound="lower"``, the cone distribution function of Hamel &
+    Kostner 2018) or the most favourable one (``bound="upper"``). The gap
+    between the two bounds — available through
+    :meth:`bounds` — measures the per-product indeterminacy left by the
+    refusal to rank the criteria.
+
+    The simplex sample is drawn **once**, at ``fit`` time, and reused by
+    ``predict``: two calls on the same matrix therefore return the same
+    scores, and a product scored out of sample is judged against the very
+    weightings that produced the training scores.
+
+    Args:
+        n_draws: Number of Dirichlet draws sampling the simplex.
+        random_state: Seed of the weight sampler.
+        bound: ``"lower"`` (default) or ``"upper"``.
+        block_size: Number of draws scored at once in ``predict``.
+
+    Attributes:
+        weight_draws_: Simplex sample of shape ``(n_draws, d)``.
+
+    Examples:
+        >>> import numpy as np
+        >>> X = np.array([[1.0, 1.0], [0.5, 0.5], [0.0, 0.0], [1.0, 0.0]])
+        >>> scorer = ConeQuantileScorer(n_draws=200).fit(X)
+        >>> scores = scorer.predict(X)
+        >>> bool(scores[0] == 1.0 and scores[2] == 0.25)
+        True
+        >>> lower, upper = scorer.bounds(X)
+        >>> bool(np.all(lower <= upper))
+        True
+    """
+
+    # Initialisation
+    def __init__(
+        self,
+        n_draws: int = 2000,
+        random_state: Optional[int] = 0,
+        bound: str = "lower",
+        block_size: int = 256,
+    ) -> None:
+        self.n_draws = n_draws
+        self.random_state = random_state
+        self.bound = bound
+        self.block_size = block_size
+
+    # Ajustement : tirage du simplexe, réutilisé par `predict`
+    def fit(self, X: np.ndarray, y: None = None) -> "ConeQuantileScorer":
+        """Draw the simplex sample the scores will be computed against.
+
+        Args:
+            X: Metric matrix of shape ``(n, d)``, positive polarity; the
+                score being rank-based, no normalisation is required.
+            y: Ignored, present for sklearn API compatibility.
+
+        Returns:
+            ``self``, with ``weight_draws_`` fitted.
+
+        Raises:
+            ValueError: If ``bound`` is unknown.
+        """
+        if self.bound not in ("lower", "upper"):
+            raise ValueError(
+                f"Unknown bound {self.bound!r}. Available: 'lower', 'upper'."
+            )
+        X = check_array(X)
+        self.n_features_in_ = X.shape[1]
+        self.weight_draws_ = dirichlet_weights(
+            X.shape[1], self.n_draws, random_state=self.random_state
+        )
+        return self
+
+    # Prédiction : pire (ou meilleur) rang unidimensionnel sur les tirages
+    def predict(self, X: np.ndarray) -> np.ndarray:
+        """Score every row by the fitted bound of the cone quantile.
+
+        Args:
+            X: Metric matrix of shape ``(n, d)``, same preprocessing as at
+                fit time.
+
+        Returns:
+            Score vector of shape ``(n,)``, in ``(0, 1]``.
+        """
+        check_is_fitted(self, "weight_draws_")
+        return functions.cone_quantile_score(
+            check_array(X),
+            self.weight_draws_,
+            bound=self.bound,
+            block_size=self.block_size,
+        )
+
+    # Bornes inférieure et supérieure : indétermination par produit
+    def bounds(self, X: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
+        """Return both bounds of the cone quantile.
+
+        Args:
+            X: Metric matrix of shape ``(n, d)``.
+
+        Returns:
+            Tuple ``(lower, upper)`` of two vectors of shape ``(n,)``; their
+            difference is the indeterminacy of the product's position.
+        """
+        check_is_fitted(self, "weight_draws_")
+        return functions.cone_quantile_bounds(
+            check_array(X), self.weight_draws_, block_size=self.block_size
+        )
+
+    # Alias sklearn conventionnel : ajustement puis prédiction
+    def fit_predict(self, X: np.ndarray, y: None = None) -> np.ndarray:
+        """Fit on ``X`` then predict on the same matrix.
+
+        Args:
+            X: Metric matrix of shape ``(n, d)``.
+            y: Ignored, present for sklearn API compatibility.
+
+        Returns:
+            Score vector of shape ``(n,)``.
+        """
+        return self.fit(X, y).predict(X)
+
+
+# Estimateur sklearn du protocole SMAA
+class SmaaScorer(BaseEstimator):
+    """Score by the SMAA confidence factor: "in the top ``k`` how often?".
+
+    Turns the robustness protocol of
+    :func:`~macroforecast.trade.aggregation.diagnostics.smaa_rank_acceptability`
+    into a method in its own right: the score of a product is the share of
+    admissible weightings under which it ranks within the top ``k`` — the
+    statement fit for an administrative report, and a genuine
+    "higher = more vulnerable" score (D-16).
+
+    As for :class:`ConeQuantileScorer`, the simplex sample is drawn once at
+    ``fit`` time and reused by ``predict``. ``predict`` stores the full
+    :class:`~macroforecast.trade.aggregation.diagnostics.SmaaResult` of the
+    call in ``result_``, so the rank acceptabilities and the central weights
+    stay available for the report.
+
+    Args:
+        aggregation: Name of a weight-taking function in
+            :data:`AGGREGATION_REGISTRY`.
+        aggregation_params: Extra keyword arguments forwarded to it.
+        k: Rank depth defining the confidence factor.
+        n_draws: Number of Dirichlet draws.
+        random_state: Seed of the weight sampler.
+
+    Attributes:
+        weight_draws_: Simplex sample of shape ``(n_draws, d)``.
+        result_: :class:`~macroforecast.trade.aggregation.diagnostics.SmaaResult`
+            of the last ``predict`` call.
+
+    Examples:
+        >>> import numpy as np
+        >>> X = np.array([[0.9, 0.8], [0.5, 0.5], [0.1, 0.2]])
+        >>> scorer = SmaaScorer(k=1, n_draws=200)
+        >>> scores = scorer.fit_predict(X)
+        >>> bool(scores[0] == 1.0 and scores[2] == 0.0)
+        True
+        >>> scorer.result_.central_weight.shape
+        (3, 2)
+    """
+
+    # Initialisation
+    def __init__(
+        self,
+        aggregation: str = "weighted_sum",
+        aggregation_params: Optional[Dict[str, Any]] = None,
+        k: int = 50,
+        n_draws: int = 2000,
+        random_state: Optional[int] = 0,
+    ) -> None:
+        self.aggregation = aggregation
+        self.aggregation_params = aggregation_params
+        self.k = k
+        self.n_draws = n_draws
+        self.random_state = random_state
+
+    # Ajustement : tirage du simplexe, réutilisé par `predict`
+    def fit(self, X: np.ndarray, y: None = None) -> "SmaaScorer":
+        """Draw the simplex sample the exploration will run on.
+
+        Args:
+            X: Metric matrix of shape ``(n, d)``, already oriented,
+                winsorised and normalised.
+            y: Ignored, present for sklearn API compatibility.
+
+        Returns:
+            ``self``, with ``weight_draws_`` fitted.
+
+        Raises:
+            ValueError: If ``aggregation`` names an unknown function, or one
+                that ignores the weights (exploring the simplex would then
+                return a constant).
+        """
+        if self.aggregation not in AGGREGATION_REGISTRY:
+            raise ValueError(
+                f"Unknown aggregation {self.aggregation!r}. "
+                f"Available: {sorted(AGGREGATION_REGISTRY)}."
+            )
+        if self.aggregation in _WEIGHT_FREE_AGGREGATIONS:
+            raise ValueError(
+                f"The aggregation {self.aggregation!r} ignores its weights: "
+                "exploring the weight simplex would leave the ranking "
+                "unchanged. Pick a weight-taking aggregation "
+                f"({sorted(set(AGGREGATION_REGISTRY) - _WEIGHT_FREE_AGGREGATIONS)})."
+            )
+        X = check_array(X)
+        self.n_features_in_ = X.shape[1]
+        self.weight_draws_ = dirichlet_weights(
+            X.shape[1], self.n_draws, random_state=self.random_state
+        )
+        return self
+
+    # Prédiction : facteur de confiance sur les tirages ajustés
+    def predict(self, X: np.ndarray) -> np.ndarray:
+        """Compute the confidence factor of every row.
+
+        Args:
+            X: Metric matrix of shape ``(n, d)``, same preprocessing as at
+                fit time.
+
+        Returns:
+            Score vector of shape ``(n,)``, in ``[0, 1]``; ``result_`` holds
+            the full :class:`SmaaResult` of the call.
+        """
+        check_is_fitted(self, "weight_draws_")
+        X = check_array(X)
+        self.result_ = smaa_rank_acceptability(
+            X,
+            AGGREGATION_REGISTRY[self.aggregation],
+            aggregation_params=self.aggregation_params,
+            k=self.k,
+            weight_draws=self.weight_draws_,
+        )
+        return self.result_.confidence_factor
+
+    # Alias sklearn conventionnel : ajustement puis prédiction
     def fit_predict(self, X: np.ndarray, y: None = None) -> np.ndarray:
         """Fit on ``X`` then predict on the same matrix.
 
