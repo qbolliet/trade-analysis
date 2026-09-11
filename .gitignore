@@ -230,3 +230,13 @@ Documentation_scores_vulnerabilité_full.tex
 
 Methodologie synthese multicritere*
 !Methodologie synthese multicritere.tex
+
+# Artefacts de compilation LaTeX (*.log déjà ignoré ci-dessus)
+*.aux
+*.bbl
+*.blg
+*.fdb_latexmk
+*.fls
+*.synctex.gz
+*.toc
+*.out

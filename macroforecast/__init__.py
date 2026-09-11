@@ -16,6 +16,12 @@ from .trade import (
     run_network_vulnerabilities,
     NetworkVulnerabilityConfig,
     NETWORK_VULNERABILITY_DEFAULT_CONFIG,
+    # Synthèse multicritère des vulnérabilités
+    run_synthesis,
+    SynthesisConfig,
+    # Cohérence des métriques et des synthèses
+    run_coherence,
+    CoherenceConfig,
 )
 
 __all__ = [
@@ -28,4 +34,8 @@ __all__ = [
     "run_network_vulnerabilities",
     "NetworkVulnerabilityConfig",
     "NETWORK_VULNERABILITY_DEFAULT_CONFIG",
+    "run_synthesis",
+    "SynthesisConfig",
+    "run_coherence",
+    "CoherenceConfig",
 ]
