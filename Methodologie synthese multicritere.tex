@@ -3757,7 +3757,1083 @@ contrainte en remplaçant le vecteur par une distribution sur le simplexe.
 \label{sec:ot}
 %=======================================================================
 
-% À rédiger : prompt P15
+\medskip
+
+Les chapitres~\ref{sec:poids} et~\ref{sec:agregation} construisent un score en combinant
+les métriques coordonnée par coordonnée : un vecteur de poids, puis une règle de
+combinaison. Ce chapitre change de point de départ. Il ne cherche pas de coefficients, mais
+transporte le nuage tout entier sur une loi de référence fixée, et lit la position d'une
+unité dans cette référence plutôt que la valeur de ses métriques. La construction
+généralise exactement la notion de rang : elle ne suppose aucune forme de distribution,
+absorbe les échelles et les corrélations d'un seul mouvement, et rend compte de la
+\emph{géométrie} du nuage là où une normalisation marginale ne voit que les marges.
+
+\bigskip
+
+Cette généralité a un prix, et le chapitre l'expose avec le reste : la carte de transport
+est un objet estimé, dont la qualité se dégrade avec la dimension et dépend de deux
+hyperparamètres ; et le rang qu'elle définit mesure l'\emph{atypicité} et non la position
+dans une direction d'intérêt, ce qui impose une correction d'orientation sans laquelle la
+méthode répond à une autre question que celle posée.
+
+\bigskip
+
+\subsection{Du rang unidimensionnel à la carte de Brenier}
+\label{sec:ot-idee}
+
+\medskip
+
+\paragraph{Le rang comme transport.} En dimension $1$, la fonction de répartition $F$ d'une
+loi $P$ absolument continue est l'unique application croissante qui transporte $P$ sur la
+loi uniforme $\Unif[0,1]$. Le rang empirique $\hat F_n(x_i) = \rg(x_i)/n$ n'est rien
+d'autre que la version échantillonnale de cette application. C'est ce qui lui confère ses
+deux propriétés d'usage : sa loi ne dépend pas de $P$, et il est invariant par toute
+transformation strictement croissante des données. Le rang \emph{est} un problème de
+transport, et c'est ce point de vue qui se généralise.
+
+\medskip
+
+\paragraph{L'obstacle et sa levée.} En dimension $d \ge 2$, « croissante » n'a pas de sens
+immédiat : l'ordre de $\R$ disparaît, comme l'établit la propriété~\ref{prop:impossibilite}.
+La généralisation retenue par la théorie du transport optimal est la
+\emph{monotonie cyclique} : une application $\Tmap$ est monotone au sens multivarié
+lorsqu'elle est le gradient d'une fonction convexe. Le théorème de Brenier garantit que,
+$P$ étant absolument continue et $Q$ une loi de référence fixée, il existe une unique (à un
+ensemble négligeable près) application de cette forme qui pousse $P$ sur $Q$, et qu'elle
+minimise le coût quadratique $\EE\norm{Z - \Tmap(Z)}^2$ parmi tous les transports de $P$
+sur $Q$. Pour $d = 1$, le gradient d'une fonction convexe est une fonction croissante et
+l'on retrouve $F$ exactement.
+
+\medskip
+
+\begin{remarque}[Ce que la construction apporte, et ce qu'elle ne donne pas]
+  \label{rem:ot-apport}
+  Deux propriétés distinguent cette construction d'une normalisation marginale suivie
+  d'une norme.
+
+  \medskip
+
+  \begin{itemize}[nosep,leftmargin=1.4em]
+    \item \textbf{Absence de distribution.} La loi de l'image $\Tmap(Z)$ est la loi de
+    référence, \emph{quelle que soit} $P$. Échelles hétérogènes, asymétries, queues lourdes
+    et corrélations sont neutralisées d'un seul coup, sans qu'aucune décision de
+    normalisation ne soit prise métrique par métrique. La version empirique hérite de cette
+    propriété : les rangs \emph{center-outward} empiriques sont exactement libres de la loi
+    sous-jacente, à $n$ fini \citep{hallin2021}.
+    \item \textbf{Prise en compte de la géométrie.} La carte tient compte de la forme du
+    nuage et non seulement de ses marges : une valeur élevée dans une direction où le nuage
+    est étalé est jugée moins remarquable que la même valeur dans une direction où il est
+    resserré. C'est ce qu'une transformation en rangs coordonnée par coordonnée, suivie
+    d'une agrégation, ne peut pas faire.
+  \end{itemize}
+
+  \medskip
+
+  En revanche, la construction ne fournit \emph{pas} un ordre. Elle fournit une position
+  dans une boule, dont la norme est un rang de centralité non orienté : la
+  section~\ref{sec:ot-orientation} en tire un score, et c'est là que réside l'essentiel du
+  travail méthodologique.
+\end{remarque}
+
+\bigskip
+
+\subsection{Cadre \emph{center-outward}}
+\label{sec:ot-cadre}
+
+\medskip
+
+\paragraph{La loi de référence.} Le choix de $Q$ n'est pas libre : c'est lui qui fixe
+l'échelle sur laquelle se lisent les rangs, et donc la couverture des régions quantiles.
+La littérature \emph{center-outward} retient la loi \emph{sphérique uniforme}, qui rend la
+norme de l'image uniforme sur $[0,1]$ et fait donc jouer à $\norm{\Tmap(z)}$ le rôle exact
+que joue $F(x)$ en dimension $1$.
+
+\medskip
+
+\begin{definition}[Loi sphérique uniforme $\Unif_d$]
+  \label{def:spherique-uniforme}
+  La loi sphérique uniforme sur la boule unité $\Bball_d \subset \R^d$ est la loi du produit
+  $U = \varrho\,\Theta$, où $\Theta$ est uniforme sur la sphère $\Sphere^{d-1}$, $\varrho$
+  est uniforme sur $[0,1]$, et $\varrho \perp\!\!\!\perp \Theta$. Elle vérifie
+
+  \medskip
+
+  \[
+    \PP\big(\norm{U} \le r\big) = r
+    \qquad \text{pour tout } r \in [0,1],
+    \qquad\text{soit}\qquad
+    \norm{U} \sim \Unif[0,1].
+  \]
+
+  \bigskip
+
+  Pour $d = 1$, $\Unif_1$ est la loi uniforme sur $[-1,1]$ et la construction qui suit
+  redonne $2F - 1$.
+\end{definition}
+
+\bigskip
+
+\begin{avertissement}[La loi uniforme \emph{de Lebesgue} sur la boule n'est pas la bonne
+référence]
+  \label{av:lebesgue}
+  Il est tentant de prendre pour $Q$ la loi uniforme au sens de Lebesgue \emph{dans} la
+  boule, qui est la loi « uniforme » au sens courant du terme. Elle correspond à
+  $U = \varrho^{1/d}\Theta$ et vérifie $\PP(\norm{U} \le r) = r^d$, c'est-à-dire
+  $\norm{U} \sim \mathrm{Beta}(d,1)$. Les deux conséquences sont directes et toutes deux
+  indésirables :
+
+  \medskip
+
+  \begin{itemize}[nosep,leftmargin=1.4em]
+    \item la région $\{z : \norm{\Tmap(z)} \le 1-\alpha\}$ a la couverture
+    $(1-\alpha)^d$ et non $1-\alpha$ : à $d = 6$ et $\alpha = 0{,}05$, elle contient
+    $73{,}5\,\%$ de la masse et non $95\,\%$ ;
+    \item le contrôle d'uniformité des normes transportées
+    (section~\ref{sec:ot-estimation}) rejette systématiquement une carte pourtant correcte.
+    Sur une grille de $4\,096$ points en dimension $6$, le test de Kolmogorov--Smirnov des
+    normes contre $\Unif[0,1]$ donne une $p$-valeur nulle à la précision machine, et une
+    $p$-valeur de $1{,}00$ contre $\mathrm{Beta}(d,1)$.
+  \end{itemize}
+
+  \medskip
+
+  La loi de la définition~\ref{def:spherique-uniforme} est donc la seule pour laquelle le
+  rang se lit comme une probabilité et le seuil radial comme un quantile. Le rayon de la
+  grille de référence est tiré uniformément sur $[0,1]$, et non en $\varrho^{1/d}$.
+\end{avertissement}
+
+\bigskip
+
+\begin{definition}[Fonction de répartition \emph{center-outward}, rang et signe]
+  \label{def:center-outward}
+  Soit $Z \sim P$ à valeurs dans $\R^d$, $P$ absolument continue de support connexe. La
+  \emph{fonction de répartition center-outward} de $P$ est l'application
+  $\Tmap = \nabla\varphi$, gradient d'une fonction convexe $\varphi$, qui pousse $P$ sur
+  $\Unif_d$. On en déduit
+
+  \medskip
+
+  \[
+    \underbrace{\mathcal{R}(z) = \norm{\Tmap(z)} \in [0,1]}_{\text{rang}},
+    \qquad
+    \underbrace{\mathcal{S}(z) = \frac{\Tmap(z)}{\norm{\Tmap(z)}} \in \Sphere^{d-1}}_{\text{signe}},
+  \]
+
+  \bigskip
+
+  le signe n'étant pas défini au seul point transporté sur le centre. Le couple
+  $(\mathcal{R}, \mathcal{S})$ détermine $\Tmap$ et réciproquement.
+\end{definition}
+
+\bigskip
+
+\begin{definition}[Régions et contours quantiles]
+  \label{def:regions-quantiles}
+  Pour $\alpha \in (0,1)$, la \emph{région quantile} de couverture $1-\alpha$ et le
+  \emph{contour quantile} associé sont les images réciproques de la boule et de la sphère
+  de rayon $1-\alpha$ :
+
+  \medskip
+
+  \[
+    \mathcal{R}_\alpha = \Tmap^{-1}\big(\Bball(0, 1-\alpha)\big)
+    = \{ z : \mathcal{R}(z) \le 1-\alpha \},
+    \qquad
+    \mathcal{C}_\alpha = \Tmap^{-1}\big((1-\alpha)\,\Sphere^{d-1}\big).
+  \]
+
+  \bigskip
+
+  Sous la loi de référence de la définition~\ref{def:spherique-uniforme},
+  $\PP(Z \in \mathcal{R}_\alpha) = 1-\alpha$ exactement.
+\end{definition}
+
+\bigskip
+
+Ces régions ne sont ni des ellipsoïdes ni des pavés : elles épousent la forme du nuage,
+peuvent être non convexes, et emboîtées par construction puisque $\alpha \mapsto
+\mathcal{R}_\alpha$ est décroissante pour l'inclusion. C'est ce qui les distingue des
+régions de confiance fondées sur une distance de Mahalanobis, qui sont elliptiques par
+construction quelle que soit la forme réelle du nuage.
+
+\bigskip
+
+\paragraph{Propriétés statistiques.} La construction est établie sur le plan théorique, ce
+qui n'est pas le cas de toutes les méthodes de cette note.
+\citet{chernozhukov2017} définissent la profondeur, les quantiles, les rangs et les signes
+de Monge--Kantorovitch et en établissent l'équivariance et les propriétés de robustesse.
+\citet{hallin2021} en donnent la version empirique : existence et unicité essentielle de la
+carte, convergence uniforme de $\Tmap_n$ vers $\Tmap$ sur tout compact du support, et
+surtout \emph{liberté de distribution exacte à $n$ fini} des rangs et signes empiriques,
+qui est l'analogue littéral de la propriété des rangs univariés.
+\citet{ghosal2022} complètent le tableau par les vitesses de convergence et les lois
+limites, ainsi que par les tests de rang multivariés qui s'en déduisent. Les résultats
+d'estimation propres à la version entropique employée ici sont dus à
+\citet{pooladian2021}.
+
+\bigskip
+
+\subsection{Estimation : carte entropique et grille de référence}
+\label{sec:ot-estimation}
+
+\medskip
+
+\paragraph{Pourquoi ne pas calculer la carte exacte.} La version empirique exacte de
+$\Tmap_n$ s'obtient en résolvant un problème d'affectation optimale entre les $n$
+observations et $n$ points de référence : coût cubique en $n$ par l'algorithme hongrois, et
+obligation de prendre une cible de même cardinal que l'échantillon. Surtout, la solution
+n'est définie qu'aux points observés, alors que l'orientation
+(section~\ref{sec:ot-orientation}) et la calibration (section~\ref{sec:ot-alerte})
+demandent de transporter des points \emph{hors échantillon}. Les deux difficultés se lèvent
+ensemble par la régularisation entropique.
+
+\medskip
+
+\paragraph{Le problème de Sinkhorn.} Soit $\{u_1,\dots,u_m\}$ une grille de référence
+tirée de $\Unif_d$, et $\tilde{x}_1,\dots,\tilde{x}_n$ les lignes normalisées. Le problème
+de transport régularisé \citep{cuturi2013,peyre2019} s'écrit, sous sa forme duale,
+
+\medskip
+
+\[
+  (f^\star, g^\star)
+  = \arg\max_{f \in \R^n,\, g \in \R^m}\;
+  \scal{f}{\tfrac{\mathbf{1}_n}{n}} + \scal{g}{\tfrac{\mathbf{1}_m}{m}}
+  - \varepsilon \scal{e^{f/\varepsilon}}{K\,e^{g/\varepsilon}},
+  \qquad
+  K_{i\ell} = e^{-\norm{\tilde{x}_i - u_\ell}^2/\varepsilon},
+\]
+
+\bigskip
+
+et se résout par itérations de projections alternées, dont chacune coûte $O(nm)$. Le
+paramètre $\varepsilon > 0$ est la force de la régularisation : la solution du problème non
+régularisé est retrouvée à la limite $\varepsilon \to 0$.
+
+\medskip
+
+\begin{definition}[Carte entropique]
+  \label{def:carte-entropique}
+  À partir du potentiel dual $g^\star$, la \emph{carte entropique} de
+  \citet{pooladian2021} est définie \emph{en tout point} $z \in \R^d$ par
+
+  \medskip
+
+  \[
+    \bar{\Tmap}_\varepsilon(z) = \sum_{\ell=1}^{m} p_\ell(z)\, u_\ell,
+    \qquad
+    p_\ell(z) = \frac{\exp\!\big(\big(g^\star_\ell - \norm{z - u_\ell}^2\big)/\varepsilon\big)}
+    {\sum_{k=1}^{m}\exp\!\big(\big(g^\star_k - \norm{z - u_k}^2\big)/\varepsilon\big)}.
+  \]
+
+  \bigskip
+
+  C'est une moyenne \emph{softmax} des points de la grille, donc une combinaison convexe :
+  l'image est toujours dans l'enveloppe convexe de la grille, et en particulier dans
+  $\Bball_d$. Le coût est $O(nm)$ à l'ajustement et $O(m)$ par point transporté ensuite.
+\end{definition}
+
+\bigskip
+
+\begin{remarque}[Biais de rétrécissement et lecture de $\varepsilon$]
+  \label{rem:ot-shrinkage}
+  La carte entropique étant une moyenne pondérée de points de la grille, elle rétrécit les
+  images vers le centre de la boule : les rangs $\norm{\bar{\Tmap}_\varepsilon(x_i)}$ sont
+  systématiquement inférieurs à leur cible uniforme, d'autant plus que $\varepsilon$ est
+  grand. Le compromis est donc à deux extrémités, et toutes deux sont mauvaises :
+  $\varepsilon$ trop grand écrase la carte vers une image floue du centre, jusqu'à rendre
+  l'orientation indéfinie ; $\varepsilon$ trop petit restaure les mauvaises propriétés
+  statistiques du transport non régularisé et ralentit la convergence de l'algorithme. Le
+  contrôle d'uniformité ci-dessous mesure précisément l'ampleur du rétrécissement.
+\end{remarque}
+
+\bigskip
+
+\paragraph{Échelle de $\varepsilon$.} Le coût quadratique $\norm{\tilde{x}_i - u_\ell}^2$
+dépend de l'échelle des données, alors que la grille vit dans la boule unité : un
+$\varepsilon$ absolu n'a donc pas de sens transposable d'un groupe à l'autre. Le paramètre
+est exprimé \emph{relativement au coût moyen} : $\varepsilon_{\mathrm{abs}} = \varepsilon
+\cdot \overline{C}$ avec $\overline{C}$ la moyenne des $\norm{\tilde{x}_i - u_\ell}^2$.
+Cette convention rend $\varepsilon$ invariant par homothétie des données et comparable
+entre groupes de tailles et de dispersions différentes. Les schémas de normalisation
+admissibles en entrée sont le centrage--réduction et le quantile gaussien ; le min--max est
+exclu, la carte étant sensible à la géométrie du nuage et non à ses seules marges.
+
+\medskip
+
+\paragraph{Grille de référence.} La qualité de la cible compte autant que celle du
+solveur : une grille tirée au hasard introduit sa propre variance dans les rangs. On
+emploie une suite à faible discrépance, transformée en deux temps. À partir de
+$w_1,\dots,w_m$, suite de Sobol sur $[0,1]^{d+1}$ :
+
+\medskip
+
+\begin{itemize}[nosep,leftmargin=1.4em]
+  \item les $d$ premières coordonnées donnent des directions quasi uniformes sur la sphère
+  par la transformation gaussienne
+  $\theta_\ell = \Phi^{-1}(w_{\ell,1:d}) / \norm{\Phi^{-1}(w_{\ell,1:d})}$, qui exploite
+  l'isotropie de la loi normale multivariée ;
+  \item la dernière coordonnée fournit des rayons \emph{uniformes stratifiés}
+  $\varrho_\ell = w_{\ell,d+1}$, conformément à la définition~\ref{def:spherique-uniforme}
+  et non à la loi de Lebesgue de l'avertissement~\ref{av:lebesgue} ;
+  \item la grille est $u_\ell = \varrho_\ell\,\theta_\ell$.
+\end{itemize}
+
+\bigskip
+
+\paragraph{Contrôle d'uniformité.} La cible étant $\Unif_d$, une carte correctement estimée
+laisse les normes transportées uniformes sur $[0,1]$. Le contrôle consiste à appliquer un
+test de Kolmogorov--Smirnov à $\{\norm{\bar{\Tmap}_\varepsilon(\tilde{x}_i)}\}_{i \in [n]}$
+contre $\Unif[0,1]$, et à rapporter la statistique et la $p$-valeur. Une statistique élevée
+signale l'une des trois causes suivantes, dans cet ordre de fréquence : un $\varepsilon$
+trop grand (rétrécissement de la remarque~\ref{rem:ot-shrinkage}), une non-convergence du
+solveur, ou une grille trop petite pour la dimension. Le diagnostic est indicatif et non
+un test d'adéquation : le rétrécissement entropique rend l'uniformité approchée par
+construction, de sorte que la statistique se lit en évolution --- entre valeurs de
+$\varepsilon$, entre groupes --- plutôt qu'en valeur absolue.
+
+\medskip
+
+\paragraph{Grands échantillons.} La matrice de coût est de taille $n \times m$ : avec
+$n = 2 \cdot 10^5$ et $m = 2^{14}$, le problème n'est pas soluble en mémoire. La carte
+entropique étant définie hors échantillon, la difficulté se contourne sans approximation
+supplémentaire : le problème de Sinkhorn est résolu sur un sous-échantillon tiré sans
+remise de taille $n_{\mathrm{fit}}$ (défaut $20\,000$), puis \emph{tous} les points sont
+transportés par lots de taille $b$, chaque lot ne matérialisant qu'une matrice de coût
+$b \times m$. Le coût total devient $O(n_{\mathrm{fit}}\,m)$ à l'ajustement et $O(nm)$ au
+transport, pour une mémoire en $O(bm)$ indépendante de $n$.
+
+\medskip
+
+\begin{algorithm}[htbp]
+  \caption{Carte \emph{center-outward} entropique}
+  \label{algo:ot-carte}
+  \begin{algorithmic}[1]
+    \Require matrice normalisée $\tilde{X} \in \R^{n \times d}$ (centrage--réduction ou
+      quantile gaussien) ; régularisation relative $\varepsilon$ ; taille de grille $m$ ;
+      taille d'ajustement $n_{\mathrm{fit}}$ ; taille de lot $b$ ; germe
+    \Ensure carte $\bar{\Tmap}_\varepsilon$ définie sur $\R^d$ ; diagnostic d'uniformité
+    \Statex\hspace{-1.2em}\textbf{Grille de référence}
+    \State $w_1,\dots,w_m \gets$ suite de Sobol brouillée sur $[0,1]^{d+1}$
+    \State $\theta_\ell \gets \Phi^{-1}(w_{\ell,1:d}) / \norm{\Phi^{-1}(w_{\ell,1:d})}$
+      \Comment{Directions quasi uniformes sur $\Sphere^{d-1}$}
+    \State $u_\ell \gets w_{\ell,d+1}\,\theta_\ell$
+      \Comment{Rayons uniformes : loi $\Unif_d$, et non Lebesgue}
+    \Statex\hspace{-1.2em}\textbf{Ajustement}
+    \State $X_{\mathrm{fit}} \gets$ tirage sans remise de
+      $\min(n, n_{\mathrm{fit}})$ lignes de $\tilde{X}$
+    \State $\overline{C} \gets$ moyenne des $\norm{x - u_\ell}^2$ sur
+      $X_{\mathrm{fit}} \times \{u_\ell\}$~;\quad
+      $\varepsilon_{\mathrm{abs}} \gets \varepsilon\,\overline{C}$
+      \Comment{$\varepsilon$ relatif au coût moyen}
+    \State $g^\star \gets$ potentiel dual de Sinkhorn entre $X_{\mathrm{fit}}$ et
+      $\{u_\ell\}$ à la régularisation $\varepsilon_{\mathrm{abs}}$
+    \If{le solveur n'a pas convergé}
+      \State signaler la non-convergence sans interrompre : la carte reste exploitable
+    \EndIf
+    \State $\bar{\Tmap}_\varepsilon(z) \gets \sum_\ell p_\ell(z)\,u_\ell$ avec
+      $p_\ell(z) \propto \exp\!\big((g^\star_\ell - \norm{z-u_\ell}^2)/
+      \varepsilon_{\mathrm{abs}}\big)$
+    \Statex\hspace{-1.2em}\textbf{Transport et contrôle}
+    \For{chaque lot de $b$ lignes de $\tilde{X}$}
+      \State transporter le lot \Comment{matrice de coût $b \times m$}
+    \EndFor
+    \State $(D, p) \gets$ test de Kolmogorov--Smirnov de
+      $\{\norm{\bar{\Tmap}_\varepsilon(\tilde{x}_i)}\}_i$ contre $\Unif[0,1]$
+    \State \Return $\bar{\Tmap}_\varepsilon$, les images transportées, $(D, p)$
+  \end{algorithmic}
+\end{algorithm}
+
+\bigskip
+
+\subsection{Orientation : du rang au score}
+\label{sec:ot-orientation}
+
+\medskip
+
+\paragraph{Le rang mesure l'atypicité.} Le rang $\mathcal{R}(z) = \norm{\Tmap(z)}$ croît du
+c\oe ur du nuage vers sa périphérie, dans \emph{toutes} les directions à la fois. Une unité
+très vulnérable sur toutes les métriques et une unité remarquablement peu vulnérable sur
+toutes les métriques sont l'une et l'autre à la périphérie : elles reçoivent le même rang.
+Utilisé tel quel, le rang classe donc par \emph{singularité}, ce qui ne coïncide avec
+l'objectif que sous le postulat « atypique $=$ en tête de classement », rarement défendable.
+C'est exactement la limite déjà rencontrée par la distance de Mahalanobis au centre
+(section~\ref{sec:maha}), et elle se lève de la même manière : en projetant sur une
+direction, plutôt qu'en prenant une norme.
+
+\medskip
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[scale=1.0]
+  % panneau gauche : nuage et contours center-outward
+  \begin{scope}
+    \node[font=\small\bfseries] at (2.4,5.0) {Rang non orienté $\mathcal{R}(z)$};
+    \draw[->,Gris] (-0.3,0) -- (4.7,0) node[right,black,font=\scriptsize] {$\tilde{x}_1$};
+    \draw[->,Gris] (0,-0.3) -- (0,4.2) node[above,black,font=\scriptsize] {$\tilde{x}_2$};
+    \foreach \r in {0.55,1.05,1.55} {
+      \draw[Gris,rotate around={32:(2.2,2.0)}] (2.2,2.0) ellipse ({\r*1.5} and {\r*0.75});
+    }
+    \foreach \x/\y in {1.5/1.4, 2.6/2.4, 2.0/1.8, 2.9/2.6, 1.9/1.5, 2.5/2.1, 3.0/2.9,
+                       1.6/1.7, 2.3/2.3, 2.8/2.2, 1.8/1.3, 2.4/2.6}
+      \fill[Gris] (\x,\y) circle (1.7pt);
+    \fill[Rouge] (3.9,3.2) circle (3pt) node[right,font=\scriptsize,black] {$a$};
+    \fill[Rouge] (0.5,0.8) circle (3pt) node[left,font=\scriptsize,black] {$b$};
+    \node[font=\scriptsize,align=center,Rouge] at (2.2,-0.85)
+      {$\mathcal{R}(a) = \mathcal{R}(b)$ : \\ indiscernables};
+  \end{scope}
+  % panneau droit : score oriente
+  \begin{scope}[xshift=7.2cm]
+    \node[font=\small\bfseries] at (2.4,5.0) {Score orienté $\scal{\Tmap(z)}{u^{*}}$};
+    \draw[->,Gris] (-0.3,0) -- (4.7,0) node[right,black,font=\scriptsize] {$\tilde{x}_1$};
+    \draw[->,Gris] (0,-0.3) -- (0,4.2) node[above,black,font=\scriptsize] {$\tilde{x}_2$};
+    \foreach \x/\y in {1.5/1.4, 2.6/2.4, 2.0/1.8, 2.9/2.6, 1.9/1.5, 2.5/2.1, 3.0/2.9,
+                       1.6/1.7, 2.3/2.3, 2.8/2.2, 1.8/1.3, 2.4/2.6}
+      \fill[Gris] (\x,\y) circle (1.7pt);
+    \draw[Vert,very thick,-{Stealth}] (2.2,2.0) -- (3.5,3.3)
+      node[left,font=\scriptsize,black,xshift=-2pt] {$u^{*}$};
+    \foreach \c in {-0.9,0,0.9,1.8} {
+      \draw[Bleu,dashed,shift={(\c*0.7071,\c*0.7071)}] (0.3,3.9) -- (3.9,0.3);
+    }
+    \fill[Rouge] (3.9,3.2) circle (3pt) node[right,font=\scriptsize,black] {$a$};
+    \fill[Rouge] (0.5,0.8) circle (3pt) node[left,font=\scriptsize,black] {$b$};
+    \node[font=\scriptsize,align=center,Vert] at (2.2,-0.85)
+      {$\scal{\Tmap(a)}{u^{*}} \gg \scal{\Tmap(b)}{u^{*}}$ : \\ ordre restauré};
+  \end{scope}
+\end{tikzpicture}
+\vspace{0.6em}
+\caption{À gauche, les contours quantiles \emph{center-outward} et deux unités
+diamétralement opposées qui reçoivent le même rang : $a$ est extrême dans la direction
+recherchée, $b$ l'est dans la direction opposée. À droite, la projection sur la direction
+$u^{*}$ rétablit l'orientation, les lignes pointillées étant les iso-scores du score
+projeté.}
+\label{fig:ot-orientation}
+\end{figure}
+
+\bigskip
+
+\paragraph{La direction de vulnérabilité.} La définition~\ref{def:center-outward} produit
+un rang \emph{et} un signe ; l'orientation s'obtient en utilisant le second. On construit
+une unité fictive $x^{+}$, de coordonnées $x^{+}_j = \hat{F}_j^{-1}(q^{+})$ avec
+$q^{+} = 0{,}99$ --- le même pôle idéal marginal que TOPSIS (section~\ref{sec:topsis}) et
+que la projection blanchie (section~\ref{sec:projection-blanchie}) --- et l'on pose
+
+\medskip
+
+\[
+  u^{*} = \frac{\bar{\Tmap}_\varepsilon(x^{+})}{\norm{\bar{\Tmap}_\varepsilon(x^{+})}}
+  \in \Sphere^{d-1}.
+\]
+
+\bigskip
+
+La direction est entièrement estimée sur les données : aucune hiérarchie entre métriques
+n'est introduite, seule l'orientation commune de la polarité (section~\ref{sec:orientation})
+est utilisée. Le pôle $x^{+}$ est un coin du pavé des marges : il est situé à l'intérieur de
+la boîte englobante mais, sauf dépendance parfaite, à l'extérieur de l'enveloppe convexe du
+nuage. La carte entropique étant définie sur $\R^d$ tout entier, son image reste dans la
+boule sans qu'aucun rognage ne soit nécessaire ; le seul cas rejeté est celui où le pôle est
+transporté sur le centre, où aucune direction n'est définie --- situation qui signale un
+$\varepsilon$ trop grand ou un nuage dégénéré.
+
+\medskip
+
+\begin{remarque}[Sensibilité de $u^{*}$ au quantile du pôle]
+  \label{rem:ot-direction}
+  Le pôle étant extrapolé, la direction obtenue dépend du comportement de la carte hors du
+  support, là où elle est la moins bien estimée. Le diagnostic consiste à estimer une
+  seconde direction à un pôle nettement moins extrême ($q = 0{,}90$) et à rapporter le
+  cosinus des deux. Une valeur proche de $1$ indique que l'orientation ne tient pas à
+  l'extrapolation ; un cosinus sensiblement inférieur invite à abaisser $q^{+}$, ce qui
+  rapproche le pôle du nuage au prix d'une direction moins tranchée.
+\end{remarque}
+
+\bigskip
+
+\paragraph{Trois scores.} La projection et le rang se combinent de trois manières, par
+sévérité croissante quant au traitement des unités mal orientées :
+
+\medskip
+
+\begin{align*}
+  \text{projection signée} \qquad
+  & s^{\mathrm{OT}}_{\mathrm{proj}}(x_i)
+    = \scal{\bar{\Tmap}_\varepsilon(\tilde{x}_i)}{u^{*}}
+    = \mathcal{R}(\tilde{x}_i)\,\scal{\mathcal{S}(\tilde{x}_i)}{u^{*}}, \\[0.3em]
+  \text{rang modulé par le signe} \qquad
+  & s^{\mathrm{OT}}_{\mathrm{mult}}(x_i)
+    = \mathcal{R}(\tilde{x}_i)\cdot
+      \frac{1 + \scal{\mathcal{S}(\tilde{x}_i)}{u^{*}}}{2}, \\[0.3em]
+  \text{rang restreint à un cône} \qquad
+  & s^{\mathrm{OT}}_{\mathrm{cone}}(x_i)
+    = \mathcal{R}(\tilde{x}_i)\cdot
+      \ind{\scal{\mathcal{S}(\tilde{x}_i)}{u^{*}} \ge \cos\theta_0}.
+\end{align*}
+
+\bigskip
+
+Le premier se lit comme une somme pondérée \emph{dans l'espace transporté}, à coefficients
+$u^{*}$ estimés ; il est signé, une unité située du mauvais côté recevant un score négatif,
+et il est le seul des trois à varier continûment sur toute la boule. Le deuxième remplace le
+signe brut par un facteur d'alignement dans $[0,1]$ : il conserve l'ordre radial à
+alignement égal, et annule le score des unités diamétralement opposées à $u^{*}$. Le
+troisième est une lecture par ensemble plutôt que par classement : il ne retient que les
+unités à la fois périphériques et situées dans le cône de demi-angle $\theta_0$ autour de
+$u^{*}$, et met toutes les autres à zéro. Le paramètre $\theta_0$ règle la largeur de ce
+cône : $\theta_0 = 90^\circ$ redonne le demi-espace, $\theta_0 \to 0$ ne retient que les
+unités exactement alignées. La valeur par défaut retenue est $\theta_0 = 60^\circ$.
+
+\medskip
+
+\begin{propriete}[Propriétés des scores orientés]
+  \label{prop:ot-proprietes}
+  Soient $\Tmap$ la carte \emph{center-outward} et $s^{\mathrm{OT}}$ l'un des trois scores
+  ci-dessus.
+
+  \medskip
+
+  \begin{enumerate}[nosep,leftmargin=1.8em]
+    \item \emph{Monotonie cyclique, et non monotonie coordonnée par coordonnée.} La carte
+    étant un gradient de fonction convexe, elle vérifie
+    $\scal{\Tmap(z) - \Tmap(z')}{z - z'} \ge 0$ pour tout couple. Cette propriété est
+    globale et ne se transmet pas à la dominance : $x_i \pareto x_k$ n'implique pas
+    $s^{\mathrm{OT}}(x_i) > s^{\mathrm{OT}}(x_k)$, car l'accroissement de $\Tmap$ peut être
+    orthogonal à $u^{*}$. La monotonie n'est donc pas garantie et se mesure par les taux
+    $V_{\mathrm{strict}}$ et $V_{\mathrm{tie}}$ du chapitre~\ref{sec:comparer}, comme pour
+    la distance de Mahalanobis et pour l'axe factoriel.
+    \item \emph{Invariances.} Le rang et le signe sont invariants par similitude ---
+    translation, rotation, homothétie positive --- appliquée à l'ensemble du nuage, et les
+    scores orientés le sont également, la direction $u^{*}$ subissant la même
+    transformation. Ils ne sont en revanche \emph{pas} invariants par transformation affine
+    quelconque, ni par transformation monotone appliquée coordonnée par coordonnée : c'est
+    la contrepartie exacte de la prise en compte de la géométrie
+    (remarque~\ref{rem:ot-apport}), et la raison pour laquelle le schéma de normalisation
+    reste un choix méthodologique.
+    \item \emph{Compensation.} La projection signée est totalement compensatoire dans
+    l'espace transporté, mais non dans l'espace d'origine : le taux de substitution entre
+    deux métriques dépend du point, puisque la carte est non linéaire. Le score de cône est
+    à l'opposé du spectre, une unité hors du cône n'étant pas rachetable par un rang élevé.
+    \item \emph{Ex \ae quo.} Les scores de cône produisent des ex \ae quo massifs à $0$, par
+    construction : ils s'emploient comme indicateurs d'appartenance et non comme
+    classements, et les rangs correspondants sont moyennés selon la
+    remarque~\ref{rem:exaequo}.
+  \end{enumerate}
+\end{propriete}
+
+\bigskip
+
+\begin{algorithm}[htbp]
+  \caption{Score de Kantorovitch orienté}
+  \label{algo:ot-score}
+  \begin{algorithmic}[1]
+    \Require matrice normalisée $\tilde{X}$ ; carte $\bar{\Tmap}_\varepsilon$
+      (algorithme~\ref{algo:ot-carte}) ; quantile de pôle $q^{+}$ ; variante
+      $\in \{\textsc{projection}, \textsc{modulé}, \textsc{cône}\}$ ; demi-angle $\theta_0$
+    \Ensure scores $s^{\mathrm{OT}} \in \R^n$ ; direction $u^{*}$ ; diagnostic
+      d'orientation
+    \State $x^{+} \gets \big(\hat{F}_j^{-1}(q^{+})\big)_{j \le d}$~;\quad
+      $v \gets \bar{\Tmap}_\varepsilon(x^{+})$
+    \If{$\norm{v} \le \eta$}
+      \State \textbf{erreur} : le pôle est transporté sur le centre, aucune direction
+        n'est définie
+    \EndIf
+    \State $u^{*} \gets v/\norm{v}$
+    \State $v_{0} \gets \bar{\Tmap}_\varepsilon\big((\hat{F}_j^{-1}(0{,}90))_{j \le d}\big)$~;\quad
+      $\cos_{\mathrm{dir}} \gets \scal{u^{*}}{v_{0}/\norm{v_{0}}}$
+      \Comment{Remarque~\ref{rem:ot-direction}}
+    \For{chaque lot de lignes de $\tilde{X}$}
+      \State $t_i \gets \bar{\Tmap}_\varepsilon(\tilde{x}_i)$~;\quad
+        $\mathcal{R}_i \gets \norm{t_i}$~;\quad
+        $\mathcal{S}_i \gets t_i/\mathcal{R}_i$ si $\mathcal{R}_i > \eta$, sinon $0$
+      \If{variante $=$ \textsc{projection}}
+        \State $s^{\mathrm{OT}}_i \gets \scal{t_i}{u^{*}}$
+      \ElsIf{variante $=$ \textsc{modulé}}
+        \State $s^{\mathrm{OT}}_i \gets
+          \mathcal{R}_i\,(1 + \scal{\mathcal{S}_i}{u^{*}})/2$
+      \Else
+        \State $s^{\mathrm{OT}}_i \gets
+          \mathcal{R}_i\,\ind{\scal{\mathcal{S}_i}{u^{*}} \ge \cos\theta_0}$
+      \EndIf
+    \EndFor
+    \State \Return $s^{\mathrm{OT}}$, $u^{*}$, $\cos_{\mathrm{dir}}$
+  \end{algorithmic}
+\end{algorithm}
+
+\bigskip
+
+\subsection{Le cas elliptique, et ce qu'il enseigne}
+\label{sec:ot-elliptique}
+
+\medskip
+
+Une question se pose naturellement : que gagne-t-on à estimer une carte de transport
+lorsque le nuage a une forme simple ? La réponse est explicite, et elle prend la forme
+d'une identification exacte dans le cas elliptique --- le cas où toutes les courbes de
+niveau de la densité sont des ellipsoïdes homothétiques, qui couvre la loi normale, les
+lois de Student multivariées et les mélanges d'échelle gaussiens.
+
+\medskip
+
+\begin{propriete}[Forme de la carte dans le cas elliptique]
+  \label{prop:ot-elliptique}
+  Soit $Z$ de loi elliptique de centre $\mu$ et de dispersion $\Sigma$. La carte
+  \emph{center-outward} vers $\Unif_d$ s'écrit
+
+  \medskip
+
+  \[
+    \Tmap(z) = h(r)\,\frac{\Sigma^{-1/2}(z-\mu)}{r},
+    \qquad r = \norm{\Sigma^{-1/2}(z-\mu)} = d_{\mathrm{Mah}}(z,\mu),
+  \]
+
+  \bigskip
+
+  où $h : \R_+ \to [0,1]$ est la fonction de répartition de $r$, donc croissante. Il en
+  résulte deux identifications distinctes :
+
+  \medskip
+
+  \begin{enumerate}[nosep,leftmargin=1.8em]
+    \item le rang $\mathcal{R}(z) = h(r)$ est une transformation strictement croissante de
+    la \textbf{distance de Mahalanobis au centre} : il induit exactement le même
+    classement ;
+    \item le score orienté $s^{\mathrm{OT}}_{\mathrm{proj}}(z) =
+    \big(h(r)/r\big)\,\scal{\Sigma^{-1/2}(z-\mu)}{u^{*}}$ est la \textbf{projection
+    blanchie} $s^{\mathrm{white}}$ de la section~\ref{sec:projection-blanchie}, modulée par
+    le facteur radial $h(r)/r$ et à la direction près.
+  \end{enumerate}
+
+  \medskip
+
+  Aucun des deux ne se réduit à la distance de Mahalanobis à l'\emph{anti-idéal}, qui n'est
+  pas le point de référence de la construction.
+\end{propriete}
+
+\bigskip
+
+\paragraph{Le diagnostic d'ellipticité.} La propriété~\ref{prop:ot-elliptique} fournit
+directement les deux termes de comparaison légitimes, et le diagnostic consiste à mesurer
+l'écart de classement entre chacun des scores de transport et sa contrepartie linéaire, par
+le $\tau_b$ de Kendall du chapitre~\ref{sec:comparer} :
+
+\medskip
+
+\[
+  \tau_{\mathrm{proj}}
+  = \tau_b\big(s^{\mathrm{OT}}_{\mathrm{proj}},\ s^{\mathrm{white}}\big),
+  \qquad
+  \tau_{\mathrm{rang}}
+  = \tau_b\big(\mathcal{R},\ d_{\mathrm{Mah}}(\cdot,\mu)\big).
+\]
+
+\bigskip
+
+Ces deux quantités comparent des objets de même nature. Une comparaison entre
+$s^{\mathrm{OT}}_{\mathrm{proj}}$ et la distance de Mahalanobis à l'anti-idéal, qui a pu
+être proposée, confronte au contraire un score orienté à une distance non orientée : le
+$\tau$ obtenu peut être faible sur un nuage parfaitement elliptique, et il ne dit alors rien
+de l'ellipticité.
+
+\medskip
+
+\begin{remarque}[Un diagnostic, et non une porte de décision]
+  \label{rem:ot-diagnostic}
+  La tentation est grande de transformer ce diagnostic en règle : « si $\tau > 0{,}95$, la
+  méthode la plus coûteuse n'est pas justifiée ». Cette règle n'est pas retenue ici, pour
+  deux raisons.
+
+  \medskip
+
+  \begin{itemize}[nosep,leftmargin=1.4em]
+    \item Un $\tau$ élevé constate que le transport \emph{n'a rien ajouté sur ce groupe},
+    et non que la version linéaire aurait été suffisante sur un autre. La décision de
+    n'estimer que le score linéaire suppose de connaître à l'avance la réponse qu'on
+    cherche : elle ne peut pas être prise sur la base du diagnostic lui-même sans
+    circularité, et un dispositif appliqué à de nombreux groupes rencontrera des géométries
+    différentes.
+    \item Le diagnostic informe la \emph{lecture} du résultat, ce qui est sa vraie valeur.
+    « Sur ce groupe, $\tau_{\mathrm{proj}} = 0{,}98$ : le nuage est approximativement
+    elliptique et le classement se lit comme une projection blanchie » est une phrase utile.
+    « Sur celui-là, $\tau_{\mathrm{proj}} = 0{,}62$ : la géométrie non elliptique --- une
+    asymétrie marquée, plusieurs régimes, une dépendance de queue --- déplace des unités de
+    façon substantielle » l'est tout autant, et désigne les groupes qui méritent un examen.
+  \end{itemize}
+
+  \medskip
+
+  Les deux $\tau$ sont donc calculés et persistés systématiquement, et le score de transport
+  est produit dès que la dimension et la taille du groupe le permettent.
+\end{remarque}
+
+\bigskip
+
+\paragraph{Généralité contre coût d'estimation.} Il reste que la comparaison n'est pas à
+sens unique, et l'honnêteté demande de l'énoncer dans les deux sens. À l'avantage du
+transport : aucune hypothèse de forme n'est faite, et la méthode reste valide là où
+l'ellipticité est fausse, c'est-à-dire précisément là où une distance de Mahalanobis
+induirait en erreur. À sa charge : la projection blanchie s'estime en $O(nd^2 + d^3)$ sans
+aucun hyperparamètre, tandis que la carte de transport demande le choix de $\varepsilon$ et
+de $m$, un solveur itératif qui peut ne pas converger, et une précision d'estimation qui se
+dégrade avec $d$ (section~\ref{sec:ot-dimension}). À distance finie, une méthode plus
+générale mais moins bien estimée peut classer moins bien qu'une méthode plus restrictive
+mais exactement ajustée. C'est un arbitrage de variance contre biais de spécification, et
+il n'a pas de solution universelle : les diagnostics --- uniformité des normes, sensibilité
+de $u^{*}$, $\tau$ d'ellipticité, stabilité par bootstrap --- sont ce qui permet de le
+trancher groupe par groupe, à l'usage plutôt qu'a priori.
+
+\bigskip
+
+\subsection{Seuil d'alerte et calibration conforme}
+\label{sec:ot-alerte}
+
+\medskip
+
+\paragraph{Une lecture par ensemble plutôt que par palmarès.} Toutes les méthodes de cette
+note produisent un classement, dont la lecture usuelle est un « top $k$ » dont le $k$ est
+arbitraire. La construction \emph{center-outward} permet autre chose : désigner les unités
+dont la position dépasse un niveau explicite $\alpha$, avec une garantie de couverture.
+Encore faut-il calibrer le seuil correctement.
+
+\medskip
+
+\begin{avertissement}[Un quantile de la loi de référence n'est pas un seuil calibré]
+  \label{av:ot-quantile}
+  Il est tentant de définir le seuil radial directement sur la mesure cible, en posant
+  $\hat{r}_\alpha = \inf\{r : \hat{\Unif}(\Bball(0,r)) \ge 1-\alpha\}$. Cette quantité vaut
+  $1-\alpha$ par construction et ne dépend d'aucune donnée : elle n'a la couverture annoncée
+  que si la carte estimée pousse exactement l'échantillon sur $\Unif_d$, ce que la
+  remarque~\ref{rem:ot-shrinkage} interdit. La garantie invoquée « à distance finie » est
+  celle de la prédiction conforme, et elle s'obtient d'une tout autre manière : par un
+  quantile d'ordre ajusté des scores de non-conformité observés sur un échantillon
+  \emph{disjoint} de celui qui a servi à l'ajustement.
+\end{avertissement}
+
+\bigskip
+
+\paragraph{Scores de non-conformité.} La calibration conforme
+\citep{vovk2005,lei2018,angelopoulos2023} demande une fonction de non-conformité, qui
+mesure à quel point une observation est atypique au regard de ce que le modèle a appris.
+Deux choix sont retenus, qui correspondent aux deux lectures du chapitre :
+
+\medskip
+
+\begin{itemize}[nosep,leftmargin=1.4em]
+  \item \emph{radial} : $S(x) = \mathcal{R}(\tilde{x}) = \norm{\bar{\Tmap}_\varepsilon(\tilde{x})}$,
+  le rang lui-même. C'est la non-conformité naturelle de la construction, mais elle n'est
+  pas orientée : elle est combinée à la condition de cône ci-dessous ;
+  \item \emph{projeté} : $S(x) = s^{\mathrm{OT}}_{\mathrm{proj}}(x)$, le score orienté. La
+  calibration devient alors une prédiction conforme unidimensionnelle sur le score, plus
+  simple et directement orientée. C'est le choix par défaut.
+\end{itemize}
+
+\bigskip
+
+\begin{definition}[Seuil conforme par séparation]
+  \label{def:conforme}
+  L'échantillon d'ajustement est scindé en deux parties disjointes : $\mathcal{I}_{\mathrm{fit}}$,
+  sur laquelle la carte $\bar{\Tmap}_\varepsilon$ \emph{et} la direction $u^{*}$ sont
+  estimées, et $\mathcal{I}_{\mathrm{cal}}$ de taille $n_{\mathrm{cal}}$, qui n'intervient
+  dans aucune estimation. Soient $S_{(1)} \le \dots \le S_{(n_{\mathrm{cal}})}$ les scores
+  de non-conformité ordonnés de $\mathcal{I}_{\mathrm{cal}}$. Le seuil conforme de niveau
+  $\alpha$ est
+
+  \medskip
+
+  \[
+    \hat{q}_{1-\alpha} = S_{(k)},
+    \qquad
+    k = \big\lceil (1-\alpha)\,(n_{\mathrm{cal}} + 1) \big\rceil,
+  \]
+
+  \bigskip
+
+  défini lorsque $k \le n_{\mathrm{cal}}$, c'est-à-dire lorsque
+  $n_{\mathrm{cal}} \ge \lceil 1/\alpha \rceil - 1$ ; le seuil est infini sinon, et aucune
+  unité n'est signalée.
+\end{definition}
+
+\bigskip
+
+\begin{propriete}[Garantie de couverture]
+  \label{prop:conforme}
+  Si les scores de non-conformité de $\mathcal{I}_{\mathrm{cal}}$ et celui d'une unité
+  nouvelle $x_{n+1}$ sont \emph{échangeables} --- ce qui est le cas dès lors que les unités
+  sont tirées de la même loi et que ni la carte ni la direction n'ont vu
+  $\mathcal{I}_{\mathrm{cal}}$ ni $x_{n+1}$ --- alors
+
+  \medskip
+
+  \[
+    \PP\big(S(x_{n+1}) \le \hat{q}_{1-\alpha}\big) \ge 1-\alpha,
+  \]
+
+  \bigskip
+
+  et cette probabilité est majorée par $1 - \alpha + 1/(n_{\mathrm{cal}}+1)$ lorsque les
+  scores sont presque sûrement distincts. La probabilité porte à la fois sur l'échantillon
+  de calibration et sur l'unité nouvelle. L'ensemble d'alerte
+  $\{x : S(x) > \hat{q}_{1-\alpha}\}$ a donc une probabilité au plus $\alpha$ de contenir
+  une unité nouvelle, et la garantie ne suppose aucune forme de loi : ni normalité, ni
+  ellipticité, ni même convergence de la carte, dont la mauvaise estimation dégraderait la
+  pertinence du seuil mais non sa couverture.
+\end{propriete}
+
+\bigskip
+
+\paragraph{Version descriptive.} Lorsque la totalité de la population est observée et qu'on
+ne cherche pas à couvrir une unité future, la séparation n'a pas d'objet : le seuil est
+alors le quantile empirique d'ordre $1-\alpha$ des scores de non-conformité calculés sur
+l'échantillon d'ajustement lui-même. Cette version, plus économe en données, est
+\emph{descriptive} : elle désigne les $\alpha$ pour cent d'unités les plus extrêmes de
+l'échantillon, sans garantie sur une observation nouvelle, et sans même l'exactitude d'un
+quantile puisque les scores dépendent d'une carte estimée sur ces mêmes lignes. Les deux
+modes sont conservés et le mode retenu est rapporté avec le seuil.
+
+\medskip
+
+\paragraph{Ensemble d'alerte.} Sous la non-conformité projetée, l'alerte est simplement
+$\{x : s^{\mathrm{OT}}_{\mathrm{proj}}(x) > \hat{q}_{1-\alpha}\}$. Sous la non-conformité
+radiale, le rang n'étant pas orienté, l'alerte est l'intersection de la périphérie et du
+cône de vulnérabilité :
+
+\medskip
+
+\[
+  \mathcal{A}_\alpha
+  = \big\{ x : \mathcal{R}(\tilde{x}) > \hat{r}_\alpha \big\}
+  \ \cap\
+  \big\{ x : \scal{\mathcal{S}(\tilde{x})}{u^{*}} \ge \cos\theta_0 \big\}.
+\]
+
+\bigskip
+
+L'intersection ne peut qu'abaisser la probabilité de l'ensemble : $\mathcal{A}_\alpha$ étant
+inclus dans le complémentaire de la région quantile calibrée, sa couverture reste majorée
+par $\alpha$. Le prix de cette prudence est que le taux d'alerte observé est \emph{inférieur}
+au niveau nominal, d'autant plus que $\theta_0$ est petit ; le taux effectivement observé
+sur l'échantillon de calibration est donc rapporté à côté du seuil, et c'est lui qui se lit
+en pratique.
+
+\medskip
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[scale=1.0]
+  % --- panneau gauche : espace des metriques ---
+  \begin{scope}
+    \node[font=\small\bfseries] at (2.3,4.9) {Espace des métriques};
+    \draw[->,Gris] (-0.3,0) -- (4.6,0) node[right,black,font=\scriptsize] {$\tilde{x}_1$};
+    \draw[->,Gris] (0,-0.3) -- (0,4.3) node[above,black,font=\scriptsize] {$\tilde{x}_2$};
+    % contours quantiles non elliptiques (courbes fermees deformees)
+    \foreach \s/\op in {0.45/1, 0.75/1, 1.0/1} {
+      \draw[Gris,thick,opacity=\op]
+        plot[smooth cycle,tension=0.8]
+        coordinates {(2.2+\s*1.5,2.1+\s*0.9) (2.2+\s*0.2,2.1+\s*1.35)
+                     (2.2-\s*1.25,2.1+\s*0.75) (2.2-\s*1.3,2.1-\s*0.8)
+                     (2.2+\s*0.15,2.1-\s*1.2) (2.2+\s*1.35,2.1-\s*0.5)};
+    }
+    \foreach \x/\y in {1.6/1.7, 2.6/2.5, 2.0/2.0, 2.9/2.7, 1.9/1.6, 2.5/2.2,
+                       1.4/2.3, 2.3/1.5, 2.8/2.1, 1.7/2.6}
+      \fill[Gris] (\x,\y) circle (1.6pt);
+    \fill[Rouge] (3.85,3.2) circle (2.6pt);
+    \fill[Rouge] (3.55,3.55) circle (2.6pt);
+    \fill[Bleu] (0.55,0.75) circle (2.6pt);
+    \node[font=\scriptsize,Gris] at (3.5,1.0) {$\mathcal{C}_\alpha$};
+    \node[font=\scriptsize,align=center,Gris] at (2.3,-0.85)
+      {contours quantiles :\\ aucune forme imposée};
+  \end{scope}
+  % --- fleche de transport ---
+  \draw[-{Stealth},Gris,very thick] (5.1,2.1) -- (6.3,2.1)
+    node[midway,above,font=\scriptsize,black] {$\bar{\Tmap}_\varepsilon$};
+  % --- panneau droit : boule unite ---
+  \begin{scope}[xshift=7.0cm,yshift=0cm]
+    \node[font=\small\bfseries] at (2.1,4.9) {Boule unité $\Bball_d$};
+    \begin{scope}
+      \clip (2.1,2.1) circle (1.9);
+      % cone d'alerte : secteur angulaire autour de u*
+      \fill[Rouge,opacity=0.10] (2.1,2.1) -- ([shift=(0:2.6)]2.1,2.1)
+        arc (0:90:2.6) -- cycle;
+      % zone d'alerte effective : cone au-dela du seuil
+      \fill[Rouge,opacity=0.22] ([shift=(0:1.33)]2.1,2.1) arc (0:90:1.33)
+        -- ([shift=(90:2.6)]2.1,2.1) arc (90:0:2.6) -- cycle;
+    \end{scope}
+    \draw[Gris,thick] (2.1,2.1) circle (1.9);
+    \draw[Gris,dashed] (2.1,2.1) circle (0.95);
+    \draw[Rouge,thick] (2.1,2.1) circle (1.33);
+    % rayons du cone
+    \draw[Rouge,thin] (2.1,2.1) -- ++(0:1.9);
+    \draw[Rouge,thin] (2.1,2.1) -- ++(90:1.9);
+    \draw[Vert,very thick,-{Stealth}] (2.1,2.1) -- ++(45:1.9)
+      node[above right,font=\scriptsize,black] {$u^{*}$};
+    \draw[Gris,thin] ([shift=(0:0.78)]2.1,2.1) arc (0:45:0.78);
+    \node[font=\scriptsize,Gris] at ([shift=(21:0.55)]2.1,2.1) {$\theta_0$};
+    \node[font=\scriptsize,Rouge] at ([shift=(-32:1.62)]2.1,2.1) {$\hat{r}_\alpha$};
+    \fill[Rouge] (3.45,3.05) circle (2.6pt);
+    \fill[Rouge] (3.15,3.35) circle (2.6pt);
+    \fill[Bleu] (0.85,0.95) circle (2.6pt);
+    \foreach \a/\r in {160/0.75, 205/0.55, 250/0.85, 120/0.45, 340/0.62,
+                       300/0.7, 75/0.42, 190/0.35}
+      \fill[Gris] ($(2.1,2.1)+(\a:{\r*1.9})$) circle (1.6pt);
+    \node[font=\scriptsize,align=center,Rouge] at (2.1,-0.85)
+      {$\mathcal{A}_\alpha$ : périphérie\\ \emph{et} cône};
+  \end{scope}
+\end{tikzpicture}
+\vspace{0.6em}
+\caption{La carte transporte le nuage sur la boule unité. À gauche, les contours quantiles
+$\mathcal{C}_\alpha$ dans l'espace des métriques épousent la forme du nuage et ne sont ni
+convexes ni elliptiques par construction. À droite, leurs images sont des sphères
+concentriques ; l'ensemble d'alerte radial (en rouge soutenu) est l'intersection de la
+couronne périphérique $\{\mathcal{R} > \hat{r}_\alpha\}$ et du cône de demi-angle
+$\theta_0$ autour de $u^{*}$. Les deux points rouges sont signalés ; le point bleu, tout
+aussi périphérique mais du côté opposé, ne l'est pas --- c'est l'unité $b$ de la
+figure~\ref{fig:ot-orientation}.}
+\label{fig:ot-alerte}
+\end{figure}
+
+\bigskip
+
+\paragraph{Où la garantie a une valeur.} La couverture porte sur une observation
+échangeable avec l'échantillon de calibration, ce qui délimite exactement ses usages.
+
+\medskip
+
+\begin{itemize}[nosep,leftmargin=1.4em]
+  \item \textbf{Suivi temporel.} La carte, la direction et le seuil sont estimés sur la
+  période $t$, et les unités de la période $t+1$ sont scorées avec ces objets figés.
+  L'échangeabilité devient alors l'hypothèse explicite --- et contrôlable --- que la
+  structure du nuage n'a pas changé. Un taux d'alerte significativement supérieur à
+  $\alpha$ sur la période suivante n'est plus un défaut de la méthode : c'est un signal de
+  rupture de régime, et c'est la lecture la plus utile que cette calibration autorise.
+  \item \textbf{Unités nouvelles.} Une unité apparue en cours de période --- une nouvelle
+  position de nomenclature, un nouveau partenaire --- reçoit un score et un statut d'alerte
+  calibrés sur l'existant, sans réestimation ni recalcul du classement complet. C'est une
+  conséquence directe du fait que la carte entropique est définie hors échantillon.
+  \item \textbf{Ce que la garantie ne couvre pas.} Sur une population complète et observée,
+  scorée avec une carte estimée sur elle-même, il n'y a ni observation future ni
+  échangeabilité à invoquer : le seuil est le mode descriptif, et il se lit comme tel.
+\end{itemize}
+
+\bigskip
+
+\begin{algorithm}[htbp]
+  \caption{Seuil d'alerte par calibration conforme}
+  \label{algo:ot-alerte}
+  \begin{algorithmic}[1]
+    \Require matrice normalisée $\tilde{X}$ ; niveau $\alpha$ ; non-conformité
+      $\in \{\textsc{radial}, \textsc{projeté}\}$ ; mode
+      $\in \{\textsc{séparation}, \textsc{descriptif}\}$ ; fraction de calibration $\gamma$ ;
+      demi-angle $\theta_0$
+    \Ensure seuil $\hat{q}_{1-\alpha}$ (ou $\hat{r}_\alpha$) ; alertes booléennes ; taux
+      d'alerte de calibration
+    \State $X_{\mathrm{sub}} \gets$ sous-échantillon d'ajustement
+      (algorithme~\ref{algo:ot-carte})
+    \If{mode $=$ \textsc{séparation}}
+      \State permuter $X_{\mathrm{sub}}$~;\quad
+        $n_{\mathrm{cal}} \gets \lfloor \gamma\,\abs{X_{\mathrm{sub}}} \rfloor$
+      \State $X_{\mathrm{cal}} \gets$ les $n_{\mathrm{cal}}$ premières lignes~;\quad
+        $X_{\mathrm{fit}} \gets$ les autres
+      \If{$n_{\mathrm{cal}} < 1$ \textbf{ou} $n_{\mathrm{cal}} = \abs{X_{\mathrm{sub}}}$}
+        \State \textbf{erreur} : une moitié est vide
+      \EndIf
+    \Else
+      \State $X_{\mathrm{fit}} \gets X_{\mathrm{sub}}$~;\quad
+        $X_{\mathrm{cal}} \gets X_{\mathrm{sub}}$
+      \Comment{Seuil descriptif, sans garantie}
+    \EndIf
+    \State ajuster $\bar{\Tmap}_\varepsilon$ et $u^{*}$ sur $X_{\mathrm{fit}}$
+      \textbf{seulement}
+      \Comment{Condition d'échangeabilité}
+    \State $S \gets$ non-conformité des lignes de $X_{\mathrm{cal}}$
+      \Comment{$\mathcal{R}$ ou $s^{\mathrm{OT}}_{\mathrm{proj}}$}
+    \If{mode $=$ \textsc{séparation}}
+      \State $k \gets \lceil (1-\alpha)(n_{\mathrm{cal}}+1) \rceil$
+      \State $\hat{q} \gets S_{(k)}$ si $k \le n_{\mathrm{cal}}$, sinon $+\infty$ avec
+        avertissement
+    \Else
+      \State $\hat{q} \gets$ quantile empirique d'ordre $1-\alpha$ de $S$
+    \EndIf
+    \State taux d'alerte $\gets$ part de $X_{\mathrm{cal}}$ telle que $S > \hat{q}$
+    \For{chaque ligne $i$ de $\tilde{X}$}
+      \If{non-conformité $=$ \textsc{radial}}
+        \State alerte$_i \gets \big(\mathcal{R}_i > \hat{q}\big)$ \textbf{et}
+          $\big(\scal{\mathcal{S}_i}{u^{*}} \ge \cos\theta_0\big)$
+      \Else
+        \State alerte$_i \gets \big(s^{\mathrm{OT}}_{\mathrm{proj},i} > \hat{q}\big)$
+      \EndIf
+    \EndFor
+    \State \Return $\hat{q}$, alertes, taux d'alerte
+  \end{algorithmic}
+\end{algorithm}
+
+\bigskip
+
+\subsection{Dimension}
+\label{sec:ot-dimension}
+
+\medskip
+
+L'estimation d'une carte de transport est un problème non paramétrique en dimension $d$, et
+elle en subit la malédiction. Les vitesses connues pour l'estimation de la carte de Brenier
+se dégradent avec $d$ ; la carte entropique atténue la dégradation sans la supprimer, et le
+nombre de points de grille nécessaire pour couvrir la boule à résolution donnée croît
+exponentiellement. En pratique, trois régimes se distinguent.
+
+\medskip
+
+\begin{itemize}[nosep,leftmargin=1.4em]
+  \item \textbf{$d \le 6$ --- régime favorable.} La carte est estimée avec une précision
+  suffisante pour que le classement obtenu diffère utilement de celui des méthodes
+  linéaires. C'est le régime où les travaux empiriques de la littérature observent un gain
+  net, et c'est celui de la plupart des dispositifs à quelques métriques.
+  \item \textbf{$7 \le d \le 12$ --- régime intermédiaire.} Le gain s'amenuise ; les
+  diagnostics --- statistique de Kolmogorov--Smirnov, sensibilité de $u^{*}$, écart entre
+  tirages --- deviennent la seule manière de savoir si la carte est exploitable sur le
+  groupe considéré, et $m$ comme $\varepsilon$ doivent être augmentés, ce qui alourdit le
+  calcul.
+  \item \textbf{$d \ge 14$ --- régime défavorable.} L'avantage sur les méthodes linéaires
+  s'évanouit, et l'estimation devient plus bruitée que la structure qu'elle prétend révéler.
+\end{itemize}
+
+\bigskip
+
+Trois remèdes sont disponibles, et ils sont complémentaires plutôt qu'alternatifs. Le
+premier est la réduction préalable de la dimension par regroupement des métriques
+redondantes (section~\ref{sec:reduction}) : le transport porte alors sur les représentants
+de groupes, dont le nombre est fixé ou déduit d'un seuil de dissimilarité. Le deuxième est
+la restriction à un sous-ensemble de métriques choisi pour sa lisibilité, le reste étant
+traité par les méthodes linéaires. Le troisième, et le plus important, est de ne jamais lire
+le score de transport sans ses diagnostics : une carte dont les normes transportées sont
+loin de l'uniformité, ou dont la direction $u^{*}$ dépend du quantile du pôle, produit un
+classement qui n'est pas interprétable, quelle que soit la dimension.
+
+\bigskip
+
+\subsection{Travaux apparentés}
+\label{sec:ot-apparentes}
+
+\medskip
+
+Deux travaux récents combinent transport optimal et prédiction conforme, dans une direction
+voisine mais distincte de celle suivie ici. \citet{klein2025} construisent des ensembles de
+prédiction multivariés en utilisant les rangs \emph{center-outward} estimés par carte
+entropique comme scores de non-conformité, et c'est de là que proviennent les choix
+d'estimation repris dans ce chapitre --- grille gaussienne, plage de $\varepsilon$, ordres
+de grandeur de $m$, constat de dégradation avec $d$. \citet{thurin2025} développent la
+prédiction conforme multivariée par transport optimal dans un cadre plus général, en
+calibrant directement des régions dans l'espace de la réponse.
+
+\bigskip
+
+La différence de problème mérite d'être explicitée, parce qu'elle explique les écarts de
+construction. Ces travaux portent sur la \emph{prédiction} : il existe un modèle
+$\hat{y}$, des résidus, et une observation future à couvrir ; la garantie conforme est
+alors l'objet principal et le rang, non orienté, convient puisque les régions recherchées
+sont symétriques autour de la prédiction. Le problème traité ici est un problème de
+\emph{classement} descriptif : il n'y a ni modèle prédictif ni résidus, la symétrie du rang
+est un défaut et non une propriété, et la conformalisation ne subsiste que comme outil de
+calibration d'un seuil --- ce qui reste un usage légitime, et le seul de ce chapitre. C'est
+pourquoi l'orientation de la section~\ref{sec:ot-orientation} n'a pas d'équivalent dans ces
+références, et pourquoi la calibration y occupe ici une place subordonnée.
 
 %=======================================================================
 \section{Incertitude sur les poids}
