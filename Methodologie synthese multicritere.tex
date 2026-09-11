@@ -1036,15 +1036,1847 @@ schémas de la table~\ref{tab:normalisation} à l'exception de la winsorisation.
 \label{sec:ordres}
 %=======================================================================
 
-% À rédiger : prompt P13
+\medskip
+
+Les constructions de ce chapitre sont les seules de la note à n'introduire aucun
+coefficient. Elles n'ordonnent que les paires d'unités pour lesquelles \emph{toutes} les
+métriques concordent, au sens de la dominance de Pareto (définition~\ref{def:pareto}).
+Leur sortie n'est donc pas un classement complet mais un ordre partiel, dont certains
+raffinements --- couches, comptage de dominance, quantile de cône --- produisent ensuite
+un score numérique. La contrepartie de cette économie d'hypothèses est double :
+l'incomparabilité est assumée, et la proportion d'unités incomparables croît très vite
+avec $d$ (section~\ref{sec:cardinal}).
+
+\bigskip
+
+Toutes les quantités définies ci-dessous ne dépendent que des ordres marginaux des
+colonnes de $\Xor$. Elles sont donc invariantes par transformation monotone coordonnée
+par coordonnée (remarque~\ref{rem:invariance-front}), et en particulier indépendantes du
+schéma de normalisation retenu. C'est ce qui leur donne leur statut d'\emph{invariant} :
+un score synthétique qui placerait bas une unité non dominée est suspect, quel que soit
+le prétraitement, et le chapitre~\ref{sec:comparer} en fait un contrôle systématique.
+
+\bigskip
+
+\subsection{Front, couches, comptage et profondeur}
+\label{sec:front}
+
+\medskip
+
+\begin{definition}[Front de Pareto]
+  \label{def:front}
+  Le \emph{front de Pareto} est l'ensemble des unités qu'aucune autre ne domine :
+
+  \medskip
+
+  \[
+    \mathcal{F}_1 = \big\{ i \in [n] \;:\; \nexists\, k \in [n],\ x_k \pareto x_i \big\}.
+  \]
+
+  \bigskip
+
+  Il est non vide dès que $n \ge 1$, et contient toutes les unités maximisant une forme
+  linéaire à coefficients positifs quelconque.
+\end{definition}
+
+\bigskip
+
+Le front ne discrimine pas à l'intérieur de l'ensemble qu'il détermine. Trois
+raffinements, eux aussi sans pondération, le complètent.
+
+\medskip
+
+\begin{definition}[Couches du tri non dominé]
+  \label{def:couches}
+  Les \emph{couches} $(\mathcal{F}_\ell)_{\ell \ge 1}$ sont définies récursivement :
+  $\mathcal{F}_1$ est le front de $[n]$, et $\mathcal{F}_{\ell+1}$ est le front de
+  $[n] \setminus (\mathcal{F}_1 \cup \dots \cup \mathcal{F}_\ell)$. Le \emph{rang de
+  couche} $\ell(i)$ est l'indice de la couche contenant $i$ ; une valeur faible place
+  l'unité en tête.
+\end{definition}
+
+\bigskip
+
+\begin{definition}[Comptage de dominance et profondeur normalisée]
+  \label{def:comptage}
+  Le \emph{comptage de dominance} de l'unité $i$ est la différence entre ce qu'elle
+  domine et ce qui la domine :
+
+  \medskip
+
+  \[
+    \delta(i) =
+    \underbrace{\#\{k \in [n] : x_i \pareto x_k\}}_{\textstyle \abs{\mathcal{D}(i)}}
+    \;-\;
+    \underbrace{\#\{k \in [n] : x_k \pareto x_i\}}_{\textstyle \abs{\mathcal{A}(i)}}
+    \;\in\; \{-(n-1),\dots,n-1\}.
+  \]
+
+  \bigskip
+
+  La \emph{profondeur normalisée} $\bar{\delta}(i) = \delta(i)/(n-1) \in [-1,1]$ est
+  directement comparable entre groupes de tailles différentes.
+\end{definition}
+
+\bigskip
+
+Le comptage est le plus fin des trois : il sépare des unités que la couche confond, et
+c'est le seul à être strictement monotone. La propriété suivante en donne une forme
+quantitative, qui sert d'invariant de test de l'implémentation.
+
+\medskip
+
+\begin{propriete}[Écart minimal du comptage sur une paire dominante]
+  \label{prop:comptage}
+  Si $x_i \pareto x_k$, alors $\delta(i) \ge \delta(k) + 2$, et $\ell(i) < \ell(k)$. En
+  particulier $\bar{\delta}$ est strictement monotone pour $\pareto$ au sens de la
+  définition~\ref{def:monotonie}, tandis que $-\ell$ ne l'est que faiblement.
+\end{propriete}
+
+\bigskip
+
+La démonstration tient en deux inclusions. La relation $\pareto$ étant transitive,
+$x_i \pareto x_k$ entraîne $\mathcal{D}(k) \subseteq \mathcal{D}(i)$ ; de plus
+$k \in \mathcal{D}(i)$ alors que $k \notin \mathcal{D}(k)$ par irréflexivité, d'où
+$\abs{\mathcal{D}(i)} \ge \abs{\mathcal{D}(k)} + 1$. Symétriquement
+$\mathcal{A}(i) \subseteq \mathcal{A}(k)$ et $i \in \mathcal{A}(k) \setminus
+\mathcal{A}(i)$, d'où $\abs{\mathcal{A}(i)} \le \abs{\mathcal{A}(k)} - 1$. En retranchant,
+$\delta(i) - \delta(k) \ge 1 + 1 = 2$. L'écart de $2$, et non de $1$, vient de ce qu'une
+paire dominante est comptée deux fois : une fois au crédit du dominant, une fois au débit
+du dominé. Le rang de couche, lui, sépare bien les deux unités --- la construction de la
+récurrence garantit $\ell(i) < \ell(k)$ ---, mais d'une seule couche au minimum : il ne
+discrimine pas à l'intérieur d'une couche, qui peut être très peuplée.
+
+\bigskip
+
+\begin{remarque}[Lecture du comptage comme écart de répartition]
+  \label{rem:comptage-cdf}
+  Notons $\hat{F}(x) = \frac{1}{n}\#\{k : \mathring{x}_k \le x\}$ la fonction de
+  répartition jointe empirique et
+  $\hat{S}(x) = \frac{1}{n}\#\{k : \mathring{x}_k \ge x\}$ la fonction de survie jointe
+  empirique, les inégalités étant entendues coordonnée par coordonnée. En position
+  générale --- aucune égalité entre deux valeurs d'une même colonne --- on a exactement
+
+  \medskip
+
+  \[
+    \delta(i) = n\,\big(\hat{F}(\mathring{x}_i) - \hat{S}(\mathring{x}_i)\big),
+  \]
+
+  \bigskip
+
+  les deux dénombrements comptant l'unité $i$ elle-même et ce terme s'annulant dans la
+  différence. Le comptage de dominance est donc l'écart entre deux fonctions de
+  répartition multivariées, ce qui l'apparente directement au quantile de cône de la
+  section~\ref{sec:cone} : celui-ci remplace l'orthant par un demi-espace et récupère un
+  ordre total.
+\end{remarque}
+
+\bigskip
+
+\begin{figure}[htbp]
+  \centering
+  \begin{tikzpicture}[scale=1.0]
+    \draw[->,thick,Gris] (0,0) -- (7.6,0) node[right,black,font=\small] {métrique $1$};
+    \draw[->,thick,Gris] (0,0) -- (0,5.2) node[above,black,font=\small] {métrique $2$};
+
+    % couche 1
+    \foreach \x/\y in {0.9/4.4, 2.2/4.1, 3.6/3.7, 5.0/3.3, 6.1/2.4, 6.6/1.4}
+      \fill[Rouge] (\x,\y) circle (3pt);
+    \draw[Rouge,thick,dashed]
+      (0.9,4.4) -- (2.2,4.1) -- (3.6,3.7) -- (5.0,3.3) -- (6.1,2.4) -- (6.6,1.4);
+
+    % couche 2
+    \foreach \x/\y in {0.6/3.0, 2.4/3.0, 4.0/2.9, 4.9/1.8, 5.4/1.1}
+      \fill[Bleu] (\x,\y) circle (2.6pt);
+    \draw[Bleu,thick,dotted] (0.6,3.0) -- (2.4,3.0) -- (4.0,2.9) -- (4.9,1.8) -- (5.4,1.1);
+
+    % couche 3 et au-dela
+    \foreach \x/\y in {0.8/1.0, 1.5/0.6, 2.0/1.9, 1.2/2.4, 2.9/1.2, 3.5/2.2, 3.1/0.5,
+                       2.6/2.2, 4.2/1.0}
+      \fill[Gris] (\x,\y) circle (2.1pt);
+
+    \node[Rouge,font=\small\bfseries] at (2.5,4.85) {$\mathcal{F}_1$};
+    \node[Bleu,font=\small\bfseries]  at (1.1,3.35) {$\mathcal{F}_2$};
+    \node[Gris,font=\small\bfseries]  at (1.0,1.55) {$\mathcal{F}_{\ell \ge 3}$};
+
+    % comptage sur un point
+    \fill[black] (3.5,2.2) circle (2.4pt);
+    \draw[Gris,thick,-{Stealth}] (3.5,2.2) -- (4.55,2.2);
+    \draw[Gris,thick,-{Stealth}] (3.5,2.2) -- (3.5,3.25);
+    \node[font=\scriptsize,align=right,anchor=east] at (3.35,1.95)
+      {$\delta = \abs{\mathcal{D}} - \abs{\mathcal{A}}$};
+  \end{tikzpicture}
+  \caption{Couches du tri non dominé en dimension $2$. Le front $\mathcal{F}_1$ rassemble
+  les unités non dominées ; son retrait fait affleurer $\mathcal{F}_2$, et ainsi de
+  suite. Le comptage de dominance discrimine à l'intérieur d'une couche, là où le rang de
+  couche confond toutes ses unités. Le cône de dominance associé à une unité est celui de
+  la figure~\ref{fig:cone}.}
+  \label{fig:couches}
+\end{figure}
+
+\bigskip
+
+\subsection{Algorithmes}
+\label{sec:algos-pareto}
+
+\medskip
+
+Trois familles d'algorithmes calculent les mêmes quantités à des coûts très différents.
+Le choix entre elles est dicté par $n$, et par lui seul : les résultats sont identiques.
+
+\medskip
+
+\paragraph{Algorithme matriciel.} La matrice booléenne
+$D_{ik} = \ind{x_i \pareto x_k}$ se calcule en une seule opération vectorisée, et le
+front comme $\mathcal{F}_1 = \{i : \sum_k D_{ki} = 0\}$, le comptage comme
+$\delta = D\mathbf{1} - D^\top\mathbf{1}$. C'est la référence lisible, et le moyen de
+tester les autres variantes. Son coût mémoire est $O(n^2)$ pour la matrice seule, et
+$O(n^2 d)$ pour les tableaux intermédiaires d'une implémentation naïve ; elle reste
+praticable jusqu'à $n \approx 10^4$ et devient impossible au-delà.
+
+\bigskip
+
+\paragraph{Balayage trié.} La dominance stricte augmente strictement la somme des
+coordonnées : si $x_i \pareto x_k$ alors $\sum_j \mathring{x}_{ij} >
+\sum_j \mathring{x}_{kj}$. Une unité ne peut donc être dominée que par une unité de somme
+\emph{strictement supérieure}. En parcourant les unités par somme décroissante et en
+n'entretenant que le front accumulé jusque-là, on obtient le front exact sans jamais
+former de matrice $n \times n$. Le coût est $O(n \log n + n\,\abs{\mathcal{F}_1}\,d)$ en
+temps et $O(n + \abs{\mathcal{F}_1}\,d)$ en mémoire. Les couches s'obtiennent en itérant
+le balayage sur le complémentaire du front courant.
+
+\bigskip
+
+\paragraph{Comptage par blocs.} Le comptage exige de comparer toutes les paires : il est
+intrinsèquement en $O(n^2 d)$ en temps, et aucun tri ne l'évite. En revanche il n'exige
+pas de \emph{stocker} les paires. Un bloc de $c$ lignes est comparé aux $n$ colonnes, sa
+contribution accumulée, puis le bloc est abandonné ; la comparaison est elle-même
+accumulée métrique par métrique, de sorte que l'axe des $d$ n'est jamais matérialisé. La
+mémoire de pointe se réduit à deux tampons booléens $(c, n)$.
+
+\medskip
+
+\begin{table}[htbp]
+  \centering
+  \small
+  \renewcommand{\arraystretch}{1.25}
+  \begin{tabularx}{\textwidth}{@{}l l l Y@{}}
+    \toprule
+    \textbf{Quantité} & \textbf{Temps} & \textbf{Mémoire} & \textbf{Domaine d'emploi} \\
+    \midrule
+    Matrice de dominance & $O(n^2 d)$ & $O(n^2)$ &
+      référence de test ; $n \lesssim 10^4$ \\
+    Front par balayage & $O(n \log n + n \abs{\mathcal{F}_1} d)$ & $O(n)$ &
+      toutes tailles ; se dégrade si le front est volumineux \\
+    Couches par épluchage & $O(L \cdot n \abs{\mathcal{F}_1} d)$ & $O(n)$ &
+      $L$ couches ; désactivable lorsque $n$ est grand \\
+    Comptage par blocs & $O(n^2 d)$ & $O(c\,n)$ &
+      toutes tailles, à condition d'accepter le temps quadratique \\
+    \bottomrule
+  \end{tabularx}
+  \caption{Coût des algorithmes de dominance. Le balayage supprime la mémoire quadratique
+  pour le front et les couches ; le comptage ne peut être que \emph{diffusé} par blocs,
+  son temps restant quadratique. La taille de bloc $c$ règle l'arbitrage entre mémoire et
+  surcoût de boucle.}
+  \label{tab:cout-pareto}
+\end{table}
+
+\bigskip
+
+\begin{algorithm}[htbp]
+  \caption{Front exact par balayage trié}
+  \label{algo:front-balayage}
+  \begin{algorithmic}[1]
+    \Require matrice orientée $\Xor \in \R^{n \times d}$
+    \Ensure masque booléen $\mathcal{F}_1 \in \{0,1\}^n$
+    \State $\sigma \gets$ ordre des indices par somme $\sum_j \mathring{x}_{ij}$
+      décroissante \Comment{Tri stable : résultat déterministe sur les ex \ae quo}
+    \State $\mathcal{C} \gets ()$ \Comment{Front courant, au plus $n$ lignes}
+    \ForAll{$i \in \sigma$}
+      \If{aucun $y \in \mathcal{C}$ ne vérifie $y \ge \mathring{x}_i$ et $y \ne
+        \mathring{x}_i$}
+        \State $\mathcal{C} \gets \mathcal{C} \cup \{\mathring{x}_i\}$~;\quad
+          $\mathcal{F}_1[i] \gets \text{vrai}$
+        \Comment{Seules les lignes de somme supérieure ont pu être examinées}
+      \EndIf
+    \EndFor
+    \State \Return $\mathcal{F}_1$
+  \end{algorithmic}
+\end{algorithm}
+
+\bigskip
+
+Deux conventions méritent d'être fixées explicitement, car elles déterminent le résultat
+sur des données réelles où les ex \ae quo sont fréquents. D'abord, deux lignes
+\emph{identiques} restent toutes deux sur le front : la dominance stricte exige un gain
+strict quelque part, que deux lignes identiques ne peuvent s'offrir. Ensuite, le tri sur
+les ex \ae quo de somme est stable et complété par l'indice, de sorte que le résultat ne
+dépend pas de l'ordre des lignes en entrée.
+
+\bigskip
+
+\begin{algorithm}[htbp]
+  \caption{Comptage de dominance par blocs}
+  \label{algo:comptage-blocs}
+  \begin{algorithmic}[1]
+    \Require matrice orientée $\Xor \in \R^{n \times d}$ ; taille de bloc $c \ge 1$
+    \Ensure comptage $\delta \in \Z^n$
+    \State $a \gets 0_n$~;\quad $b \gets 0_n$
+      \Comment{$a_i = \abs{\mathcal{D}(i)}$, $b_i = \abs{\mathcal{A}(i)}$}
+    \For{chaque bloc de lignes $\mathcal{B} = \{t, \dots, \min(t+c-1, n)\}$}
+      \State $G \gets \mathbf{1}$ de taille $(\abs{\mathcal{B}}, n)$~;\quad
+        $H \gets \mathbf{0}$ de taille $(\abs{\mathcal{B}}, n)$
+      \For{$j = 1$ \textbf{à} $d$}
+        \State $G \gets G \wedge
+          \big(\mathring{x}_{\mathcal{B}j} \ge \mathring{x}_{\cdot j}^{\,\top}\big)$~;\quad
+          $H \gets H \vee
+          \big(\mathring{x}_{\mathcal{B}j} > \mathring{x}_{\cdot j}^{\,\top}\big)$
+        \Comment{L'axe des métriques n'est jamais matérialisé}
+      \EndFor
+      \State $D_{\mathcal{B}} \gets G \wedge H$
+        \Comment{Diagonale fausse d'office : $H$ y est faux}
+      \State $a_{\mathcal{B}} \gets D_{\mathcal{B}}\mathbf{1}$~;\quad
+        $b \gets b + D_{\mathcal{B}}^{\top}\mathbf{1}$
+    \EndFor
+    \State \Return $\delta \gets a - b$
+  \end{algorithmic}
+\end{algorithm}
+
+\bigskip
+
+\subsection{Cardinal attendu du front}
+\label{sec:cardinal}
+
+\medskip
+
+Le front n'est utile que s'il est nettement plus petit que la population. Son cardinal
+attendu sous indépendance est connu exactement, et croît très rapidement avec $d$.
+
+\medskip
+
+\begin{propriete}[Cardinal du front sous indépendance, \citealp{bentley1978}]
+  \label{prop:cardinal}
+  Soient $n$ points de $\R^d$ dont les $d$ coordonnées sont indépendantes et de lois
+  marginales continues. Alors
+
+  \medskip
+
+  \[
+    \EE\big[\abs{\mathcal{F}_1}\big] = H_{n,d-1},
+    \qquad
+    H_{n,1} = \sum_{k=1}^{n} \frac{1}{k},
+    \qquad
+    H_{n,m} = \sum_{k=1}^{n} \frac{H_{k,m-1}}{k},
+  \]
+
+  \bigskip
+
+  et, asymptotiquement, $H_{n,d-1} \sim (\ln n)^{d-1} / (d-1)!$.
+\end{propriete}
+
+\bigskip
+
+L'équivalent asymptotique est celui que l'on cite d'ordinaire, mais il sous-estime
+nettement la valeur exacte aux tailles usuelles : la table~\ref{tab:cardinal} met les
+deux en regard pour $n = 5\,000$, avec une simulation de contrôle. À $d = 6$, l'écart
+entre l'équivalent et la valeur exacte est d'un facteur $1{,}7$.
+
+\medskip
+
+\begin{table}[htbp]
+  \centering
+  \small
+  \renewcommand{\arraystretch}{1.25}
+  \begin{tabular}{@{}l r r r r@{}}
+    \toprule
+    & $d = 2$ & $d = 3$ & $d = 4$ & $d = 6$ \\
+    \midrule
+    Valeur exacte $H_{n,d-1}$ & $9{,}1$ & $42{,}2$ & $133{,}2$ & $644{,}2$ \\
+    Équivalent $(\ln n)^{d-1}/(d-1)!$ & $8{,}5$ & $36{,}3$ & $102{,}9$ & $374{,}0$ \\
+    Simulation, coordonnées indépendantes & $9$ & $44$ & $142$ & $590$ \\
+    Simulation, corrélation $0{,}5$ & --- & $10$ & --- & $49$ \\
+    \midrule
+    Part de la population (exact) & $0{,}2\,\%$ & $0{,}8\,\%$ & $2{,}7\,\%$ &
+      $12{,}9\,\%$ \\
+    \bottomrule
+  \end{tabular}
+  \caption{Cardinal du front pour $n = 5\,000$. Les simulations sont des moyennes sur
+  plusieurs tirages ($5$ tirages uniformes indépendants ; $10$ tirages gaussiens
+  équicorrélés à $\rho = 0{,}5$) ; leur dispersion est large, l'écart-type du cardinal
+  étant du même ordre que sa racine. La corrélation positive réduit le front d'un ordre
+  de grandeur : c'est la structure de dépendance, et non la seule dimension, qui
+  détermine son informativité.}
+  \label{tab:cardinal}
+\end{table}
+
+\bigskip
+
+Deux lectures s'en déduisent. La première est que la dimension est le facteur dominant :
+à $n$ fixé, chaque métrique supplémentaire multiplie approximativement le cardinal
+attendu par $\ln n / (d-1)$, et au-delà de $d \approx 6$ le front absorbe une part de la
+population qui le rend inexploitable comme critère de sélection. La seconde est que la
+corrélation entre métriques agit en sens inverse et avec une amplitude comparable :
+des métriques positivement corrélées concordent plus souvent, donc se dominent plus
+souvent, et le front se resserre. À la limite d'une dépendance monotone parfaite, le
+front se réduit à une seule unité ; à la limite opposée d'une anticorrélation complète
+entre deux métriques, aucune paire n'est comparable et le front est la population
+entière. Les diagnostics de corrélation de la section~\ref{sec:diagnostics} permettent
+donc d'anticiper le cardinal avant de le calculer.
+
+\bigskip
+
+Lorsque le front est trop volumineux, deux corrections indépendantes sont disponibles :
+sélectionner un sous-ensemble représentatif du front à une tolérance près
+(section~\ref{sec:front-epsilon}), ou réduire $d$ en regroupant les métriques redondantes
+(section~\ref{sec:reduction}). La première ne modifie pas la relation de dominance ; la
+seconde la modifie, dans un sens contrôlé.
+
+\bigskip
+
+\subsection{Front \texorpdfstring{$\varepsilon$}{epsilon} : sous-ensemble représentatif}
+\label{sec:front-epsilon}
+
+\medskip
+
+L'idée naturelle pour réduire un front trop peuplé est d'élargir le cône de dominance en
+tolérant un écart $\varepsilon_j$ sur chaque métrique. Cette idée, appliquée telle quelle,
+ne produit pas le résultat attendu.
+
+\medskip
+
+\begin{propriete}[La relation à cône élargi n'est pas un ordre]
+  \label{prop:eps-symetrique}
+  Soit $\varepsilon \in \R_+^d$ et soit la relation
+  $x_i \pareto^{\varepsilon} x_k \iff \forall j,\ \mathring{x}_{ij} \ge
+  \mathring{x}_{kj} - \varepsilon_j$. Cette relation est \emph{symétrique} sur toute
+  paire dont les coordonnées diffèrent de moins de $\varepsilon$ : si
+  $\abs{\mathring{x}_{ij} - \mathring{x}_{kj}} \le \varepsilon_j$ pour tout $j$, alors
+  $x_i \pareto^{\varepsilon} x_k$ \emph{et} $x_k \pareto^{\varepsilon} x_i$. L'ensemble
+  des unités « $\varepsilon$-dominées par personne » peut donc être vide, et exclut en
+  particulier toute unité possédant un voisin à moins de $\varepsilon$.
+\end{propriete}
+
+\bigskip
+
+Le contre-exemple minimal comporte trois points alignés. Pour
+$\mathring{x}_1 = (3,3)$, $\mathring{x}_2 = (2,2)$, $\mathring{x}_3 = (1,1)$ et
+$\varepsilon = (1{,}5\,;\,1{,}5)$, l'unité $2$ « $\varepsilon$-domine » l'unité $1$
+puisque $2 \ge 3 - 1{,}5$, et réciproquement ; l'unité $3$ fait de même avec l'unité $2$.
+Les trois unités sont exclues, y compris le maximum $\mathring{x}_1$ qui domine
+strictement les deux autres au sens usuel. Le phénomène n'est pas un artefact de la
+dimension $2$ ni de l'alignement : sur $500$ points uniformes en dimension $3$, dont le
+front exact compte $24$ unités, la même construction en retient $2$ pour
+$\varepsilon = 0{,}05$ et aucune pour $\varepsilon = 0{,}2$.
+
+\medskip
+
+\begin{figure}[htbp]
+  \centering
+  \begin{tikzpicture}[scale=1.0]
+    \draw[->,thick,Gris] (0,0) -- (5.4,0) node[right,black,font=\small] {métrique $1$};
+    \draw[->,thick,Gris] (0,0) -- (0,5.0) node[above,black,font=\small] {métrique $2$};
+
+    % Facteur d'echelle des coordonnees, pour la lisibilite
+    \def\sx{1.15}
+    % Region epsilon-dominee par x_2 : l'orthant inferieur issu de x_2 + epsilon
+    \begin{scope}[opacity=0.16]
+      \fill[Rouge] (0.03,0.03) rectangle ({\sx*3.5},{\sx*3.5});
+    \end{scope}
+    \draw[Rouge,thick,dashed] ({\sx*3.5},0.03) -- ({\sx*3.5},{\sx*3.5})
+      -- (0.03,{\sx*3.5});
+
+    \fill[black] ({\sx*3},{\sx*3}) circle (2.8pt)
+      node[above left=1pt,font=\scriptsize] {$\mathring{x}_1 = (3,3)$};
+    \fill[Bleu] ({\sx*2},{\sx*2}) circle (2.8pt)
+      node[left=3pt,font=\scriptsize,black] {$\mathring{x}_2 = (2,2)$};
+    \fill[Gris] ({\sx*1},{\sx*1}) circle (2.8pt)
+      node[below right=1pt,font=\scriptsize,black] {$\mathring{x}_3 = (1,1)$};
+
+    \draw[Bleu,thick,-{Stealth}] ({\sx*2},{\sx*2}) -- ({\sx*3.47},{\sx*2});
+    \node[Bleu,font=\scriptsize,anchor=south] at ({\sx*2.75},{\sx*2.05})
+      {$\varepsilon_1$};
+
+    \node[Rouge,font=\scriptsize,align=left,anchor=south west] at (0.5,{\sx*3.6})
+      {région $\varepsilon$-dominée par $\mathring{x}_2$ :\\
+       $\{z : z \le \mathring{x}_2 + \varepsilon\}$, qui contient $\mathring{x}_1$};
+  \end{tikzpicture}
+  \caption{Pourquoi la relation à cône élargi vide le front. L'unité $2$
+  « $\varepsilon$-domine » toute unité située sous $\mathring{x}_2 + \varepsilon$, et
+  cette région contient $\mathring{x}_1$ --- alors même que $1$ domine strictement $2$.
+  La relation étant symétrique sur cette paire, les deux unités sont exclues du
+  « front ». Le maximum global n'est jamais protégé.}
+  \label{fig:eps-contrexemple}
+\end{figure}
+
+\bigskip
+
+La construction correcte, due à \citet{laumanns2002}, n'élargit pas le cône : elle
+utilise la tolérance pour \emph{sélectionner un sous-ensemble représentatif du front
+exact}, en imposant que toute unité de la population reste couverte à $\varepsilon$ près
+par un représentant retenu.
+
+\medskip
+
+\begin{definition}[Couverture et front $\varepsilon$]
+  \label{def:front-eps}
+  Pour $\varepsilon \in \R_+^d$, l'unité $k$ \emph{$\varepsilon$-couvre} l'unité $i$,
+  noté $x_k \succeq_\varepsilon x_i$, lorsque
+
+  \medskip
+
+  \[
+    \forall j \in [d], \quad \mathring{x}_{kj} + \varepsilon_j \ge \mathring{x}_{ij}.
+  \]
+
+  \bigskip
+
+  Un \emph{front $\varepsilon$} est un ensemble
+  $\mathcal{F}_\varepsilon \subseteq \mathcal{F}_1$ tel que toute unité de $[n]$ soit
+  $\varepsilon$-couverte par au moins un élément de $\mathcal{F}_\varepsilon$.
+\end{definition}
+
+\bigskip
+
+La différence formelle avec la propriété~\ref{prop:eps-symetrique} est le côté où la
+tolérance est ajoutée : elle avantage ici le \emph{couvrant} et non le couvert, si bien
+que $x_k \succeq_\varepsilon x_i$ n'entraîne pas $x_i \succeq_\varepsilon x_k$ dès que
+l'écart dépasse $\varepsilon$ dans un sens. La différence conceptuelle est plus
+importante encore : $\succeq_\varepsilon$ ne remplace pas $\pareto$, elle sert de critère
+de \emph{redondance} entre éléments d'un front que l'on cherche à résumer.
+
+\medskip
+
+\begin{algorithm}[htbp]
+  \caption{Front $\varepsilon$ glouton \citep{laumanns2002}}
+  \label{algo:eps-front}
+  \begin{algorithmic}[1]
+    \Require matrice orientée $\Xor$ ; tolérances $\varepsilon \in \R_+^d$ ; clé de tri
+      $\mathrm{cl\acute{e}}$ (par défaut la somme des coordonnées) ; départage
+      $\delta$ (comptage de dominance, facultatif)
+    \Ensure masque booléen $\mathcal{F}_\varepsilon \subseteq \mathcal{F}_1$
+    \State $\mathcal{F}_1 \gets$ front exact (algorithme~\ref{algo:front-balayage})
+      \Comment{Le résultat en est un sous-ensemble par construction}
+    \State $\sigma \gets$ ordre de $\mathcal{F}_1$ par $\mathrm{cl\acute{e}}$
+      décroissante, ex \ae quo départagés par $\delta$ décroissant puis par indice
+      croissant
+    \State $\mathcal{K} \gets ()$ \Comment{Représentants retenus}
+    \ForAll{$i \in \sigma$}
+      \If{aucun $y \in \mathcal{K}$ ne vérifie $y + \varepsilon \ge \mathring{x}_i$}
+        \State $\mathcal{K} \gets \mathcal{K} \cup \{\mathring{x}_i\}$~;\quad
+          $\mathcal{F}_\varepsilon[i] \gets \text{vrai}$
+      \EndIf
+    \EndFor
+    \State \Return $\mathcal{F}_\varepsilon$
+  \end{algorithmic}
+\end{algorithm}
+
+\bigskip
+
+\begin{propriete}[Propriétés du front $\varepsilon$ glouton]
+  \label{prop:eps-front}
+  L'algorithme~\ref{algo:eps-front} produit un ensemble
+  $\mathcal{F}_\varepsilon$ vérifiant :
+
+  \medskip
+
+  \begin{enumerate}[nosep,leftmargin=1.8em]
+    \item $\mathcal{F}_\varepsilon \subseteq \mathcal{F}_1$, par construction ;
+    \item avec la clé « somme des coordonnées », l'unité maximisant
+    $\sum_j \mathring{x}_{ij}$ est traitée en premier et donc toujours conservée : le mode
+    de défaillance de la propriété~\ref{prop:eps-symetrique} est écarté ;
+    \item toute unité de $[n]$ est $\varepsilon$-couverte par un élément de
+    $\mathcal{F}_\varepsilon$ ;
+    \item $\abs{\mathcal{F}_\varepsilon}$ est décroissant en $\varepsilon$ ;
+    \item $\varepsilon \to 0$ redonne $\mathcal{F}_1$, aux lignes dupliquées près.
+  \end{enumerate}
+\end{propriete}
+
+\bigskip
+
+Les points~(4) et~(5) demandent deux précisions, l'une et l'autre observables sur des
+données réelles. D'abord, la décroissance porte sur le \emph{cardinal} et non sur
+l'ensemble : l'inclusion $\mathcal{F}_{\varepsilon'} \subseteq \mathcal{F}_{\varepsilon}$
+pour $\varepsilon' \ge \varepsilon$ est fausse en général, le glouton parcourant un ordre
+fixé. Trois unités du front exact, $(20,0)$, $(11,3)$ et $(9,4)$, en donnent un
+contre-exemple : la sélection retient $\{1,2\}$ pour $\varepsilon = 1$ et $\{1,3\}$ pour
+$\varepsilon = 3$, l'unité $2$ ayant elle-même disparu à la tolérance supérieure.
+Ensuite, à $\varepsilon = 0$ exactement, la relation $\succeq_0$ est la dominance
+\emph{faible} : deux lignes identiques du front se couvrent l'une l'autre et l'une des
+deux est écartée, alors que la dominance stricte les conserve toutes deux.
+
+\bigskip
+
+\paragraph{Calibrage de $\varepsilon$.} La tolérance a la dimension des données : elle ne
+peut être fixée qu'après normalisation, et relativement à une échelle de colonne. La
+littérature d'optimisation multiobjectif calibre parfois $\varepsilon$ sur l'écart-type
+du bruit d'estimation de chaque métrique, obtenu par rééchantillonnage des données
+sous-jacentes ; cette information n'est pas disponible lorsque l'étape de synthèse ne lit
+que la table des métriques déjà calculées. La convention retenue ici est donc une échelle
+robuste de colonne,
+
+\medskip
+
+\[
+  \varepsilon_j = c \cdot s_j,
+  \qquad
+  s_j \in \{\MAD_j,\ \mathrm{IQR}_j,\ \sigma_j\},
+\]
+
+\bigskip
+
+avec $c$ un paramètre de configuration, de valeur usuelle $0{,}1$, et $s_j$ calculée sur
+les données normalisées. La lecture est directe : deux unités dont les métriques diffèrent
+de moins d'un dixième de l'écart absolu médian sont tenues pour interchangeables. Le
+paramètre $c$ est le seul degré de liberté de la méthode, et son effet sur
+$\abs{\mathcal{F}_\varepsilon}$ est monotone, donc facile à explorer.
+
+\medskip
+
+\begin{avertissement}[Deux usages à ne pas confondre]
+  \label{av:eps-usage}
+  Le front $\varepsilon$ est un résumé : il sélectionne des représentants d'un front
+  exact trop peuplé. Il ne se substitue jamais au front exact dans les constructions qui
+  en exploitent une propriété mathématique --- au premier rang desquelles la restriction
+  des contraintes du programme \emph{benefit of the doubt}
+  (section~\ref{sec:bod}), dont l'exactitude repose sur le front \emph{exact} et serait
+  détruite par un front $\varepsilon$.
+\end{avertissement}
+
+\bigskip
+
+\subsection{Réduction préalable de la dimension}
+\label{sec:reduction}
+
+\medskip
+
+La seconde correction attaque la cause plutôt que le symptôme. Si le front est volumineux
+parce que $d$ est grand, et si une part de ces $d$ métriques mesure la même chose, alors
+regrouper les métriques redondantes réduit $d$ sans perte d'information substantielle.
+
+\medskip
+
+\begin{definition}[Réduction par regroupement]
+  \label{def:reduction}
+  Soit $\rho^S$ la matrice de corrélation de Spearman des colonnes de $\Xor$ et soit
+  $\mathcal{P} = \{G_1,\dots,G_{d'}\}$ une partition de $[d]$ obtenue par classification
+  ascendante hiérarchique sur la dissimilarité $1 - \abs{\rho^S_{jk}}$, coupée soit à un
+  nombre de groupes fixé $d'$, soit à un seuil de dissimilarité $\theta$. Le
+  \emph{représentant} du groupe $G_m$ est la moyenne des rangs normalisés de ses
+  colonnes :
+
+  \medskip
+
+  \[
+    \mathring{x}^{\,\mathcal{P}}_{im}
+    = \frac{1}{\abs{G_m}} \sum_{j \in G_m}
+      \frac{\rg(\mathring{x}_{ij})}{n},
+  \]
+
+  \bigskip
+
+  et la matrice réduite $\Xor^{\mathcal{P}} \in \R^{n \times d'}$ rassemble ces
+  représentants.
+\end{definition}
+
+\bigskip
+
+\begin{propriete}[Inclusion des fronts]
+  \label{prop:inclusion-fronts}
+  La moyenne étant croissante en chacun de ses arguments et le rang étant croissant en la
+  valeur, $x_i \pareto x_k$ sur les colonnes implique $x_i \pareto x_k$ sur les
+  représentants. La dominance sur la matrice réduite est donc \emph{plus riche} que la
+  dominance sur les colonnes, et
+
+  \medskip
+
+  \[
+    \mathcal{F}_1\big(\Xor^{\mathcal{P}}\big) \subseteq \mathcal{F}_1\big(\Xor\big).
+  \]
+\end{propriete}
+
+\bigskip
+
+C'est exactement l'effet recherché : le front ne peut que se resserrer, et toute unité
+qu'il conserve était déjà non dominée sur les métriques d'origine. La réciproque est
+fausse --- une unité non dominée sur les colonnes peut devenir dominée sur les
+représentants ---, et c'est précisément l'information que la réduction ajoute : elle
+tranche des incomparabilités qui ne tenaient qu'à la duplication d'un même mécanisme.
+
+\bigskip
+
+Le passage par les \emph{rangs} avant la moyenne n'est pas un détail. Il est ce qui
+préserve l'invariance monotone dont bénéficie la dominance : une moyenne de valeurs
+brutes dépendrait des échelles relatives des colonnes du groupe, et la réduction
+introduirait une pondération implicite là où le chapitre se veut sans coefficient. Deux
+limites subsistent, à énoncer plutôt qu'à corriger. La dissimilarité $1 - \abs{\rho^S}$
+traite une anticorrélation forte comme une redondance, ce qui est une hypothèse de
+modélisation --- deux métriques portant la même information de signe opposé --- et non
+une évidence. Et la moyenne à l'intérieur d'un groupe est une opération compensatoire :
+la réduction échange une incomparabilité contre une compensation locale, assumée au sein
+d'un groupe de métriques jugées redondantes.
+
+\bigskip
+
+\subsection{Quantile de cône}
+\label{sec:cone}
+
+\medskip
+
+Le comptage de dominance laisse subsister de nombreux ex \ae quo : deux unités
+incomparables et dominant chacune autant d'unités reçoivent le même score. Le
+\emph{quantile de cône} de \citet{hamel2018} comble cette lacune sans introduire de poids,
+en remplaçant le dénombrement sur un orthant par le pire dénombrement sur un demi-espace.
+
+\medskip
+
+\begin{definition}[Fonction de répartition de cône]
+  \label{def:cone}
+  Pour $w \in \simplex$, soit $F_{w^\top X}$ la fonction de répartition empirique de la
+  somme pondérée $\{w^\top \mathring{x}_k\}_{k \in [n]}$. La \emph{fonction de
+  répartition de cône} est
+
+  \medskip
+
+  \[
+    F_C(x) = \inf_{w \in \simplex} F_{w^\top X}\big(w^\top x\big)
+    \;\in\; (0,1],
+  \]
+
+  \bigskip
+
+  c'est-à-dire le \emph{pire rang unidimensionnel} de $x$ parmi toutes les sommes
+  pondérées à poids positifs. La version supérieure, $\sup_{w} F_{w^\top X}(w^\top x)$,
+  donne le meilleur cas.
+\end{definition}
+
+\bigskip
+
+\begin{propriete}[Propriétés du quantile de cône]
+  \label{prop:cone}
+  Avec les notations de la remarque~\ref{rem:comptage-cdf} :
+
+  \medskip
+
+  \begin{enumerate}[nosep,leftmargin=1.8em]
+    \item \emph{Encadrement.} $\hat{F}(x) \le F_C(x)$ pour tout $x$ : si
+    $\mathring{x}_k \le x$ coordonnée par coordonnée et $w \ge 0$, alors
+    $w^\top \mathring{x}_k \le w^\top x$, de sorte que l'orthant est inclus dans chaque
+    demi-espace. Le quantile de cône est donc une relaxation de la fonction de
+    répartition jointe, qui en retient un ordre \emph{total}.
+    \item \emph{Monotonie faible.} $x_i \pareto x_k$ implique
+    $w^\top \mathring{x}_i \ge w^\top \mathring{x}_k$ pour tout $w \ge 0$, donc un rang au
+    moins aussi élevé sous chaque $w$, donc $F_C(x_i) \ge F_C(x_k)$. La monotonie est
+    faible : une unité dominante dont l'avantage porte sur une seule métrique reçoit le
+    même score sous le poids qui ignore cette métrique.
+    \item \emph{Absence de pondération et orientation.} Aucun $w$ particulier n'est
+    retenu ; le score est néanmoins orienté, puisque la restriction $w \ge 0$ encode
+    la polarité positive commune à toutes les métriques.
+    \item \emph{Niveau interprétable.} $F_C(x) = 0{,}97$ se lit : « sous \emph{toute}
+    pondération positive, $x$ se situe au-dessus d'au moins $97\,\%$ de la population ».
+    L'écart $\sup_w - \inf_w$ mesure l'indétermination propre à l'unité, et complète
+    naturellement l'analyse de l'espace des poids du chapitre~\ref{sec:smaa}.
+  \end{enumerate}
+\end{propriete}
+
+\bigskip
+
+L'infimum sur le simplexe n'est pas calculé exactement : il est approché sur un
+échantillon fini $w^{(1)},\dots,w^{(T)}$ de $\simplex$, typiquement des tirages de
+Dirichlet uniformes, partagés avec l'analyse de l'espace des poids
+(chapitre~\ref{sec:smaa}) afin d'éviter de tirer deux fois. L'estimateur
+
+\medskip
+
+\[
+  \hat{F}^{\,T}_C(x_i)
+  = \min_{t \le T} \frac{\rg\big(w^{(t)\top}\mathring{x}_i\big)}{n}
+\]
+
+\bigskip
+
+est un \emph{majorant} de $F_C(x_i)$, puisqu'un minimum sur un sous-ensemble majore le
+minimum sur l'ensemble ; symétriquement, la version supérieure minore le supremum. Le
+biais est donc de sens connu, et il décroît lorsque $T$ croît. Le coût est
+$O(T\,n \log n)$ en temps, et la mémoire se contrôle en traitant les tirages par blocs :
+seul un tableau $(n, T_b)$ de projections est matérialisé à la fois.
+
+\medskip
+
+\begin{algorithm}[htbp]
+  \caption{Quantile de cône par tirages sur le simplexe}
+  \label{algo:cone}
+  \begin{algorithmic}[1]
+    \Require matrice orientée $\Xor$ ; nombre de tirages $T$ ; taille de bloc $T_b$ ;
+      germe aléatoire
+    \Ensure bornes $\hat{F}^{\,T}_C$ et $\hat{F}^{\,T,\sup}_C$, toutes deux dans $(0,1]$
+    \State $\underline{f} \gets +\infty$ de taille $n$~;\quad
+      $\overline{f} \gets -\infty$ de taille $n$
+    \For{chaque bloc de tirages $W_b \in \R^{T_b \times d}$,
+      $w^{(t)} \sim \mathrm{Dirichlet}(\mathbf{1}_d)$}
+      \State $P \gets \Xor W_b^{\top}$
+        \Comment{Projections, $(n, T_b)$ ; l'unique tableau matérialisé}
+      \State $\Pi \gets \rg(P) / n$ colonne par colonne
+        \Comment{Ex \ae quo moyennés}
+      \State $\underline{f} \gets \min(\underline{f},\ \min_{\text{colonnes}} \Pi)$~;\quad
+        $\overline{f} \gets \max(\overline{f},\ \max_{\text{colonnes}} \Pi)$
+    \EndFor
+    \State \Return $\underline{f}$, $\overline{f}$
+  \end{algorithmic}
+\end{algorithm}
+
+\bigskip
+
+Le score retenu par défaut est la borne inférieure $\underline{f} = \hat{F}^{\,T}_C$,
+c'est-à-dire la lecture la moins favorable à chaque unité : une unité classée haut l'est
+sous toutes les pondérations envisagées, ce qui en fait la contrepartie non compensatoire
+exacte de la somme pondérée. La méthode est invariante par transformation monotone
+appliquée à \emph{toutes} les colonnes simultanément, mais pas colonne par colonne : les
+projections $w^\top x$ mélangent les échelles, et le quantile de cône se calcule donc sur
+des données normalisées par les rangs lorsque l'invariance marginale est recherchée.
+
+\bigskip
+
+\subsection{Pour aller plus loin}
+\label{sec:ordres-plus}
+
+\medskip
+
+Deux familles de raffinements de l'ordre partiel ne sont pas retenues ici, pour des
+raisons opposées, et méritent d'être signalées.
+
+\medskip
+
+\paragraph{Extensions linéaires.} Une \emph{extension linéaire} d'un ordre partiel est un
+ordre total compatible avec lui. Le rang moyen d'une unité sur l'ensemble des extensions
+linéaires fournit un classement complet qui n'ajoute aucune hypothèse : il ne fait
+qu'agréger toutes les manières cohérentes de compléter la dominance
+\citep{bruggemann2011, fattore2016}. La difficulté est calculatoire --- le dénombrement
+des extensions linéaires est un problème $\#$P-complet ---, et les approximations locales
+disponibles \citep{deloof2006} restent hors de portée au-delà de quelques centaines
+d'unités. La construction garde l'intérêt d'un point de comparaison conceptuel : le
+comptage de dominance et le quantile de cône en sont deux substituts calculables.
+
+\bigskip
+
+\paragraph{Profondeurs statistiques.} Les profondeurs de Tukey et leurs variantes
+\citep{tukey1975, zuo2000, mosler2013} ordonnent les points de $\R^d$ par leur centralité
+dans le nuage, du centre vers l'extérieur. Elles sont invariantes affines, robustes, et
+munies d'une théorie asymptotique complète. Elles répondent cependant à une autre
+question que celle de cette note : une profondeur faible signale un point
+\emph{atypique}, sans distinguer le haut du bas du nuage, alors que le classement
+recherché ici est orienté. La distinction est la même que celle qui, au
+chapitre~\ref{sec:ot}, sépare le rang \emph{center-outward} du score orienté qui en est
+dérivé.
 
 %=======================================================================
 \section{Pondérations endogènes}
 \label{sec:poids}
 %=======================================================================
 
-% À rédiger : prompt P13
+\medskip
 
+Les méthodes du chapitre précédent renoncent au classement complet pour ne rien supposer.
+Celles de ce chapitre font le choix inverse : elles produisent des coefficients, mais les
+déduisent d'une propriété statistique de l'échantillon plutôt que d'un jugement
+d'expert. L'avertissement~\ref{av:cout} rappelle que ce déplacement ne supprime pas
+l'hypothèse ; il la rend seulement vérifiable, puisque la propriété invoquée se mesure sur
+les données.
+
+\bigskip
+
+Les coefficients produits ne sont pas tous de même nature, et les traiter comme
+interchangeables est une source d'erreur courante. La section~\ref{sec:classes-poids}
+fixe la distinction ; les sections suivantes décrivent les méthodes classe par classe :
+entropie (section~\ref{sec:entropie}) et CRITIC (section~\ref{sec:critic}) pour les
+pondérations simpliciales fondées sur la dispersion, analyse en composantes principales
+(section~\ref{sec:acp}) pour les deux objets qu'elle produit selon la variante retenue,
+méta-sélection (section~\ref{sec:meta}) pour le choix entre elles, et \emph{benefit of
+the doubt} (section~\ref{sec:bod}) pour la pondération individualisée.
+
+\bigskip
+
+\subsection{Trois classes de pondérations}
+\label{sec:classes-poids}
+
+\medskip
+
+\begin{definition}[Classes de pondérations]
+  \label{def:classes-poids}
+  \
+
+  \medskip
+
+  \begin{itemize}[nosep,leftmargin=1.4em]
+    \item Une \emph{pondération simpliciale} est un vecteur $w \in \simplex$, à
+    composantes positives de somme $1$. Elle définit un score par
+    $s(x) = \sum_j w_j \tilde{x}_j$ ou par toute autre fonction d'agrégation du
+    chapitre~\ref{sec:agregation}, et se lit comme une répartition d'importance entre les
+    métriques.
+    \item Une \emph{direction} est un vecteur $v \in \Sphere^{d-1}$, de norme $1$ et de
+    composantes de signe quelconque. Elle définit un score linéaire
+    $s(x) = \scal{v}{z}$ sur les données \emph{centrées-réduites} $Z$, et ne se lit pas
+    comme une répartition d'importance : une composante négative signifie qu'une
+    augmentation de la métrique correspondante fait \emph{baisser} le score.
+    \item Une \emph{pondération individualisée} est une famille
+    $(w^{(o)})_{o \in [n]}$ de vecteurs de $\simplex$, un par unité. Elle ne définit pas
+    une fonction de score commune, mais un score $s(x_o) = \sum_j w^{(o)}_j
+    \tilde{x}_{oj}$ propre à chaque unité.
+  \end{itemize}
+\end{definition}
+
+\bigskip
+
+\begin{avertissement}[Une direction n'est pas un vecteur de poids]
+  \label{av:direction}
+  Une direction ne peut pas être transmise à une moyenne géométrique, à une méthode de
+  distance aux pôles ou à tout autre agrégat exigeant $w \ge 0$ : la composante négative
+  y produit soit une erreur numérique, soit, plus insidieusement, un score qui inverse la
+  polarité d'une métrique sans que rien ne le signale. La validation qui l'accompagne est
+  donc double : $w \ge 0$ et $\sum_j w_j = 1$ à la tolérance numérique près, vérifiés
+  avant toute agrégation qui l'exige. Symétriquement, une pondération simpliciale
+  appliquée à des données centrées-réduites reste licite, mais son score n'est plus borné
+  et perd l'interprétation en part de contribution.
+\end{avertissement}
+
+\bigskip
+
+\begin{table}[htbp]
+  \centering
+  \small
+  \renewcommand{\arraystretch}{1.3}
+  \begin{tabularx}{\textwidth}{@{}l l Y Y@{}}
+    \toprule
+    \textbf{Méthode} & \textbf{Sortie} & \textbf{Normalisation d'entrée admissible} &
+    \textbf{Motif de la restriction} \\
+    \midrule
+    Entropie & $w \in \simplex$ &
+      min--max \textbf{(défaut)}, rangs &
+      exige $\tilde{X} \ge 0$ et n'est pas invariante par translation \\
+    CRITIC & $w \in \simplex$ &
+      min--max \textbf{(défaut)}, rangs &
+      la dispersion doit être comparable d'une colonne à l'autre, donc sur une échelle
+      commune \\
+    ACP, axe $1$ & direction $v$ &
+      centrage--réduction \textbf{(défaut)}, quantile gaussien &
+      le score est une projection sur données standardisées \\
+    ACP, variante OCDE--JRC & $w \in \simplex$ &
+      toutes &
+      la matrice de corrélation est invariante d'échelle et de position \\
+    Méta-sélection & $w \in \simplex$ &
+      min--max \textbf{(défaut)}, rangs &
+      contrainte du candidat le plus exigeant (entropie) \\
+    \emph{Benefit of the doubt} & $(w^{(o)})_o$ &
+      min--max \textbf{(défaut)}, rangs &
+      exige $\tilde{X} \ge 0$ : la contrainte $\tilde{X}w \le 1$ et la borne
+      $[0,1]$ perdent leur sens sur données signées \\
+    Poids égaux & $w \in \simplex$ &
+      toutes &
+      aucune quantité n'est estimée \\
+    \bottomrule
+  \end{tabularx}
+  \caption{Normalisation d'entrée admissible par méthode de pondération. La colonne de
+  droite donne le motif de la restriction : la violer ne produit pas nécessairement une
+  erreur, mais un résultat dont l'interprétation ne tient plus. Les schémas eux-mêmes sont
+  décrits à la table~\ref{tab:normalisation}.}
+  \label{tab:poids-normalisation}
+\end{table}
+
+\bigskip
+
+\subsection{Entropie de Shannon}
+\label{sec:entropie}
+
+\medskip
+
+\paragraph{Idée.} Une métrique dont les valeurs sont quasi identiques sur toutes les
+unités ne les distingue pas : elle porte peu d'information au sens de
+\citet{shannon1948}, et reçoit un poids faible. Une métrique dont les valeurs sont très
+étalées en porte beaucoup et reçoit un poids fort. La méthode, due sous cette forme à
+\citet{zou2006}, est la traduction la plus directe du postulat « l'information utile est
+la dispersion ».
+
+\bigskip
+
+\paragraph{Construction.} Chaque colonne, positive, est d'abord convertie en distribution
+de probabilité sur les unités, puis on calcule son entropie normalisée et son degré de
+divergence :
+
+\medskip
+
+\[
+  p_{ij} = \frac{\tilde{x}_{ij}}{\sum_{k=1}^{n}\tilde{x}_{kj}},
+  \qquad
+  E_j = -\frac{1}{\ln n}\sum_{i=1}^{n} p_{ij}\ln p_{ij} \in [0,1],
+  \qquad
+  g_j = 1 - E_j,
+  \qquad
+  w_j = \frac{g_j}{\sum_{k=1}^{d} g_k}.
+\]
+
+\bigskip
+
+La division par $\ln n$ ramène l'entropie dans $[0,1]$, sa valeur maximale étant atteinte
+par la distribution uniforme sur les $n$ unités.
+
+\medskip
+
+\begin{remarque}[Conventions sur les cas dégénérés]
+  \label{rem:entropie-degenere}
+  Deux situations demandent une convention explicite, faute de quoi le calcul produit un
+  avertissement numérique ou un $\mathrm{NaN}$ qui se propage à tous les poids.
+
+  \medskip
+
+  \begin{itemize}[nosep,leftmargin=1.4em]
+    \item \textbf{Composante nulle.} $p_{ij} = 0$ donne $0 \ln 0$, prolongé par
+    continuité à $0$. Le logarithme n'est évalué que sur les composantes strictement
+    positives.
+    \item \textbf{Colonne constante.} Une colonne constante et non nulle répartit sa
+    masse uniformément : $E_j = 1$, donc $g_j = 0$ et $w_j = 0$. Une colonne
+    identiquement nulle --- ce qu'une colonne constante \emph{devient} après
+    normalisation min--max --- ne définit aucune distribution ($0/0$) ; la convention
+    retenue lui attribue également $g_j = 0$, cohérente avec le cas précédent. Dans les
+    deux cas la colonne est signalée.
+  \end{itemize}
+
+  \bigskip
+
+  Une métrique de poids nul ne participe plus à la monotonie : le score n'est alors que
+  \emph{faiblement} monotone au sens de la définition~\ref{def:monotonie}, et deux unités
+  ne différant que sur cette métrique sont ex \ae quo. La conséquence pratique est nulle
+  --- la métrique ne discriminait de toute façon pas --- mais le diagnostic
+  $V_{\mathrm{tie}}$ du chapitre~\ref{sec:comparer} en portera la trace, et c'est
+  l'explication à en donner.
+\end{remarque}
+
+\bigskip
+
+\begin{avertissement}[Dépendance à l'origine de l'échelle]
+  \label{av:entropie-translation}
+  La méthode n'est pas invariante par translation : ajouter une constante $b$ à une
+  colonne rapproche sa distribution $p_{\cdot j}$ de l'uniforme, augmente son entropie et
+  \emph{diminue} son poids, sans qu'aucune information ait changé. Les poids d'entropie
+  ne sont donc définis que relativement à un schéma de normalisation, qui doit être
+  rapporté avec eux. Seuls les schémas bornés dans $[0,1]$ et ancrés sur le minimum
+  observé --- min--max, rangs --- sont admissibles ; le centrage--réduction et la
+  normalisation robuste produisent des valeurs négatives et sont rejetés.
+\end{avertissement}
+
+\bigskip
+
+\subsection{CRITIC}
+\label{sec:critic}
+
+\medskip
+
+\paragraph{Idée.} L'entropie ne regarde qu'une colonne à la fois et ignore la redondance :
+deux métriques quasi identiques reçoivent chacune un poids plein, et le mécanisme qu'elles
+capturent pèse donc double dans le score. La méthode CRITIC (\emph{CRiteria Importance
+Through Intercriteria Correlation}) de \citet{diakoulaki1995} corrige ce point en
+pondérant chaque métrique par le produit de sa \emph{dispersion} et de son
+\emph{originalité} vis-à-vis des autres.
+
+\bigskip
+
+\paragraph{Construction.} Avec $s_j$ une statistique de dispersion de la colonne $j$ et
+$r_{jk}$ la corrélation entre les colonnes $j$ et $k$ :
+
+\medskip
+
+\[
+  C_j = s_j \sum_{k=1}^{d}\big(1 - r_{jk}\big),
+  \qquad
+  w_j = \frac{C_j}{\sum_{m=1}^{d} C_m}.
+\]
+
+\bigskip
+
+Le facteur $\sum_k (1 - r_{jk})$ vaut $d - 1$ lorsque la métrique $j$ est indépendante
+des autres, tend vers $0$ lorsqu'elle en est une réplique, et atteint son maximum
+$2d - 1$ lorsqu'elle leur est parfaitement anticorrélée. La somme inclut le terme
+$k = j$, dont la contribution $1 - r_{jj} = 0$ est nulle : il est conservé pour la
+lisibilité de la formule.
+
+\medskip
+
+\begin{remarque}[Variantes et hypothèses qu'elles encodent]
+  \label{rem:critic-variantes}
+  \
+
+  \medskip
+
+  \begin{itemize}[nosep,leftmargin=1.4em]
+    \item \textbf{Variante robuste.} $s_j = \MAD_j$ et $r = \rho^S$ (Spearman) au lieu de
+    $s_j = \sigma_j$ et $r$ de Pearson. La dispersion cesse d'être pilotée par quelques
+    valeurs extrêmes et la corrélation ne mesure plus qu'une association monotone. C'est
+    la variante adaptée aux métriques de concentration, dont les distributions sont très
+    asymétriques (section~\ref{sec:queues}). Les deux substitutions vont de pair : un MAD
+    associé à une corrélation de Pearson laisse subsister la sensibilité aux extrêmes par
+    le second terme.
+    \item \textbf{Originalité en valeur absolue.} Remplacer $\sum_k (1 - r_{jk})$ par
+    $\sum_k (1 - \abs{r_{jk}})$ traite une anticorrélation forte comme une redondance :
+    deux métriques portant la même information de signe opposé sont alors pénalisées,
+    au lieu d'être récompensées. C'est une hypothèse de modélisation explicite, non une
+    correction, et le choix est à rapporter. Sur des métriques déjà orientées en polarité
+    positive, une anticorrélation forte est rare et signale généralement un désaccord de
+    fond entre mécanismes, que la formule originale a raison de valoriser.
+    \item \textbf{Colonne constante.} La corrélation d'une colonne constante avec toute
+    autre est indéfinie. La convention retenue la fixe à $0$ hors diagonale et à $1$ sur
+    la diagonale ; comme $s_j = 0$, la métrique reçoit un poids exactement nul plutôt que
+    de rendre $\mathrm{NaN}$ l'ensemble du vecteur.
+  \end{itemize}
+\end{remarque}
+
+\bigskip
+
+\begin{algorithm}[htbp]
+  \caption{Pondérations par entropie et par CRITIC}
+  \label{algo:poids-dispersion}
+  \begin{algorithmic}[1]
+    \Require $\tilde{X} \in [0,1]^{n \times d}$ (polarité positive, min--max ou rangs) ;
+      statistique de dispersion $s \in \{\sigma, \MAD\}$ ; corrélation
+      $r \in \{\text{Pearson}, \text{Spearman}\}$ ; indicateur $\mathrm{abs}$
+    \Ensure $w^{\mathrm{ent}}, w^{\mathrm{cri}} \in \simplex$
+    \Statex \textbf{--- Entropie ---}
+    \For{$j = 1$ \textbf{à} $d$}
+      \If{$\sum_i \tilde{x}_{ij} = 0$}
+        \State $g_j \gets 0$ \Comment{Colonne identiquement nulle : convention $0/0$}
+      \Else
+        \State $p_{\cdot j} \gets \tilde{x}_{\cdot j} / \sum_i \tilde{x}_{ij}$
+        \State $E_j \gets -\frac{1}{\ln n}\sum_{i : p_{ij} > 0} p_{ij}\ln p_{ij}$
+          \Comment{Convention $0\ln 0 = 0$}
+        \State $g_j \gets 1 - E_j$
+      \EndIf
+    \EndFor
+    \State $w^{\mathrm{ent}} \gets g / \sum_j g_j$, ou le vecteur uniforme si
+      $\sum_j g_j = 0$
+    \Statex \textbf{--- CRITIC ---}
+    \State $R \gets r(\tilde{X})$, les valeurs indéfinies étant mises à $0$ hors
+      diagonale
+    \If{$\mathrm{abs}$} \State $R \gets \abs{R}$ \EndIf
+    \For{$j = 1$ \textbf{à} $d$}
+      \State $C_j \gets s_j \sum_k (1 - R_{jk})$
+        \Comment{Dispersion pondérée par l'originalité}
+    \EndFor
+    \State $w^{\mathrm{cri}} \gets C / \sum_j C_j$, ou le vecteur uniforme si
+      $\sum_j C_j = 0$
+    \State \Return $w^{\mathrm{ent}}, w^{\mathrm{cri}}$
+  \end{algorithmic}
+\end{algorithm}
+
+\bigskip
+
+\subsection{Analyse en composantes principales}
+\label{sec:acp}
+
+\medskip
+
+Si les métriques sont corrélées, c'est qu'elles mesurent en partie une même grandeur
+latente. L'analyse en composantes principales identifie cette grandeur et en tire, selon
+la variante retenue, l'un des \emph{deux} objets de la
+définition~\ref{def:classes-poids} : une direction, ou une pondération simpliciale.
+L'analyse est conduite sur la matrice de \emph{corrélation}
+
+\medskip
+
+\[
+  R = \sum_{m=1}^{d} \lambda_m\, a_m a_m^\top,
+  \qquad \lambda_1 \ge \dots \ge \lambda_d \ge 0,
+  \qquad \norm{a_m} = 1,
+  \qquad \sum_m \lambda_m = d,
+\]
+
+\bigskip
+
+et non sur la covariance : la matrice de corrélation ne dépend ni de l'échelle ni de la
+position des colonnes, de sorte que le résultat est le même quel que soit le schéma de
+normalisation en amont. Conduire l'analyse sur la covariance de données min--max
+reviendrait à pondérer chaque métrique par l'étendue de son intervalle observé, ce qui
+n'est pas l'intention.
+
+\bigskip
+
+\subsubsection{Variante « direction » : premier axe}
+\label{sec:acp-axe1}
+
+\medskip
+
+Le score du premier axe est $s^{\mathrm{ACP}}(x_i) = \scal{a_1}{z_i}$, calculé sur les
+données centrées-réduites $Z$. Trois points en conditionnent la validité.
+
+\medskip
+
+\begin{itemize}[nosep,leftmargin=1.6em]
+  \item \textbf{Signe.} Le vecteur $a_1$ n'est défini qu'au signe près. La convention
+  retenue impose $\sum_j a_{1j} > 0$, de sorte qu'un score élevé corresponde à des
+  métriques élevées. Sans cette convention, le signe dépend de l'implémentation de la
+  décomposition propre et peut changer d'un groupe à l'autre.
+  \item \textbf{Saturations négatives.} Si certaines composantes de $a_1$ sont négatives,
+  le score \emph{viole la monotonie} (définition~\ref{def:monotonie}) : augmenter la
+  métrique correspondante fait baisser l'indice. Ce n'est pas un défaut d'estimation mais
+  la traduction fidèle d'une structure où les métriques ne vont pas dans le même sens ; le
+  score cesse simplement d'être un indice de synthèse orienté. La présence de saturations
+  négatives est rapportée comme un diagnostic, et conduit soit à retenir une autre
+  méthode, soit à accepter explicitement un score non monotone.
+  \item \textbf{Part de variance.} Si $\lambda_1/d$ est faible, il n'existe pas de facteur
+  dominant : le premier axe n'est qu'une direction parmi d'autres, et son instabilité par
+  rééchantillonnage sera visible au bootstrap du chapitre~\ref{sec:comparer}. Le seuil
+  usuel de $0{,}5$ n'a rien de canonique ; il sert de garde dans la méta-sélection de la
+  section~\ref{sec:meta}.
+\end{itemize}
+
+\bigskip
+
+\subsubsection{Variante OCDE--JRC : pondération simpliciale}
+\label{sec:acp-oecd}
+
+\medskip
+
+La procédure du \emph{Handbook on Constructing Composite Indicators}
+\citep[p.~89--90]{nardo2008}, reprise de \citet{nicoletti2000}, produit un vecteur de
+$\simplex$ en quatre étapes.
+
+\medskip
+
+\begin{enumerate}[nosep,leftmargin=1.8em]
+  \item \textbf{Sélection et rotation.} Les $M$ axes de valeur propre $\lambda_m > 1$
+  (critère de Kaiser : un axe est retenu s'il explique plus qu'une métrique standardisée
+  isolée) sont soumis à une rotation varimax \citep{kaiser1958}, qui produit des
+  saturations $\ell'_{jm}$ interprétables, chaque métrique saturant fortement un petit
+  nombre de facteurs.
+  \item \textbf{Affectation.} Chaque métrique $j$ est affectée au facteur
+  $m^*(j) = \arg\max_{m \le M} \ell'^{\,2}_{jm}$ sur lequel son carré de saturation est
+  maximal.
+  \item \textbf{Normalisation intra-facteur.} À l'intérieur de chaque facteur, les carrés
+  de saturations des métriques \emph{qui lui sont affectées} sont normalisés pour sommer
+  à $1$.
+  \item \textbf{Pondération des facteurs.} Chaque facteur pèse à proportion de la variance
+  qu'il explique \emph{après} rotation, $V_m = \sum_j \ell'^{\,2}_{jm}$.
+\end{enumerate}
+
+\bigskip
+
+D'où la formule complète :
+
+\medskip
+
+\[
+  w_j
+  = \underbrace{\frac{V_{m^*(j)}}{\sum_{m \le M} V_m}}_{\text{poids du facteur}}
+  \;\cdot\;
+  \underbrace{\frac{\ell'^{\,2}_{j\,m^*(j)}}
+                   {\sum_{k \,:\, m^*(k) = m^*(j)} \ell'^{\,2}_{k\,m^*(j)}}}
+             _{\text{part de la métrique dans son facteur}},
+  \qquad
+  V_m = \sum_{j=1}^{d} \ell'^{\,2}_{jm}.
+\]
+
+\bigskip
+
+Écrit ainsi, $\sum_j w_j = 1$ \emph{sans renormalisation} : la somme se factorise en une
+somme sur les facteurs des parts, chacune valant $1$. La somme $\sum_m V_m$ au
+dénominateur porte sur les facteurs effectivement dotés d'au moins une métrique, ce qui
+préserve la somme unitaire lorsqu'un axe retenu n'en attire aucune.
+
+\medskip
+
+\begin{avertissement}[Deux écarts fréquents à la procédure de référence]
+  \label{av:oecd}
+  Deux simplifications circulent, dont la combinaison change l'ordre de grandeur des
+  poids. La première remplace les variances $V_m$ \emph{après} rotation par les valeurs
+  propres $\lambda_m$ \emph{avant} rotation : la rotation redistribue la variance entre
+  les axes retenus, et l'assimilation n'est exacte que si la rotation est l'identité. La
+  seconde omet l'étape~(3), c'est-à-dire écrit
+  $w_j \propto \max_m \ell'^{\,2}_{jm} \cdot \lambda_m / \sum_{m'}\lambda_{m'}$ : le
+  poids d'un facteur est alors \emph{répliqué} sur chacune de ses métriques au lieu
+  d'être \emph{partagé} entre elles, de sorte qu'un facteur nombreux est surpondéré
+  proportionnellement à son effectif.
+\end{avertissement}
+
+\bigskip
+
+L'exemple suivant isole le second écart, le plus conséquent. On considère cinq métriques
+et deux facteurs après rotation : quatre métriques saturent le facteur $1$ avec
+$\ell'^{\,2} = 0{,}8$, la cinquième sature le facteur $2$ avec $\ell'^{\,2} = 0{,}8$.
+D'où $V_1 = 3{,}2$ et $V_2 = 0{,}8$.
+
+\medskip
+
+\begin{table}[htbp]
+  \centering
+  \small
+  \renewcommand{\arraystretch}{1.25}
+  \begin{tabular}{@{}l c c c c c@{}}
+    \toprule
+    & $j = 1$ & $j = 2$ & $j = 3$ & $j = 4$ & $j = 5$ \\
+    \midrule
+    Facteur affecté $m^*(j)$ & $1$ & $1$ & $1$ & $1$ & $2$ \\
+    Saturation au carré $\ell'^{\,2}_{j m^*}$ &
+      $0{,}8$ & $0{,}8$ & $0{,}8$ & $0{,}8$ & $0{,}8$ \\
+    \midrule
+    Procédure du \emph{Handbook} &
+      $0{,}200$ & $0{,}200$ & $0{,}200$ & $0{,}200$ & $0{,}200$ \\
+    Sans normalisation intra-facteur &
+      $0{,}235$ & $0{,}235$ & $0{,}235$ & $0{,}235$ & $0{,}059$ \\
+    \bottomrule
+  \end{tabular}
+  \caption{Effet de l'omission de la normalisation intra-facteur, sur cinq métriques et
+  deux facteurs ($V_1 = 3{,}2$, $V_2 = 0{,}8$). La procédure de référence donne
+  $w_j = (3{,}2/4)\times(0{,}8/3{,}2) = 0{,}2$ pour les quatre premières et
+  $(0{,}8/4)\times(0{,}8/0{,}8) = 0{,}2$ pour la cinquième : les cinq métriques pèsent
+  autant, le facteur $1$ pesant quatre fois plus que le facteur $2$ parce qu'il rassemble
+  quatre métriques. La variante sans l'étape~(3) répartit les poids dans le rapport
+  $4 : 1$ entre les deux facteurs \emph{et} donne ce rapport à chacune de leurs
+  métriques, rendant la cinquième métrique quatre fois moins importante que chacune des
+  quatre autres.}
+  \label{tab:oecd-exemple}
+\end{table}
+
+\bigskip
+
+\begin{algorithm}[htbp]
+  \caption{Pondération OCDE--JRC}
+  \label{algo:oecd}
+  \begin{algorithmic}[1]
+    \Require $\tilde{X} \in \R^{n \times d}$ (normalisation quelconque) ; seuil de
+      rétention $\lambda_{\min}$ (défaut $1$)
+    \Ensure $w \in \simplex$ ; diagnostics $(\lambda_m/d)_m$, saturations négatives
+    \State $R \gets$ matrice de corrélation de $\tilde{X}$~;\quad
+      $(\lambda_m, a_m)_m \gets$ décomposition propre de $R$, $\lambda$ décroissantes
+    \State $\mathcal{M} \gets \{m : \lambda_m > \lambda_{\min}\}$
+    \If{$\mathcal{M} = \emptyset$}
+      \State $\mathcal{M} \gets \{1\}$ \Comment{Repli : aucun axe ne passe le critère}
+    \EndIf
+    \State $L \gets [\,a_m \sqrt{\lambda_m}\,]_{m \in \mathcal{M}}$
+      \Comment{Saturations, $(d, \abs{\mathcal{M}})$}
+    \State $L' \gets \mathrm{varimax}(L)$
+    \State $V_m \gets \sum_j \ell'^{\,2}_{jm}$~;\quad
+      $m^*(j) \gets \arg\max_m \ell'^{\,2}_{jm}$
+    \State $\mathcal{U} \gets \{m^*(j) : j \in [d]\}$
+      \Comment{Facteurs effectivement dotés d'une métrique}
+    \ForAll{$m \in \mathcal{U}$}
+      \State $G_m \gets \{j : m^*(j) = m\}$
+      \ForAll{$j \in G_m$}
+        \State $w_j \gets \dfrac{V_m}{\sum_{m' \in \mathcal{U}} V_{m'}} \cdot
+          \dfrac{\ell'^{\,2}_{jm}}{\sum_{k \in G_m} \ell'^{\,2}_{km}}$
+      \EndFor
+    \EndFor
+    \State \Return $w$ \Comment{$\sum_j w_j = 1$ sans renormalisation}
+  \end{algorithmic}
+\end{algorithm}
+
+\bigskip
+
+\subsubsection{Diagnostics d'adéquation}
+\label{sec:acp-diagnostics}
+
+\medskip
+
+L'analyse en composantes principales produit toujours un résultat, y compris sur des
+métriques indépendantes où il n'y a rien à extraire. Quatre diagnostics, tous calculés
+sur la matrice de corrélation, indiquent si ce résultat a un contenu.
+
+\medskip
+
+\begin{itemize}[nosep,leftmargin=1.6em]
+  \item \textbf{Indice KMO} \citep{kaiser1974}, défini à la
+  section~\ref{sec:diagnostics}. Une valeur élevée signale que les corrélations observées
+  s'expliquent par un petit nombre de facteurs communs. Les seuils usuels
+  ($0{,}6$ acceptable, $0{,}8$ bon) sont des conventions de la littérature factorielle.
+  \item \textbf{Test de sphéricité de Bartlett} \citep{bartlett1951}. Le non-rejet
+  indique une matrice compatible avec l'indépendance, donc l'absence de structure à
+  extraire. Sur un grand groupe le test rejette presque systématiquement, et sa valeur
+  informative est faible ; il sert de garde-fou sur les petits groupes.
+  \item \textbf{Part de variance du premier axe} $\lambda_1/d$, qui départage un facteur
+  dominant d'un ensemble d'axes équivalents.
+  \item \textbf{Rapport $n/d$.} La matrice de corrélation est estimée sur $n$
+  observations ; en deçà de $n \approx 30$ pour $d$ petit, ses valeurs propres sont trop
+  instables pour que la rotation ait un sens. C'est le motif de la taille minimale de
+  groupe imposée aux méthodes factorielles, là où une pondération par dispersion reste
+  calculable sur quelques unités.
+\end{itemize}
+
+\bigskip
+
+\subsection{Méta-sélection du schéma de pondération}
+\label{sec:meta}
+
+\medskip
+
+Les trois schémas précédents reposent sur des postulats différents, et leurs diagnostics
+d'adéquation sont précisément les quantités qui indiquent lequel est pertinent sur un
+groupe donné. La méta-sélection formalise cet enchaînement de lectures en une règle
+explicite, appliquée groupe par groupe.
+
+\medskip
+
+\begin{hypothese}[Statut de la règle de sélection]
+  \label{hyp:meta}
+  La règle ci-dessous est une \emph{heuristique} : elle ordonne des diagnostics dont
+  aucun n'est un test de la question posée --- « quel schéma de pondération donne le
+  meilleur classement ? » ---, question à laquelle les données seules ne répondent pas.
+  Elle a deux mérites, qui ne sont pas ceux d'un résultat : elle est reproductible, là où
+  une inspection au cas par cas de milliers de groupes ne l'est pas, et elle est
+  explicite, donc contestable et modifiable par ses seuils. Son résultat est persisté avec
+  les diagnostics qui l'ont produit, et le classement obtenu est comparé à ceux des
+  schémas non retenus par les procédures du chapitre~\ref{sec:comparer}.
+\end{hypothese}
+
+\bigskip
+
+\begin{figure}[htbp]
+  \centering
+  \begin{tikzpicture}[
+      font=\small,
+      test/.style={draw=Bleu,fill=Bleu!6,rounded corners=2pt,thick,
+                   text width=5.2cm,align=center,inner sep=4pt},
+      issue/.style={draw=Vert,fill=Vert!7,rounded corners=2pt,thick,
+                    text width=2.2cm,align=center,inner sep=4pt},
+      garde/.style={draw=Rouge,fill=Rouge!6,rounded corners=2pt,thick,
+                    text width=4.6cm,align=center,inner sep=4pt},
+      lien/.style={draw=Gris,thick,-{Stealth}},
+      etiq/.style={font=\scriptsize,Gris,inner sep=1.5pt}
+    ]
+    \node[test] (t0) at (0,0) {$d = 1$ ?};
+    \node[test] (t1) at (0,-1.7)
+      {$\mathrm{KMO} \ge 0{,}6$ \textbf{et} $p_{\mathrm{Bartlett}} \le 0{,}05$
+       \textbf{et} $\lambda_1/d \ge 0{,}5$ ?};
+    \node[test] (t2) at (0,-3.4) {$\bar{\rho} \ge 0{,}3$ ?};
+
+    \node[issue] (equal0) at (5.0,0)    {\textbf{poids égaux}};
+    \node[issue] (pca)    at (5.0,-1.7) {\textbf{OCDE--JRC}};
+    \node[issue] (critic) at (5.0,-3.4) {\textbf{CRITIC}};
+    \node[issue] (entro)  at (5.0,-5.0) {\textbf{entropie}};
+
+    \node[garde] (garde) at (0,-6.6)
+      {\textbf{Garde de dégénérescence}\\[1pt]
+       \scriptsize $\max_j w_j \ge 0{,}6$ : candidat suivant dans l'ordre\\
+       \scriptsize OCDE--JRC $\to$ CRITIC $\to$ entropie $\to$ poids égaux};
+
+    \draw[lien] (t0) -- (equal0) node[etiq,midway,above] {oui};
+    \draw[lien] (t0) -- (t1)     node[etiq,midway,right] {non};
+    \draw[lien] (t1) -- (pca)    node[etiq,midway,above] {oui};
+    \draw[lien] (t1) -- (t2)     node[etiq,midway,right] {non};
+    \draw[lien] (t2) -- (critic) node[etiq,midway,above] {oui};
+    \draw[lien] (t2.south) -- (0,-5.0) node[etiq,midway,right] {non} -- (entro.west);
+
+    % Bus de retour de la garde de dégénérescence, commun aux trois candidats
+    \draw[Rouge,dashed,thick] (pca.east)    -- (7.3,-1.7);
+    \draw[Rouge,dashed,thick] (critic.east) -- (7.3,-3.4);
+    \draw[Rouge,dashed,thick] (entro.east)  -- (7.3,-5.0);
+    \draw[Rouge,dashed,thick,-{Stealth}] (7.3,-1.7) -- (7.3,-6.6) -- (garde.east);
+  \end{tikzpicture}
+  \caption{Arbre de décision de la méta-sélection. Les tests successifs lisent les
+  diagnostics dans l'ordre du plus exigeant au moins exigeant : une structure factorielle
+  avérée justifie la pondération OCDE--JRC ; à défaut, une redondance marquée justifie le
+  coût de CRITIC ; à défaut encore, la dispersion seule est tout ce qui reste. La garde de
+  dégénérescence, appliquée après le choix, écarte tout candidat concentrant le score sur
+  une seule métrique.}
+  \label{fig:meta-arbre}
+\end{figure}
+
+\bigskip
+
+\paragraph{Paramètres.} Cinq seuils règlent la sélection : $\mathrm{KMO}_{\min} = 0{,}6$,
+$\alpha_{\mathrm{Bartlett}} = 0{,}05$, $(\lambda_1/d)_{\min} = 0{,}5$,
+$\bar{\rho}_{\min} = 0{,}3$ et $w_{\max} = 0{,}6$. Le dernier joue un rôle différent des
+autres : il ne teste pas l'adéquation du schéma mais la qualité de son \emph{résultat},
+en écartant un vecteur de poids qui concentrerait plus de $60\,\%$ de l'importance sur une
+seule métrique --- situation dans laquelle la synthèse multicritère se réduit de fait à
+une seule métrique et perd sa raison d'être.
+
+\bigskip
+
+\paragraph{Limites.} Trois sont à retenir. D'abord, la règle est \emph{discontinue} en les
+données : deux groupes voisins de part et d'autre d'un seuil reçoivent des pondérations de
+nature différente, ce qui rend les scores de deux groupes moins comparables encore qu'ils
+ne le sont déjà (définition~\ref{def:groupe}). Ensuite, les diagnostics sont eux-mêmes
+estimés, et leur variabilité sur les petits groupes peut dominer les seuils : la sélection
+sur un groupe de $30$ unités est peu fiable. Enfin, la méthode \emph{benefit of the doubt}
+est délibérément hors sélection, puisqu'elle ne produit pas un vecteur de poids partagé
+mais une pondération par unité : elle reste une méthode à part entière, comparée aux
+autres et non substituable à elles.
+
+\bigskip
+
+\subsection{\emph{Benefit of the doubt}}
+\label{sec:bod}
+
+\medskip
+
+\paragraph{Idée.} Les méthodes précédentes cherchent \emph{un} vecteur de poids valable
+pour toutes les unités. L'approche \emph{benefit of the doubt} \citep{cherchye2007},
+transposition de l'analyse d'enveloppement des données de \citet{charnes1978}, attribue à
+chaque unité la pondération qui lui est la plus favorable, sous la seule contrainte que
+cette pondération, appliquée à toutes les autres unités, ne produise aucun score supérieur
+à $1$.
+
+\bigskip
+
+\paragraph{Construction.} Pour chaque unité $o \in [n]$, on résout le programme linéaire
+
+\medskip
+
+\[
+  \begin{aligned}
+    s^{\mathrm{BoD}}(x_o) \;=\; \max_{w^{(o)} \in \R_+^d} \quad
+      & \sum_{j=1}^{d} w^{(o)}_j \tilde{x}_{oj} \\
+    \text{sous} \quad
+      & \sum_{j=1}^{d} w^{(o)}_j \tilde{x}_{ij} \le 1, \quad \forall i \in [n], \\
+      & w^{(o)}_j \ge 0, \quad \forall j \in [d].
+  \end{aligned}
+  \tag{BoD}
+\]
+
+\bigskip
+
+Le programme est toujours réalisable ($w = 0$ convient) et borné (la contrainte
+d'indice $i = o$ majore l'objectif par $1$), de sorte que le score existe et appartient à
+$[0,1]$.
+
+\medskip
+
+\begin{remarque}[Interprétation pour une grandeur défavorable]
+  \label{rem:bod-inversion}
+  Le sens du « bénéfice du doute » s'inverse par rapport à son usage habituel. Dans un
+  indice de performance, la méthode est bienveillante : elle donne à chaque unité sa
+  meilleure chance de paraître performante. Lorsque la grandeur mesurée est défavorable
+  --- une exposition, un risque, une vulnérabilité ---, l'optimum retenu est celui qui
+  rend l'unité \emph{aussi exposée que possible}. La lecture devient celle de la
+  précaution : une unité est signalée dès lors qu'il existe au moins une pondération
+  admissible sous laquelle elle est en tête. C'est la seule méthode de la note à être
+  explicitement averse au risque, et c'est à ce titre qu'elle est conservée malgré son
+  coût.
+\end{remarque}
+
+\bigskip
+
+\begin{propriete}[Propriétés exactes du score BoD]
+  \label{prop:bod}
+  Notons $\mathcal{E}$ l'ensemble des unités atteignant $s^{\mathrm{BoD}} = 1$.
+
+  \medskip
+
+  \begin{enumerate}[nosep,leftmargin=1.8em]
+    \item $s^{\mathrm{BoD}}(x_o) \in [0,1]$ pour tout $o$.
+    \item $s^{\mathrm{BoD}}(x_o) = 1$ caractérise l'\emph{efficacité faible} : $x_o$
+    appartient à l'enveloppe convexe supérieure du nuage, élargie par les restrictions de
+    poids en vigueur. Ce n'est \emph{pas} équivalent à la non-domination.
+    \item Sans restriction de poids, un poids nul est admissible et $s^{\mathrm{BoD}} = 1$
+    n'implique pas la non-domination : pour $\tilde{x}_o = (1,0)$ et
+    $\tilde{x}_k = (1,1)$, le poids $w = (1,0)$ donne $1$ aux deux unités, alors que $k$
+    domine strictement $o$.
+    \item Sous une restriction rendant tout poids strictement positif
+    (section~\ref{sec:bod-restrictions}), $s^{\mathrm{BoD}} = 1$ implique la
+    non-domination. La réciproque reste fausse : une unité du front située dans une
+    \emph{concavité} de celui-ci n'atteint pas $1$, l'enveloppe convexe étant strictement
+    au-dessus d'elle.
+    \item La monotonie est \emph{faible} : $x_i \pareto x_k$ implique
+    $s^{\mathrm{BoD}}(x_i) \ge s^{\mathrm{BoD}}(x_k)$, car tout $w$ admissible pour $k$
+    l'est pour $i$ et lui donne une valeur supérieure ; l'inégalité stricte n'est pas
+    garantie, les deux unités pouvant être saturées à $1$.
+  \end{enumerate}
+\end{propriete}
+
+\bigskip
+
+Le point~(5) a une conséquence directe sur les contrôles : le taux d'ex \ae quo
+$V_{\mathrm{tie}}$ du chapitre~\ref{sec:comparer} sera strictement positif dès que deux
+unités comparables sont toutes deux efficaces, et ce n'est pas une anomalie. Le point~(3)
+explique pourquoi une restriction n'est pas seulement un remède à la dégénérescence, mais
+une condition de la propriété que l'on attend de la méthode.
+
+\medskip
+
+\begin{avertissement}[Le score suppose des données positives]
+  \label{av:bod-positif}
+  La contrainte $\tilde{X}w \le 1$ et la borne $[0,1]$ n'ont de sens que si
+  $\tilde{X} \ge 0$. Sur données centrées, une ligne à coordonnées négatives peut
+  satisfaire toutes les contraintes avec des poids arbitrairement grands, et le programme
+  devient non borné ou produit un score sans interprétation. La positivité est vérifiée en
+  entrée, et le message d'erreur nomme les normalisations attendues.
+\end{avertissement}
+
+\bigskip
+
+\subsubsection{Dégénérescence et restrictions de poids}
+\label{sec:bod-restrictions}
+
+\medskip
+
+Sans contrainte supplémentaire, le programme attribue fréquemment tout le poids à une
+seule métrique et ignore les autres, ce qui vide la synthèse multicritère de son objet.
+Deux familles de restrictions corrigent ce comportement ; elles ne sont pas
+équivalentes.
+
+\bigskip
+
+\paragraph{Région d'assurance (variante retenue par défaut).} La restriction porte sur les
+\emph{rapports} de poids :
+
+\medskip
+
+\[
+  \frac{w^{(o)}_j}{w^{(o)}_k} \in \Big[\frac{1}{\rho},\, \rho\Big]
+  \quad \forall j,k \in [d],
+  \qquad\text{soit, sous forme linéaire,}\qquad
+  w^{(o)}_j \le \rho\, w^{(o)}_k \quad \forall j \ne k,
+\]
+
+\bigskip
+
+avec $\rho \ge 1$ le seul paramètre ($\rho = +\infty$ : aucune restriction). Ces
+contraintes ont quatre propriétés qui en font le choix par défaut : elles sont linéaires,
+donc n'altèrent pas la nature du programme ; elles sont symétriques entre critères, donc
+n'introduisent aucune hiérarchie \emph{a priori} ; elles sont toujours réalisables, le
+vecteur uniforme les satisfaisant ; et elles sont \emph{insensibles aux coordonnées
+nulles}. Elles forcent en outre tout poids à être strictement positif dès que l'un l'est,
+ce qui active le point~(4) de la propriété~\ref{prop:bod}.
+
+\bigskip
+
+\paragraph{Parts de contribution (variante conservée en option).} La restriction porte sur
+la part de chaque métrique dans le score :
+
+\medskip
+
+\[
+  \frac{\kappa}{d}
+  \;\le\; \frac{w^{(o)}_j\,(\tilde{x}_{oj} + \delta)}
+               {\sum_k w^{(o)}_k\,(\tilde{x}_{ok} + \delta)}
+  \;\le\; \frac{1}{\kappa d},
+  \qquad \kappa \in (0,1],\quad \delta > 0,
+\]
+
+\bigskip
+
+linéarisable par multiplication par le dénominateur, strictement positif. Avec
+$\kappa = 1/2$, aucune métrique ne contribue à moins de la moitié ni à plus du double de
+sa part uniforme. La lecture est plus parlante que celle des rapports de poids, mais la
+variante a un défaut que le plancher $\delta$ ne fait qu'atténuer.
+
+\medskip
+
+\begin{avertissement}[La coordonnée nulle annule le score]
+  \label{av:bod-parts}
+  Appliquée telle quelle ($\delta = 0$) à des données min--max, la borne inférieure
+  impose, pour toute unité possédant une coordonnée nulle,
+  $w^{(o)}_j \cdot 0 \ge (\kappa/d)\,\tilde{x}_o^\top w^{(o)}$, donc
+  $\tilde{x}_o^\top w^{(o)} \le 0$, donc un score nul. Or au moins une unité par colonne
+  a une coordonnée nulle par construction de la normalisation min--max : le minimum de
+  chaque métrique. Le résultat est indépendant de $\kappa$, y compris pour
+  $\kappa = 10^{-4}$.
+\end{avertissement}
+
+\bigskip
+
+La table~\ref{tab:bod-exemple} illustre le phénomène sur cinq unités et trois métriques.
+La première unité, maximale sur deux métriques sur trois, reçoit un score nul sous la
+restriction de parts sans plancher, et le score maximal sous la région d'assurance.
+
+\medskip
+
+\begin{table}[htbp]
+  \centering
+  \small
+  \renewcommand{\arraystretch}{1.25}
+  \begin{tabular}{@{}l c c c c c@{}}
+    \toprule
+    $\tilde{x}_o$ & $(0\,;1\,;1)$ & $(0{,}5\,;0{,}5\,;0{,}5)$ & $(1\,;0{,}2\,;0{,}3)$ &
+      $(0{,}3\,;0\,;0{,}9)$ & $(0{,}6\,;0{,}7\,;0)$ \\
+    \midrule
+    Parts, $\kappa = 0{,}5$, $\delta \to 0$ &
+      $0{,}000$ & $0{,}885$ & $0{,}720$ & $0{,}000$ & $0{,}000$ \\
+    Parts, $\kappa = 0{,}5$, $\delta = 10^{-2}$ &
+      $0{,}049$ & $0{,}885$ & $0{,}736$ & $0{,}048$ & $0{,}049$ \\
+    Région d'assurance, $\rho = 4$ &
+      $1{,}000$ & $0{,}888$ & $1{,}000$ & $0{,}936$ & $1{,}000$ \\
+    Sans restriction &
+      $1{,}000$ & $0{,}888$ & $1{,}000$ & $1{,}000$ & $1{,}000$ \\
+    \bottomrule
+  \end{tabular}
+  \caption{Scores \emph{benefit of the doubt} sur cinq unités et trois métriques, selon la
+  restriction. Trois des cinq unités possèdent une coordonnée nulle et reçoivent un score
+  nul sous la restriction de parts sans plancher, quelle que soit la valeur de leurs
+  autres métriques. Le plancher $\delta$ les ramène à un score non nul mais très faible :
+  il est un \emph{paramètre de sensibilité} à part entière, et non un détail numérique,
+  puisque le comportement tend vers le cas dégénéré quand $\delta \to 0$. La région
+  d'assurance, elle, n'est pas affectée ; en resserrant les rapports de poids, elle
+  ramène aussi la quatrième unité sous le seuil d'efficacité, ce que l'absence de
+  restriction ne faisait pas.}
+  \label{tab:bod-exemple}
+\end{table}
+
+\bigskip
+
+\subsubsection{Restriction des contraintes au front de Pareto}
+\label{sec:bod-front}
+
+\medskip
+
+Le programme est résolu $n$ fois, chacun avec $n$ contraintes de non-domination. La
+réduction suivante n'est pas une approximation.
+
+\medskip
+
+\begin{propriete}[Exactitude de la restriction au front]
+  \label{prop:bod-front}
+  Le programme (BoD) a la même valeur optimale et le même ensemble admissible lorsque les
+  contraintes $\tilde{x}_i^\top w \le 1$ sont imposées pour $i \in \mathcal{F}_1$
+  seulement, au lieu de $i \in [n]$.
+\end{propriete}
+
+\bigskip
+
+La démonstration est immédiate. Soit $i \notin \mathcal{F}_1$ ; l'ensemble $[n]$ étant
+fini, il existe $k \in \mathcal{F}_1$ tel que $x_k \paretoeq x_i$, donc
+$\tilde{x}_k \ge \tilde{x}_i$ coordonnée par coordonnée. Pour tout $w \ge 0$, on a alors
+$\tilde{x}_i^\top w \le \tilde{x}_k^\top w$ : la contrainte $i$ est impliquée par la
+contrainte $k$, et sa suppression ne change pas l'ensemble admissible. Le gain est
+considérable --- le front compte quelques dizaines à quelques centaines d'unités là où
+$n$ en compte des milliers --- et la propriété se reformule en une phrase : \emph{le
+maximum d'une forme linéaire à coefficients positifs sur un ensemble fini est atteint en
+un point non dominé}.
+
+\medskip
+
+\begin{avertissement}[Le front $\varepsilon$ ne convient pas ici]
+  \label{av:bod-front-eps}
+  La démonstration repose sur l'existence, pour toute unité, d'un dominant \emph{exact}
+  dans l'ensemble de contraintes. Un front $\varepsilon$
+  (section~\ref{sec:front-epsilon}) ne le garantit pas : ses éléments ne couvrent les
+  autres unités qu'à $\varepsilon$ près, et des contraintes actives peuvent en être
+  absentes. Le substituer au front exact relâcherait silencieusement le programme et
+  produirait des scores supérieurs à $1$.
+\end{avertissement}
+
+\bigskip
+
+\begin{algorithm}[htbp]
+  \caption{Score \emph{benefit of the doubt} avec restrictions de poids}
+  \label{algo:bod}
+  \begin{algorithmic}[1]
+    \Require $\tilde{X} \in [0,1]^{n \times d}$, de polarité positive et à coefficients
+      positifs ; restriction $\in \{\text{région d'assurance},\ \text{parts},\
+      \text{aucune}\}$ ; paramètres $\rho \ge 1$, $\kappa \in (0,1]$, $\delta > 0$
+    \Ensure scores $s^{\mathrm{BoD}} \in [0,1]^n$ ; poids individuels
+      $(w^{(o)})_{o \in [n]}$
+    \State vérifier $\tilde{X} \ge 0$, sinon lever une erreur
+      \Comment{Avertissement~\ref{av:bod-positif}}
+    \State $A \gets \tilde{X}[\mathcal{F}_1]$ \Comment{Front \emph{exact} uniquement,
+      propriété~\ref{prop:bod-front}}
+    \For{$o = 1$ \textbf{à} $n$}
+      \State $(A_o, b_o) \gets$ lignes de restriction associées à $\tilde{x}_o$
+      \If{restriction $=$ région d'assurance}
+        \State $A_o \gets \big(e_j - \rho\,e_k\big)_{j \ne k}$~;\quad $b_o \gets 0$
+          \Comment{$d(d-1)$ lignes, indépendantes de $\tilde{x}_o$}
+      \ElsIf{restriction $=$ parts}
+        \State $A_o \gets \big(\tfrac{\kappa}{d}(\tilde{x}_o + \delta) -
+          e_j (\tilde{x}_{oj} + \delta)\,;\;
+          e_j(\tilde{x}_{oj} + \delta) - \tfrac{1}{\kappa d}(\tilde{x}_o + \delta)
+          \big)_j$~;\quad $b_o \gets 0$
+      \EndIf
+      \State $(s^{\mathrm{BoD}}_o, w^{(o)}) \gets$ résolution de
+        $\max_{w \ge 0} \tilde{x}_o^\top w$ sous $Aw \le \mathbf{1}$ et $A_o w \le b_o$
+      \If{le programme est irréalisable ou non borné}
+        \State $s^{\mathrm{BoD}}_o \gets \text{indéfini}$ \Comment{Signalé, non imputé}
+      \EndIf
+    \EndFor
+    \State \Return $s^{\mathrm{BoD}}$, $(w^{(o)})_o$
+  \end{algorithmic}
+\end{algorithm}
+
+\bigskip
+
+\begin{figure}[htbp]
+  \centering
+  \begin{tikzpicture}[scale=1.0]
+    \draw[->,thick,Gris] (0,0) -- (7.8,0) node[right,black,font=\small] {métrique $1$};
+    \draw[->,thick,Gris] (0,0) -- (0,5.2) node[above,black,font=\small] {métrique $2$};
+
+    % Enveloppe convexe superieure du nuage
+    \draw[Rouge,very thick] (1.0,4.5) -- (2.6,4.0) -- (6.0,2.4) -- (6.8,0.9);
+    \foreach \x/\y in {1.0/4.5, 2.6/4.0, 6.0/2.4, 6.8/0.9}
+      \fill[Rouge] (\x,\y) circle (3pt);
+    \node[Rouge,font=\scriptsize,anchor=south west] at (1.4,4.65)
+      {enveloppe convexe supérieure};
+
+    % Nuage des unites dominees
+    \foreach \x/\y in {0.8/2.4, 1.2/1.6, 2.0/2.6, 1.6/3.2, 3.2/2.4, 3.0/1.8,
+                       2.2/0.8, 2.4/1.3, 4.4/1.5, 5.0/1.2, 5.6/1.8}
+      \fill[Gris] (\x,\y) circle (2.1pt);
+
+    % Unite du front située dans une concavite de l'enveloppe
+    \draw[Bleu,dashed,thick] (0,0) -- (4.76,2.99);
+    \fill[Bleu,opacity=0.4] (4.76,2.99) circle (2.4pt);
+    \fill[Bleu] (4.3,2.7) circle (2.8pt);
+    \node[Bleu,font=\scriptsize,anchor=north west] at (4.35,2.62) {$x_k$};
+
+    % Rayon d'une unite dominee
+    \draw[thick,-{Stealth}] (0,0) -- (6.46,1.53);
+    \fill[black,opacity=0.4] (6.46,1.53) circle (2.4pt);
+    \fill[black] (3.8,0.9) circle (2.6pt);
+    \node[font=\scriptsize,anchor=north] at (3.8,0.78) {$x_o$};
+    \node[font=\scriptsize,anchor=west] at (6.6,1.78)
+      {$x_o / s^{\mathrm{BoD}}$};
+  \end{tikzpicture}
+  \caption{Lecture radiale du score \emph{benefit of the doubt}. Le score d'une unité est
+  l'inverse du facteur par lequel il faudrait la dilater depuis l'origine pour atteindre
+  l'enveloppe convexe supérieure du nuage, soit
+  $s^{\mathrm{BoD}}(x_o) = \norm{x_o} / \norm{x_o/s^{\mathrm{BoD}}(x_o)}$ ;
+  $s^{\mathrm{BoD}} = 1$ caractérise donc l'appartenance à cette enveloppe. L'unité $x_k$
+  appartient au front de Pareto --- aucune autre unité ne la domine --- mais se situe
+  dans une concavité de l'enveloppe : son rayon la dépasse avant de l'atteindre et elle
+  n'obtient pas $1$, ce qui illustre le point~(4) de la propriété~\ref{prop:bod}. Une
+  restriction de poids remplace l'enveloppe par une version élargie, en excluant les
+  pondérations trop déséquilibrées.}
+  \label{fig:bod}
+\end{figure}
+
+\bigskip
+
+\paragraph{Coût.} Le programme est résolu $n$ fois. Avec la restriction au front, chaque
+résolution porte sur $d$ variables, $\abs{\mathcal{F}_1}$ contraintes de non-domination et
+$d(d-1)$ lignes de restriction, ce qui la rend très rapide ; c'est le facteur $n$ qui
+domine. Les $n$ programmes étant indépendants, ils se parallélisent sans communication.
+L'ordre de grandeur observé est de quelques dizaines de secondes pour $n = 5\,000$ et de
+quelques minutes pour $n = 2 \cdot 10^5$, ce qui fait de la méthode la plus coûteuse du
+chapitre, mais reste praticable.
+
+\bigskip
+
+\subsection{Récapitulatif : que produisent ces pondérations ?}
+\label{sec:poids-recap}
+
+\medskip
+
+Les méthodes de ce chapitre produisent trois objets de natures différentes, qui n'ont
+aucune raison de coïncider : un vecteur de $\simplex$ pour l'entropie, CRITIC, la variante
+OCDE--JRC et la méta-sélection ; une direction de $\Sphere^{d-1}$ pour le premier axe
+factoriel ; une famille de $n$ vecteurs pour le \emph{benefit of the doubt}. Seuls les
+premiers alimentent indifféremment les fonctions d'agrégation du
+chapitre~\ref{sec:agregation} ; les deux autres définissent leur score eux-mêmes.
+
+\bigskip
+
+Les postulats qu'ils encodent sont tout aussi distincts. L'entropie et CRITIC valorisent
+la dispersion, la seconde la corrigeant de la redondance. L'analyse en composantes
+principales valorise la variance partagée, c'est-à-dire ce que les métriques ont en
+commun, exactement à l'inverse de CRITIC qui valorise ce qui les distingue --- deux
+lectures opposées de la même matrice de corrélation, l'une supposant que le facteur commun
+est le signal, l'autre qu'il est la redondance. Le \emph{benefit of the doubt} ne valorise
+rien de global : il juge chaque unité sous sa propre lumière la plus favorable.
+
+\bigskip
+
+L'écart entre les vecteurs obtenus n'est donc pas un défaut à corriger par le choix d'un
+gagnant : il mesure l'indétermination que la contrainte « aucune pondération \emph{a
+priori} » laisse subsister. Un groupe sur lequel les quatre schémas donnent des poids
+proches est un groupe où le classement ne dépend pas du postulat ; un groupe où ils
+divergent est un groupe où toute conclusion doit être assortie du schéma qui l'a produite.
+Les procédures du chapitre~\ref{sec:comparer} sont conçues pour exploiter cet écart, et
+les pondérations obtenues sont persistées avec les scores pour le rendre lisible.
 %=======================================================================
 \section{Fonctions d'agrégation}
 \label{sec:agregation}
