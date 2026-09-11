@@ -2882,7 +2882,875 @@ les pondérations obtenues sont persistées avec les scores pour le rendre lisib
 \label{sec:agregation}
 %=======================================================================
 
-% À rédiger : prompt P14
+\medskip
+
+Le chapitre précédent fournit des coefficients ; celui-ci fournit la règle qui les
+combine. Les deux questions sont indépendantes et il est utile de les garder séparées :
+la première porte sur l'importance relative des métriques, la seconde sur une question
+qui ne s'y réduit pas --- \emph{jusqu'où une métrique favorable rachète-t-elle une
+métrique défavorable ?} Deux unités ayant la même somme pondérée, l'une médiocre partout
+et l'autre catastrophique sur une seule dimension, sont départagées par le choix de la
+fonction d'agrégation, et par lui seul.
+
+\bigskip
+
+L'entrée commune est la matrice normalisée $\tilde{X} \in \R^{n \times d}$ de la
+section~\ref{sec:normalisation} et, pour la plupart des fonctions, un vecteur de poids
+$w \in \simplex$. Trois des fonctions présentées ici n'en demandent aucun : l'indice de
+Mazziotta--Pareto (section~\ref{sec:mpi}) est sans paramètre libre, tandis que la distance
+de Mahalanobis (section~\ref{sec:maha}) et la projection blanchie
+(section~\ref{sec:projection-blanchie}) portent une pondération \emph{implicite}, lue dans
+la matrice de covariance du nuage. La sortie commune est un vecteur de scores
+$s \in \R^n$, orienté de sorte qu'une valeur élevée désigne une unité plus vulnérable ; les
+fonctions dont la construction naturelle est un coût sont retournées en $1 - \cdot$.
+
+\bigskip
+
+La figure~\ref{fig:isoscores} donne la lecture géométrique de la notion de compensation
+introduite par la définition~\ref{def:compensation} : à deux métriques, une fonction
+d'agrégation est entièrement caractérisée par la forme de ses courbes d'iso-score, et la
+courbure de ces courbes \emph{est} le degré de compensation.
+
+\medskip
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[scale=1.4]
+  % --- Rangée 1 : somme, géométrique, pénalité ---
+  \foreach \dx/\titre in {0/{Somme pondérée}, 3.4/{Moyenne géométrique},
+                          6.8/{Indice à pénalité}}{
+    \begin{scope}[xshift=\dx cm]
+      \draw[->,Gris] (0,0) -- (2.3,0) node[right,black,font=\scriptsize] {$\tilde{x}_1$};
+      \draw[->,Gris] (0,0) -- (0,2.3) node[above,black,font=\scriptsize] {$\tilde{x}_2$};
+      \node[font=\scriptsize\bfseries,black] at (1.15,2.9) {\titre};
+    \end{scope}
+  }
+  % Iso-lignes linéaires
+  \begin{scope}
+    \foreach \c in {0.8,1.4,2.0} \draw[Bleu,thick] (\c,0.05) -- (0.05,\c);
+  \end{scope}
+  % Iso-lignes géométriques (hyperboles)
+  \begin{scope}[xshift=3.4cm]
+    \foreach \c in {0.16,0.49,1.0}
+      \draw[Bleu,thick,domain=0.08:2.2,samples=80,variable=\x]
+        plot ({\x},{min(\c/\x,2.2)});
+  \end{scope}
+  % Iso-lignes pénalisées (encore plus courbées)
+  \begin{scope}[xshift=6.8cm]
+    \foreach \c in {0.35,0.75,1.25}
+      \draw[Bleu,thick,domain=0.16:2.2,samples=80,variable=\x]
+        plot ({\x},{min((\c/\x)^1.6,2.2)});
+  \end{scope}
+  \node[font=\scriptsize,Gris,align=center] at (1.15,-0.55)
+    {compensation\\totale};
+  \node[font=\scriptsize,Gris,align=center] at (4.55,-0.55)
+    {compensation\\partielle};
+  \node[font=\scriptsize,Gris,align=center] at (7.95,-0.55)
+    {compensation\\faible};
+  % --- Rangée 2 : TOPSIS, VIKOR ---
+  \begin{scope}[yshift=-4.6cm]
+    \foreach \dx/\titre in {1.7/{TOPSIS}, 5.1/{VIKOR ($v = 1/2$)}}{
+      \begin{scope}[xshift=\dx cm]
+        \draw[->,Gris] (0,0) -- (2.3,0)
+          node[right,black,font=\scriptsize] {$\tilde{x}_1$};
+        \draw[->,Gris] (0,0) -- (0,2.3)
+          node[above,black,font=\scriptsize] {$\tilde{x}_2$};
+        \node[font=\scriptsize\bfseries,black] at (1.15,2.9) {\titre};
+      \end{scope}
+    }
+    % TOPSIS : cercles d'Apollonius par rapport aux pôles (0,0) et (2,2)
+    \begin{scope}[xshift=1.7cm]
+      \begin{scope}
+        \clip (0,0) rectangle (2,2);
+        \draw[Bleu,thick] (-0.667,-0.667) circle (1.8856);
+        \draw[Bleu,thick] (0,2) -- (2,0);
+        \draw[Bleu,thick] (2.667,2.667) circle (1.8856);
+      \end{scope}
+    \end{scope}
+    % VIKOR : lignes de niveau brisées, arête sur la diagonale
+    \begin{scope}[xshift=5.1cm]
+      \draw[Bleu,thick] (0.133,2) -- (0.6,0.6) -- (2,0.133);
+      \draw[Bleu,thick] (0.8,2)   -- (1.1,1.1) -- (2,0.8);
+      \draw[Bleu,thick] (1.467,2) -- (1.6,1.6) -- (2,1.467);
+      \draw[Gris,dashed,thin] (0,0) -- (2,2);
+    \end{scope}
+    \node[font=\scriptsize,Gris,align=center] at (2.85,-0.55)
+      {compensation quasi\\totale};
+    \node[font=\scriptsize,Gris,align=center] at (6.25,-0.55)
+      {compensation réglée\\par $v$};
+  \end{scope}
+\end{tikzpicture}
+\vspace{0.6em}
+\caption{Courbes d'iso-score de cinq fonctions d'agrégation, à deux métriques de poids
+égaux. Plus une courbe est incurvée vers l'origine, plus un profil déséquilibré est
+pénalisé à somme égale. Les courbes de TOPSIS sont les cercles d'Apollonius des deux
+pôles $x^{+}$ et $x^{-}$ --- la courbe médiane, $s = 1/2$, coïncide exactement avec une
+iso-ligne de la somme pondérée. Celles de VIKOR présentent une arête sur la diagonale
+d'équilibre, trace du terme de regret maximal ; leurs pentes valent $-3$ et $-1/3$ pour
+$v = 1/2$, et tendent vers $-1$ lorsque $v \to 1$.}
+\label{fig:isoscores}
+\end{figure}
+
+\bigskip
+
+Les sections qui suivent décrivent chaque fonction par son idée, sa formule, ses
+propriétés, ses paramètres et le schéma de normalisation qu'elle admet. Le
+tableau~\ref{tab:agregation-recap} en donne la synthèse. Trois d'entre elles ne sont pas
+monotones : l'indice de Mazziotta--Pareto par construction, les deux scores fondés sur la
+covariance par accident numérique. Ce n'est pas une raison suffisante pour les écarter,
+mais la violation est mesurée systématiquement par les taux $V_{\mathrm{strict}}$ et
+$V_{\mathrm{tie}}$ du chapitre~\ref{sec:comparer}.
+
+\bigskip
+
+\subsection{Somme pondérée}
+\label{sec:somme}
+
+\medskip
+
+\paragraph{Idée.} La combinaison linéaire est la seule fonction d'agrégation dont le taux
+de substitution entre deux métriques est constant sur tout l'espace : elle formalise
+l'hypothèse qu'un point perdu sur une métrique vaut toujours le même nombre de points
+gagnés sur une autre, où que l'on se trouve. C'est l'hypothèse la plus forte du chapitre,
+et aussi la plus lisible.
+
+\medskip
+
+\[
+  s^{\mathrm{lin}}(x_i) = \sum_{j=1}^{d} w_j\,\tilde{x}_{ij},
+  \qquad w \in \simplex .
+\]
+
+\bigskip
+
+\paragraph{Propriétés.} La somme pondérée est strictement monotone dès que $w_j > 0$ pour
+tout $j$, et seulement faiblement monotone si un poids est nul : deux unités ne différant
+que sur la métrique de poids nul reçoivent le même score. Elle est totalement
+compensatoire, le taux de substitution entre les métriques $j$ et $k$ valant $w_k/w_j$
+partout. Elle est invariante par transformation affine croissante \emph{commune} à toutes
+les colonnes, mais pas colonne par colonne : changer l'échelle d'une seule métrique change
+sa contribution effective, ce qui est exactement la raison pour laquelle la normalisation
+précède l'agrégation et non l'inverse. Le coût est $O(nd)$.
+
+\bigskip
+
+\paragraph{Normalisation et paramètres.} Le schéma par défaut est le min--max, qui borne
+les contributions dans $[0, w_j]$ et rend les poids directement lisibles comme des parts ;
+la normalisation par rangs est admissible et donne alors le score de rang moyen de la
+section suivante. Le seul paramètre est $w$, issu du chapitre~\ref{sec:poids}.
+
+\medskip
+
+\begin{remarque}[Le maillon faible]
+  \label{rem:maillon-faible}
+  La compensation totale est une propriété, non un défaut, mais elle est une hypothèse
+  de modélisation qui peut être fausse. Si la vulnérabilité étudiée relève d'un mécanisme
+  de « maillon faible » --- une seule dépendance critique suffit à exposer l'unité ---
+  alors la somme pondérée est mal spécifiée quelle que soit la qualité des poids, et
+  aucune pondération endogène ne corrigera cette erreur de forme. Les fonctions des
+  sections~\ref{sec:geo} à~\ref{sec:vikor} sont les réponses à cette situation, par ordre
+  croissant de sévérité.
+\end{remarque}
+
+\bigskip
+
+\subsection{Score de rang moyen}
+\label{sec:rang-moyen}
+
+\medskip
+
+\paragraph{Idée.} Remplacer chaque métrique par le rang qu'elle attribue, puis moyenner
+les rangs. La procédure supprime toute influence de la forme des distributions
+marginales : seul compte l'ordre que chaque métrique induit. C'est la méthode de
+référence de la littérature appliquée sur données commerciales
+\citep{arjona2023}, et la transposition à $d$ critères de la règle de comptage de
+\citet{borda1781}, dont elle hérite le nom usuel de « méthode de Borda par métriques ».
+
+\medskip
+
+\[
+  s^{\mathrm{rang}}(x_i)
+  = \sum_{j=1}^{d} w_j \, \frac{\rg(\mathring{x}_{ij}) - 1}{n - 1},
+  \qquad w \in \simplex ,
+\]
+
+\bigskip
+
+les rangs étant pris dans l'ordre croissant de la métrique orientée et les ex \ae quo
+moyennés (définition~\ref{def:rang}). Le score est dans $[0,1]$ ; à poids égaux il se lit
+comme la position moyenne de l'unité, en centiles, sur l'ensemble des métriques. La
+convention de repli pour $n = 1$ est un score nul, aucun rang relatif n'étant défini.
+
+\bigskip
+
+\paragraph{Propriétés.} Formellement, le score de rang moyen est la somme pondérée
+appliquée à la normalisation par rangs ; il est donc totalement compensatoire et
+strictement monotone pour $w > 0$, puisque $x_i \pareto x_k$ entraîne un rang au moins
+aussi élevé sur chaque métrique et strictement supérieur sur au moins une. Sa propriété
+distinctive est l'\emph{invariance monotone par coordonnée} au sens de la
+définition~\ref{def:invariances} : appliquer un logarithme, une winsorisation ou une
+renormalisation min--max à une métrique laisse le classement rigoureusement inchangé. Il
+est de ce fait la seule fonction d'agrégation de ce chapitre dont le résultat ne dépende
+pas du schéma de normalisation retenu en amont.
+
+\bigskip
+
+Cette invariance est aussi tout son coût. Un écart d'un ordre de grandeur entre deux
+unités et un écart infinitésimal comptent identiquement : l'information cardinale est
+détruite, y compris lorsqu'elle était le signal recherché. Sur une métrique fortement
+asymétrique où une poignée d'unités décroche du reste de la population, la normalisation
+par rangs ramène ce décrochage à un écart de $1/(n-1)$. Le score de rang moyen est donc
+adapté lorsque les échelles des métriques ne sont pas comparables ou sont peu fiables, et
+inadapté lorsque l'intensité des valeurs extrêmes fait partie de ce que l'on cherche à
+mesurer. Le coût est $O(nd\log n)$, dominé par les tris colonne par colonne.
+
+\bigskip
+
+\subsection{Moyenne géométrique pondérée}
+\label{sec:geo}
+
+\medskip
+
+\paragraph{Idée.} Sommer sur l'échelle logarithmique plutôt que sur l'échelle d'origine.
+La substitution entre métriques cesse alors d'être constante : elle devient proportionnelle
+au niveau atteint, de sorte qu'une valeur proche de zéro tire le score entier vers le bas
+sans qu'aucune autre métrique puisse la racheter. C'est la réponse minimale à la
+remarque~\ref{rem:maillon-faible}, et la fonction retenue par l'indice de développement
+humain depuis 2010 pour cette raison exacte.
+
+\medskip
+
+\[
+  s^{\mathrm{geo}}_{\epsilon}(x_i)
+  = \prod_{j=1}^{d} \big(\tilde{x}_{ij} + \epsilon\big)^{w_j}
+  = \exp\!\Big(\sum_{j=1}^{d} w_j \ln\big(\tilde{x}_{ij} + \epsilon\big)\Big),
+  \qquad \tilde{x}_{ij} \ge 0 .
+\]
+
+\bigskip
+
+\paragraph{Propriétés.} Pour $w > 0$ et $\tilde{x} + \epsilon > 0$, la fonction est
+strictement monotone et partiellement compensatoire : le taux de substitution entre $j$ et
+$k$ au point $x$ vaut $(w_k/w_j)\,(\tilde{x}_j + \epsilon)/(\tilde{x}_k + \epsilon)$, donc
+il dépend du point, et il devient arbitrairement défavorable lorsqu'une coordonnée
+s'approche de $-\epsilon$. Elle est invariante par changement d'échelle multiplicatif
+colonne par colonne --- multiplier une colonne par $a_j > 0$ multiplie tous les scores par
+$a_j^{w_j}$ --- mais pas par translation, ce qui est précisément l'objet du paramètre
+$\epsilon$. Le coût est $O(nd)$.
+
+\bigskip
+
+\paragraph{Normalisation et positivité.} La fonction n'est définie que sur des données
+positives ; seuls les schémas bornés dans $[0,1]$ --- min--max et rangs --- sont
+admissibles, le centrage--réduction et la normalisation robuste produisant des valeurs
+négatives sur lesquelles le logarithme n'est pas défini. L'implémentation refuse une
+matrice comportant une valeur négative plutôt que de renvoyer silencieusement des
+$\mathrm{NaN}$.
+
+\medskip
+
+\begin{avertissement}[Le décalage $\epsilon$ est un paramètre de sensibilité]
+  \label{av:epsilon-geo}
+  Après normalisation min--max, l'unité la moins vulnérable de chaque métrique vaut
+  exactement $0$ : sans décalage le produit s'annule, et toutes les unités minimales sur
+  au moins une métrique sont ex \ae quo au score nul. Le décalage $\epsilon$ lève cette
+  dégénérescence, mais il n'est pas neutre : il fixe le \emph{plancher} de substitution.
+  Pour $\epsilon$ grand devant l'étendue des données, $\ln(\tilde{x} + \epsilon)$ est
+  quasi affine et le classement converge vers celui de la somme pondérée ; pour $\epsilon$
+  petit, les unités proches de zéro sont écrasées et le classement de la queue basse est
+  piloté par le seul choix de $\epsilon$. La valeur usuelle $\epsilon = 10^{-3}$ n'a
+  aucune justification théorique, et la stabilité du classement sur une grille
+  $\epsilon \in \{10^{-4}, 10^{-3}, 10^{-2}, 10^{-1}\}$ constitue un test de sensibilité à
+  part entière, dont le résultat est rapporté avec le score.
+\end{avertissement}
+
+\bigskip
+
+\subsection{Indice de Mazziotta--Pareto}
+\label{sec:mpi}
+
+\medskip
+
+\paragraph{Idée.} Pénaliser explicitement l'hétérogénéité du profil, plutôt que de la
+pénaliser implicitement par la courbure d'une moyenne. À moyenne égale, une unité
+vulnérable sur une seule dimension et sûre ailleurs est jugée plus sévèrement qu'une unité
+uniformément moyenne. La construction de \citet{mazziotta2016} réalise cette idée sans
+introduire le moindre coefficient : c'est, avec le front de Pareto, l'une des rares
+méthodes de cette note entièrement dépourvue de paramètre libre.
+
+\medskip
+
+\paragraph{Construction.} Les métriques normalisées sont d'abord recalées sur une moyenne
+de $100$ et un écart-type de $10$, échelle conventionnelle qui garantit la positivité des
+moyennes en ligne :
+
+\medskip
+
+\[
+  z_{ij} = 100 + 10\,\frac{\tilde{x}_{ij} - \bar{x}_j}{\sigma_j} .
+\]
+
+\bigskip
+
+On note ensuite $M_i$ et $S_i$ la moyenne et l'écart-type \emph{en ligne} des
+$(z_{ij})_{j \le d}$, et $\mathrm{cv}_i = S_i/M_i$ le coefficient de variation horizontal.
+L'indice, dans sa version $\mathrm{MPI}^{+}$ adaptée à une grandeur dont l'augmentation est
+\emph{défavorable}, ajoute la pénalité au lieu de la retrancher :
+
+\medskip
+
+\[
+  \mathrm{MPI}^{+}_i = M_i + S_i\,\mathrm{cv}_i = M_i + \frac{S_i^{2}}{M_i} .
+\]
+
+\bigskip
+
+Le terme $S_i^2/M_i$ est nul pour un profil parfaitement équilibré et croît avec la
+dispersion des métriques de l'unité. La variante $\mathrm{MPI}^{-} = M_i - S_i^2/M_i$,
+utilisée lorsque l'augmentation est favorable, n'a pas lieu d'être ici : après orientation
+(section~\ref{sec:orientation}), toutes les métriques ont la polarité « haut = vulnérable »
+et c'est bien le profil déséquilibré qui doit être aggravé.
+
+\bigskip
+
+\paragraph{Normalisation et paramètres.} Le recalage interne rend la fonction invariante
+par transformation affine croissante de chaque colonne ; min--max, centrage--réduction et
+normalisation robuste conduisent donc au même résultat, et le schéma retenu n'a d'effet
+que par l'intermédiaire de la winsorisation éventuelle. La normalisation par rangs, elle,
+change le résultat, puisqu'elle modifie les écarts entre unités et donc $S_i$. Le coût est
+$O(nd)$.
+
+\medskip
+
+\begin{avertissement}[Non-monotonie intrinsèque]
+  \label{av:mpi-monotonie}
+  $\mathrm{MPI}^{+}$ n'est pas monotone au sens de la définition~\ref{def:monotonie}.
+  Améliorer la métrique la plus faible d'une unité réduit sa dispersion en ligne $S_i$, et
+  peut donc faire \emph{baisser} l'indice. La dérivée s'écrit
+
+  \medskip
+
+  \[
+    \frac{\partial\,\mathrm{MPI}^{+}_i}{\partial z_{ik}}
+    = \frac{1}{d}\left(1 + \frac{2(z_{ik} - M_i)}{M_i} - \frac{S_i^{2}}{M_i^{2}}\right),
+  \]
+
+  \bigskip
+
+  qui est négative si et seulement si
+  $z_{ik} < \big(M_i^{2} + S_i^{2}\big) / (2 M_i)$. Le seuil est très bas pour un profil
+  équilibré --- avec $M_i = 100$ et $S_i = 10$, il vaut $50{,}5$, soit cinq écarts-types
+  sous la moyenne de la colonne --- et remonte rapidement avec le déséquilibre.
+
+  \medskip
+
+  \emph{Contre-exemple.} Avec $d = 2$ et une unité de profil $z_i = (20, 180)$ :
+  $M_i = 100$, $S_i = 80$ et $\mathrm{MPI}^{+}_i = 164$. Le seuil vaut ici
+  $(100^2 + 80^2)/200 = 82$. En portant la première métrique de $20$ à $60$ --- une
+  aggravation stricte au sens de $\pareto$ --- on obtient $M_i = 120$, $S_i = 60$ et
+  $\mathrm{MPI}^{+}_i = 150$ : l'unité dominante est classée quatorze points \emph{en
+  dessous} de l'unité qu'elle domine. L'indice décroît jusqu'à $z_{i1} \approx 74{,}6$,
+  où il atteint son minimum de $149{,}1$, puis recroît.
+
+  \medskip
+
+  Cette violation n'est pas un défaut d'implémentation : elle est intrinsèque à toute
+  pénalité de déséquilibre, dont la raison d'être est précisément de ne pas être une
+  fonction croissante de chaque coordonnée. Elle est mesurée par $V_{\mathrm{strict}}$
+  (chapitre~\ref{sec:comparer}) et assumée, ou bien la méthode est écartée. Elle reste
+  rare en pratique, la condition ci-dessus n'étant satisfaite que par des profils
+  fortement déséquilibrés.
+\end{avertissement}
+
+\bigskip
+
+\subsection{TOPSIS}
+\label{sec:topsis}
+
+\medskip
+
+\paragraph{Idée.} Classer les unités par leur position \emph{relative} entre deux pôles
+construits sur les données : un pôle idéal $x^{+}$, unité fictive maximalement vulnérable,
+et un pôle anti-idéal $x^{-}$, unité fictive minimalement vulnérable. La méthode de
+\citet{hwang1981} substitue à la question « quel score ? » la question « à quelle distance
+relative des deux extrêmes observés ? », ce qui produit un score borné et directement
+interprétable.
+
+\medskip
+
+\paragraph{Construction.} La matrice est d'abord normalisée par colonne en norme
+euclidienne puis pondérée --- le vecteur noté $y_{i}$ pour éviter la collision avec le
+paramètre $v$ de VIKOR :
+
+\medskip
+
+\[
+  y_{ij} = w_j\,\frac{\tilde{x}_{ij}}{\sqrt{\sum_{k=1}^{n}\tilde{x}_{kj}^{2}}},
+  \qquad
+  x^{+}_j = \max_i y_{ij},
+  \qquad
+  x^{-}_j = \min_i y_{ij} .
+\]
+
+\bigskip
+
+Les distances aux deux pôles et le score en découlent :
+
+\medskip
+
+\[
+  D^{\pm}_i = \Big(\sum_{j=1}^{d} \big(y_{ij} - x^{\pm}_j\big)^{2}\Big)^{1/2},
+  \qquad
+  s^{\mathrm{TOPSIS}}(x_i) = \frac{D^{-}_i}{D^{+}_i + D^{-}_i} \;\in\; [0,1] .
+\]
+
+\bigskip
+
+\paragraph{Variante robuste.} Les pôles étant des extrema, une seule unité atypique les
+déplace et comprime tout le reste de l'échelle. La variante robuste les remplace par des
+quantiles marginaux, $x^{+}_j = \hat{F}_j^{-1}(1 - q)$ et $x^{-}_j = \hat{F}_j^{-1}(q)$
+avec $q = 0{,}01$ par défaut. Le prix à payer est que les unités situées au-delà des
+quantiles sortent du pavé $[x^{-}, x^{+}]$, ce qui a une conséquence directe sur la
+monotonie.
+
+\medskip
+
+\begin{propriete}[Monotonie de TOPSIS]
+  \label{prop:topsis}
+  Soit $w > 0$. Sur le pavé $[x^{-}, x^{+}]$, augmenter une coordonnée $y_{ij}$ augmente
+  strictement $D^{-}_i$ et diminue strictement $D^{+}_i$, donc augmente strictement
+  $s^{\mathrm{TOPSIS}}$ : la fonction est strictement monotone pour $\pareto$. Hors du
+  pavé, les deux effets cessent d'être de même sens --- au-delà de $x^{+}_j$, augmenter
+  $y_{ij}$ augmente aussi $D^{+}_i$ --- et la monotonie n'est plus garantie. La variante
+  non robuste place tout l'échantillon dans le pavé par construction et est donc
+  strictement monotone ; la variante robuste ne l'est qu'en dehors des queues, et la
+  violation résiduelle est mesurée comme les autres.
+\end{propriete}
+
+\bigskip
+
+\paragraph{Propriétés complémentaires.} La compensation est quasi totale : les courbes
+d'iso-score sont les cercles d'Apollonius des deux pôles (figure~\ref{fig:isoscores}), et
+celle de niveau $1/2$ est exactement l'hyperplan médiateur, c'est-à-dire une iso-ligne de
+somme pondérée. L'écart à la compensation totale est donc de second ordre et ne se
+manifeste qu'aux niveaux extrêmes. La normalisation admissible est le min--max
+(défaut) ou les rangs ; le centrage--réduction est exclu, la normalisation euclidienne
+interne supposant des colonnes positives. Le coût est $O(nd)$. Les paramètres sont $w$,
+l'indicateur \emph{robuste} et le quantile $q$.
+
+\bigskip
+
+\subsection{VIKOR}
+\label{sec:vikor}
+
+\medskip
+
+\paragraph{Idée.} TOPSIS mélange en une seule distance euclidienne l'écart moyen à
+l'idéal et le pire écart. VIKOR \citep{opricovic2004,opricovic2007} les sépare et les
+recombine avec un coefficient explicite : c'est la seule fonction de ce chapitre dont le
+degré de compensation est un paramètre réglable plutôt qu'une conséquence de la forme
+algébrique.
+
+\medskip
+
+\paragraph{Construction.} Sur les écarts normalisés à l'idéal, on définit l'\emph{utilité
+de groupe} $S_i$, totalement compensatoire, et le \emph{regret individuel} $R_i$,
+non compensatoire :
+
+\medskip
+
+\[
+  g_{ij} = w_j\,\frac{x^{+}_j - \tilde{x}_{ij}}{x^{+}_j - x^{-}_j},
+  \qquad
+  S_i = \sum_{j=1}^{d} g_{ij},
+  \qquad
+  R_i = \max_{j \le d} g_{ij} .
+\]
+
+\bigskip
+
+Les deux quantités sont ensuite ramenées dans $[0,1]$ par leur propre étendue et mélangées
+par le paramètre de compromis $v \in [0,1]$ :
+
+\medskip
+
+\[
+  Q_i = v\,\frac{S_i - S^{-}}{S^{+} - S^{-}}
+      + (1 - v)\,\frac{R_i - R^{-}}{R^{+} - R^{-}},
+  \qquad
+  s^{\mathrm{VIKOR}}(x_i) = 1 - Q_i ,
+\]
+
+\bigskip
+
+avec $S^{\pm} = \max_i S_i,\ \min_i S_i$ et de même pour $R^{\pm}$. Comme $S$ et $R$ sont
+des \emph{coûts} --- des distances à l'idéal --- le score retourné est $1 - Q_i$, ce qui
+rétablit la convention « élevé $=$ plus vulnérable ». Un dénominateur dégénéré
+($S^{+} = S^{-}$ ou $R^{+} = R^{-}$, c'est-à-dire un nuage où toutes les unités portent la
+même utilité ou le même regret) contribue $0$ à $Q$ plutôt qu'un $\mathrm{NaN}$ : le terme
+correspondant ne porte simplement aucune information.
+
+\medskip
+
+\begin{propriete}[Monotonie et compensation de VIKOR]
+  \label{prop:vikor}
+  Soit $w > 0$. Chaque $g_{ij}$ est une fonction affine strictement décroissante de
+  $\tilde{x}_{ij}$, donc $S_i$ décroît strictement et $R_i$ décroît faiblement lorsqu'une
+  coordonnée augmente. Si $x_i \pareto x_k$, alors $S_i < S_k$ et $R_i \le R_k$, d'où
+  $Q_i < Q_k$ dès que $v > 0$ : la fonction est strictement monotone pour tout
+  $v \in\ ]0,1]$, y compris hors du pavé $[x^{-}, x^{+}]$, la linéarité de $S$ ne
+  dépendant pas de la position relative aux pôles. Pour $v = 0$, le score se réduit au
+  regret et n'est que faiblement monotone.
+
+  \medskip
+
+  Le paramètre $v$ balaie continûment le spectre de compensation : $v = 1$ donne une somme
+  pondérée renormalisée, $v = 0$ un critère de type \emph{minimax} entièrement
+  non compensatoire, et $v = 1/2$, valeur par défaut de l'article d'origine, un compromis
+  dit « de consensus ». Les pentes des iso-lignes de la figure~\ref{fig:isoscores} en sont
+  la lecture directe : à deux métriques de poids égaux, elles valent $-3$ et $-1/3$ pour
+  $v = 1/2$, et tendent vers $-1$ lorsque $v \to 1$.
+\end{propriete}
+
+\bigskip
+
+\paragraph{Normalisation et paramètres.} Comme pour TOPSIS, les schémas admissibles sont le
+min--max (défaut) et les rangs, et la variante robuste remplace les extrema par les
+quantiles $q$ et $1-q$. Les paramètres sont $w$, $v$, l'indicateur \emph{robuste} et $q$.
+Le coût est $O(nd)$.
+
+\medskip
+
+\begin{algorithm}[htbp]
+  \caption{Scores à pôles empiriques : TOPSIS et VIKOR}
+  \label{algo:poles}
+  \begin{algorithmic}[1]
+    \Require matrice normalisée $\tilde{X} \in \R^{n\times d}$ ; poids $w \in \simplex$ ;
+      indicateur \textit{robuste} ; quantile $q$ ; compromis $v \in [0,1]$
+    \Ensure scores $s^{\mathrm{TOPSIS}}$ et $s^{\mathrm{VIKOR}}$, tous deux dans $[0,1]$
+    \If{\textit{robuste}}
+      \State $x^{+}_j \gets \hat{F}_j^{-1}(1-q)$~;\quad $x^{-}_j \gets \hat{F}_j^{-1}(q)$
+    \Else
+      \State $x^{+}_j \gets \max_i \tilde{x}_{ij}$~;\quad
+        $x^{-}_j \gets \min_i \tilde{x}_{ij}$
+    \EndIf
+    \State $\Delta_j \gets \max(x^{+}_j - x^{-}_j,\ \eta)$
+      \Comment{Colonne constante neutralisée, $\eta > 0$}
+    \Statex\hspace{-1.2em}\textbf{TOPSIS}
+    \State $y_{ij} \gets w_j\,\tilde{x}_{ij} / \max\big(\|\tilde{x}_{\cdot j}\|_2,\
+      \eta\big)$ \Comment{Pôles recalculés sur $y$}
+    \State $D^{\pm}_i \gets \big\|y_i - x^{\pm}\big\|_2$~;\quad
+      $s^{\mathrm{TOPSIS}}_i \gets D^{-}_i / \max(D^{+}_i + D^{-}_i,\ \eta)$
+    \Statex\hspace{-1.2em}\textbf{VIKOR}
+    \State $g_{ij} \gets w_j (x^{+}_j - \tilde{x}_{ij}) / \Delta_j$~;\quad
+      $S_i \gets \sum_j g_{ij}$~;\quad $R_i \gets \max_j g_{ij}$
+    \State $\tilde{S} \gets \mathrm{etendue}(S)$~;\quad
+      $\tilde{R} \gets \mathrm{etendue}(R)$
+      \Comment{$\mathrm{etendue}(u) = (u - \min u)/(\max u - \min u)$, nul si dégénéré}
+    \State $s^{\mathrm{VIKOR}}_i \gets 1 - \big(v\,\tilde{S}_i
+      + (1-v)\,\tilde{R}_i\big)$
+    \State \Return $s^{\mathrm{TOPSIS}}$, $s^{\mathrm{VIKOR}}$
+  \end{algorithmic}
+\end{algorithm}
+
+\bigskip
+
+\subsection{Distance de Mahalanobis}
+\label{sec:maha}
+
+\medskip
+
+\paragraph{Idée.} Lorsque les métriques sont corrélées, une distance euclidienne compte
+plusieurs fois la même information : deux métriques quasi identiques pèsent double. La
+distance de \citet{mahalanobis1936} corrige cet effet en mesurant les écarts en unités de
+dispersion \emph{du nuage}, direction par direction, plutôt qu'en unités d'échelle
+marginale.
+
+\medskip
+
+\[
+  s^{\mathrm{Mah}}(x_i)
+  = \sqrt{\big(\tilde{x}_i - c\big)^{\top} \Sigma^{-1} \big(\tilde{x}_i - c\big)},
+\]
+
+\bigskip
+
+où $\Sigma$ est une estimation de la covariance des métriques et $c$ le point de
+référence. Deux choix de référence sont disponibles, et ils ne mesurent pas la même chose.
+
+\medskip
+
+\begin{itemize}[nosep,leftmargin=1.4em]
+  \item \textbf{L'anti-idéal} $c = x^{-}$, de coordonnées
+  $x^{-}_j = \hat{F}_j^{-1}(0{,}01)$ : la distance au coin le moins vulnérable, variante
+  historique conservée comme méthode à part entière.
+  \item \textbf{Le centre robuste} $c = \mu$, la localisation de l'estimateur de
+  covariance : la distance au c\oe ur du nuage. C'est la référence théoriquement
+  pertinente, puisque pour une loi elliptique $d_{\mathrm{Mah}}(x, \mu)$ est une
+  transformation strictement croissante du rang \emph{center-outward} du
+  chapitre~\ref{sec:ot}. Elle mesure l'\emph{atypicité} et non la vulnérabilité : une
+  unité extrême dans la queue basse y obtient un score aussi élevé qu'une unité extrême
+  dans la queue haute.
+\end{itemize}
+
+\bigskip
+
+\paragraph{Estimation de $\Sigma$.} L'estimateur empirique est contaminé par les unités
+extrêmes, qui gonflent leur propre référence et réduisent ainsi leur score. Deux
+alternatives sont retenues : le déterminant de covariance minimum
+\citep[MCD,][]{rousseeuw1999}, robuste mais coûteux au-delà de quelques dizaines de
+milliers de lignes, et le rétrécissement de \citet{ledoit2004}, préférable lorsque $d$ est
+grand devant $n$ ou lorsque $n$ est grand. L'inversion se fait par décomposition spectrale
+avec seuillage des valeurs propres, ce qui traite le cas d'une matrice singulière ---
+deux métriques colinéaires --- sans renvoyer d'erreur.
+
+\medskip
+
+\begin{remarque}[Une norme dans l'espace blanchi]
+  \label{rem:maha-norme}
+  L'écriture $\Sigma^{-1} = \Sigma^{-1/2}\Sigma^{-1/2}$ montre que $s^{\mathrm{Mah}}$ est
+  la norme euclidienne des données \emph{blanchies}
+  $u_i = \Sigma^{-1/2}(\tilde{x}_i - c)$. Ce n'est donc pas une somme pondérée, même
+  déguisée : c'est une norme, et une norme n'est pas une forme linéaire. La méthode donne
+  un poids égal à chaque \emph{direction décorrélée} et non à chaque métrique, et les
+  coefficients implicites sur les métriques d'origine se lisent dans $\Sigma^{-1/2}$.
+
+  \medskip
+
+  Deux conséquences en découlent. D'abord, le score n'est pas \emph{orienté} : une unité
+  située en deçà de l'anti-idéal sur toutes les métriques est à distance strictement
+  positive, et se classe donc au-dessus d'une unité située exactement en $x^{-}$. Ensuite,
+  les termes extra-diagonaux de $\Sigma^{-1}$ pouvant être négatifs, le gradient
+  $\Sigma^{-1}(\tilde{x}_i - c)/s^{\mathrm{Mah}}(x_i)$ peut avoir des composantes
+  négatives : la monotonie peut être violée, pour la même raison que dans le cas de l'axe
+  factoriel (avertissement~\ref{av:direction}). Le signe des coefficients implicites est
+  donc vérifié et rapporté systématiquement.
+\end{remarque}
+
+\bigskip
+
+\paragraph{Normalisation et paramètres.} Les schémas admissibles sont le
+centrage--réduction (défaut) et le quantile gaussien ; le min--max est exclu, les
+variances marginales y étant pilotées par l'étendue observée, ce qui prive $\Sigma$ de son
+interprétation. Les paramètres sont l'estimateur de covariance, la référence $c$ et le
+quantile de l'anti-idéal. Le coût est $O(nd^2 + d^3)$ pour l'estimateur empirique ou le
+rétrécissement, et sensiblement supérieur pour le MCD, dont l'algorithme est itératif.
+
+\bigskip
+
+\subsection{Projection blanchie orientée}
+\label{sec:projection-blanchie}
+
+\medskip
+
+\paragraph{Idée.} La remarque~\ref{rem:maha-norme} identifie exactement ce qui manque à la
+distance de Mahalanobis : une orientation. On la lui donne en remplaçant la norme du
+vecteur blanchi par sa projection sur une direction de référence, celle du pôle idéal. On
+obtient un score signé, linéaire, qui décorrèle les métriques comme le fait Mahalanobis
+mais qui place les unités de la queue basse \emph{en dessous} du centre au lieu de les en
+éloigner.
+
+\medskip
+
+\[
+  s^{\mathrm{white}}(x_i)
+  = \big\langle \Sigma^{-1/2}(\tilde{x}_i - \mu),\ \upsilon \big\rangle,
+  \qquad
+  \upsilon = \frac{\Sigma^{-1/2}(x^{+} - \mu)}{\norm{\Sigma^{-1/2}(x^{+} - \mu)}},
+\]
+
+\bigskip
+
+avec $\mu$ et $\Sigma$ estimés robustement comme à la section précédente et
+$x^{+}_j = \hat{F}_j^{-1}(0{,}99)$ le pôle idéal marginal. Le cas dégénéré où le pôle idéal
+coïncide avec le centre robuste dans l'espace blanchi ne définit aucune direction et lève
+une erreur explicite plutôt que de produire un vecteur nul.
+
+\bigskip
+
+\paragraph{Propriétés.} Le score est une forme linéaire de $\tilde{x}_i$, de coefficients
+implicites $\Sigma^{-1/2}\upsilon$. Il est donc totalement compensatoire, invariant par
+transformation affine croissante commune, de coût identique à celui de la distance de
+Mahalanobis, et strictement monotone si et seulement si toutes les composantes de
+$\Sigma^{-1/2}\upsilon$ sont strictement positives --- condition qui n'est pas garantie et
+qui est vérifiée numériquement, exactement comme pour l'axe factoriel. Les schémas de
+normalisation admissibles sont les mêmes que pour Mahalanobis.
+
+\medskip
+
+\begin{propriete}[Contrepartie linéaire du cas elliptique]
+  \label{prop:white-elliptique}
+  Soit $Z$ une variable aléatoire de loi elliptique de centre $\mu$ et de dispersion
+  $\Sigma$. La carte de Brenier vers la loi sphérique uniforme du
+  chapitre~\ref{sec:ot} s'écrit alors
+
+  \medskip
+
+  \[
+    T(z) = h(r)\,\frac{\Sigma^{-1/2}(z - \mu)}{r},
+    \qquad r = \norm{\Sigma^{-1/2}(z - \mu)},
+  \]
+
+  \bigskip
+
+  avec $h$ croissante. Il en résulte deux identifications distinctes :
+
+  \medskip
+
+  \begin{enumerate}[nosep,leftmargin=1.8em]
+    \item le \emph{rang} $\norm{T(z)} = h(r)$ est une transformation strictement
+    croissante de la distance de Mahalanobis \emph{au centre} $\mu$ ;
+    \item le \emph{score orienté} $\scal{T(z)}{u^{*}} = \big(h(r)/r\big)\,
+    \scal{\Sigma^{-1/2}(z-\mu)}{u^{*}}$ est la projection blanchie $s^{\mathrm{white}}$
+    modulée par le facteur radial $h(r)/r$, à la direction près.
+  \end{enumerate}
+
+  \medskip
+
+  Aucun des deux ne se réduit à la distance de Mahalanobis à l'\emph{anti-idéal}. La
+  projection blanchie est donc la contrepartie linéaire exacte du score de Kantorovitch
+  orienté dans le cas elliptique, et c'est à ce titre qu'elle sert de terme de référence
+  au diagnostic d'ellipticité du chapitre~\ref{sec:ot}, comparaison qui serait dénuée de
+  sens si elle portait sur $s^{\mathrm{Mah}}$ à l'anti-idéal.
+\end{propriete}
+
+\bigskip
+
+\begin{algorithm}[htbp]
+  \caption{Scores blanchis : distance de Mahalanobis et projection orientée}
+  \label{algo:blanchi}
+  \begin{algorithmic}[1]
+    \Require matrice normalisée $\tilde{X} \in \R^{n\times d}$ ; estimateur de covariance
+      $\in \{\textsc{mcd}, \textsc{ledoit-wolf}, \textsc{empirique}\}$ ; référence
+      $c \in \{x^{-}, \mu\}$ ; quantiles $q^{-} = 0{,}01$, $q^{+} = 0{,}99$
+    \Ensure scores $s^{\mathrm{Mah}}$ (positif) et $s^{\mathrm{white}}$ (signé)
+    \State $(\mu, \Sigma) \gets$ ajustement de l'estimateur de covariance sur $\tilde{X}$
+    \State $(\lambda_m, a_m)_{m \le d} \gets$ décomposition spectrale de $\Sigma$~;\quad
+      $\lambda_m \gets \max(\lambda_m, \eta)$
+      \Comment{Seuillage : cas singulier}
+    \State $\Sigma^{-1} \gets \sum_m \lambda_m^{-1} a_m a_m^{\top}$~;\quad
+      $\Sigma^{-1/2} \gets \sum_m \lambda_m^{-1/2} a_m a_m^{\top}$
+    \Statex\hspace{-1.2em}\textbf{Distance de Mahalanobis}
+    \State $c \gets \big(\hat{F}_j^{-1}(q^{-})\big)_{j \le d}$ si référence
+      $= x^{-}$, sinon $c \gets \mu$
+    \State $s^{\mathrm{Mah}}_i \gets
+      \sqrt{\max\big((\tilde{x}_i - c)^{\top}\Sigma^{-1}(\tilde{x}_i - c),\ 0\big)}$
+      \Comment{Troncature : arrondis}
+    \Statex\hspace{-1.2em}\textbf{Projection blanchie orientée}
+    \State $x^{+} \gets \big(\hat{F}_j^{-1}(q^{+})\big)_{j \le d}$~;\quad
+      $\upsilon \gets \Sigma^{-1/2}(x^{+} - \mu)$
+    \If{$\norm{\upsilon} \le \eta$}
+      \State \textbf{erreur} : le pôle idéal coïncide avec le centre dans l'espace blanchi
+    \EndIf
+    \State $s^{\mathrm{white}}_i \gets
+      \big\langle \Sigma^{-1/2}(\tilde{x}_i - \mu),\ \upsilon/\norm{\upsilon}
+      \big\rangle$
+    \State Vérification du signe de $\Sigma^{-1/2}\upsilon/\norm{\upsilon}$ et report des
+      composantes négatives
+    \State \Return $s^{\mathrm{Mah}}$, $s^{\mathrm{white}}$
+  \end{algorithmic}
+\end{algorithm}
+
+\bigskip
+
+\subsection{Récapitulatif}
+\label{sec:agregation-recap}
+
+\medskip
+
+Le tableau~\ref{tab:agregation-recap} rassemble les caractéristiques qui déterminent
+l'admissibilité d'une fonction dans une configuration donnée. Trois lectures s'en
+dégagent. La colonne « normalisation » est une contrainte dure et non une préférence :
+une moyenne géométrique sur données centrées-réduites n'est pas définie, et une distance
+de Mahalanobis sur données min--max n'a pas d'interprétation. La colonne « poids »
+distingue les fonctions qui consomment un vecteur du chapitre~\ref{sec:poids} de celles
+qui n'en demandent aucun ou qui en produisent un implicitement. La colonne « monotonie »
+sépare enfin les fonctions dont la compatibilité avec la dominance est acquise par
+construction de celles dont elle doit être mesurée sur chaque groupe.
+
+\medskip
+
+\begin{table}[htbp]
+  \centering
+  \scriptsize
+  \renewcommand{\arraystretch}{1.35}
+  \begin{tabularx}{\textwidth}{@{}l Y l Y Y@{}}
+    \toprule
+    \textbf{Fonction} & \textbf{Normalisation admissible} & \textbf{Poids} &
+    \textbf{Monotonie} & \textbf{Compensation} \\
+    \midrule
+    Somme pondérée &
+    \textbf{min--max}, rangs &
+    simpliciaux &
+    stricte si $w > 0$ ; faible si un poids est nul &
+    totale, taux $w_k/w_j$ constant \\
+    Rang moyen &
+    \textbf{rangs} ; résultat invariant par tout schéma monotone &
+    simpliciaux ou égaux &
+    stricte si $w > 0$ &
+    totale, sur l'échelle des rangs \\
+    Moyenne géométrique &
+    \textbf{min--max}, rangs (positivité requise) &
+    simpliciaux &
+    stricte si $w > 0$ et $\tilde{x} + \epsilon > 0$ &
+    partielle, taux dépendant du point \\
+    Mazziotta--Pareto &
+    \textbf{min--max}, centrage--réduction, robuste &
+    aucun &
+    \textbf{violée} (avert.~\ref{av:mpi-monotonie}) &
+    pénalité explicite du déséquilibre \\
+    TOPSIS &
+    \textbf{min--max}, rangs &
+    simpliciaux &
+    stricte sur $[x^{-},x^{+}]$ ; non garantie hors du pavé &
+    quasi totale (cercles d'Apollonius) \\
+    VIKOR &
+    \textbf{min--max}, rangs &
+    simpliciaux &
+    stricte si $w > 0$ et $v > 0$ ; faible si $v = 0$ &
+    réglable par $v$, de totale à \emph{minimax} \\
+    Mahalanobis (anti-idéal) &
+    \textbf{centrage--réduction}, quantile gaussien &
+    implicites, $\Sigma^{-1/2}$ &
+    \textbf{non garantie} ; score non orienté &
+    totale par direction décorrélée \\
+    Mahalanobis (centre) &
+    \textbf{centrage--réduction}, quantile gaussien &
+    implicites, $\Sigma^{-1/2}$ &
+    \textbf{non} : mesure l'atypicité, pas la vulnérabilité &
+    totale par direction décorrélée \\
+    Projection blanchie &
+    \textbf{centrage--réduction}, quantile gaussien &
+    implicites, $\Sigma^{-1/2}\upsilon$ &
+    stricte ssi $\Sigma^{-1/2}\upsilon > 0$, à vérifier &
+    totale (forme linéaire) \\
+    \bottomrule
+  \end{tabularx}
+  \caption{Fonctions d'agrégation : normalisation admissible (défaut en gras), nature des
+  poids consommés, monotonie pour $\pareto$ et degré de compensation. Le quantile de cône
+  de la section~\ref{sec:cone} complète ce tableau par le bas du spectre de compensation :
+  il n'admet aucune normalisation particulière, ne consomme aucun poids, est faiblement
+  monotone et entièrement non compensatoire.}
+  \label{tab:agregation-recap}
+\end{table}
+
+\bigskip
+
+Aucune ligne de ce tableau ne désigne un gagnant, et la comparaison des fonctions relève
+du chapitre~\ref{sec:comparer} plutôt que d'un arbitrage \emph{a priori}. Deux
+observations orientent néanmoins la lecture. D'abord, les fonctions totalement
+compensatoires produisent des classements très proches les uns des autres, la somme
+pondérée, TOPSIS et la projection blanchie ne différant que par la métrique de l'espace où
+la combinaison linéaire est effectuée ; leur accord ne constitue donc pas une validation
+croisée. Ensuite, l'information discriminante se trouve dans l'écart entre les familles de
+compensation : une unité classée haut à la fois par la somme pondérée et par le quantile
+de cône l'est pour des raisons indépendantes, et c'est cet accord-là qui est informatif.
+
+\bigskip
+
+Il reste enfin que toutes ces fonctions consomment un vecteur de poids unique, quand bien
+même il serait estimé sur les données. Le chapitre~\ref{sec:smaa} lève cette dernière
+contrainte en remplaçant le vecteur par une distribution sur le simplexe.
 
 %=======================================================================
 \section{Rangs multivariés par transport optimal}
@@ -2896,7 +3764,303 @@ les pondérations obtenues sont persistées avec les scores pour le rendre lisib
 \label{sec:smaa}
 %=======================================================================
 
-% À rédiger : prompt P14
+\medskip
+
+Les chapitres~\ref{sec:poids} et~\ref{sec:agregation} construisent un classement en deux
+temps : un vecteur de poids, puis une fonction qui le consomme. La contrainte « aucune
+pondération \emph{a priori} » y est respectée au sens où le vecteur est estimé sur les
+données, mais elle est contournée au sens où un vecteur unique finit par être retenu. Ce
+chapitre prend la contrainte au pied de la lettre : au lieu de choisir un point du
+simplexe, il l'explore tout entier et remplace le classement unique par une
+\emph{distribution} de classements.
+
+\bigskip
+
+\subsection{Loi de référence sur le simplexe}
+\label{sec:smaa-loi}
+
+\medskip
+
+\paragraph{Idée.} L'analyse d'acceptabilité multicritère stochastique \citep[SMAA,][]
+{lahdelma1998} traite le vecteur de poids comme une variable aléatoire dont la loi encode
+l'état de connaissance sur l'importance des métriques. L'ignorance complète --- le cas
+traité ici --- correspond à la loi uniforme sur le simplexe ; toute information partielle
+se traduit par une restriction du support.
+
+\medskip
+
+\begin{definition}[Loi uniforme sur le simplexe]
+  \label{def:dirichlet}
+  La loi uniforme sur $\simplex = \{w \in \R^d_+ : \sum_j w_j = 1\}$ est la loi de
+  Dirichlet de paramètre $\mathbf{1}_d = (1,\dots,1)$, de densité constante sur le
+  simplexe. Un tirage s'obtient exactement --- et non par approximation --- en simulant
+  $d$ variables exponentielles indépendantes $e_1,\dots,e_d$ de paramètre $1$ et en
+  posant $w_j = e_j / \sum_k e_k$.
+\end{definition}
+
+\bigskip
+
+Deux propriétés de cette loi méritent d'être relevées, car elles sont couramment mal
+anticipées. La marginale de chaque coordonnée est une loi bêta $\mathcal{B}(1, d-1)$, de
+moyenne $1/d$ mais de mode en $0$ : un tirage uniforme sur le simplexe produit donc
+\emph{typiquement} des vecteurs déséquilibrés, et le vecteur de poids égaux $(1/d,\dots,
+1/d)$ n'est nullement représentatif de la loi. Et l'espérance du score,
+$\EE_w\big[\sum_j w_j \tilde{x}_{ij}\big] = \frac{1}{d}\sum_j \tilde{x}_{ij}$, coïncide
+avec la moyenne non pondérée : l'information apportée par SMAA n'est donc jamais dans la
+moyenne des scores, qui ne contient rien de nouveau, mais dans la \emph{dispersion} des
+rangs qu'ils induisent.
+
+\bigskip
+
+\subsection{Les trois sorties}
+\label{sec:smaa-sorties}
+
+\medskip
+
+Soit $g$ une fonction d'agrégation du chapitre~\ref{sec:agregation} consommant un vecteur
+de poids, et $r^{(w)}_i$ le rang de l'unité $i$ sous le vecteur $w$, au sens de la
+définition~\ref{def:rang}. Trois quantités résument la distribution induite.
+
+\medskip
+
+\begin{definition}[Indices SMAA]
+  \label{def:smaa}
+  Pour $w \sim \Unif(\simplex)$ et une profondeur $k \in [n]$ fixée :
+
+  \medskip
+
+  \begin{align*}
+    \text{indice d'acceptabilité de rang} \quad
+      & b^{\,r}_i = \PP\big(r^{(w)}_i = r\big), \qquad r \in [n], \\[0.2em]
+    \text{vecteur de poids central} \quad
+      & w^{c}_i = \EE\big[\,w \mid r^{(w)}_i = 1\,\big], \\[0.2em]
+    \text{facteur de confiance à profondeur } k \quad
+      & p^{(k)}_i = \PP\big(r^{(w)}_i \le k\big) = \sum_{r \le k} b^{\,r}_i .
+  \end{align*}
+\end{definition}
+
+\bigskip
+
+Les trois objets répondent à des questions différentes. L'indice d'acceptabilité
+$b^{\,r}_i$ décrit la loi complète du rang : une unité dont la masse est concentrée sur
+quelques rangs voisins occupe une position que la pondération ne remet pas en cause, une
+unité dont la loi est étalée sur tout $[n]$ est une unité dont le rang est un artefact du
+vecteur retenu. Le vecteur de poids central $w^{c}_i$ répond à la question inverse :
+\emph{sous quel postulat} cette unité serait-elle la plus vulnérable ? Il est indéfini
+--- conventionnellement $\mathrm{NaN}$ --- pour une unité qui n'arrive jamais première,
+ce qui est le cas de la quasi-totalité de l'échantillon dès que $n$ est grand.
+
+\bigskip
+
+Le facteur de confiance $p^{(k)}_i$ est la sortie exploitable dans un document de
+décision. Avec $k$ fixé par la capacité d'action --- le nombre d'unités qu'il est
+matériellement possible de traiter --- il se lit directement : « cette unité figure parmi
+les cinquante plus vulnérables sous $94\,\%$ des pondérations admissibles ». L'énoncé est
+plus faible qu'un rang ponctuel, et c'est ce qui en fait sa valeur : il est vrai, alors
+qu'un rang ponctuel ne l'est que relativement à un vecteur de poids que rien n'impose.
+C'est également une fonction de score au sens de la convention de sortie de cette note
+--- élevé $=$ plus vulnérable --- ce qui permet de traiter SMAA comme une méthode à part
+entière et non seulement comme un protocole de robustesse.
+
+\medskip
+
+\begin{remarque}[Ex \ae quo et profondeur]
+  \label{rem:smaa-exaequo}
+  Le facteur de confiance est une fonction en escalier de $k$, à valeurs dans
+  $\{0, 1/T, \dots, 1\}$ avec $T$ tirages. Deux conséquences pratiques en découlent :
+  les unités très en tête saturent à $p^{(k)} = 1$ et deviennent ex \ae quo, ce qui
+  \emph{est} le résultat --- elles sont dans le top $k$ sous toute pondération --- mais
+  rend nécessaire une profondeur $k$ compatible avec la finesse de classement recherchée ;
+  et les unités très en queue saturent à $0$. La méthode discrimine donc au voisinage du
+  rang $k$ et nulle part ailleurs, ce qui doit gouverner le choix de $k$.
+\end{remarque}
+
+\bigskip
+
+\subsection{Restrictions partielles du simplexe}
+\label{sec:smaa-restrictions}
+
+\medskip
+
+L'ignorance complète est une hypothèse, au même titre que n'importe quelle pondération.
+SMAA accepte des restrictions partielles \citep{lahdelma2001} qui l'affaiblissent sans
+exiger un vecteur précis : des contraintes d'ordre, $w_1 \ge w_2 \ge \dots$, des planchers,
+$w_j \ge 0{,}05$, ou des rapports bornés, $w_j / w_k \le \rho$. Chacune définit un
+polytope $\mathcal{W} \subseteq \simplex$ et la loi de référence devient l'uniforme sur
+$\mathcal{W}$.
+
+\bigskip
+
+Le tirage uniforme dans un polytope n'admet pas de formule fermée. Deux procédures sont
+usuelles : le rejet, qui tire dans $\simplex$ et écarte les vecteurs hors de
+$\mathcal{W}$ --- exact et trivial à implémenter, mais dont le taux d'acceptation
+s'effondre exponentiellement avec $d$ et avec la sévérité des contraintes --- et le
+\emph{hit-and-run}, une chaîne de Markov qui, depuis un point intérieur, tire une
+direction uniforme et se déplace uniformément le long de la corde qu'elle découpe dans
+$\mathcal{W}$. La seconde reste efficace en grande dimension, au prix de la corrélation
+entre tirages successifs et d'un temps de chauffe. Pour les dimensions considérées ici
+($d \le 6$, voir l'avertissement~\ref{av:cout}) le rejet suffit, et son taux
+d'acceptation est rapporté comme diagnostic : un taux très faible signale des contraintes
+qui, de fait, déterminent presque entièrement le vecteur de poids.
+
+\bigskip
+
+L'intérêt de ces restrictions n'est pas seulement de produire un classement plus précis :
+c'est de \emph{mesurer le prix de l'information}. L'écart entre la distribution des rangs
+sous $\simplex$ et sous $\mathcal{W}$ quantifie exactement ce qu'une hiérarchisation même
+faible des métriques ferait gagner en pouvoir de discrimination, et donc si la recherche
+d'un consensus sur les poids vaut l'effort qu'elle demande.
+
+\bigskip
+
+\subsection{Algorithme et coût}
+\label{sec:smaa-algo}
+
+\medskip
+
+L'obstacle d'implémentation est la mémoire. La matrice complète des indices
+d'acceptabilité est de taille $n \times n$ : pour $n = 5\,000$ elle occupe déjà
+$200$~Mo en double précision, et elle est hors de portée à l'échelle d'un catalogue
+complet. Elle est de surcroît presque entièrement inutile, puisque seuls les rangs de tête
+sont exploités. L'algorithme~\ref{algo:smaa} ne matérialise donc que les $k$ premières
+colonnes, soit un stockage $(n, k)$, et traite les tirages par blocs de taille $T_b$, un
+bloc n'occupant que $(n, T_b)$.
+
+\medskip
+
+\begin{algorithm}[htbp]
+  \caption{SMAA --- indices d'acceptabilité, poids centraux et facteur de confiance}
+  \label{algo:smaa}
+  \begin{algorithmic}[1]
+    \Require matrice normalisée $\tilde{X} \in \R^{n\times d}$ ; fonction d'agrégation
+      $g$ ; nombre de tirages $T$ ; taille de bloc $T_b$ ; profondeur $k$ ; germe
+      aléatoire ; polytope $\mathcal{W}$ (défaut $\simplex$)
+    \Ensure $b \in [0,1]^{n \times k'}$ avec $k' = \min(k,n)$ ;
+      $w^{c} \in \R^{n\times d}$ ; $p \in [0,1]^n$
+    \State $k' \gets \min(k, n)$~;\quad $b \gets 0 \in \N^{n \times k'}$~;\quad
+      $c \gets 0 \in \R^{n\times d}$~;\quad $\nu \gets 0 \in \N^n$
+    \For{chaque bloc $W_b \in \R^{T_b \times d}$,
+      $w^{(t)} \sim \Unif(\mathcal{W})$}
+      \State $\Xi \gets \big[\,g(\tilde{X}; w^{(t)})\,\big]_{t \le T_b}$
+        \Comment{Scores du bloc, $(n, T_b)$ ; unique tableau matérialisé}
+      \State $\Pi \gets \rg(-\Xi)$ colonne par colonne
+        \Comment{Rangs ordinaux, ex \ae quo départagés par l'ordre des lignes}
+      \ForAll{$(i,t)$ tel que $\Pi_{it} \le k'$}
+        \State $b_{i,\,\Pi_{it}} \gets b_{i,\,\Pi_{it}} + 1$
+      \EndFor
+      \ForAll{$t \le T_b$}
+        \State $i^{*} \gets \arg\max_i \Xi_{it}$~;\quad
+          $c_{i^{*}} \gets c_{i^{*}} + w^{(t)}$~;\quad
+          $\nu_{i^{*}} \gets \nu_{i^{*}} + 1$
+      \EndFor
+    \EndFor
+    \State $b \gets b / T$~;\quad
+      $p_i \gets \sum_{r \le k'} b_{ir}$
+    \State $w^{c}_i \gets c_i / \nu_i$ si $\nu_i > 0$, sinon $w^{c}_i \gets \mathrm{NaN}$
+    \State \Return $b$, $w^{c}$, $p$
+  \end{algorithmic}
+\end{algorithm}
+
+\bigskip
+
+Le coût en temps est $O\big(T\,(nd + n\log n)\big)$ : un produit matriciel par bloc suivi
+d'un tri par colonne. Le coût en mémoire est $O(nk + nT_b)$, indépendant de $T$. Une
+subtilité de lecture s'attache aux ex \ae quo : les rangs sont pris \emph{ordinaux} et
+non moyennés à l'intérieur d'un tirage, faute de quoi un rang fractionnaire ne pourrait
+pas indexer une colonne de $b$. Deux unités de score strictement égal sous un tirage sont
+donc départagées par l'ordre des lignes, ce qui est sans conséquence sur $p$ dès que les
+scores sont continus, et ce qui doit être signalé lorsqu'ils ne le sont pas --- sur
+données normalisées par rangs avec $d$ petit, par exemple.
+
+\medskip
+
+\begin{remarque}[Nombre de tirages]
+  \label{rem:smaa-tirages}
+  $p^{(k)}_i$ est une proportion estimée sur $T$ tirages indépendants : son erreur type
+  est au plus $1/(2\sqrt{T})$, soit $0{,}005$ pour $T = 10^4$ et $0{,}0016$ pour
+  $T = 10^5$. La valeur $T = 10^4$, usuelle, suffit donc pour rapporter un facteur de
+  confiance au point de pourcentage près. Les poids centraux, eux, sont estimés sur les
+  seuls tirages plaçant l'unité en tête : leur précision est bien moindre et se dégrade
+  avec $n$, la masse se répartissant sur les unités du front de Pareto. Ils ne sont
+  interprétés que pour les rares unités dont $\nu_i$ est substantiel, et $\nu_i$ est
+  rapporté avec eux.
+\end{remarque}
+
+\bigskip
+
+\subsection{Lien avec le quantile de cône}
+\label{sec:smaa-cone}
+
+\medskip
+
+Le quantile de cône de la section~\ref{sec:cone} et SMAA parcourent le même espace, le
+simplexe des poids, et peuvent partager le même échantillon de tirages. Ils en tirent
+cependant deux lectures très différentes, et les confondre serait une erreur.
+
+\medskip
+
+\begin{itemize}[nosep,leftmargin=1.4em]
+  \item Le quantile de cône prend le \emph{minimum} sur les poids : $F_C(x_i) =
+  \inf_{w} F_{w^\top X}(w^\top x_i)$ est le pire rang unidimensionnel atteint. C'est une
+  garantie au sens fort --- « sous \emph{toute} pondération positive, cette unité domine
+  au moins $97\,\%$ de la population » --- qui ne dit rien de la fréquence des
+  pondérations défavorables. Une unité pénalisée par un unique vecteur de poids, de mesure
+  nulle, y perd tout son score.
+  \item SMAA rapporte la \emph{distribution} des rangs : $p^{(k)}_i$ pondère chaque
+  pondération par sa probabilité. C'est une garantie en moyenne --- « sous $94\,\%$ des
+  pondérations » --- qui admet des exceptions et les quantifie.
+\end{itemize}
+
+\bigskip
+
+Les deux quantités s'ordonnent : si $F_C(x_i)$ place $x_i$ au-dessus du seuil
+correspondant au rang $k$, alors $p^{(k)}_i = 1$, la réciproque étant fausse. Le
+quantile de cône est donc la version \emph{pire cas} de ce dont SMAA donne la loi, et
+leur écart mesure précisément la masse des pondérations défavorables. En pratique, un
+facteur de confiance élevé assorti d'un quantile de cône faible caractérise une unité
+solide sous presque toutes les pondérations mais vulnérable à un postulat particulier ---
+lequel se lit dans le vecteur de poids qui réalise l'infimum, et qui est conservé à cette
+fin.
+
+\bigskip
+
+\subsection{Lecture des sorties}
+\label{sec:smaa-lecture}
+
+\medskip
+
+Les sorties de ce chapitre se lisent comme une décomposition de l'indétermination plutôt
+que comme un classement. Quatre configurations se rencontrent.
+
+\medskip
+
+\begin{itemize}[nosep,leftmargin=1.4em]
+  \item $p^{(k)}_i$ \emph{proche de} $1$. L'appartenance de l'unité au groupe des $k$
+  plus vulnérables ne dépend pas de la pondération. C'est la seule situation où un
+  classement ponctuel peut être rapporté sans réserve, et le rang exact à l'intérieur du
+  groupe reste, lui, indéterminé.
+  \item $p^{(k)}_i$ \emph{intermédiaire}, acceptabilités étalées. Le rang de l'unité est
+  un choix de postulat et non un fait. Le vecteur de poids central indique quel postulat
+  la placerait en tête, ce qui transforme une indétermination en question documentable.
+  \item $p^{(k)}_i$ \emph{proche de} $0$ \emph{avec} $b^{\,r}_i > 0$ \emph{pour de petits}
+  $r$. L'unité est marginale mais non négligeable : il existe des pondérations, rares, qui
+  la placent en tête. Ce sont les unités que le classement principal manque, et le seul
+  moyen de les identifier est cette distribution.
+  \item Acceptabilités \emph{identiquement nulles} sur $[k]$. L'unité est hors de portée
+  du groupe de tête sous toute pondération envisagée ; c'est l'équivalent stochastique
+  d'être dominée par au moins $k$ unités.
+\end{itemize}
+
+\bigskip
+
+Deux limites encadrent ces lectures. La première est que la loi uniforme sur le simplexe
+n'est pas une absence d'hypothèse : c'est l'hypothèse que toutes les pondérations sont
+également plausibles, ce qui est un choix, contestable dès qu'une métrique est connue pour
+être moins fiable que les autres. La seconde est que SMAA hérite de la fonction
+d'agrégation $g$ qu'il enveloppe, y compris de ses défauts : une exploration du simplexe
+adossée à une somme pondérée explore un espace de pondérations, pas un espace de degrés de
+compensation. Faire varier conjointement les deux --- le vecteur de poids et la fonction
+--- relève des procédures de comparaison du chapitre~\ref{sec:comparer}.
 
 %=======================================================================
 \section{Comparer et contrôler}
