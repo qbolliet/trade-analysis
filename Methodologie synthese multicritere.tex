@@ -1,0 +1,1117 @@
+\documentclass[11pt,a4paper]{article}
+
+%=======================================================================
+% Préambule
+%=======================================================================
+
+\usepackage[T1]{fontenc}
+\usepackage[utf8]{inputenc}
+% natbib est chargé avant babel-french, qui l'exige pour adapter ses
+% redéfinitions de la bibliographie.
+\usepackage[round]{natbib}
+% La bibliographie constitue l'annexe D : son titre est produit comme une
+% section numérotée plutôt que comme la section étoilée par défaut.
+\renewcommand{\bibsection}{\section{Bibliographie}\label{app:biblio}\medskip}
+\usepackage[french]{babel}
+\usepackage{lmodern}
+\usepackage{microtype}
+\usepackage[margin=2.4cm]{geometry}
+\usepackage{amsmath,amssymb,amsthm,mathtools}
+\usepackage{booktabs}
+\usepackage{tabularx}
+% Colonne extensible non justifiée : les colonnes étroites des tableaux
+% comparatifs produiraient sinon des espacements inter-mots très irréguliers.
+\newcolumntype{Y}{>{\raggedright\arraybackslash}X}
+\usepackage{enumitem}
+\usepackage{xcolor}
+\usepackage{tikz}
+\usetikzlibrary{arrows.meta,positioning,shapes.geometric,calc,fit,backgrounds}
+\usepackage{algorithm}
+\usepackage{algpseudocode}
+\usepackage{listings}
+
+% Les couleurs sont définies AVANT le chargement de hyperref, qui les
+% référence dans ses options ; hidelinks est incompatible avec colorlinks.
+\definecolor{Bleu}{HTML}{1F4E79}
+\definecolor{Gris}{HTML}{6B7280}
+\definecolor{GrisClair}{HTML}{F1F2F4}
+\definecolor{Rouge}{HTML}{A83232}
+\definecolor{Vert}{HTML}{2E6B4F}
+
+\usepackage[colorlinks=true,linkcolor=Bleu,citecolor=Bleu,urlcolor=Bleu]{hyperref}
+
+% --- Environnements de théorèmes ---
+\theoremstyle{definition}
+\newtheorem{definition}{Définition}[section]
+\newtheorem{propriete}{Propriété}[section]
+\newtheorem{hypothese}{Hypothèse}[section]
+\theoremstyle{remark}
+\newtheorem{remarque}{Remarque}[section]
+\newtheorem{avertissement}{Avertissement}[section]
+
+% --- Algorithmes en français ---
+\floatname{algorithm}{Algorithme}
+\renewcommand{\listalgorithmname}{Liste des algorithmes}
+\algrenewcommand\algorithmicrequire{\textbf{Entrées :}}
+\algrenewcommand\algorithmicensure{\textbf{Sortie :}}
+\algrenewcommand\algorithmicfor{\textbf{pour}}
+\algrenewcommand\algorithmicforall{\textbf{pour tout}}
+\algrenewcommand\algorithmicdo{\textbf{faire}}
+\algrenewcommand\algorithmicwhile{\textbf{tant que}}
+\algrenewcommand\algorithmicend{\textbf{fin}}
+\algrenewcommand\algorithmicif{\textbf{si}}
+\algrenewcommand\algorithmicthen{\textbf{alors}}
+\algrenewcommand\algorithmicelse{\textbf{sinon}}
+\algrenewcommand\algorithmicreturn{\textbf{retourner}}
+
+% --- Listings Python ---
+\lstset{
+  language=Python,
+  basicstyle=\ttfamily\footnotesize,
+  keywordstyle=\color{Bleu}\bfseries,
+  commentstyle=\color{Vert}\itshape,
+  stringstyle=\color{Rouge},
+  backgroundcolor=\color{GrisClair},
+  frame=single,
+  rulecolor=\color{Gris},
+  breaklines=true,
+  showstringspaces=false,
+  columns=fullflexible,
+  extendedchars=true,
+  literate=%
+    {é}{{\'e}}1 {è}{{\`e}}1 {ê}{{\^e}}1 {à}{{\`a}}1 {ù}{{\`u}}1
+    {ç}{{\c c}}1 {î}{{\^i}}1 {ô}{{\^o}}1 {û}{{\^u}}1 {É}{{\'E}}1
+    {â}{{\^a}}1 {ë}{{\"e}}1 {ï}{{\"i}}1 {°}{{$^\circ$}}1 {œ}{{\oe}}1
+}
+
+% --- Raccourcis mathématiques ---
+\newcommand{\R}{\mathbb{R}}
+\newcommand{\N}{\mathbb{N}}
+\newcommand{\Z}{\mathbb{Z}}
+\newcommand{\PP}{\mathbb{P}}
+\newcommand{\EE}{\mathbb{E}}
+\newcommand{\Unif}{\mathcal{U}}
+\newcommand{\Bball}{\mathbb{B}}
+\newcommand{\Sphere}{\mathbb{S}}
+\newcommand{\norm}[1]{\left\lVert #1 \right\rVert}
+\newcommand{\abs}[1]{\left\lvert #1 \right\rvert}
+\newcommand{\scal}[2]{\left\langle #1 ,\, #2 \right\rangle}
+\newcommand{\ind}[1]{\mathbf{1}\{#1\}}
+\newcommand{\simplex}{\Delta^{d-1}}
+\newcommand{\Tmap}{\mathbf{T}}
+\newcommand{\pareto}{\succ_{\mathrm{P}}}
+\newcommand{\paretoeq}{\succeq_{\mathrm{P}}}
+\newcommand{\Xor}{\mathring{X}}
+\newcommand{\med}{\operatorname{med}}
+\newcommand{\MAD}{\operatorname{MAD}}
+\newcommand{\rg}{\operatorname{rg}}
+
+\title{\textbf{Méthodologie de synthèse multicritère}\\[0.3em]
+\large Ordonner un ensemble de vecteurs de $\R^d$\\ sans pondération fixée \emph{a priori}}
+\author{Note méthodologique}
+\date{\today}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+\noindent
+Cette note décrit les méthodes permettant d'ordonner un ensemble fini de vecteurs de
+$\R^d$ lorsque aucune hiérarchie n'est fixée \emph{a priori} entre les coordonnées,
+c'est-à-dire lorsque tous les coefficients de la synthèse sont déterminés à partir des
+données elles-mêmes. Six familles sont présentées : les ordres partiels issus de la
+dominance, qui n'introduisent aucun coefficient ; les pondérations endogènes, qui
+déduisent des poids d'une propriété statistique de l'échantillon ; les fonctions
+d'agrégation, qui transforment un vecteur pondéré en un scalaire ; les rangs
+multivariés fondés sur le transport optimal, qui ordonnent par la position dans le
+nuage ; l'exploration de l'espace des poids, qui remplace un classement unique par une
+distribution de classements ; enfin les procédures de comparaison et de contrôle, qui
+mesurent l'accord entre méthodes et la stabilité des rangs. Chaque méthode est décrite
+par son idée, ses hypothèses, ses définitions, son algorithme, ses propriétés
+(monotonie, invariances, compensation, complexité), ses paramètres et ses limites. Le
+dernier chapitre illustre l'ensemble sur un cas d'application.
+\end{abstract}
+
+\vspace{0.5em}
+{\small\tableofcontents}
+\newpage
+
+%=======================================================================
+\section{Introduction}
+\label{sec:intro}
+%=======================================================================
+
+\medskip
+
+\subsection{Le problème}
+
+\medskip
+
+On considère un ensemble fini de $n$ \emph{unités}, indexées par $i \in [n] := \{1,\dots,n\}$,
+décrites chacune par $d$ \emph{métriques} indexées par $j \in [d]$. L'unité $i$ est
+représentée par le vecteur ligne $x_i = (x_{i1},\dots,x_{id}) \in \R^d$ et l'ensemble des
+observations forme la matrice
+
+\medskip
+
+\[
+X = (x_{ij})_{i \in [n],\, j \in [d]} \in \R^{n \times d}.
+\]
+
+\bigskip
+
+La question traitée est celle de la construction d'un ordre sur $\{x_1,\dots,x_n\}$ qui
+rende compte simultanément des $d$ métriques, et dont tous les paramètres soient
+\emph{estimés à partir de $X$} plutôt que fixés par jugement d'expert. Dans le cas le
+plus courant, cet ordre est induit par une fonction de score $s : \R^d \to \R$, la
+convention retenue ici étant qu'une valeur élevée de $s$ désigne une unité placée en tête
+du classement. D'autres constructions ne produisent pas de score mais directement un ordre,
+éventuellement partiel : l'ensemble des méthodes décrites dans cette note se répartit
+entre ces deux sorties.
+
+\bigskip
+
+\subsection{L'absence d'ordre canonique sur \texorpdfstring{$\R^d$}{R\textasciicircum d}}
+
+\medskip
+
+Pour $d = 1$, l'ordre usuel de $\R$ répond à la question sans aucune convention
+supplémentaire. Pour $d \ge 2$, une telle réponse n'existe pas : il n'y a pas d'ordre
+total sur $\R^d$ qui soit à la fois compatible avec la structure d'espace vectoriel et
+invariant par permutation des coordonnées.
+
+\medskip
+
+\begin{propriete}[Impossibilité d'un ordre total canonique]
+  \label{prop:impossibilite}
+  Soit $d \ge 2$ et soit $\preceq$ un ordre total sur $\R^d$ vérifiant les trois
+  conditions suivantes :
+
+  \medskip
+
+  \begin{enumerate}[nosep,leftmargin=1.8em]
+    \item \emph{compatibilité à l'addition} : $x \preceq y \Rightarrow x + z \preceq y + z$
+    pour tout $z \in \R^d$ ;
+    \item \emph{compatibilité à la multiplication scalaire positive} :
+    $x \preceq y \Rightarrow \lambda x \preceq \lambda y$ pour tout $\lambda > 0$ ;
+    \item \emph{invariance par permutation} : $x \preceq y \Rightarrow
+    \sigma(x) \preceq \sigma(y)$ pour toute permutation $\sigma$ des coordonnées.
+  \end{enumerate}
+
+  \bigskip
+
+  Alors $\preceq$ est l'ordre trivial, pour lequel tous les points sont équivalents.
+\end{propriete}
+
+\bigskip
+
+En effet, notons $e_1,\dots,e_d$ la base canonique. L'invariance par permutation impose
+que $e_1$ et $e_2$ soient équivalents, donc, par (1) appliqué avec $z = -e_2$, que
+$e_1 - e_2$ soit équivalent à $0$. Par (3) à nouveau, $e_2 - e_1$ est également équivalent
+à $0$, et par (1) tout multiple entier de $e_1 - e_2$ l'est aussi ; la combinaison de (1)
+et (2) étend l'équivalence à la droite engendrée, puis, en itérant sur les autres paires
+de coordonnées, à l'hyperplan $\{x : \sum_j x_j = 0\}$ tout entier. Un ordre total
+compatible avec l'addition ne peut alors distinguer que la somme des coordonnées, laquelle
+n'est pas invariante par changement d'échelle coordonnée par coordonnée ; imposer en outre
+l'invariance d'échelle vide l'ordre de tout contenu.
+
+\bigskip
+
+La conséquence pratique est directe : tout classement complet des unités repose sur une
+hypothèse supplémentaire, qui départage les situations où les métriques ne concordent pas.
+Cette hypothèse est explicite lorsqu'un expert fixe des poids ; elle reste présente, sous
+une autre forme, lorsque les poids sont estimés.
+
+\bigskip
+
+\subsection{Ce qu'implique l'absence de pondération \emph{a priori}}
+
+\medskip
+
+Renoncer à fixer des poids \emph{a priori} ne supprime pas l'hypothèse identifiée
+ci-dessus : cela la \emph{déplace} d'un jugement de valeur explicite vers une propriété
+statistique de l'échantillon, qui joue alors le même rôle. Chaque famille de méthodes
+correspond à un postulat différent sur ce qui, dans les données, fait l'information.
+
+\medskip
+
+\begin{avertissement}[Le postulat implicite des pondérations endogènes]
+  \label{av:cout}
+  \begin{itemize}[nosep,leftmargin=1.4em]
+    \item \textbf{Entropie, CRITIC, analyse en composantes principales} :
+    \emph{l'information utile est la dispersion}. Une métrique qui discrimine peu entre
+    les unités reçoit un poids faible, même lorsqu'elle décrit le mécanisme le plus
+    important. Un risque auquel toutes les unités sont également exposées est
+    mécaniquement neutralisé.
+    \item \textbf{Analyse en composantes principales, axe principal} : \emph{la quantité
+    d'intérêt est la direction de plus grande dispersion}. Rien ne garantit que le premier
+    axe factoriel corresponde au phénomène étudié plutôt qu'à un effet de taille ou à un
+    artefact d'échelle.
+    \item \textbf{\emph{Benefit of the doubt}} : \emph{chaque unité est jugée sous la
+    pondération qui lui est la plus favorable}. Le classement obtenu est une lecture de
+    précaution, et non une mesure du niveau moyen.
+    \item \textbf{Transport optimal} : \emph{la position dans le nuage résume
+    l'information}, au travers d'une notion de centralité multivariée qui absorbe les
+    corrélations et les échelles.
+    \item \textbf{Exploration de l'espace des poids} : \emph{l'ignorance sur les poids se
+    représente par une loi uniforme sur le simplexe}, ce qui est une hypothèse de plein
+    droit et non une absence d'hypothèse.
+  \end{itemize}
+\end{avertissement}
+
+\bigskip
+
+Ce constat oriente la démarche suivie ici. Plutôt que de sélectionner une méthode unique,
+la note décrit un ensemble de méthodes reposant sur des postulats distincts, énonce pour
+chacune les propriétés vérifiées et les propriétés non vérifiées, et présente au
+chapitre~\ref{sec:comparer} les procédures permettant de mesurer l'accord entre les
+classements obtenus. Un désaccord marqué entre deux méthodes n'est pas un défaut à
+corriger : c'est l'information selon laquelle le classement dépend du postulat retenu.
+
+\bigskip
+
+\subsection{Taxonomie des familles de méthodes}
+
+\medskip
+
+Les méthodes décrites se répartissent en six familles, selon la nature des coefficients
+qu'elles introduisent et la nature de leur sortie.
+
+\medskip
+
+\begin{figure}[htbp]
+  \centering
+  \begin{tikzpicture}[
+      font=\small,
+      famille/.style={draw=Bleu,fill=Bleu!6,rounded corners=2pt,thick,
+                      text width=3.5cm,align=center,inner sep=5pt,minimum height=1.25cm},
+      racine/.style={draw=Gris,fill=GrisClair,rounded corners=2pt,thick,
+                     text width=5.4cm,align=center,inner sep=5pt},
+      lien/.style={draw=Gris,thick,-{Stealth}}
+    ]
+    \node[racine] (root) at (0,0)
+      {Ordonner $\{x_1,\dots,x_n\} \subset \R^d$\\[2pt]
+       \scriptsize sans hiérarchie \emph{a priori} des coordonnées};
+
+    \node[famille] (ordres)  at (-5.6,-2.3) {\textbf{Ordres partiels}\\[2pt]
+      \scriptsize dominance, fronts, comptage\\ \scriptsize\textcolor{Gris}{aucun coefficient}};
+    \node[famille] (poids)   at ( 0.0,-2.3) {\textbf{Pondérations endogènes}\\[2pt]
+      \scriptsize entropie, CRITIC, ACP, BoD\\ \scriptsize\textcolor{Gris}{$w$ estimé sur $X$}};
+    \node[famille] (agreg)   at ( 5.6,-2.3) {\textbf{Agrégations}\\[2pt]
+      \scriptsize somme, géométrique, TOPSIS\\ \scriptsize\textcolor{Gris}{compensation réglable}};
+
+    \node[famille] (ot)      at (-5.6,-5.2) {\textbf{Rangs multivariés}\\[2pt]
+      \scriptsize transport optimal\\ \scriptsize\textcolor{Gris}{position dans le nuage}};
+    \node[famille] (smaa)    at ( 0.0,-5.2) {\textbf{Exploration des poids}\\[2pt]
+      \scriptsize SMAA, quantile de cône\\ \scriptsize\textcolor{Gris}{loi sur $\simplex$}};
+    \node[famille] (controle)at ( 5.6,-5.2) {\textbf{Comparaison et contrôle}\\[2pt]
+      \scriptsize accord, stabilité, consensus\\ \scriptsize\textcolor{Gris}{pas de classement propre}};
+
+    \draw[lien] (root) -- (ordres);
+    \draw[lien] (root) -- (poids);
+    \draw[lien] (root) -- (agreg);
+    \draw[lien] (root) -- (ot);
+    \draw[lien] (root) -- (smaa);
+    \draw[lien] (root) -- (controle);
+
+    \draw[Gris,thick,dashed,-{Stealth}] (poids) -- (agreg);
+    \node[Gris,font=\scriptsize] at (2.8,-1.95) {$w$};
+  \end{tikzpicture}
+  \caption{Taxonomie des familles de méthodes. Les pondérations endogènes produisent un
+  vecteur de poids qui alimente une fonction d'agrégation : ces deux familles se composent,
+  alors que les ordres partiels et les rangs multivariés produisent directement un ordre.
+  La dernière famille ne produit pas de classement mais évalue ceux des autres.}
+  \label{fig:taxonomie}
+\end{figure}
+
+\bigskip
+
+Les deux premières familles se distinguent par le nombre d'hypothèses introduites. Les
+ordres partiels n'en introduisent aucune, au prix d'une incomparabilité assumée : deux
+unités dont les métriques ne concordent pas ne sont pas départagées. Les pondérations
+endogènes produisent un classement complet, au prix du postulat statistique correspondant.
+Les rangs multivariés occupent une position intermédiaire : ils ne fixent pas de poids,
+mais l'orientation du score, qui désigne la direction dans laquelle un point est considéré
+comme extrême, reste une convention.
+
+\bigskip
+
+\subsection{Plan}
+
+\medskip
+
+Le chapitre~\ref{sec:cadre} fixe le cadre et les notations, et définit les propriétés qui
+serviront de grille de lecture : dominance, monotonie, compensation, invariances,
+conventions de rang. Le chapitre~\ref{sec:pretraitement} décrit le prétraitement
+(orientation, traitement des queues de distribution, normalisation, diagnostics de
+corrélation), étape dont dépendent la plupart des méthodes ultérieures.
+
+\medskip
+
+Les chapitres~\ref{sec:ordres} à~\ref{sec:smaa} présentent les méthodes :
+ordres partiels et dominance (chapitre~\ref{sec:ordres}), pondérations endogènes
+(chapitre~\ref{sec:poids}), fonctions d'agrégation (chapitre~\ref{sec:agregation}), rangs
+multivariés par transport optimal (chapitre~\ref{sec:ot}) et incertitude sur les poids
+(chapitre~\ref{sec:smaa}).
+
+\medskip
+
+Le chapitre~\ref{sec:comparer} décrit les procédures de comparaison entre classements, de
+mesure de la stabilité et de construction d'un consensus. Le
+chapitre~\ref{sec:application} illustre l'ensemble sur un cas d'application. Les annexes
+rassemblent les notations (annexe~\ref{app:notations}), les algorithmes
+(annexe~\ref{app:algos}) et la correspondance avec une implémentation de référence
+(annexe~\ref{app:code}).
+
+%=======================================================================
+\section{Cadre et notations}
+\label{sec:cadre}
+%=======================================================================
+
+\medskip
+
+\subsection{Unités, métriques et groupes}
+
+\medskip
+
+Les objets classés sont appelés \emph{unités} ; les variables qui les décrivent sont
+appelées \emph{métriques}. Aucune hypothèse n'est faite sur la nature des unités : la
+seule exigence est que les $n$ unités considérées simultanément soient
+\emph{comparables}, au sens où les valeurs d'une même métrique y sont mesurées sur la même
+échelle et sont interprétables les unes par rapport aux autres.
+
+\medskip
+
+\begin{definition}[Groupe]
+  \label{def:groupe}
+  Un \emph{groupe} est un ensemble d'unités à l'intérieur duquel l'ordre est construit.
+  Toutes les quantités estimées à partir des données --- bornes de normalisation, poids,
+  moments, cartes de transport, pôles idéal et anti-idéal --- sont calculées à
+  l'intérieur d'un groupe et ne sont pas transportables d'un groupe à l'autre.
+\end{definition}
+
+\bigskip
+
+La notion de groupe est structurante. Une pondération endogène est une propriété de
+l'échantillon sur lequel elle est estimée : les poids obtenus sur deux groupes différents
+diffèrent, et les scores correspondants ne sont pas comparables entre groupes. Lorsqu'une
+comparaison entre groupes est recherchée, elle porte sur les rangs relatifs à l'intérieur
+de chaque groupe, ou sur un score estimé une seule fois sur la réunion des groupes.
+
+\bigskip
+
+\subsection{Notations}
+
+\medskip
+
+\begin{table}[htbp]
+  \centering
+  \small
+  \renewcommand{\arraystretch}{1.2}
+  \begin{tabularx}{\textwidth}{@{}l X@{}}
+    \toprule
+    \textbf{Symbole} & \textbf{Définition} \\
+    \midrule
+    $n$, $d$ & nombre d'unités (lignes) et de métriques (colonnes) d'un groupe \\
+    $[n] = \{1,\dots,n\}$ & indices des unités \\
+    $X = (x_{ij}) \in \R^{n\times d}$ & matrice brute ; $x_i \in \R^d$ la ligne $i$ ;
+      $x_{\cdot j}$ la colonne $j$ \\
+    $p \in \{-1,+1\}^d$ & polarités ; $\Xor = X\,\mathrm{diag}(p)$ la matrice orientée \\
+    $\tilde{X}$ & matrice orientée puis normalisée par le schéma $\nu$ \\
+    $Z$ & matrice orientée puis centrée-réduite \\
+    $x_i \pareto x_k$ & dominance de Pareto stricte sur $\Xor$
+      (définition~\ref{def:pareto}) \\
+    $\mathcal{F}_1$, $\mathcal{F}_\ell$, $\mathcal{F}_\varepsilon$ & front, couche $\ell$,
+      front $\varepsilon$ (sous-ensemble de $\mathcal{F}_1$) \\
+    $\delta(i)$, $\bar\delta(i)$ & comptage de dominance ; profondeur normalisée
+      $\delta/(n-1)$ \\
+    $\simplex$ & simplexe des poids
+      $\{w \in \R_+^d : \sum_j w_j = 1\}$ \\
+    $w$, $w^{(o)}$ & poids partagés ; poids individuels de l'unité $o$ \\
+    $s : \R^d \to \R$ & fonction de score, valeur élevée $=$ tête de classement \\
+    $r_i$ & rang de l'unité $i$, $r = 1$ pour la valeur la plus élevée, ex \ae quo moyennés \\
+    $\rho^S_{jk}$, $r_{jk}$ & corrélation de Spearman ; corrélation de Pearson \\
+    $R$, $\Sigma$, $\mu$ & matrice de corrélation ; covariance (robuste) ; centre (robuste) \\
+    $\lambda_m$, $a_m$, $\ell_{jm}$, $\ell'_{jm}$, $V_m$ & valeurs et vecteurs propres ;
+      saturations ; saturations après rotation ; variance d'un facteur après rotation \\
+    $x^+$, $x^-$ & pôles idéal et anti-idéal (quantiles marginaux $q^+$, $q^-$) \\
+    $\Unif_d$, $\Bball_d$, $\Sphere^{d-1}$ & loi sphérique uniforme ; boule unité ;
+      sphère unité \\
+    $\Tmap$, $\bar{\Tmap}_\varepsilon$ & carte \emph{center-outward} ; son estimateur
+      entropique hors échantillon \\
+    $\mathcal{R}(z) = \norm{\Tmap(z)}$, $\mathcal{S}(z) = \Tmap(z)/\norm{\Tmap(z)}$ &
+      rang et signe \emph{center-outward} \\
+    $u^*$, $\theta_0$, $\alpha$, $\hat{r}_\alpha$, $\hat{q}_{1-\alpha}$ & direction
+      d'intérêt ; demi-angle du cône ; niveau ; seuil radial ; seuil projeté \\
+    $\varepsilon$, $m$ & régularisation entropique ; taille de la grille de référence \\
+    $\tau_b$, $\tau_w$, $W$, $\mathrm{RBO}_p$, $J_k$ & Kendall ; Kendall pondéré ;
+      concordance ; \emph{rank-biased overlap} ; recouvrement des $k$ premiers \\
+    $V_{\mathrm{strict}}(s)$, $V_{\mathrm{tie}}(s)$ & taux d'inversions strictes ; taux
+      d'ex \ae quo sur les paires comparables \\
+    $B$, $T$ & nombre de tirages bootstrap ; nombre de tirages de poids \\
+    $\rho$ & borne des rapports de poids d'une région d'assurance \\
+    $\kappa$, $\delta$ & paramètre de parts ; plancher additif (option) \\
+    \bottomrule
+  \end{tabularx}
+  \caption{Notations employées dans l'ensemble de la note. Les symboles propres à une
+  méthode sont redéfinis au chapitre correspondant.}
+  \label{tab:notations}
+\end{table}
+
+\bigskip
+
+\subsection{Polarité et orientation}
+
+\medskip
+
+\begin{definition}[Polarité]
+  \label{def:polarite}
+  Une métrique $j$ est de \emph{polarité positive} lorsqu'une valeur élevée place l'unité
+  en tête du classement recherché, et de \emph{polarité négative} dans le cas contraire.
+  Le vecteur $p \in \{-1,+1\}^d$ rassemble les polarités.
+\end{definition}
+
+\bigskip
+
+L'ensemble des méthodes décrites suppose que toutes les métriques sont de polarité
+positive. L'\emph{orientation} est l'opération qui ramène la matrice brute à cette
+convention : $\Xor = X\,\mathrm{diag}(p)$, soit $\mathring{x}_{ij} = p_j\,x_{ij}$. Cette
+transformation est affine ; la section~\ref{sec:orientation} compare les variantes
+possibles et justifie ce choix.
+
+\bigskip
+
+\subsection{Dominance de Pareto}
+
+\medskip
+
+\begin{definition}[Dominance de Pareto]
+  \label{def:pareto}
+  Sur la matrice orientée $\Xor$, l'unité $i$ \emph{domine strictement} l'unité $k$, ce
+  qui se note $x_i \pareto x_k$, lorsque
+
+  \medskip
+
+  \[
+    \forall j \in [d],\ \mathring{x}_{ij} \ge \mathring{x}_{kj}
+    \quad \text{et} \quad
+    \exists j_0 \in [d],\ \mathring{x}_{ij_0} > \mathring{x}_{kj_0}.
+  \]
+
+  \bigskip
+
+  La \emph{dominance faible}, notée $x_i \paretoeq x_k$, retient la seule première
+  condition.
+\end{definition}
+
+\bigskip
+
+La relation $\pareto$ est un ordre strict partiel : elle est irréflexive, transitive et
+antisymétrique, mais non totale dès que $d \ge 2$. Deux unités dont les métriques ne
+concordent pas sont \emph{incomparables} au sens de $\pareto$. Géométriquement, $i$ domine
+$k$ si et seulement si $\mathring{x}_i$ appartient au cône $\mathring{x}_k + \R_+^d$ privé
+de son sommet.
+
+\medskip
+
+\begin{figure}[htbp]
+  \centering
+  \begin{tikzpicture}[scale=1.0]
+    \draw[->,thick,Gris] (0,0) -- (7.2,0) node[right,black,font=\small] {métrique $1$};
+    \draw[->,thick,Gris] (0,0) -- (0,5.0) node[above,black,font=\small] {métrique $2$};
+
+    % cône supérieur : points dominant x_i
+    \begin{scope}[opacity=0.16]
+      \fill[Bleu] (3.5,2.2) rectangle (7.0,4.8);
+    \end{scope}
+    % cône inférieur : points dominés par x_i
+    \begin{scope}[opacity=0.16]
+      \fill[Vert] (0.05,0.05) rectangle (3.5,2.2);
+    \end{scope}
+
+    \foreach \x/\y in {0.8/1.0, 1.5/0.6, 2.0/1.9, 2.9/1.2, 3.1/0.5, 2.6/2.2}
+      \fill[Vert] (\x,\y) circle (2.1pt);
+    \foreach \x/\y in {4.2/2.6, 5.4/3.1, 4.0/2.9, 6.1/2.4}
+      \fill[Bleu] (\x,\y) circle (2.1pt);
+    \foreach \x/\y in {1.2/2.4, 0.6/3.0, 2.4/3.0, 4.9/1.8, 5.9/0.9, 1.0/4.2}
+      \fill[Gris] (\x,\y) circle (2.1pt);
+
+    \draw[Bleu,thick,-{Stealth}] (3.5,2.2) -- (4.8,2.2);
+    \draw[Bleu,thick,-{Stealth}] (3.5,2.2) -- (3.5,3.5);
+    \fill[Rouge] (3.5,2.2) circle (2.8pt) node[below right,font=\scriptsize,black] {$x_i$};
+
+    \node[Bleu,font=\scriptsize,align=center] at (5.9,4.35)
+      {unités dominant $x_i$};
+    \node[Vert,font=\scriptsize,align=center] at (1.55,0.25)
+      {unités dominées par $x_i$};
+    \node[Gris,font=\scriptsize,align=center] at (1.35,3.55)
+      {incomparables};
+  \end{tikzpicture}
+  \caption{Cône de dominance en dimension $2$, les deux métriques étant orientées en
+  polarité positive. Le plan se partage en trois régions : le cône supérieur droit issu
+  de $x_i$ (unités qui le dominent), le cône inférieur gauche (unités qu'il domine) et les
+  deux quadrants restants (unités incomparables avec $x_i$). La proportion de la troisième
+  région croît rapidement avec $d$.}
+  \label{fig:cone}
+\end{figure}
+
+\bigskip
+
+\subsection{Monotonie stricte et monotonie faible}
+
+\medskip
+
+La compatibilité d'un score avec la dominance se décline en deux propriétés distinctes,
+qu'il est nécessaire de séparer : plusieurs méthodes vérifient la seconde sans vérifier la
+première, et la différence porte précisément sur le traitement des ex \ae quo.
+
+\medskip
+
+\begin{definition}[Monotonie stricte et monotonie faible]
+  \label{def:monotonie}
+  Une fonction de score $s : \R^d \to \R$ est
+
+  \medskip
+
+  \begin{itemize}[nosep,leftmargin=1.4em]
+    \item \emph{strictement monotone} pour $\pareto$ lorsque
+    $x_i \pareto x_k \Rightarrow s(x_i) > s(x_k)$ ;
+    \item \emph{faiblement monotone} lorsque
+    $x_i \pareto x_k \Rightarrow s(x_i) \ge s(x_k)$.
+  \end{itemize}
+\end{definition}
+
+\bigskip
+
+La monotonie stricte est la seule propriété exigible sans engager de jugement de valeur :
+elle formalise l'idée qu'une unité meilleure sur une métrique et non pire sur les autres
+ne peut pas être classée plus bas. Une somme pondérée à poids strictement positifs est
+strictement monotone ; la même somme avec un poids nul ne l'est que faiblement, puisque
+deux unités ne différant que sur la métrique de poids nul reçoivent le même score.
+
+\medskip
+
+\begin{remarque}[Conséquence pour les contrôles]
+  \label{rem:monotonie-controle}
+  La distinction entre les deux notions se traduit dans le contrôle de cohérence du
+  chapitre~\ref{sec:comparer} par deux quantités séparées : le taux d'inversions strictes
+  $V_{\mathrm{strict}}(s)$, qui compte les paires dominantes pour lesquelles
+  $s(x_i) < s(x_k)$, et le taux d'ex \ae quo $V_{\mathrm{tie}}(s)$, qui compte celles pour
+  lesquelles $s(x_i) = s(x_k)$. Une méthode faiblement monotone a
+  $V_{\mathrm{strict}} = 0$ et $V_{\mathrm{tie}} \ge 0$ ; leur confusion en un indicateur
+  unique rendrait incomparables des méthodes qui ne le sont pas pour la même raison.
+\end{remarque}
+
+\bigskip
+
+\subsection{Compensation}
+
+\medskip
+
+\begin{definition}[Compensation]
+  \label{def:compensation}
+  Une fonction d'agrégation $s$ est \emph{compensatoire} lorsqu'une dégradation sur une
+  coordonnée peut être intégralement compensée par une amélioration sur une autre,
+  c'est-à-dire lorsque, pour tout $x$, toute paire $(j,k)$ et toute perturbation
+  $-h$ sur la coordonnée $j$, il existe une perturbation $h'$ sur la coordonnée $k$
+  laissant $s$ inchangé.
+\end{definition}
+
+\bigskip
+
+La compensation est une propriété graduelle plutôt que binaire ; les exemples suivants en
+délimitent les extrêmes.
+
+\medskip
+
+\begin{itemize}[nosep,leftmargin=1.4em]
+  \item La somme pondérée $s(x) = \sum_j w_j x_j$ est totalement compensatoire : le taux
+  de substitution entre les métriques $j$ et $k$ vaut $w_k/w_j$, constant sur tout
+  l'espace.
+  \item L'ordre lexicographique n'est pas compensatoire : aucune amélioration sur la
+  deuxième coordonnée ne rattrape une dégradation sur la première.
+  \item La moyenne géométrique $s(x) = \prod_j x_j^{w_j}$ est partiellement
+  compensatoire : le taux de substitution dépend du point, et une coordonnée proche de
+  zéro ne peut plus être compensée.
+  \item Les indices à pénalité explicite, qui retranchent une fonction croissante de la
+  dispersion des coordonnées, et les méthodes fondées sur le regret maximal occupent des
+  positions intermédiaires paramétrables.
+\end{itemize}
+
+\bigskip
+
+Le degré de compensation admissible est un choix méthodologique et non une propriété des
+données. Il est explicité pour chaque méthode au chapitre correspondant, et fait partie
+des dimensions de comparaison du chapitre~\ref{sec:comparer}.
+
+\bigskip
+
+\subsection{Invariances}
+
+\medskip
+
+Trois familles de transformations servent à caractériser les méthodes. Une méthode est
+dite \emph{invariante} pour une transformation lorsque l'ordre qu'elle produit est
+inchangé lorsqu'on l'applique aux données.
+
+\medskip
+
+\begin{definition}[Invariances]
+  \label{def:invariances}
+  Soit $\mathcal{A}$ une méthode associant à $X$ un ordre sur $[n]$.
+
+  \medskip
+
+  \begin{itemize}[nosep,leftmargin=1.4em]
+    \item $\mathcal{A}$ est \emph{invariante affine par coordonnée} lorsque l'ordre est
+    inchangé par $x_{ij} \mapsto a_j x_{ij} + b_j$ pour tout $a_j > 0$ et $b_j \in \R$.
+    \item $\mathcal{A}$ est \emph{invariante monotone par coordonnée} lorsque l'ordre est
+    inchangé par $x_{ij} \mapsto g_j(x_{ij})$ pour toute fonction $g_j$ strictement
+    croissante. Cette invariance implique la précédente.
+    \item $\mathcal{A}$ est \emph{invariante par permutation des coordonnées} lorsque
+    l'ordre est inchangé lorsqu'on renumérote les métriques, c'est-à-dire lorsque la
+    méthode ne privilégie aucune métrique par construction.
+  \end{itemize}
+\end{definition}
+
+\bigskip
+
+L'invariance par permutation est vérifiée par toutes les méthodes considérées ici, ce qui
+est la traduction formelle de l'absence de hiérarchie \emph{a priori}. Les deux autres
+invariances les séparent nettement : la dominance de Pareto et tout ce qui s'en déduit
+sont invariants monotones ; les méthodes fondées sur la covariance sont invariantes
+affines mais pas monotones ; les méthodes fondées sur la normalisation min--max ne sont
+en général ni l'une ni l'autre, puisqu'elles dépendent des valeurs extrêmes observées.
+
+\bigskip
+
+\subsection{Rangs et ex \ae quo}
+
+\medskip
+
+\begin{definition}[Rang]
+  \label{def:rang}
+  Étant donné un score $s$ et un groupe de $n$ unités, le \emph{rang} $r_i$ de l'unité $i$
+  est sa position dans le tri décroissant de $(s(x_1),\dots,s(x_n))$ : la valeur la plus
+  élevée reçoit le rang $1$. Les unités de score égal reçoivent la \emph{moyenne} des
+  positions qu'elles occupent, de sorte que $\sum_i r_i = n(n+1)/2$ quelle que soit la
+  structure des ex \ae quo.
+\end{definition}
+
+\bigskip
+
+Cette convention, dite des rangs moyens, est celle qu'emploient les corrélations de
+Spearman et de Kendall corrigées des ex \ae quo. Elle est employée dans toute la note, y
+compris dans les normalisations par rangs de la section~\ref{sec:normalisation}, où les
+rangs sont pris dans l'ordre \emph{croissant} de la métrique orientée afin qu'une valeur
+élevée corresponde à une valeur normalisée élevée.
+
+\medskip
+
+\begin{remarque}[Ex \ae quo légitimes]
+  \label{rem:exaequo}
+  Les ex \ae quo ne sont pas tous des artefacts. Certaines méthodes en produisent par
+  construction : les scores à valeurs discrètes, les scores bornés atteints par plusieurs
+  unités, ou les rangs de couche du tri non dominé. D'autres en produisent par effet de
+  bord du prétraitement, notamment la winsorisation
+  (section~\ref{sec:queues}). La distinction est conservée dans tous les diagnostics.
+\end{remarque}
+
+%=======================================================================
+\section{Prétraitement}
+\label{sec:pretraitement}
+%=======================================================================
+
+\medskip
+
+Le prétraitement transforme la matrice brute $X$ en une matrice $\tilde{X}$ utilisable par
+les méthodes des chapitres suivants. Il comporte quatre opérations : l'orientation, le
+traitement éventuel des queues de distribution, la normalisation, et le calcul des
+diagnostics qui documentent la structure de corrélation. Ce n'est pas une étape neutre :
+le choix de normalisation modifie le classement final au même titre que le choix de la
+méthode d'agrégation, et relève à ce titre de l'analyse de sensibilité.
+
+\bigskip
+
+\subsection{Orientation}
+\label{sec:orientation}
+
+\medskip
+
+L'orientation ramène toutes les métriques en polarité positive
+(définition~\ref{def:polarite}). Pour une métrique de polarité négative, trois
+transformations sont couramment employées :
+
+\medskip
+
+\begin{itemize}[nosep,leftmargin=1.4em]
+  \item la \emph{négation} $x_{ij} \mapsto -x_{ij}$, affine et définie sans condition ;
+  \item le \emph{complément à la borne supérieure}
+  $x_{ij} \mapsto \max_k x_{kj} - x_{ij}$, affine également, mais dépendant d'une
+  statistique de l'échantillon, donc non transportable d'un groupe à l'autre ;
+  \item l'\emph{inversion} $x_{ij} \mapsto 1/x_{ij}$, définie pour une métrique
+  strictement positive, strictement décroissante mais non affine.
+\end{itemize}
+
+\bigskip
+
+Ces trois transformations induisent le même ordre marginal sur la métrique $j$, donc la
+même relation de dominance ; elles ne sont en revanche pas équivalentes pour les méthodes
+qui exploitent la structure de covariance. Seules les deux premières sont affines, et donc
+seules elles laissent invariants les résultats de l'analyse en composantes principales, de
+la distance de Mahalanobis et du transport optimal dans le cas elliptique. La négation est
+la seule des trois à ne dépendre d'aucune statistique de l'échantillon : c'est la variante
+retenue par défaut dans la suite, l'orientation étant alors $\Xor = X\,\mathrm{diag}(p)$.
+
+\bigskip
+
+\subsection{Queues de distribution}
+\label{sec:queues}
+
+\medskip
+
+Les métriques de concentration produisent fréquemment des distributions très
+asymétriques : une poignée d'unités atteignent des valeurs extrêmes tandis que la masse se
+concentre près de la borne inférieure. Trois attitudes sont possibles, chacune ayant un
+coût identifiable.
+
+\medskip
+
+\paragraph{Aucun traitement.} Les valeurs extrêmes sont conservées telles quelles. C'est
+le choix cohérent avec l'objectif lorsque les unités extrêmes sont précisément celles que
+le classement doit identifier. Son coût est que la normalisation min--max est alors pilotée
+par une seule unité par métrique, et que les méthodes fondées sur la covariance sont
+sensibles à quelques points de levier.
+
+\bigskip
+
+\paragraph{Winsorisation.} La transformation
+$x_{ij} \mapsto \min\!\big(x_{ij},\,\hat{F}_j^{-1}(q)\big)$ rabat les valeurs supérieures
+au quantile empirique d'ordre $q$ sur ce quantile. Elle stabilise les statistiques
+d'échelle et les estimateurs de covariance, mais elle a un coût direct sur la
+discrimination dans la queue haute, qui est l'objet même du classement.
+
+\medskip
+
+\begin{remarque}[Coût de la winsorisation en ex \ae quo]
+  \label{rem:winsor}
+  Après winsorisation au quantile $q$ puis normalisation min--max, les
+  $\lceil (1-q)\,n \rceil$ unités les plus élevées de chaque métrique reçoivent exactement
+  la valeur $1$. Pour $n = 5\,000$ et $q = 0{,}99$, cinquante unités sont ex \ae quo au
+  maximum de chaque métrique et ne sont plus départagées, métrique par métrique, par aucune
+  méthode compensatoire. La discrimination perdue l'est définitivement : aucune étape
+  ultérieure ne la restaure. La winsorisation est donc désactivée par défaut ($q$ non
+  renseigné) ; lorsqu'elle est activée, la valeur de $q$ est rapportée avec le nombre
+  d'ex \ae quo induits.
+\end{remarque}
+
+\bigskip
+
+\paragraph{Transformation monotone.} Une transformation strictement croissante appliquée
+coordonnée par coordonnée --- $\log(1+x)$, racine carrée, transformation de Box--Cox dont
+le paramètre est estimé par maximum de vraisemblance --- réduit l'asymétrie sans créer
+d'ex \ae quo. Elle est adaptée lorsque l'objectif est de stabiliser les estimateurs de
+covariance tout en conservant l'ordre marginal complet. Son coût est une modification des
+écarts cardinaux, donc des taux de substitution implicites d'une somme pondérée.
+
+\bigskip
+
+\begin{remarque}[Invariance de la dominance]
+  \label{rem:invariance-front}
+  Une transformation strictement croissante appliquée coordonnée par coordonnée laisse la
+  relation $\pareto$ inchangée : la dominance ne dépend que des ordres marginaux. Le front
+  de Pareto, les couches et le comptage de dominance
+  (chapitre~\ref{sec:ordres}) sont donc insensibles au choix entre « aucun traitement » et
+  « transformation monotone », ainsi qu'au choix du schéma de normalisation. La
+  winsorisation fait exception : elle n'est pas strictement croissante, elle crée des
+  ex \ae quo, et elle modifie donc la relation de dominance elle-même.
+\end{remarque}
+
+\bigskip
+
+\subsection{Schémas de normalisation}
+\label{sec:normalisation}
+
+\medskip
+
+La normalisation ramène les $d$ métriques sur une échelle commune. Elle est nécessaire dès
+lors qu'une méthode combine les coordonnées, et le schéma retenu détermine les invariances
+disponibles ainsi que les méthodes admissibles en aval.
+
+\medskip
+
+\begin{table}[htbp]
+  \centering
+  \scriptsize
+  \renewcommand{\arraystretch}{1.35}
+  \begin{tabularx}{\textwidth}{@{}l l Y l Y@{}}
+    \toprule
+    \textbf{Schéma} & \textbf{Formule} & \textbf{Effet} & \textbf{Invariances} &
+    \textbf{Méthodes compatibles} \\
+    \midrule
+    Min--max &
+    $\tilde{x}_{ij} = \dfrac{\mathring{x}_{ij} - \min_k \mathring{x}_{kj}}
+                            {\max_k \mathring{x}_{kj} - \min_k \mathring{x}_{kj}}$ &
+    Borne dans $[0,1]$ et conserve les écarts relatifs ; une seule unité atypique comprime
+    toute la métrique &
+    affine &
+    entropie, CRITIC, \emph{benefit of the doubt}, moyenne géométrique, indices à
+    pénalité, TOPSIS, VIKOR \\
+    Centrage--réduction &
+    $\tilde{x}_{ij} = \dfrac{\mathring{x}_{ij} - \bar{x}_j}{\sigma_j}$ &
+    Égalise les variances, donc égalise implicitement les poids d'une somme ; non borné,
+    conserve l'asymétrie &
+    affine &
+    ACP, Mahalanobis, projection blanchie, transport optimal \\
+    Robuste &
+    $\tilde{x}_{ij} = \dfrac{\mathring{x}_{ij} - \med_j}{\MAD_j}$ &
+    Comme la précédente, mais insensible aux valeurs extrêmes ; adaptée aux distributions
+    très asymétriques &
+    affine &
+    ACP, Mahalanobis, projection blanchie, transport optimal \\
+    Rangs &
+    $\tilde{x}_{ij} = \dfrac{\rg(\mathring{x}_{ij}) - 1}{n-1}$ &
+    Détruit l'information cardinale : un écart important et un écart infime deviennent
+    identiques ; borne dans $[0,1]$ &
+    monotone &
+    toutes ; seul schéma rendant le classement invariant par transformation monotone \\
+    Quantile gaussien &
+    $\tilde{x}_{ij} = \Phi^{-1}\!\Big(\dfrac{\rg(\mathring{x}_{ij}) - 1/2}{n}\Big)$ &
+    Marges gaussiennes, structure de dépendance (copule) préservée ; non borné &
+    monotone &
+    ACP, Mahalanobis, transport optimal \\
+    \bottomrule
+  \end{tabularx}
+  \caption{Schémas de normalisation. Les rangs sont pris dans l'ordre croissant de la
+  métrique orientée, ex \ae quo moyennés. Aucun schéma n'est neutre : le
+  centrage--réduction constitue déjà une pondération implicite, puisqu'il égalise la
+  contribution de chaque métrique à la variance d'une somme non pondérée.}
+  \label{tab:normalisation}
+\end{table}
+
+\bigskip
+
+Deux contraintes fixent le schéma admissible pour une méthode donnée. La première est le
+\emph{signe} : les méthodes exigeant des données positives --- moyenne géométrique,
+indices à pénalité, \emph{benefit of the doubt} --- n'admettent que les schémas bornés
+dans $[0,1]$. La seconde est la \emph{translation} : les pondérations par entropie
+dépendent de l'origine de l'échelle, ce qui exclut les schémas centrés. À l'inverse, les
+méthodes fondées sur la covariance perdent leur interprétation sur des données min--max,
+dont les variances marginales sont pilotées par l'étendue observée.
+
+\bigskip
+
+\subsection{Diagnostics de corrélation}
+\label{sec:diagnostics}
+
+\medskip
+
+La structure de corrélation des métriques normalisées conditionne l'adéquation des
+familles de méthodes. Quatre diagnostics la résument ; ils sont calculés sur la matrice de
+corrélation de Spearman $\rho^S = (\rho^S_{jk})$, qui ne dépend que des ordres marginaux
+et reste donc stable sous transformation monotone et en présence de valeurs extrêmes.
+
+\medskip
+
+\paragraph{Corrélation moyenne.} La statistique
+$\bar{\rho} = \tfrac{2}{d(d-1)} \sum_{j<k} \abs{\rho^S_{jk}}$ résume l'intensité de la
+redondance entre métriques. Une valeur proche de $0$ indique des métriques quasi
+indépendantes ; une valeur élevée indique que les métriques mesurent en grande partie la
+même chose, et qu'une somme pondérée compte alors plusieurs fois la même information.
+
+\bigskip
+
+\paragraph{Indice KMO.} L'indice de \citet{kaiser1974} compare les corrélations simples
+aux corrélations partielles :
+
+\medskip
+
+\[
+  \mathrm{KMO} =
+  \frac{\sum_{j \ne k} r_{jk}^2}{\sum_{j \ne k} r_{jk}^2 + \sum_{j \ne k} \pi_{jk}^2},
+\]
+
+\bigskip
+
+où $\pi_{jk}$ est la corrélation partielle entre les métriques $j$ et $k$, les autres
+étant contrôlées. Une valeur élevée signale que les corrélations observées s'expliquent
+par un petit nombre de facteurs communs, et donc qu'une pondération de type factoriel est
+identifiable ; une valeur faible signale que les corrélations sont essentiellement des
+liens deux à deux, situation dans laquelle un modèle factoriel n'apporte rien.
+
+\bigskip
+
+\paragraph{Test de sphéricité de Bartlett.} Le test de \citet{bartlett1951} compare la
+matrice de corrélation à l'identité, au moyen de la statistique
+
+\medskip
+
+\[
+  \chi^2 = -\Big(n - 1 - \tfrac{2d+5}{6}\Big)\,\ln \det R,
+  \qquad \text{de loi } \chi^2 \text{ à } \tfrac{d(d-1)}{2} \text{ degrés de liberté.}
+\]
+
+\bigskip
+
+Le non-rejet indique une matrice de corrélation compatible avec l'indépendance, donc
+l'absence de structure factorielle à extraire. Sur les grands échantillons, le test
+rejette presque systématiquement ; sa lecture est alors principalement qualitative et
+l'indice KMO est plus informatif.
+
+\bigskip
+
+\paragraph{Lecture conjointe.} Les trois configurations suivantes appellent des familles de
+méthodes différentes.
+
+\medskip
+
+\begin{itemize}[nosep,leftmargin=1.4em]
+  \item \textbf{Métriques fortement corrélées} ($\bar{\rho}$ élevé, KMO élevé). Une somme
+  pondérée surpondère de fait le mécanisme commun. Les méthodes qui décorrèlent
+  explicitement --- analyse en composantes principales, distance de Mahalanobis, CRITIC,
+  transport optimal --- sont adaptées à cette configuration.
+  \item \textbf{Métriques quasi indépendantes} ($\bar{\rho}$ faible, KMO faible).
+  L'analyse en composantes principales n'a pas d'axe dominant et son premier axe est
+  instable. Les pondérations par dispersion et les ordres partiels sont adaptés, mais le
+  front de Pareto est alors volumineux (chapitre~\ref{sec:ordres}).
+  \item \textbf{Corrélations négatives marquées.} Les métriques décrivent des mécanismes
+  antagonistes, et la réduction à un score unique perd une part importante de
+  l'information. Plusieurs scores thématiques, ou une méthode admettant
+  l'incomparabilité, sont alors plus fidèles aux données.
+\end{itemize}
+
+\bigskip
+
+\subsection{Algorithme de prétraitement}
+
+\medskip
+
+\begin{algorithm}[htbp]
+  \caption{Prétraitement}
+  \label{algo:pretraitement}
+  \begin{algorithmic}[1]
+    \Require matrice brute $X \in \R^{n \times d}$ ; polarités $p \in \{-1,+1\}^d$ ;
+      quantile de winsorisation $q$ (éventuellement non renseigné) ; transformation
+      monotone $g$ (éventuellement l'identité) ; schéma de normalisation $\nu$
+    \Ensure matrice normalisée $\tilde{X}$ ; matrice de corrélation $\rho^S$ ;
+      diagnostics $(\bar{\rho},\mathrm{KMO},\chi^2)$
+    \State écarter les lignes comportant au moins une valeur manquante, et signaler leur
+      nombre \Comment{Convention de lignes complètes}
+    \For{$j = 1$ \textbf{à} $d$}
+      \State $\mathring{x}_{\cdot j} \gets p_j \cdot x_{\cdot j}$
+        \Comment{Orientation en polarité positive}
+      \If{$q$ est renseigné}
+        \State $\mathring{x}_{\cdot j} \gets
+          \min\!\big(\mathring{x}_{\cdot j},\, \hat{F}_j^{-1}(q)\big)$
+        \Comment{Winsorisation ; le nombre d'ex \ae quo créés est rapporté}
+      \EndIf
+      \State $\mathring{x}_{\cdot j} \gets g(\mathring{x}_{\cdot j})$
+        \Comment{Transformation monotone éventuelle}
+      \If{$\mathring{x}_{\cdot j}$ est constante}
+        \State signaler la colonne $j$ et l'exclure des méthodes qui divisent par son
+          échelle
+      \EndIf
+      \State $\tilde{x}_{\cdot j} \gets \nu(\mathring{x}_{\cdot j})$
+        \Comment{Schéma retenu, table~\ref{tab:normalisation}}
+    \EndFor
+    \State $\rho^S \gets \operatorname{corr}_{\text{Spearman}}(\tilde{X})$
+    \State $\bar{\rho} \gets \frac{2}{d(d-1)}\sum_{j<k} \abs{\rho^S_{jk}}$ ;
+      calculer $\mathrm{KMO}$ et la statistique de Bartlett
+    \State \Return $\tilde{X}$, $\rho^S$, $(\bar{\rho},\mathrm{KMO},\chi^2)$
+  \end{algorithmic}
+\end{algorithm}
+
+\bigskip
+
+L'ordre des opérations n'est pas indifférent. L'orientation précède tout le reste, afin
+que les quantiles et les statistiques d'échelle soient calculés sur des colonnes déjà
+mises en polarité positive. La winsorisation précède la normalisation, faute de quoi les
+bornes min--max seraient fixées par des valeurs ultérieurement rabattues. Les diagnostics
+sont calculés après normalisation, mais leur valeur ne dépend du schéma que pour les
+statistiques fondées sur Pearson : la matrice de Spearman est invariante pour tous les
+schémas de la table~\ref{tab:normalisation} à l'exception de la winsorisation.
+
+%=======================================================================
+\section{Ordres partiels et dominance}
+\label{sec:ordres}
+%=======================================================================
+
+% À rédiger : prompt P13
+
+%=======================================================================
+\section{Pondérations endogènes}
+\label{sec:poids}
+%=======================================================================
+
+% À rédiger : prompt P13
+
+%=======================================================================
+\section{Fonctions d'agrégation}
+\label{sec:agregation}
+%=======================================================================
+
+% À rédiger : prompt P14
+
+%=======================================================================
+\section{Rangs multivariés par transport optimal}
+\label{sec:ot}
+%=======================================================================
+
+% À rédiger : prompt P15
+
+%=======================================================================
+\section{Incertitude sur les poids}
+\label{sec:smaa}
+%=======================================================================
+
+% À rédiger : prompt P14
+
+%=======================================================================
+\section{Comparer et contrôler}
+\label{sec:comparer}
+%=======================================================================
+
+% À rédiger : prompt P16
+
+%=======================================================================
+\section{Application}
+\label{sec:application}
+%=======================================================================
+
+% À rédiger : prompt P16
+
+%=======================================================================
+\appendix
+%=======================================================================
+
+%=======================================================================
+\section{Notations}
+\label{app:notations}
+%=======================================================================
+
+% À rédiger : prompt P16 (reprise récapitulative de la table~\ref{tab:notations})
+
+%=======================================================================
+\section{Algorithmes récapitulatifs}
+\label{app:algos}
+%=======================================================================
+
+% À rédiger : prompt P16
+
+%=======================================================================
+\section{Correspondance document -- code}
+\label{app:code}
+%=======================================================================
+
+% À rédiger : prompt P16
+
+%=======================================================================
+% Annexe D — bibliographie (le titre est produit par \bibsection, redéfini
+% dans le préambule pour que l'annexe soit numérotée comme les autres).
+%=======================================================================
+
+\nocite{*}
+\bibliographystyle{plainnat}
+\bibliography{bibliography}
+
+\end{document}
