@@ -5139,18 +5139,1333 @@ compensation. Faire varier conjointement les deux --- le vecteur de poids et la 
 --- relève des procédures de comparaison du chapitre~\ref{sec:comparer}.
 
 %=======================================================================
-\section{Comparer et contrôler}
+\section{Comparer les synthèses et contrôler leur cohérence}
 \label{sec:comparer}
 %=======================================================================
 
-% À rédiger : prompt P16
+\medskip
+
+Chacune des familles décrites aux chapitres~\ref{sec:ordres} à~\ref{sec:smaa} produit un
+ordre sur le même groupe d'unités. Rien ne garantit que ces ordres concordent, et c'est
+précisément leur désaccord qui porte l'information la plus utile : il sépare la part du
+résultat qui tient aux données de celle qui tient au choix de méthode. Un classement
+publié sans cette mesure de désaccord affirme davantage que ce que les données autorisent.
+
+\medskip
+
+Le présent chapitre décrit un protocole de contrôle en cinq questions, indépendantes les
+unes des autres et calculables toutes à partir des seules sorties des chapitres
+précédents : les vecteurs de score $s^{(1)},\dots,s^{(K)}$ des $K$ méthodes retenues, les
+rangs $r^{(a)} = \rg(-s^{(a)})$ qui s'en déduisent, et la matrice orientée $\Xor$ qui
+fournit la relation de dominance. Les questions vont du désaccord global (Q1) au désaccord
+en tête de classement (Q2), puis à la cohérence avec le seul ordre non conventionnel dont
+on dispose (Q3), à la stabilité (Q4) et enfin à la valeur ajoutée de la synthèse
+elle-même (Q5). Les trois dernières sections décrivent ce qui se construit à partir de ces
+réponses : un classement consensus, une liste d'unités litigieuses, et --- lorsqu'un
+critère externe existe --- une validation qui change la nature de l'exercice.
+
+\medskip
+
+\begin{figure}[htbp]
+  \centering
+  \begin{tikzpicture}[
+    node distance=0.55cm and 1.0cm,
+    bloc/.style={draw=Bleu,fill=Bleu!6,rounded corners=2pt,align=center,font=\small,
+                minimum height=1.0cm,text width=3.6cm,inner sep=4pt},
+    outil/.style={font=\scriptsize,Gris,text width=3.6cm,align=right},
+    fl/.style={-{Stealth[length=2.5mm]},Gris,thick}
+  ]
+    \node[bloc] (q1) {\textbf{Q1} --- Les classements\\ sont-ils d'accord ?};
+    \node[bloc,below=of q1] (q2) {\textbf{Q2} --- D'accord\\ \emph{en tête} ?};
+    \node[bloc,below=of q2] (q3) {\textbf{Q3} --- Cohérents avec\\ la dominance ?};
+    \node[bloc,below=of q3] (q4) {\textbf{Q4} --- Stables au\\ rééchantillonnage ?};
+    \node[bloc,below=of q4] (q5) {\textbf{Q5} --- Non réductibles\\ à une seule métrique ?};
+    \foreach \a/\b in {q1/q2,q2/q3,q3/q4,q4/q5} \draw[fl] (\a) -- (\b);
+
+    \node[outil,left=0.35cm of q1] {$\tau_b$, $W$, déplacement moyen\\ de rang, CAH sur $1-\tau_b$};
+    \node[outil,left=0.35cm of q2] {$J_k$, $\mathrm{RBO}_p$, $\tau_w$};
+    \node[outil,left=0.35cm of q3] {$V_{\mathrm{strict}}$, $V_{\mathrm{tie}}$,\\ rang des membres du front};
+    \node[outil,left=0.35cm of q4] {bootstrap d'ajustement,\\ SMAA, indices de Sobol};
+    \node[outil,left=0.35cm of q5] {$\tau_b(s, \tilde{x}_{\cdot j})$,\\ \emph{leave-one-metric-out}};
+
+    \node[bloc,fill=Vert!8,draw=Vert,right=1.9cm of q3,text width=3.9cm]
+        (res) {\textbf{Synthèse}\\ classement consensus\\ $+$ intervalles de rang\\ $+$ unités litigieuses};
+    \draw[fl] (q1.east) to[out=0,in=90] (res.north);
+    \draw[fl] (q3.east) -- (res.west);
+    \draw[fl] (q5.east) to[out=0,in=270] (res.south);
+  \end{tikzpicture}
+  \caption{Protocole de contrôle de cohérence. Les cinq questions sont indépendantes ;
+  seules Q1, Q3 et Q5 alimentent directement le livrable, Q2 et Q4 en qualifiant la
+  portée.}
+  \label{fig:protocole}
+\end{figure}
+
+\bigskip
+
+%-----------------------------------------------------------------------
+\subsection{Q1 --- Concordance globale des classements}
+\label{sec:q1}
+
+\medskip
+
+Soient $r^{(a)}, r^{(b)} \in \R^n$ les vecteurs de rangs produits par deux méthodes $a$ et
+$b$ sur le même groupe, ex \ae quo moyennés. La première question est celle de leur accord
+sur l'ensemble du classement.
+
+\bigskip
+
+\paragraph{Corrélation de rangs.} Le $\tau_b$ de Kendall \citep{kendall1948} est préféré
+au $\rho$ de Spearman dans ce contexte pour trois raisons : il s'interprète directement
+comme une différence entre proportions de paires concordantes et discordantes, il admet une
+correction d'ex \ae quo explicite, et il est moins sensible que $\rho$ aux écarts affectant
+les rangs médians, dont l'usage opérationnel se soucie peu. Pour deux vecteurs de rangs,
+
+\medskip
+
+\[
+  \tau_b(r^{(a)}, r^{(b)})
+  = \frac{C - D}{\sqrt{(C + D + T_a)(C + D + T_b)}},
+\]
+
+\bigskip
+
+où $C$ et $D$ comptent les paires $\{i,k\}$ concordantes et discordantes, $T_a$ le nombre
+de paires ex \ae quo dans $r^{(a)}$ seul et $T_b$ dans $r^{(b)}$ seul. La quantité varie
+dans $[-1,1]$, vaut $1$ pour deux classements identiques et $0$ pour deux classements
+indépendants.
+
+\bigskip
+
+\paragraph{Matrice de concordance et classification.} La matrice
+$M^\tau = \big(\tau_b(r^{(a)}, r^{(b)})\big)_{1 \le a,b \le K}$ rassemble toutes les paires
+de méthodes. Sa lecture directe est peu commode dès que $K$ dépasse la dizaine ; une
+classification ascendante hiérarchique sur la dissimilarité $1 - \tau_b$, avec agrégation
+par lien moyen, en donne une lecture structurée. Les groupes obtenus recoupent en général
+les grandes options méthodologiques --- compensatoire ou non, décorrélée ou non, fondée sur
+les rangs ou sur les valeurs --- et non les différences de nom entre méthodes. Le nombre de
+groupes obtenu en coupant le dendrogramme à une dissimilarité fixée (par exemple $0{,}2$,
+soit $\tau_b \ge 0{,}8$ à l'intérieur d'un groupe) est un résumé commode : un seul groupe
+signifie que le choix de méthode est de second ordre, plusieurs groupes bien séparés
+signifient qu'il ne l'est pas.
+
+\bigskip
+
+\paragraph{Concordance d'ensemble.} Le coefficient $W$ de Kendall mesure l'accord simultané
+des $K$ classements, sans passer par les paires de méthodes. Avec
+$R^{\Sigma}_i = \sum_{a=1}^{K} r^{(a)}_i$ la somme des rangs de l'unité $i$, la version
+corrigée des ex \ae quo est
+
+\medskip
+
+\[
+  W = \frac{12\,S}{K^2(n^3-n) - K\sum_{a=1}^{K} T'_a},
+  \qquad
+  S = \sum_{i=1}^{n} \Big(R^{\Sigma}_i - \tfrac{K(n+1)}{2}\Big)^2,
+  \qquad
+  T'_a = \sum_{g} \big(t_{ag}^3 - t_{ag}\big),
+\]
+
+\bigskip
+
+la somme intérieure portant sur les groupes $g$ d'ex \ae quo du classement $a$, de
+cardinaux $t_{ag}$. Le terme soustractif est nul lorsqu'aucun classement ne comporte
+d'ex \ae quo, et l'expression se réduit alors à la forme usuelle
+$12S / \big(K^2 n(n^2-1)\big)$. L'omission de cette correction sous-estime $W$ dès qu'une
+méthode produit des ex \ae quo massifs, ce qui est le cas du comptage de dominance sur de
+petits groupes et du \emph{benefit of the doubt} saturé à $1$. Le coefficient varie dans
+$[0,1]$ et vaut $1$ pour un accord parfait.
+
+\medskip
+
+Un $W$ élevé indique que la question du choix de méthode est secondaire et qu'un classement
+unique peut être rapporté ; un $W$ faible indique qu'aucun classement unique ne devrait
+l'être sans mention explicite de son indétermination.
+
+\bigskip
+
+\paragraph{Déplacement moyen de rang.} La mesure la plus lisible pour un lecteur non
+statisticien, et celle que retient le \emph{Handbook} des indicateurs composites
+\citep{nardo2008}, est le déplacement moyen :
+
+\medskip
+
+\[
+  \bar{R}_{a\to b} = \frac{1}{n}\sum_{i=1}^{n} \abs{r^{(a)}_i - r^{(b)}_i}.
+\]
+
+\bigskip
+
+Elle s'énonce en clair --- « en changeant de méthode, une unité se déplace en moyenne de
+tant de places » --- et se rapporte utilement en fraction de $n$, un déplacement de
+$50$ places n'ayant pas la même portée dans un groupe de $30$ unités et dans un groupe de
+$10^5$.
+
+\bigskip
+
+%-----------------------------------------------------------------------
+\subsection{Q2 --- Concordance en tête de classement}
+\label{sec:q2}
+
+\medskip
+
+Le $\tau_b$ global est trompeur pour un usage opérationnel : seuls les premiers rangs sont
+exploités, et deux classements peuvent afficher $\tau_b = 0{,}9$ tout en ne partageant que
+la moitié de leurs cinquante premières unités. Le désaccord se concentre en effet là où les
+scores sont les plus proches --- la queue de la distribution --- alors que l'attention se
+porte sur l'autre extrémité.
+
+\bigskip
+
+\paragraph{Recouvrement des $k$ premiers.} En notant $\mathcal{T}^{(a)}_k$ l'ensemble des
+$k$ unités de tête du classement $a$,
+
+\medskip
+
+\[
+  J_k(a,b) = \frac{\abs{\mathcal{T}^{(a)}_k \cap \mathcal{T}^{(b)}_k}}{k} \in [0,1].
+\]
+
+\bigskip
+
+Tracée en fonction de $k$, la courbe $k \mapsto J_k(a,b)$ montre à partir de quelle
+profondeur les méthodes commencent à s'accorder. Trois profondeurs suffisent en pratique à
+la résumer : une profondeur d'action (les unités effectivement traitables), une profondeur
+de veille, et une profondeur de contrôle.
+
+\bigskip
+
+\paragraph{\emph{Rank-biased overlap}.} Le RBO \citep{webber2010} agrège ces recouvrements
+en pondérant géométriquement les profondeurs, ce qui donne beaucoup plus de poids aux
+premiers rangs :
+
+\medskip
+
+\[
+  \mathrm{RBO}_p(a,b) = (1-p)\sum_{k \ge 1} p^{\,k-1}\, J_k(a,b),
+  \qquad p \in (0,1).
+\]
+
+\bigskip
+
+Le paramètre de persistance $p$ --- sans rapport avec le vecteur de polarités, la collision
+de notation étant héritée de l'article d'origine --- se règle par la profondeur d'intérêt :
+l'espérance du rang examiné vaut $1/(1-p)$, de sorte que $p = 0{,}98$ centre l'attention
+sur les cinquante premiers. La somme est tronquée à la profondeur $n$ plutôt
+qu'extrapolée ; l'approximation est négligeable dès que $n \gg 1/(1-p)$, la pondération
+géométrique rendant la contribution de la queue profonde arbitrairement petite.
+
+\bigskip
+
+\paragraph{$\tau$ de Kendall pondéré.} Le RBO opère sur des listes tronquées et ignore les
+ex \ae quo ; le $\tau$ pondéré de \citet{vigna2015} répond à la même préoccupation en
+restant une corrélation de rangs sur la totalité du groupe. Une fonction de poids
+décroissante $\omega$ est attachée aux rangs, et chaque paire reçoit le poids additif
+$v_{ik} = \omega(r_i) + \omega(r_k)$ :
+
+\medskip
+
+\[
+  \tau_w(r^{(a)}, r^{(b)}) =
+  \frac{\sum_{i<k} v_{ik}\,
+        \mathrm{sgn}\big(r^{(a)}_k - r^{(a)}_i\big)\,
+        \mathrm{sgn}\big(r^{(b)}_k - r^{(b)}_i\big)}
+       {\sum_{i<k} v_{ik}} .
+\]
+
+\bigskip
+
+Le choix hyperbolique $\omega(r) = 1/(r+1)$ est celui de l'article : il n'introduit aucune
+profondeur de coupure, contrairement à $k$ dans $J_k$ et à $p$ dans le RBO, et donne un
+poids décroissant mais jamais nul aux rangs profonds. La définition ci-dessus dépend du
+classement dont les rangs alimentent $\omega$ ; la version symétrique, retenue ici, est la
+moyenne des deux versions obtenues en échangeant $a$ et $b$. L'indicateur est donc le
+complément naturel du RBO pour Q2 : même sensibilité à la tête, aucun paramètre à fixer.
+
+\bigskip
+
+%-----------------------------------------------------------------------
+\subsection{Q3 --- Cohérence avec la dominance}
+\label{sec:q3}
+
+\medskip
+
+C'est le seul contrôle du protocole qui ne repose sur aucune convention et qui puisse
+invalider une méthode à lui seul. Toutes les autres questions mesurent des désaccords entre
+constructions également arbitraires ; celle-ci confronte chaque score à l'ordre partiel de
+la définition~\ref{def:pareto}, qui ne dépend ni d'une normalisation, ni d'une pondération,
+ni d'une fonction d'agrégation.
+
+\medskip
+
+\begin{definition}[Taux de violation de la dominance]
+  \label{def:violation}
+  Soit $\mathcal{D} = \{(i,k) \in [n]^2 : x_i \pareto x_k\}$ l'ensemble des paires
+  ordonnées comparables au sens de la dominance stricte. Les taux de violation d'un score
+  $s$ sont
+
+  \medskip
+
+  \[
+    V_{\mathrm{strict}}(s) = \frac{1}{\abs{\mathcal{D}}}
+      \sum_{(i,k)\in\mathcal{D}} \ind{s(x_i) < s(x_k)},
+    \qquad
+    V_{\mathrm{tie}}(s) = \frac{1}{\abs{\mathcal{D}}}
+      \sum_{(i,k)\in\mathcal{D}} \ind{s(x_i) = s(x_k)}.
+  \]
+
+  \bigskip
+
+  Les deux quantités valent $\mathrm{NaN}$ lorsque $\mathcal{D}$ est vide, c'est-à-dire
+  lorsque aucune paire d'unités n'est comparable.
+\end{definition}
+
+\bigskip
+
+La séparation des deux taux n'est pas cosmétique. Un score strictement monotone au sens de
+la définition~\ref{def:monotonie} vérifie $V_{\mathrm{strict}} = V_{\mathrm{tie}} = 0$ ; un
+score seulement faiblement monotone vérifie $V_{\mathrm{strict}} = 0$ et
+$V_{\mathrm{tie}} \ge 0$. Confondre les deux, comme le fait le comptage
+$\ind{s(x_i) \le s(x_k)}$, pénalise toute méthode produisant des ex \ae quo légitimes ---
+le \emph{benefit of the doubt} saturé à $1$ sur le front (propriété~\ref{prop:bod-front}),
+les scores discrets comme le comptage de dominance, le quantile de cône à faible nombre de
+tirages --- et rend le diagnostic inutilisable pour ces méthodes. Seul
+$V_{\mathrm{strict}} > 0$ constitue une anomalie ; $V_{\mathrm{tie}} > 0$ mesure la part de
+l'ordre de dominance que le score laisse indécise, ce qui est une information et non un
+défaut.
+
+\bigskip
+
+\paragraph{Comportement attendu par famille.} Le tableau~\ref{tab:agregation-recap}
+récapitule les propriétés de monotonie ; elles se traduisent directement en prédictions sur
+les taux de violation :
+
+\medskip
+
+\begin{itemize}[nosep,leftmargin=1.4em]
+  \item $V_{\mathrm{strict}} = 0$ garanti pour le comptage de dominance, la somme pondérée
+  à poids strictement positifs, la moyenne géométrique, le rang moyen, TOPSIS, VIKOR et le
+  \emph{benefit of the doubt} ;
+  \item $V_{\mathrm{strict}} > 0$ possible pour la projection sur l'axe $1$ de l'ACP et
+  pour la distance de Mahalanobis, dès qu'apparaît une saturation négative ou un poids
+  implicite négatif (remarque~\ref{rem:maha-norme}) ;
+  \item $V_{\mathrm{strict}} > 0$ structurellement pour l'indice à pénalité de
+  déséquilibre (avertissement~\ref{av:mpi-monotonie}) et pour le score de Kantorovitch
+  orienté, dont la carte est monotone \emph{cycliquement} mais non coordonnée par
+  coordonnée.
+\end{itemize}
+
+\bigskip
+
+Un taux strictement positif n'est donc pas en soi un motif d'exclusion pour ces deux
+dernières familles : il est la contrepartie assumée d'une propriété recherchée --- la
+pénalisation du déséquilibre pour l'une, la prise en compte de la géométrie du nuage pour
+l'autre. L'examen porte alors sur la nature des paires concernées. Des violations
+concentrées sur des paires quasi indifférentes, dont les écarts sont inférieurs à
+l'incertitude d'estimation des métriques, sont sans portée pratique ; des violations
+touchant des paires nettement séparées signalent une méthode inadaptée au groupe.
+
+\bigskip
+
+\paragraph{Coût et estimation.} Le calcul exact matérialise la matrice de dominance
+$(n,n)$ et coûte $O(n^2 d)$ en temps et $O(n^2)$ en mémoire, hors de portée au-delà de
+quelques dizaines de milliers d'unités. Au-delà d'un seuil, les taux sont estimés sur un
+échantillon aléatoire de paires : le tirage uniforme de $N$ paires $\{i,k\}$, la
+conservation de celles qui se trouvent comparables, et le comptage des inversions et des
+ex \ae quo parmi elles fournissent un estimateur sans biais des deux taux, dont l'erreur
+type est de l'ordre de $\abs{\mathcal{D}_N}^{-1/2}$ où $\mathcal{D}_N$ est le nombre de
+paires comparables rencontrées.
+
+\bigskip
+
+\paragraph{Contrôle associé : le rang des membres du front.} Le taux de violation est une
+statistique de paires ; il ne dit rien de l'endroit où le classement place les unités non
+dominées. Le rang médian et le rang maximal des membres de $\mathcal{F}_1$ complètent le
+diagnostic. Une unité non dominée --- qu'aucune autre ne surpasse sur toutes les
+métriques --- placée au trois-millième rang signale un score dont la pondération a
+neutralisé la métrique même sur laquelle cette unité se distingue. La lecture doit
+toutefois tenir compte du cardinal du front : par la propriété~\ref{prop:cardinal}, un
+front volumineux --- beaucoup de métriques, peu d'unités --- pousse mécaniquement son rang
+médian vers le milieu du classement, sans qu'aucune méthode soit en cause. Le rang maximal
+est le plus informatif des deux, car il identifie l'unité la plus mal traitée.
+
+\bigskip
+
+%-----------------------------------------------------------------------
+\subsection{Q4 --- Stabilité}
+\label{sec:q4}
+
+\medskip
+
+Les trois sources d'instabilité d'un classement sont d'ordres différents et appellent des
+procédures distinctes : l'incertitude d'estimation de la méthode elle-même, l'incertitude
+des métriques d'entrée, et l'arbitraire des choix méthodologiques. Les deux premières sont
+statistiques, la troisième ne l'est pas.
+
+\bigskip
+
+\paragraph{Bootstrap d'ajustement : ajuster sur le rééchantillon, classer la population.}
+Les poids, les bornes de normalisation, les pôles, la covariance et la carte de transport
+sont des quantités estimées sur le groupe. Leur variabilité d'échantillonnage se propage
+aux scores et aux rangs. La procédure qui l'évalue rééchantillonne $B$ fois les $n$ unités
+avec remise, \emph{ajuste} la chaîne complète --- normalisation, pondération, agrégation ---
+sur le rééchantillon, puis \emph{score et classe la population complète d'origine}.
+
+\medskip
+
+Ce dernier point est essentiel et distingue la procédure du bootstrap usuel. Classer les
+unités \emph{à l'intérieur} du rééchantillon, comme le ferait une transposition naïve,
+produit des rangs vivant sur un support qui change d'un tirage à l'autre --- un
+rééchantillon contient des doublons et omet en moyenne une fraction $e^{-1} \approx 37\,\%$
+des unités --- et laisse sans rang les unités absentes du tirage. En classant la population
+d'origine avec la chaîne ajustée sur le rééchantillon, chaque unité reçoit exactement $B$
+rangs comparables entre eux et comparables au rang de référence.
+
+\medskip
+
+L'intervalle rapporté est l'intervalle de percentiles : pour un niveau de $90\,\%$, les
+percentiles $5$ et $95$ de la distribution empirique des $B$ rangs de l'unité. Une unité
+dont l'intervalle est $[3, 412]$ ne peut pas être présentée comme « troisième plus
+vulnérable ».
+
+\medskip
+
+\begin{algorithm}[htbp]
+  \caption{Intervalle de rang par bootstrap d'ajustement}
+  \label{algo:bootstrap}
+  \begin{algorithmic}[1]
+    \Require $X \in \R^{n\times d}$, fabrique de chaîne $\mathcal{P}$ (sans état ajusté),
+             nombre de tirages $B$, niveau $\gamma$
+    \Ensure rang de référence $r$, bornes $r^-, r^+ \in \R^n$
+    \State $\pi \gets \mathcal{P}()$ ajustée sur $X$ ; \quad
+           $r \gets \rg\big(-\pi(X)\big)$ \Comment{Classement de référence}
+    \For{$b = 1$ \textbf{à} $B$}
+      \State $I_b \gets$ $n$ indices tirés dans $[n]$ avec remise
+      \State $\pi_b \gets \mathcal{P}()$ ajustée sur $X_{I_b}$
+             \Comment{Poids, bornes et moments réestimés}
+      \State $r^{(b)} \gets \rg\big(-\pi_b(X)\big)$
+             \Comment{Population complète, jamais le rééchantillon}
+    \EndFor
+    \State $r^-_i \gets$ percentile $\tfrac{1-\gamma}{2}$ de $\{r^{(b)}_i\}_b$ ; \quad
+           $r^+_i \gets$ percentile $\tfrac{1+\gamma}{2}$
+    \State \Return $r$, $r^-$, $r^+$
+  \end{algorithmic}
+\end{algorithm}
+
+\bigskip
+
+Un rang est une statistique de l'échantillon entier, et non un paramètre attaché
+individuellement à une unité : son intervalle s'interprète comme dans la littérature des
+\emph{league tables} \citep{goldstein1996}, où le classement d'un établissement n'a de sens
+que relativement à la population classée. La couverture d'un intervalle de percentiles sur
+un rang n'est qu'approchée, la nature discrète de la statistique de rang en étant la cause,
+et l'intervalle est conservateur au milieu du classement \citep{xie2009} ; les fondements
+généraux de la méthode sont ceux de \citet{efron1994}. Les méthodes sans état ajusté ---
+dominance de Pareto, indice à pénalité de déséquilibre à poids égaux, rang moyen --- n'ont
+pas de bootstrap de ce type : leur sortie est une fonction déterministe de $X$, invariante
+par rééchantillonnage.
+
+\bigskip
+
+\paragraph{Propagation de l'incertitude des métriques.} Lorsque les $x_{ij}$ sont
+eux-mêmes des estimations construites sur un nombre fini d'observations, leur erreur
+d'échantillonnage se propage au classement, et cette source domine en général la
+précédente pour les unités de faible effectif. La procédure correspondante simule
+$x_{ij}^{(b)} \sim \mathcal{N}\big(\hat{x}_{ij}, \hat{\sigma}^2_{ij}\big)$, ou
+rééchantillonne directement les observations sous-jacentes, et recalcule le classement
+complet à chaque tirage.
+
+\medskip
+
+Elle suppose la disponibilité des écarts types $\hat{\sigma}_{ij}$, ou l'accès aux données
+élémentaires. Cette information relève de l'étape de calcul des métriques et non de l'étape
+de synthèse, qui ne reçoit que la table des valeurs estimées. La procédure est donc
+présentée ici comme une extension, conditionnée à l'export de $\hat{\sigma}_{ij}$ en amont,
+et non comme un élément du protocole courant. Sa combinaison avec le bootstrap
+d'ajustement se fait par tirages emboîtés, le coût étant alors multiplicatif.
+
+\bigskip
+
+\paragraph{Stabilité aux choix méthodologiques.} La troisième source n'est pas une
+incertitude d'échantillonnage : c'est l'arbitraire du schéma de normalisation, du schéma de
+pondération et de la fonction d'agrégation. Elle s'explore par une grille systématique ---
+le produit cartésien des variantes admissibles, soit quelques dizaines à quelques centaines
+de chaînes --- dont on collecte, pour chaque unité, la distribution des rangs obtenus.
+
+\medskip
+
+La variance du rang de l'unité $i$ à travers la grille se décompose alors par facteur, au
+sens de l'analyse de sensibilité globale \citep{saisana2005}. L'indice de Sobol du premier
+ordre attaché au facteur $f \in \{\nu, \text{pondération}, \text{agrégation}\}$ est
+
+\medskip
+
+\[
+  \mathcal{I}_f(i) = \frac{\mathrm{Var}_f\big(\EE[\,r_i \mid f\,]\big)}{\mathrm{Var}(r_i)} ,
+\]
+
+\bigskip
+
+et se lit comme la part de la variance du rang imputable à ce seul facteur. Un énoncé tel
+que « $62\,\%$ de la variance du rang provient du choix de normalisation » indique où
+concentrer l'effort de justification, et se calcule sans coût supplémentaire dès lors que
+la grille est équilibrée, c'est-à-dire que chaque modalité d'un facteur apparaît avec
+toutes les modalités des autres.
+
+\bigskip
+
+\paragraph{Exploration de l'espace des poids.} Le chapitre~\ref{sec:smaa} fournit la
+quatrième réponse à Q4, de nature différente des trois précédentes : les acceptabilités de
+rang et le facteur de confiance $p_i$ ne mesurent pas la variabilité d'une estimation mais
+l'indétermination résiduelle une fois admis qu'aucune pondération n'est privilégiée. Les
+deux lectures sont complémentaires : un intervalle de rang bootstrap étroit et un facteur de
+confiance faible décrivent une unité dont la position est bien estimée pour chaque
+pondération, mais dépend fortement de la pondération retenue.
+
+\bigskip
+
+%-----------------------------------------------------------------------
+\subsection{Q5 --- Réductibilité à une seule métrique}
+\label{sec:q5}
+
+\medskip
+
+Un risque courant des pondérations endogènes est de produire un score qui reproduit à peu
+de choses près l'une des métriques d'entrée. Le dispositif complet n'a alors servi à rien,
+et la publication d'un score composite y gagne une apparence de sophistication sans
+contrepartie informationnelle. Trois diagnostics répondent à cette question.
+
+\bigskip
+
+\paragraph{Corrélations score--métrique.} Le calcul de $\tau_b(s, \tilde{x}_{\cdot j})$
+pour tout $j \in [d]$ situe le score par rapport à chacune de ses entrées. Une valeur
+nettement supérieure aux autres appelle un examen : elle s'explique par un poids dominant
+(que le rapport de pondération permet de vérifier directement), par une métrique beaucoup
+plus dispersée que les autres après normalisation, ou par une métrique corrélée à toutes
+les autres et qui capte de ce fait l'essentiel du signal commun. Les trois causes appellent
+des réponses différentes, et seule la première relève d'un défaut de la méthode.
+
+\bigskip
+
+\paragraph{\emph{Leave-one-metric-out}.} La chaîne complète est réajustée $d$ fois, en
+retirant chaque métrique à tour de rôle, et l'accord entre le classement réduit et le
+classement complet est mesuré par $\tau_b$ et par le recouvrement des $k$ premiers. Deux
+situations extrêmes se lisent directement :
+
+\medskip
+
+\begin{itemize}[nosep,leftmargin=1.4em]
+  \item une métrique dont le retrait laisse $\tau_b$ proche de $1$ est soit redondante avec
+  les autres, soit neutralisée par la pondération --- le diagnostic de corrélation du
+  chapitre~\ref{sec:pretraitement} départage les deux cas ;
+  \item une métrique dont le retrait fait chuter $\tau_b$ porte à elle seule le résultat, et
+  la synthèse n'est alors qu'un habillage de cette métrique.
+\end{itemize}
+
+\bigskip
+
+Les deux situations appellent un commentaire explicite : la première interroge l'intérêt de
+conserver la métrique, la seconde celui de conserver la synthèse.
+
+\bigskip
+
+\paragraph{Décomposition des contributions.} Pour une agrégation linéaire, la contribution
+de la métrique $j$ au score de l'unité $i$ est
+
+\medskip
+
+\[
+  c_{ij} = \frac{w_j\,\tilde{x}_{ij}}{s_i},
+  \qquad \sum_{j=1}^{d} c_{ij} = 1 .
+\]
+
+\bigskip
+
+Le profil $(c_{i1},\dots,c_{id})$ des unités de tête rend le classement lisible et
+défendable individuellement : il répond à la question « pourquoi cette unité est-elle en
+tête ? » par une décomposition additive exacte. La décomposition ne s'étend pas aux
+agrégations non linéaires, pour lesquelles seule une contribution locale --- la dérivée
+partielle $w_j\,\partial_j g$ évaluée en $\tilde{x}_i$ --- est disponible, et n'est plus
+exactement additive.
+
+\bigskip
+
+%-----------------------------------------------------------------------
+\subsection{Classements consensus}
+\label{sec:consensus}
+
+\medskip
+
+Lorsqu'un classement unique doit néanmoins être publié, trois constructions le produisent à
+partir des $K$ classements, sans introduire de pondération sur les métriques. Elles ne
+diffèrent que par la façon dont elles agrègent des \emph{rangs} plutôt que des scores, ce
+qui les rend insensibles aux échelles hétérogènes des $s^{(a)}$.
+
+\bigskip
+
+\paragraph{Borda.} Le rang consensus est le rang de la moyenne des rangs
+\citep{borda1781} :
+
+\medskip
+
+\[
+  \bar{r}^{\,\mathrm{Bor}}_i = \frac{1}{K}\sum_{a=1}^{K} r^{(a)}_i,
+  \qquad
+  r^{\mathrm{Bor}} = \rg\big(\bar{r}^{\,\mathrm{Bor}}\big).
+\]
+
+\bigskip
+
+Immédiat et de coût $O(Kn)$, il est cependant sensible aux méthodes fortement corrélées
+entre elles, qui votent alors plusieurs fois pour la même position. La classification
+hiérarchique de Q1 fournit la correction : pondérer chaque méthode par l'inverse du cardinal
+de son groupe rétablit un vote par famille méthodologique plutôt qu'un vote par
+implémentation.
+
+\bigskip
+
+\paragraph{Copeland.} Pour chaque paire ordonnée $(i,k)$, le nombre de méthodes plaçant $i$
+devant $k$ est $\nu_{ik} = \sum_a \ind{s^{(a)}_i > s^{(a)}_k}$ ; l'unité $i$ remporte le
+duel lorsque $\nu_{ik} > \nu_{ki}$. Le score de Copeland \citep{copeland1951} est le nombre
+de duels gagnés diminué du nombre de duels perdus :
+
+\medskip
+
+\[
+  c^{\mathrm{Cop}}_i = \sum_{k \ne i}
+    \Big(\ind{\nu_{ik} > \nu_{ki}} - \ind{\nu_{ik} < \nu_{ki}}\Big).
+\]
+
+\bigskip
+
+Plus robuste que Borda aux valeurs de rang extrêmes --- une méthode isolée plaçant une unité
+au dernier rang ne fait perdre qu'un duel par adversaire, et non $n$ places dans une
+moyenne --- il exige en revanche la matrice des duels, de taille $(n,n)$. Au-delà de
+quelques milliers d'unités, les duels sont résolus sur une présélection : les $n_0$
+premières unités du consensus de Borda, le reste du classement conservant son ordre de
+Borda et étant concaténé après ce noyau.
+
+\bigskip
+
+\paragraph{Médiane de Kemeny.} Le consensus le mieux fondé axiomatiquement
+\citep{kemeny1959} est le classement $\sigma$ minimisant la somme des distances de Kendall
+aux $K$ classements observés. Le problème est NP-difficile \citep{dwork2001} ; sa
+formulation en programme linéaire en nombres entiers est la suivante. Les variables
+binaires $x_{ik} \in \{0,1\}$, définies pour tout couple $i \ne k$, valent $1$ lorsque $i$
+est placé avant $k$ dans le consensus. Avec $\nu_{ki}$ le nombre de méthodes plaçant $k$
+avant $i$ --- c'est-à-dire le coût du désaccord induit par $x_{ik} = 1$ --- le programme
+s'écrit
+
+\medskip
+
+\begin{align*}
+  \min_{x \in \{0,1\}^{n_0(n_0-1)}} \quad & \sum_{i \ne k} \nu_{ki}\, x_{ik} \\[0.2em]
+  \text{sous} \quad & x_{ik} + x_{ki} = 1,
+    && \forall\, i < k
+    && \text{(antisymétrie)} \\[0.2em]
+  & x_{ik} + x_{kl} + x_{li} \le 2,
+    && \forall\, i < k < l
+    && \text{(interdiction des $3$-cycles)} .
+\end{align*}
+
+\bigskip
+
+La contrainte d'antisymétrie impose qu'exactement une des deux orientations de chaque paire
+soit retenue ; la seconde interdit les circuits de longueur $3$, ce qui suffit à garantir la
+transitivité de la relation obtenue --- un tournoi sans $3$-cycle est transitif. Les deux
+orientations cycliques de chaque triplet $\{i,k,l\}$ doivent être exclues, ce qui fait deux
+contraintes par triplet. Le nombre de variables croît en $n_0^2$ et le nombre de contraintes
+en $n_0^3$ : la résolution exacte est confinée à une présélection de l'ordre de la centaine
+d'unités, issue comme pour Copeland du consensus de Borda. Le rang consensus de la
+présélection se lit sur la solution comme le nombre de victoires
+$\sum_{k \ne i} x_{ik}$, classé par ordre décroissant.
+
+\bigskip
+
+%-----------------------------------------------------------------------
+\subsection{Unités litigieuses}
+\label{sec:litigieuses}
+
+\medskip
+
+Le résultat le plus informatif du protocole n'est pas le classement consensus mais la liste
+des unités sur lesquelles les méthodes se contredisent. Avec $\eta$ un seuil d'étendue de
+rang,
+
+\medskip
+
+\[
+  \mathcal{L} = \Big\{\, i \in [n] :
+    \max_{a} r^{(a)}_i - \min_{a} r^{(a)}_i > \eta \,\Big\},
+  \qquad
+  \eta = \max\big(1, \lceil \varphi\, n \rceil\big).
+\]
+
+\bigskip
+
+Le seuil est exprimé en fraction $\varphi$ de la taille du groupe plutôt qu'en nombre absolu
+de rangs : une étendue de $50$ places est négligeable dans un groupe de $10^5$ unités et
+disqualifiante dans un groupe de $30$. La valeur $\varphi = 1\,\%$ constitue un défaut
+raisonnable, le plancher à $1$ évitant qu'un groupe très petit rende le critère vide de
+sens. La part $\abs{\mathcal{L}}/n$ résume le diagnostic en un nombre.
+
+\medskip
+
+Cette liste n'est pas un aveu de faiblesse : elle identifie exactement les unités pour
+lesquelles une expertise humaine apporte quelque chose, et elle est la seule sortie du
+dispositif qui oriente l'effort d'analyse. Un classement sans liste litigieuse associée
+demande au lecteur d'accorder la même confiance à toutes ses lignes, ce qu'aucune des
+statistiques précédentes ne justifie.
+
+\bigskip
+
+%-----------------------------------------------------------------------
+\subsection{Validation externe}
+\label{sec:validation-externe}
+
+\medskip
+
+Tout ce qui précède relève de la robustesse interne : le protocole mesure l'accord entre
+constructions, la stabilité au rééchantillonnage et la compatibilité avec la dominance,
+mais aucune de ces statistiques n'établit que le classement mesure ce qu'il prétend
+mesurer. La disposition d'un critère externe change la nature de l'exercice et en fait une
+question de pouvoir prédictif.
+
+\medskip
+
+Un tel critère prend la forme d'un ensemble d'événements observés --- ruptures
+d'approvisionnement avérées, alertes passées confirmées, mesures effectivement déclenchées,
+épisodes de tension documentés --- codés en une variable binaire $y_i$ sur les unités du
+groupe, ou en un score d'intensité. Les indicateurs correspondants sont alors ceux de
+l'évaluation d'un classement supervisé :
+
+\medskip
+
+\begin{itemize}[nosep,leftmargin=1.4em]
+  \item l'aire sous la courbe ROC, qui s'interprète comme la probabilité qu'une unité
+  touchée soit classée devant une unité épargnée, et qui est invariante par transformation
+  monotone du score --- elle compare donc des \emph{ordres}, ce qui est exactement le niveau
+  auquel les méthodes de cette note sont comparables ;
+  \item la précision au rang $k$, part d'unités effectivement touchées parmi les $k$
+  premières, qui correspond à la lecture opérationnelle du classement ;
+  \item le gain cumulé actualisé normalisé, qui pondère les positions par $1/\log_2(1+r)$ et
+  tient compte d'une intensité graduée plutôt que binaire.
+\end{itemize}
+
+\bigskip
+
+C'est le seul argument capable de départager objectivement deux synthèses, et la
+constitution d'un tel jeu d'événements, même modeste, en vaut le coût : quelques dizaines de
+cas avérés suffisent à discriminer des méthodes dont les $\tau_b$ mutuels sont de l'ordre de
+$0{,}8$. En son absence, la conclusion se limite à la robustesse interne, et l'énoncé
+publiable est de la forme « ce classement est stable aux choix méthodologiques », jamais
+« ce classement est correct ».
+
+\bigskip
+
+%-----------------------------------------------------------------------
+\subsection{Tableau de bord}
+\label{sec:tableau-bord}
+
+\medskip
+
+L'ensemble des statistiques du chapitre se calcule en une passe sur les $K$ vecteurs de
+score, la matrice orientée fournissant la relation de dominance.
+L'algorithme~\ref{algo:coherence} en donne l'enchaînement ; le coût dominant est celui de la
+relation de dominance, en $O(n^2 d)$ exact ou $O(N d)$ par échantillonnage de $N$ paires, et
+celui des $K(K-1)/2$ corrélations de rangs, en $O(K^2 n\log n)$.
+
+\medskip
+
+\begin{algorithm}[htbp]
+  \caption{Tableau de bord de cohérence}
+  \label{algo:coherence}
+  \begin{algorithmic}[1]
+    \Require $\Xor \in \R^{n\times d}$, scores $\{s^{(1)},\dots,s^{(K)}\}$,
+             front $\mathcal{F}_1$, profondeurs $\{k_1,\dots\}$, persistance $p$,
+             fraction $\varphi$
+    \Ensure $M^\tau$, $M^{w}$, $M^{\mathrm{RBO}}$, $(V_{\mathrm{strict}}, V_{\mathrm{tie}})$,
+            $W$, $r^{\mathrm{Bor}}$, $\mathcal{L}$
+    \State $\mathcal{D} \gets$ paires en relation de dominance stricte sur $\Xor$
+           (algorithme~\ref{algo:front-balayage} ou échantillonnage)
+    \For{$a = 1$ \textbf{à} $K$}
+      \State $r^{(a)} \gets \rg\big(-s^{(a)}\big)$
+             \Comment{Rang $1$ à la valeur la plus élevée, ex \ae quo moyennés}
+      \State $V^{a}_{\mathrm{strict}} \gets \abs{\mathcal{D}}^{-1}
+             \sum_{(i,k)\in\mathcal{D}} \ind{s^{(a)}_i < s^{(a)}_k}$
+      \State $V^{a}_{\mathrm{tie}} \gets \abs{\mathcal{D}}^{-1}
+             \sum_{(i,k)\in\mathcal{D}} \ind{s^{(a)}_i = s^{(a)}_k}$
+      \State $(\mu_a, M_a) \gets$ rang médian et rang maximal de $\mathcal{F}_1$
+             dans $r^{(a)}$
+      \For{$b = 1$ \textbf{à} $K$}
+        \State $M^\tau_{ab} \gets \tau_b(r^{(a)}, r^{(b)})$ ; \quad
+               $M^{w}_{ab} \gets \tau_w(r^{(a)}, r^{(b)})$
+        \State $M^{\mathrm{RBO}}_{ab} \gets \mathrm{RBO}_p(a,b)$ ; \quad
+               $J_{k_m}(a,b)$ pour chaque profondeur $k_m$
+      \EndFor
+    \EndFor
+    \State $W \gets$ concordance de Kendall corrigée des ex \ae quo sur $\{r^{(a)}\}_a$
+    \State $L \gets$ classification hiérarchique sur $1 - M^\tau$, lien moyen
+           \Comment{Groupes de méthodes}
+    \State $\bar{r}^{\,\mathrm{Bor}}_i \gets K^{-1}\sum_a r^{(a)}_i$ ; \quad
+           $r^{\mathrm{Bor}} \gets \rg(\bar{r}^{\,\mathrm{Bor}})$
+    \State $\eta \gets \max\big(1, \lceil \varphi n \rceil\big)$ ; \quad
+           $\mathcal{L} \gets \{ i : \max_a r^{(a)}_i - \min_a r^{(a)}_i > \eta \}$
+    \State \Return $M^\tau$, $M^{w}$, $M^{\mathrm{RBO}}$, $(V_{\mathrm{strict}},
+           V_{\mathrm{tie}})$, $(\mu, M)$, $W$, $L$, $r^{\mathrm{Bor}}$, $\mathcal{L}$
+  \end{algorithmic}
+\end{algorithm}
+
+\bigskip
+
+Les sorties du tableau de bord sont de trois natures. Les matrices $M^\tau$, $M^{w}$ et
+$M^{\mathrm{RBO}}$ et le coefficient $W$ décrivent la structure du désaccord ; les taux de
+violation et les rangs du front qualifient chaque méthode prise isolément ; le classement de
+Borda et la liste $\mathcal{L}$ constituent le livrable. Aucune de ces quantités ne
+sélectionne une méthode à la place de l'analyste : elles délimitent ce que les données
+permettent d'affirmer.
 
 %=======================================================================
-\section{Application}
+\section{Application : synthèse de métriques de vulnérabilité commerciale}
 \label{sec:application}
 %=======================================================================
 
-% À rédiger : prompt P16
+\medskip
+
+Ce chapitre est le seul de la note à porter sur un cas concret. Il décrit les données, les
+groupes, la configuration et la lecture des sorties d'un dispositif de synthèse appliqué à
+des métriques de vulnérabilité du commerce extérieur. Les méthodes mobilisées sont celles
+des chapitres~\ref{sec:ordres} à~\ref{sec:comparer}, sans modification ; seules les
+décisions de paramétrage et les contraintes de volumétrie sont propres à ce cas.
+
+\bigskip
+
+%-----------------------------------------------------------------------
+\subsection{Données}
+\label{sec:app-donnees}
+
+\medskip
+
+Les unités sont des couples $(\text{pays déclarant}, \text{produit})$, le produit étant
+une position de la nomenclature combinée à huit chiffres (CN8). Six métriques les
+décrivent, issues de deux familles construites sur des sources différentes.
+
+\medskip
+
+\begin{itemize}[nosep,leftmargin=1.4em]
+  \item \textbf{Famille « partenaires »}, calculée sur les déclarations de commerce
+  extérieur du pays déclarant. Elle comprend l'indice de Herfindahl--Hirschman des parts de
+  partenaires (\texttt{HHI}), qui mesure la concentration des flux sur un petit nombre de
+  fournisseurs, et deux indices de dépendance (\texttt{CDI2}, \texttt{CDI3}) qui cumulent
+  les parts des deux et des trois premiers partenaires.
+  \item \textbf{Famille « réseau »}, calculée sur la matrice mondiale des échanges
+  bilatéraux. Elle comprend la concentration des exportations mondiales du produit
+  (\texttt{EXPORT\_HHI}), une mesure de risque de centralité (\texttt{CENTRALITY\_RISK})
+  qui pèse la position des fournisseurs dans le graphe des échanges, et un coefficient de
+  \emph{clustering} pondéré (\texttt{CLUSTERING\_W}) qui décrit le degré de fermeture du
+  voisinage commercial du produit.
+\end{itemize}
+
+\bigskip
+
+Les six métriques sont de \emph{polarité positive} au sens de la
+définition~\ref{def:polarite} : une valeur élevée traduit une vulnérabilité élevée, de
+sorte que l'orientation de la section~\ref{sec:orientation} est l'identité et que
+$\Xor = X$. Cette homogénéité n'est pas fortuite --- les six indices sont des mesures de
+concentration ou de dépendance --- mais elle est vérifiée plutôt que supposée : une
+polarité mal déclarée est l'erreur la plus lourde de conséquences du dispositif, puisqu'elle
+inverse la contribution d'une métrique entière sans produire aucune anomalie visible dans
+les diagnostics.
+
+\bigskip
+
+\paragraph{Jointure des deux familles.} Les deux familles ne sont pas définies à la même
+maille. La famille partenaires est indexée par produit CN8 et par période ; la famille
+réseau est indexée par produit du système harmonisé à six chiffres (HS6) et par année. La
+jointure retient la troncature de la position CN8 à ses six premiers caractères, qui
+correspond par construction à la position HS6 englobante, et l'année extraite de la période.
+Un millésime unique de nomenclature (HS2022) est fixé côté réseau, faute de quoi une même
+position serait jointe à plusieurs versions de l'indice.
+
+\medskip
+
+Cette jointure est une jointure à gauche : la famille partenaires fixe la grille des
+cellules à scorer, et les positions sans correspondance réseau produisent des valeurs
+manquantes sur les trois métriques correspondantes. Le traitement de ces manques est décrit
+à la section~\ref{sec:app-lecture}. La conséquence méthodologique de la troncature mérite
+d'être explicitée : toutes les positions CN8 d'une même position HS6 partagent les mêmes
+valeurs des trois métriques réseau. La famille réseau introduit donc une structure de blocs
+dans $X$, qui réduit sa dispersion effective et qu'il faut avoir en tête à la lecture des
+pondérations fondées sur la dispersion (chapitres~\ref{sec:entropie}
+et~\ref{sec:critic}).
+
+\bigskip
+
+%-----------------------------------------------------------------------
+\subsection{Contextes et niveaux}
+\label{sec:app-niveaux}
+
+\medskip
+
+Un \emph{contexte} est un univers de comparaison à l'intérieur duquel les valeurs sont
+homogènes. Il est défini ici par quatre clés : la fréquence d'observation, le flux
+(importations ou exportations), l'indicateur sous-jacent (valeur en euros, masse) et la
+période. Deux contextes ne sont jamais comparés entre eux, et toutes les quantités estimées
+le sont à l'intérieur d'un contexte. La sélection courante retient le flux d'importation,
+l'indicateur en valeur, la fréquence annuelle et les cinq dernières périodes disponibles.
+
+\medskip
+
+À l'intérieur d'un contexte, la définition~\ref{def:groupe} se décline en trois niveaux,
+qui répondent à trois questions distinctes et ne sont pas des raffinements les uns des
+autres.
+
+\medskip
+
+\begin{itemize}[leftmargin=1.4em,itemsep=3pt]
+  \item \textbf{\texttt{by\_product}} --- le groupe est l'ensemble des pays déclarants d'un
+  même produit. L'ordre obtenu répond à : « pour cette position, quels sont les pays les
+  plus vulnérables ? ». Les quantités estimées --- poids, bornes, pôles --- sont propres au
+  produit, ce qui rend les scores incomparables d'un produit à l'autre ; seuls les rangs le
+  sont, et encore, relativement à des groupes de tailles voisines.
+  \item \textbf{\texttt{by\_reporter}} --- le groupe est l'ensemble des produits d'un même
+  pays déclarant. L'ordre répond à : « pour ce pays, quelles positions sont les plus
+  vulnérables ? ». C'est le niveau le plus directement opérationnel, puisqu'il correspond à
+  la maille à laquelle une action est décidée.
+  \item \textbf{\texttt{global}} --- le groupe est l'ensemble des cellules du contexte,
+  tous pays et tous produits confondus. L'ordre répond à : « quels couples pays--produit
+  sont les plus vulnérables ? ». Les poids y sont estimés une seule fois, ce qui rend les
+  scores comparables partout, au prix d'une pondération qui reflète la dispersion moyenne
+  de l'ensemble plutôt que celle de chaque pays.
+\end{itemize}
+
+\bigskip
+
+Les trois niveaux sont calculés simultanément et coexistent dans la même table de
+résultats, chaque cellule portant un score et un rang par niveau. Leur divergence est
+elle-même informative : une position mal classée à \texttt{by\_reporter} et bien classée à
+\texttt{by\_product} est une position sur laquelle le pays est atypique relativement aux
+autres pays, sans l'être relativement à son propre portefeuille.
+
+\bigskip
+
+%-----------------------------------------------------------------------
+\subsection{Volumétrie et méthodes admissibles}
+\label{sec:app-volumetrie}
+
+\medskip
+
+Les trois niveaux diffèrent par la taille de leurs groupes de trois ordres de grandeur, ce
+qui détermine directement les méthodes utilisables. Les ordres de grandeur observés sont
+d'environ $30$ unités à \texttt{by\_product} (le nombre de pays déclarants), environ
+$5\,000$ à \texttt{by\_reporter} (le nombre de positions renseignées pour un pays), et
+environ $1{,}5 \cdot 10^{5}$ à \texttt{global}.
+
+\medskip
+
+Ces trois régimes appellent trois régimes de coût. À $n \approx 30$, tout est calculable
+mais les quantités estimées sont bruitées : une matrice de corrélation $6\times 6$ estimée
+sur $30$ points ne supporte ni une analyse factorielle, ni une covariance robuste, et le
+plancher $n \ge 30$ du tableau~\ref{tab:methodes-niveaux} est un minimum absolu plutôt
+qu'une garantie. À $n \approx 5\,000$, les méthodes quadratiques restent calculables sous
+forme matricielle. À $n \approx 1{,}5\cdot 10^{5}$, la matrice $(n,n)$ représente
+$1{,}8\cdot 10^{11}$ octets en double précision : toute méthode qui la matérialise doit
+être remplacée par un algorithme de balayage, un calcul par blocs, ou une présélection.
+
+\medskip
+
+\begin{table}[htbp]
+  \centering
+  \footnotesize
+  \renewcommand{\arraystretch}{1.2}
+  \begin{tabularx}{\textwidth}{@{}>{\hsize=1.15\hsize}Y >{\hsize=0.8\hsize}Y
+                                 >{\hsize=0.85\hsize}Y >{\hsize=1.2\hsize}Y@{}}
+    \toprule
+    \textbf{Méthode} & \texttt{by\_product} ($n \approx 30$)
+      & \texttt{by\_reporter} ($n \approx 5\cdot10^3$)
+      & \texttt{global} ($n \approx 1{,}5\cdot10^5$) \\
+    \midrule
+    Front, couches, comptage
+      & oui
+      & oui, matriciel en $O(n^2)$
+      & front par balayage ; comptage par blocs ; couches désactivées \\
+    Entropie, CRITIC, rang moyen, somme, géométrique, TOPSIS, VIKOR, MPI
+      & oui, si $n \ge$ plancher
+      & oui
+      & oui \\
+    ACP, OCDE--JRC, Mahalanobis, projection blanchie
+      & $n \ge 30$ requis
+      & oui
+      & estimateur de covariance régularisé recommandé \\
+    \emph{Benefit of the doubt}
+      & oui
+      & oui ($n$ programmes linéaires)
+      & oui, coût linéaire en $n$ mais élevé \\
+    Kantorovitch orienté
+      & non (plancher $n \ge 500$)
+      & oui
+      & ajustement sur sous-échantillon, transport par lots \\
+    SMAA, quantile de cône
+      & oui
+      & oui
+      & tirages par lots, stockage $(n,k)$ \\
+    Bootstrap d'ajustement
+      & oui, méthodes ajustées
+      & oui, $B$ petit
+      & désactivé par défaut \\
+    Consensus Borda / Copeland / Kemeny
+      & oui
+      & présélection pour Kemeny
+      & présélection pour les trois \\
+    \bottomrule
+  \end{tabularx}
+  \caption{Méthodes admissibles par niveau. Une méthode déclarée sur un niveau où la taille
+  de groupe est insuffisante produit des valeurs manquantes et une ligne de diagnostic
+  explicite, jamais un score dégradé silencieusement.}
+  \label{tab:methodes-niveaux}
+\end{table}
+
+\bigskip
+
+\paragraph{Le cas $d = 6$ pour le transport optimal.} La dimension retenue mérite un
+commentaire particulier au regard du chapitre~\ref{sec:ot}. La
+section~\ref{sec:ot-dimension} établit que la vitesse de convergence de l'estimation de la
+carte \emph{center-outward} se dégrade rapidement avec $d$, et que $d \le 6$ constitue une
+limite pratique plutôt qu'une borne théorique. Le cas d'usage est exactement à cette limite.
+Deux considérations s'y ajoutent. D'une part, la structure de blocs induite par la jointure
+CN8 $\to$ HS6 réduit la dimension effective du nuage en deçà de $6$, ce que le diagnostic de
+corrélation permet de quantifier. D'autre part, le sous-échantillonnage d'ajustement, rendu
+nécessaire au niveau global par le coût du problème de transport, réduit la taille effective
+de l'échantillon au moment même où la dimension exige qu'elle soit grande. La configuration
+courante retient de ce fait un sous-ensemble de quatre métriques pour cette méthode et
+laisse les six aux autres, la comparaison des deux classements par $\tau_b$ mesurant
+directement ce que la restriction coûte.
+
+\bigskip
+
+%-----------------------------------------------------------------------
+\subsection{Configuration}
+\label{sec:app-config}
+
+\medskip
+
+Le dispositif est piloté par un fichier de configuration, sans valeur codée en dur dans le
+code : chaque méthode y est déclarée par un nom, un type --- la clé du registre des
+méthodes --- et ses paramètres, qui sont transmis tels quels à la fabrique d'estimateur
+correspondante. L'extrait ci-dessous en donne la partie méthodologique.
+
+\medskip
+
+\begin{lstlisting}
+PARAMETERS:
+  # Clés définissant un univers de comparaison ; deux contextes ne sont jamais comparés
+  context_columns: ["freq", "flow", "indicators", "TIME_PERIOD"]
+  # Colonnes de métriques mises à disposition des méthodes
+  metric_columns: ["HHI", "CDI2", "CDI3", "EXPORT_HHI", "CENTRALITY_RISK", "CLUSTERING_W"]
+  # Paires (métrique, +/-1) ; toute métrique non listée a une polarité positive
+  polarities: []
+  # Niveaux de comparaison à l'intérieur d'un contexte
+  levels: ["by_product", "by_reporter", "global"]
+  # Normalisation par défaut, appliquée a toute méthode qui l'admet
+  normalization: "minmax"
+  # Quantile haut de winsorisation ; null => désactivée
+  winsorize_quantile: null
+  # Plancher de taille de groupe, en plus du défaut propre à chaque méthode
+  min_group_size: 30
+  # Règles de consensus transformées en pseudo-méthodes
+  consensus: ["borda", "copeland"]
+  consensus_top_n: 100
+  # Tirages de Dirichlet partagés par SMAA et le quantile de cône ; profondeur k
+  smaa_n_draws: 2000
+  smaa_k: 50
+  # Intervalles de rang : méthodes concernées, tirages, niveaux
+  bootstrap_methods: ["critic_sum", "auto_sum"]
+  bootstrap_n: 50
+  bootstrap_levels: ["by_product", "by_reporter"]
+  random_state: 0
+  methods:
+    # Dominance : front epsilon glouton, couches, réduction préalable de d
+    - {name: "pareto", kind: "pareto",
+       params: {epsilon: 0.1, epsilon_scale: "mad", reduce: {threshold: 0.3}, layers: true}}
+    # Moyenne des rangs normalisés (Borda sur métriques)
+    - {name: "rank_mean", kind: "rank_mean"}
+    # Sommes pondérées : entropie, CRITIC robuste, méta-sélection du schéma
+    - {name: "entropy_sum", kind: "weighted",
+       params: {weighting: "entropy", aggregation: "weighted_sum"}}
+    - {name: "critic_sum", kind: "weighted",
+       params: {weighting: "critic", aggregation: "weighted_sum",
+                weighting_params: {method: "spearman", scale: "mad"}}}
+    - {name: "auto_sum", kind: "weighted",
+       params: {weighting: "auto", aggregation: "weighted_sum"}}
+    # Agrégations non compensatoires
+    - {name: "mpi", kind: "mpi"}
+    - {name: "topsis_critic", kind: "topsis", params: {weighting: "critic", robust: true}}
+    - {name: "vikor_critic", kind: "vikor", params: {weighting: "critic", v: 0.5}}
+    # Poids individualisés, rapports bornés par une région d'assurance
+    - {name: "bod", kind: "bod", params: {rho: 4.0, restriction: "assurance_region"}}
+    # Projection blanchie orientée, covariance robuste
+    - {name: "whitened", kind: "whitened_projection",
+       params: {covariance_estimator: "mcd"}}
+    # Kantorovitch orienté sur un sous-ensemble de metriques (dimension)
+    - {name: "kantorovich", kind: "kantorovich",
+       metrics: ["HHI", "CDI2", "CDI3", "EXPORT_HHI"],
+       params: {epsilon: 0.1, n_target: 4096, fit_sample_size: 20000, alpha: 0.05,
+                theta0_degrees: 60.0, conformal: "split", alert: "projected"}}
+    # Exploration du simplexe des poids
+    - {name: "smaa", kind: "smaa", params: {aggregation: "weighted_sum"}}
+    - {name: "cone_quantile", kind: "cone_quantile"}
+\end{lstlisting}
+
+\bigskip
+
+Chaque entrée de la liste \texttt{methods} renvoie à une section précise de la note ; la
+table~\ref{tab:config-chapitres} donne la correspondance. La normalisation par défaut est
+surchargeable méthode par méthode, le registre vérifiant l'admissibilité de chaque
+combinaison au sens du tableau~\ref{tab:agregation-recap} : une normalisation incompatible
+provoque une erreur explicite à la construction plutôt qu'un score silencieusement faux.
+
+\medskip
+
+\begin{table}[htbp]
+  \centering
+  \small
+  \renewcommand{\arraystretch}{1.2}
+  \begin{tabularx}{\textwidth}{@{}l l Y@{}}
+    \toprule
+    \textbf{Entrée} & \textbf{Section} & \textbf{Rôle dans le dispositif} \\
+    \midrule
+    \texttt{pareto} & \ref{sec:front}, \ref{sec:front-epsilon}, \ref{sec:reduction}
+      & invariant sans coefficient ; fournit aussi le front de référence de Q3 \\
+    \texttt{rank\_mean} & \ref{sec:rang-moyen}
+      & agrégation ordinale, invariante par transformation monotone \\
+    \texttt{entropy\_sum} & \ref{sec:entropie}, \ref{sec:somme}
+      & pondération par la dispersion, mesurée par l'entropie \\
+    \texttt{critic\_sum} & \ref{sec:critic}, \ref{sec:somme}
+      & pondération par dispersion et décorrélation \\
+    \texttt{auto\_sum} & \ref{sec:meta}
+      & sélection du schéma de poids à partir des diagnostics du groupe \\
+    \texttt{mpi} & \ref{sec:mpi}
+      & pénalisation du déséquilibre entre métriques \\
+    \texttt{topsis\_critic} & \ref{sec:topsis}
+      & distance relative aux pôles empiriques \\
+    \texttt{vikor\_critic} & \ref{sec:vikor}
+      & compromis entre utilité de groupe et regret individuel \\
+    \texttt{bod} & \ref{sec:bod}, \ref{sec:bod-restrictions}
+      & poids individualisés, bornés par une région d'assurance \\
+    \texttt{whitened} & \ref{sec:projection-blanchie}
+      & projection orientée après blanchiment robuste \\
+    \texttt{kantorovich} & \ref{sec:ot-orientation}, \ref{sec:ot-alerte}
+      & rang multivarié par transport optimal, avec seuil d'alerte conforme \\
+    \texttt{smaa} & \ref{sec:smaa-sorties}
+      & facteur de confiance sous pondération aléatoire \\
+    \texttt{cone\_quantile} & \ref{sec:cone}
+      & quantile de cône, ordre partiel probabilisé \\
+    \bottomrule
+  \end{tabularx}
+  \caption{Correspondance entre les entrées de configuration et les sections de la note.}
+  \label{tab:config-chapitres}
+\end{table}
+
+\bigskip
+
+%-----------------------------------------------------------------------
+\subsection{Lecture des sorties}
+\label{sec:app-lecture}
+
+\medskip
+
+Le dispositif écrit deux tables. La première porte les scores, la seconde les diagnostics.
+Elles ne sont jamais fusionnées avec la table des métriques d'entrée, un score synthétique
+étant une construction révisable et non une donnée observée.
+
+\bigskip
+
+\paragraph{Table des scores.} Elle est au format long par méthode : une ligne par cellule
+et par méthode, portant les trois paires (score, rang) des trois niveaux, les effectifs
+effectivement scorés, les indicateurs d'alerte et, le cas échéant, les bornes de
+l'intervalle de rang bootstrap. Sa clé primaire est le contexte, la cellule et la méthode.
+Trois conventions la régissent : un score élevé désigne toujours une vulnérabilité élevée,
+quelle que soit la méthode --- les méthodes de type « coût » étant retournées changées de
+signe ; le rang $1$ est toujours celui de la cellule la plus vulnérable, ex \ae quo
+moyennés ; et une cellule non scorée porte une valeur manquante plutôt qu'une valeur de
+repli.
+
+\medskip
+
+\begin{table}[htbp]
+  \centering
+  \small
+  \renewcommand{\arraystretch}{1.2}
+  \begin{tabular}{@{}l l l r r r r r r r@{}}
+    \toprule
+    \textbf{repor-} & \textbf{product} & \textbf{method}
+      & \multicolumn{2}{c}{\texttt{by\_product}}
+      & \multicolumn{2}{c}{\texttt{by\_reporter}}
+      & \multicolumn{2}{c}{\texttt{global}} & \textbf{alerte} \\
+    \cmidrule(lr){4-5}\cmidrule(lr){6-7}\cmidrule(lr){8-9}
+    \textbf{ter} & & & score & rang & score & rang & score & rang & \\
+    \midrule
+    FR & 85411000 & \texttt{critic\_sum}  & 0,71 & 3 & 0,64 & 112 & 0,66 & 2\,431 & --- \\
+    FR & 85411000 & \texttt{pareto}       & 0,38 & 4 & 0,91 & 15  & 0,87 & 640    & vrai \\
+    FR & 85411000 & \texttt{kantorovich}  & ---  & ---& 0,58 & 97  & 0,55 & 2\,210 & vrai \\
+    FR & 85411000 & \texttt{smaa}         & 0,96 & 2 & 0,74 & 88  & 0,61 & 1\,905 & --- \\
+    \bottomrule
+  \end{tabular}
+  \caption{Extrait de la table des scores, contexte « annuel / import / valeur / 2024 ».
+  Les effectifs des trois niveaux sont respectivement $27$, $4\,980$ et $134\,460$. La
+  méthode \texttt{kantorovich} n'est pas calculée à \texttt{by\_product}, le groupe de
+  $27$ pays étant très en deçà de son plancher.}
+  \label{tab:app-scores}
+\end{table}
+
+\bigskip
+
+Deux points de lecture appellent une attention particulière. D'abord, les scores d'une même
+méthode ne sont pas comparables d'un niveau à l'autre ni d'un groupe à l'autre, puisqu'ils
+reposent sur des quantités estimées différentes : dans le tableau~\ref{tab:app-scores}, le
+$0{,}38$ de \texttt{pareto} à \texttt{by\_product} et le $0{,}91$ à \texttt{by\_reporter}
+mesurent la même cellule sous deux normalisations distinctes de la profondeur de dominance.
+Ensuite, les règles de consensus de la section~\ref{sec:consensus} apparaissent dans la même
+table sous forme de pseudo-méthodes, dont le rang est le rang consensus et le score
+l'opposé de ce rang, afin que la convention « score élevé $=$ vulnérabilité élevée » reste
+vraie partout.
+
+\medskip
+
+\paragraph{Valeurs manquantes.} Le traitement est décidé méthode par méthode et non une fois
+pour toutes : pour chaque méthode et chaque groupe, seules les lignes complètes sur les
+métriques que cette méthode utilise sont ajustées et scorées ; les autres reçoivent une
+valeur manquante en score comme en rang. Une méthode restreinte à quatre métriques, comme
+\texttt{kantorovich} ci-dessus, score donc davantage de cellules qu'une méthode utilisant
+les six, puisqu'elle tolère l'absence des deux métriques réseau qu'elle n'emploie pas. Le
+nombre de lignes écartées est rapporté par méthode et par groupe, ce qui interdit de
+confondre une méthode qui échoue avec une méthode qui s'abstient.
+
+\bigskip
+
+\paragraph{Table des diagnostics.} Elle est au format long universel : contexte, niveau,
+groupe, famille, statistique, deux identifiants d'élément et une valeur. Les sentinelles
+--- une chaîne \texttt{'ALL'} pour un groupe non applicable, une chaîne vide pour un
+identifiant absent --- évitent toute valeur nulle dans la clé primaire. Trois familles la
+composent :
+
+\medskip
+
+\begin{itemize}[leftmargin=1.4em,itemsep=3pt]
+  \item \textbf{\texttt{metrics}} --- cohérence des métriques entre elles, indépendamment
+  de toute synthèse : corrélations de Spearman et $\tau_b$ par paire, concordance $W$ des
+  $d$ classements induits par les métriques, indice KMO global et par variable, test de
+  sphéricité, part de variance du premier axe, corrélation absolue moyenne, part du front
+  de Pareto et sa valeur attendue sous indépendance (propriété~\ref{prop:cardinal}),
+  volumétrie.
+  \item \textbf{\texttt{methods}} --- cohérence des synthèses entre elles, soit l'ensemble
+  du chapitre~\ref{sec:comparer} : $\tau_b$, $\tau_w$, RBO et recouvrements de tête par
+  paire de méthodes, concordance $W$ de l'ensemble, taux de violation stricts et
+  d'ex \ae quo par méthode, rang médian et maximal des membres du front, part de cellules
+  litigieuses, largeur médiane de l'intervalle de rang, part de cellules à facteur de
+  confiance SMAA élevé, corrélations score--métrique et \emph{leave-one-metric-out},
+  diagnostics d'ellipticité, groupe de la classification hiérarchique.
+  \item \textbf{\texttt{fit}} --- ce que chaque méthode a effectivement ajusté : le poids
+  attribué à chaque métrique, le schéma sélectionné par la méta-pondération, les
+  diagnostics factoriels, la convergence du problème de transport, le seuil d'alerte et la
+  part d'alertes, la stabilité de la direction estimée, le nombre de lignes écartées et les
+  groupes sautés faute d'effectif.
+\end{itemize}
+
+\bigskip
+
+%-----------------------------------------------------------------------
+\subsection{Diagnostics à examiner en premier}
+\label{sec:app-diagnostics}
+
+\medskip
+
+La table des diagnostics compte quelques centaines de lignes par groupe, et rien n'impose de
+les lire toutes. Six statistiques suffisent à décider si le reste mérite examen, et leur
+ordre est celui d'une lecture efficace : les deux premières qualifient les données, les deux
+suivantes la validité des synthèses, les deux dernières leur indétermination.
+
+\medskip
+
+\begin{itemize}[leftmargin=1.4em,itemsep=3pt]
+  \item \textbf{L'indice KMO} (section~\ref{sec:diagnostics}). En deçà de $0{,}5$, la
+  structure de corrélation ne se prête pas à une réduction factorielle : les méthodes
+  fondées sur l'ACP et sur le blanchiment produisent alors des directions instables, et la
+  méta-pondération les écarte d'elle-même. La lecture par variable identifie la métrique
+  responsable.
+  \item \textbf{La part du front de Pareto} $\abs{\mathcal{F}_1}/n$, comparée à sa valeur
+  attendue sous indépendance. Une part très supérieure signale des métriques peu corrélées
+  et un ordre de dominance presque vide ; une part très inférieure signale des métriques
+  quasi colinéaires, auquel cas la synthèse apporte peu par rapport à n'importe laquelle
+  d'entre elles.
+  \item \textbf{Le taux de violation stricte} $V_{\mathrm{strict}}$ par méthode
+  (section~\ref{sec:q3}). C'est le seul diagnostic capable d'invalider une méthode. Une
+  valeur non nulle sur une méthode dont la monotonie stricte est garantie signale une erreur
+  d'implémentation ou de configuration --- typiquement une polarité mal déclarée --- et non
+  une propriété de la méthode.
+  \item \textbf{La concordance $W$} de l'ensemble des méthodes (section~\ref{sec:q1}). Elle
+  conditionne tout ce qui suit : au-dessus de $0{,}9$, le choix de méthode est de second
+  ordre et un classement unique peut être publié ; en deçà de $0{,}6$, seules les sorties
+  probabilisées du chapitre~\ref{sec:smaa} et la liste litigieuse sont défendables.
+  \item \textbf{La part de cellules litigieuses} (section~\ref{sec:litigieuses}), qui
+  traduit $W$ en une quantité opérationnelle : le nombre de cellules qui demanderont un
+  examen individuel.
+  \item \textbf{Les diagnostics d'ellipticité} attachés au score de Kantorovitch
+  (remarque~\ref{rem:ot-diagnostic}). Une corrélation très élevée entre le rang de transport
+  et le rang de la projection blanchie indique que le nuage est elliptique et que le
+  transport optimal ne fait que reproduire une distance de Mahalanobis, à un coût de calcul
+  et un nombre d'hyperparamètres sans commune mesure.
+\end{itemize}
+
+\bigskip
+
+Le seuil d'alerte du transport optimal et la part d'alertes qu'il produit complètent cette
+lecture. La calibration conforme garantit que cette part est proche du niveau $\alpha$
+demandé sur l'échantillon de calibration ; un écart important entre la part observée et
+$\alpha$ signale un échantillon de calibration trop petit ou une dérive entre les données
+d'ajustement et les données scorées.
+
+\bigskip
+
+%-----------------------------------------------------------------------
+\subsection{Ce que le dispositif ne fait pas}
+\label{sec:app-limites}
+
+\medskip
+
+Deux limites structurelles encadrent l'interprétation des sorties, et aucune n'est un défaut
+d'implémentation : toutes deux tiennent à des informations dont l'étape de synthèse ne
+dispose pas.
+
+\medskip
+
+\begin{itemize}[leftmargin=1.4em,itemsep=3pt]
+  \item \textbf{Aucune validation externe.} Le dispositif ne dispose d'aucun jeu
+  d'événements observés au sens de la section~\ref{sec:validation-externe}. Toutes les
+  garanties qu'il produit sont des garanties de robustesse interne : accord entre méthodes,
+  stabilité au rééchantillonnage, compatibilité avec la dominance. Aucune ne permet
+  d'affirmer que le classement identifie les vulnérabilités qui se matérialiseront. Un
+  classement dont les méthodes s'accordent parfaitement sur des métriques mal choisies reste
+  un classement erroné, et rien dans les diagnostics ne le signalerait.
+  \item \textbf{L'incertitude des métriques n'est pas propagée.} Les six indices sont
+  traités comme des valeurs exactes. Ils sont en réalité estimés à partir de déclarations
+  en nombre fini, et cette erreur est d'autant plus grande que les flux sont faibles ---
+  c'est-à-dire précisément pour les positions que la concentration place en tête de
+  classement. Le bootstrap d'ajustement de la section~\ref{sec:q4} ne couvre que
+  l'incertitude d'estimation de la méthode, jamais celle de ses entrées. La propagation
+  décrite au même endroit est disponible dès lors que les écarts types
+  $\hat{\sigma}_{ij}$ sont exportés par l'étape amont de calcul des métriques ; en leur
+  absence, les intervalles de rang rapportés sous-estiment l'incertitude réelle, et la
+  sous-estimation est la plus forte là où elle importe le plus.
+\end{itemize}
+
+\bigskip
+
+S'y ajoutent deux limites de moindre portée, déjà signalées en place : la loi uniforme sur
+le simplexe des poids est une hypothèse et non une absence d'hypothèse
+(section~\ref{sec:smaa-lecture}), et la structure de blocs induite par la jointure
+CN8 $\to$ HS6 réduit la dispersion effective des trois métriques réseau
+(section~\ref{sec:app-donnees}), ce dont les pondérations fondées sur la dispersion
+héritent mécaniquement.
 
 %=======================================================================
 \appendix
@@ -5161,21 +6476,354 @@ compensation. Faire varier conjointement les deux --- le vecteur de poids et la 
 \label{app:notations}
 %=======================================================================
 
-% À rédiger : prompt P16 (reprise récapitulative de la table~\ref{tab:notations})
+\medskip
+
+Les trois tables qui suivent reprennent l'ensemble des symboles employés dans la note. Les
+symboles strictement locaux à une démonstration n'y figurent pas.
+
+\medskip
+
+\begin{table}[htbp]
+  \centering
+  \small
+  \renewcommand{\arraystretch}{1.2}
+  \begin{tabularx}{\textwidth}{@{}l X@{}}
+    \toprule
+    \textbf{Symbole} & \textbf{Définition} \\
+    \midrule
+    $n$, $d$ & nombre d'unités (lignes) et de métriques (colonnes) d'un groupe \\
+    $[n] = \{1,\dots,n\}$ & indices des unités \\
+    $X = (x_{ij}) \in \R^{n\times d}$ & matrice brute ; $x_i \in \R^d$ la ligne $i$ ;
+      $x_{\cdot j}$ la colonne $j$ \\
+    $p \in \{-1,+1\}^d$ & polarités ; $\Xor = X\,\mathrm{diag}(p)$ la matrice orientée \\
+    $\tilde{X}$ & matrice orientée puis normalisée par le schéma $\nu$ \\
+    $Z$ & matrice orientée puis centrée-réduite \\
+    $\nu$ & schéma de normalisation (table~\ref{tab:normalisation}) \\
+    $\med$, $\MAD$ & médiane ; écart absolu médian \\
+    $x_i \pareto x_k$, $x_i \paretoeq x_k$ & dominance de Pareto stricte, faible
+      (définition~\ref{def:pareto}) \\
+    $\mathcal{F}_1$, $\mathcal{F}_\ell$, $\mathcal{F}_\varepsilon$ & front, couche $\ell$,
+      front $\varepsilon$ (sous-ensemble de $\mathcal{F}_1$) \\
+    $\delta(i)$, $\bar\delta(i)$ & comptage de dominance ; profondeur normalisée
+      $\delta/(n-1)$ \\
+    $s : \R^d \to \R$ & fonction de score, valeur élevée $=$ tête de classement \\
+    $r_i$, $\rg$ & rang de l'unité $i$, $r = 1$ pour la valeur la plus élevée, ex \ae quo
+      moyennés ; opérateur de rang \\
+    \bottomrule
+  \end{tabularx}
+  \caption{Cadre général (chapitres~\ref{sec:cadre} et~\ref{sec:pretraitement}).}
+  \label{tab:notations-cadre}
+\end{table}
+
+\bigskip
+
+\begin{table}[htbp]
+  \centering
+  \small
+  \renewcommand{\arraystretch}{1.2}
+  \begin{tabularx}{\textwidth}{@{}l X@{}}
+    \toprule
+    \textbf{Symbole} & \textbf{Définition} \\
+    \midrule
+    $\simplex$ & simplexe des poids $\{w \in \R_+^d : \sum_j w_j = 1\}$ \\
+    $w$, $w^{(o)}$ & poids partagés ; poids individuels de l'unité $o$ \\
+    $\rho^S_{jk}$, $r_{jk}$ & corrélation de Spearman ; corrélation de Pearson \\
+    $R$, $\Sigma$, $\mu$ & matrice de corrélation ; covariance (robuste) ; centre
+      (robuste) \\
+    $\lambda_m$, $a_m$, $\ell_{jm}$, $\ell'_{jm}$, $V_m$ & valeurs et vecteurs propres ;
+      saturations ; saturations après rotation ; variance d'un facteur après rotation \\
+    $x^+$, $x^-$ & pôles idéal et anti-idéal (quantiles marginaux $q^+$, $q^-$) \\
+    $\rho$ & borne des rapports de poids d'une région d'assurance
+      (section~\ref{sec:bod-restrictions}) \\
+    $\kappa$, $\delta$ & paramètre de parts ; plancher additif (option) \\
+    $\Unif_d$, $\Bball_d$, $\Sphere^{d-1}$ & loi sphérique uniforme ; boule unité ;
+      sphère unité \\
+    $\Tmap$, $\bar{\Tmap}_\varepsilon$ & carte \emph{center-outward} ; son estimateur
+      entropique hors échantillon \\
+    $\mathcal{R}(z) = \norm{\Tmap(z)}$, $\mathcal{S}(z) = \Tmap(z)/\norm{\Tmap(z)}$ &
+      rang et signe \emph{center-outward} \\
+    $u^*$, $\theta_0$, $\alpha$, $\hat{r}_\alpha$, $\hat{q}_{1-\alpha}$ & direction
+      d'intérêt ; demi-angle du cône ; niveau ; seuil radial ; seuil projeté \\
+    $\varepsilon$, $m$ & régularisation entropique ; taille de la grille de référence \\
+    $b^{\,r}_i$, $w^c_i$, $p_i$ & acceptabilité de rang ; poids central ; facteur de
+      confiance (définition~\ref{def:smaa}) \\
+    \bottomrule
+  \end{tabularx}
+  \caption{Pondérations, agrégations, transport optimal et exploration des poids
+  (chapitres~\ref{sec:poids} à~\ref{sec:smaa}).}
+  \label{tab:notations-methodes}
+\end{table}
+
+\bigskip
+
+\begin{table}[htbp]
+  \centering
+  \small
+  \renewcommand{\arraystretch}{1.2}
+  \begin{tabularx}{\textwidth}{@{}l X@{}}
+    \toprule
+    \textbf{Symbole} & \textbf{Définition} \\
+    \midrule
+    $K$, $a$, $b$ & nombre de méthodes comparées ; indices de méthode \\
+    $r^{(a)}$, $s^{(a)}$ & vecteurs de rangs et de scores de la méthode $a$ \\
+    $\tau_b$, $\tau_w$ & $\tau$ de Kendall corrigé des ex \ae quo ; $\tau$ pondéré
+      hyperboliquement \citep{vigna2015} \\
+    $M^\tau$, $M^{w}$, $M^{\mathrm{RBO}}$ & matrices $(K,K)$ des concordances par paire de
+      méthodes \\
+    $W$, $R^\Sigma_i$, $T'_a$ & concordance de Kendall ; somme des rangs de $i$ ; correction
+      d'ex \ae quo du classement $a$ \\
+    $\bar{R}_{a\to b}$ & déplacement moyen de rang entre deux méthodes \\
+    $\mathcal{T}^{(a)}_k$, $J_k$ & ensemble des $k$ premières unités de la méthode $a$ ;
+      recouvrement des $k$ premières \\
+    $\mathrm{RBO}_p$, $p$ (RBO) & \emph{rank-biased overlap} ; paramètre de persistance,
+      distinct du vecteur de polarités \\
+    $\mathcal{D}$, $V_{\mathrm{strict}}$, $V_{\mathrm{tie}}$ & paires comparables ; taux
+      d'inversions strictes ; taux d'ex \ae quo sur ces paires \\
+    $B$, $T$ & nombre de tirages bootstrap ; nombre de tirages de poids \\
+    $r^-_i$, $r^+_i$, $\gamma$ & bornes de l'intervalle de rang bootstrap ; niveau de
+      l'intervalle \\
+    $\mathcal{I}_f$ & indice de Sobol du premier ordre du facteur méthodologique $f$ \\
+    $c_{ij}$ & contribution de la métrique $j$ au score de l'unité $i$ \\
+    $\bar{r}^{\,\mathrm{Bor}}_i$, $c^{\mathrm{Cop}}_i$, $\nu_{ik}$ & rang de Borda ; score
+      de Copeland ; nombre de méthodes plaçant $i$ devant $k$ \\
+    $x_{ik}$, $n_0$ & variables binaires du programme de Kemeny ; taille de la présélection \\
+    $\eta$, $\varphi$, $\mathcal{L}$ & seuil d'étendue de rang ; sa fraction de $n$ ;
+      ensemble des unités litigieuses \\
+    \bottomrule
+  \end{tabularx}
+  \caption{Comparaison, contrôle et consensus (chapitre~\ref{sec:comparer}).}
+  \label{tab:notations-comparaison}
+\end{table}
 
 %=======================================================================
 \section{Algorithmes récapitulatifs}
 \label{app:algos}
 %=======================================================================
 
-% À rédiger : prompt P16
+\medskip
+
+Les seize algorithmes de la note sont rassemblés ci-dessous par renvoi, avec leur objet, le
+coût dominant d'une exécution et la section où ils sont énoncés et commentés. Les notations
+$n$, $d$, $K$, $B$, $T$ et $m$ sont celles de l'annexe~\ref{app:notations}.
+
+\medskip
+
+\begin{table}[htbp]
+  \centering
+  \small
+  \renewcommand{\arraystretch}{1.25}
+  \begin{tabularx}{\textwidth}{@{}l Y l l@{}}
+    \toprule
+    \textbf{Algorithme} & \textbf{Objet} & \textbf{Coût dominant} & \textbf{Section} \\
+    \midrule
+    \ref{algo:pretraitement} & orientation, queues, normalisation, diagnostics
+      & $O(nd + d^3)$ & \ref{sec:diagnostics} \\
+    \ref{algo:front-balayage} & front exact par balayage trié
+      & $O(n\log^{d-2} n)$ & \ref{sec:algos-pareto} \\
+    \ref{algo:comptage-blocs} & comptage de dominance par blocs
+      & $O(n^2 d)$, mémoire $O(nc)$ & \ref{sec:algos-pareto} \\
+    \ref{algo:eps-front} & front $\varepsilon$ glouton \citep{laumanns2002}
+      & $O(\abs{\mathcal{F}_1}^2 d)$ & \ref{sec:front-epsilon} \\
+    \ref{algo:cone} & quantile de cône par tirages sur le simplexe
+      & $O(Tnd)$ & \ref{sec:cone} \\
+    \ref{algo:poids-dispersion} & pondérations par entropie et par CRITIC
+      & $O(nd^2)$ & \ref{sec:critic} \\
+    \ref{algo:oecd} & pondération OCDE--JRC
+      & $O(nd^2 + d^3)$ & \ref{sec:acp-oecd} \\
+    \ref{algo:bod} & \emph{benefit of the doubt} avec restrictions de poids
+      & $n$ programmes linéaires & \ref{sec:bod-front} \\
+    \ref{algo:poles} & scores à pôles empiriques : TOPSIS et VIKOR
+      & $O(nd)$ & \ref{sec:vikor} \\
+    \ref{algo:blanchi} & scores blanchis : Mahalanobis et projection orientée
+      & $O(nd^2 + d^3)$ & \ref{sec:projection-blanchie} \\
+    \ref{algo:ot-carte} & carte \emph{center-outward} entropique
+      & $O(nm d)$ par itération & \ref{sec:ot-estimation} \\
+    \ref{algo:ot-score} & score de Kantorovitch orienté
+      & coût de la carte $+\ O(nd)$ & \ref{sec:ot-orientation} \\
+    \ref{algo:ot-alerte} & seuil d'alerte par calibration conforme
+      & $O(n\log n)$ & \ref{sec:ot-alerte} \\
+    \ref{algo:smaa} & SMAA : acceptabilités, poids centraux, confiance
+      & $O(Tn\log n)$ & \ref{sec:smaa-algo} \\
+    \ref{algo:bootstrap} & intervalle de rang par bootstrap d'ajustement
+      & $B$ ajustements complets & \ref{sec:q4} \\
+    \ref{algo:coherence} & tableau de bord de cohérence
+      & $O(n^2 d + K^2 n\log n)$ & \ref{sec:tableau-bord} \\
+    \bottomrule
+  \end{tabularx}
+  \caption{Algorithmes de la note. Le coût indiqué est celui d'un groupe de $n$ unités et
+  $d$ métriques ; $c$ désigne la taille d'un bloc et $m$ celle de la grille de référence.}
+  \label{tab:algos-recap}
+\end{table}
 
 %=======================================================================
 \section{Correspondance document -- code}
 \label{app:code}
 %=======================================================================
 
-% À rédiger : prompt P16
+\medskip
+
+\begin{sloppypar}
+Le paquet \texttt{macroforecast.trade.aggregation} implémente les méthodes de la note. Les
+tables qui suivent donnent, pour chaque section, les objets correspondants ; les noms sont
+ceux exportés par le module, et celui indiqué en deuxième colonne est le fichier
+d'implémentation. Les estimateurs suivent la convention \texttt{scikit-learn} :
+\texttt{fit} ajuste l'état sur un groupe, \texttt{predict} produit le score, et les
+transformateurs exposent \texttt{transform}.
+\end{sloppypar}
+
+\medskip
+
+\begin{table}[htbp]
+  \centering
+  \small
+  \renewcommand{\arraystretch}{1.2}
+  \begin{tabularx}{\textwidth}{@{}l l Y@{}}
+    \toprule
+    \textbf{Section} & \textbf{Module} & \textbf{Objets} \\
+    \midrule
+    \ref{sec:orientation} & \texttt{preprocessing}
+      & \texttt{PolarityOrienter} \\
+    \ref{sec:queues} & \texttt{preprocessing}
+      & \texttt{Winsorizer} \\
+    \ref{sec:normalisation} & \texttt{preprocessing}
+      & \texttt{RankScaler}, \texttt{MedianMadScaler},
+        \texttt{GaussianQuantileScaler}, \texttt{make\_normalizer},
+        \texttt{NORMALIZER\_REGISTRY} \\
+    \ref{sec:diagnostics} & \texttt{preprocessing}
+      & \texttt{spearman\_correlation\_matrix}, \texttt{kmo\_statistic},
+        \texttt{bartlett\_sphericity}, \texttt{compute\_correlation\_diagnostics},
+        \texttt{CorrelationDiagnostics} \\
+    \addlinespace
+    \ref{sec:front} & \texttt{pareto}
+      & \texttt{pareto\_dominance\_matrix}, \texttt{pareto\_front},
+        \texttt{non\_dominated\_sort}, \texttt{dominance\_count},
+        \texttt{normalized\_dominance\_depth} \\
+    \ref{sec:algos-pareto} & \texttt{pareto}
+      & \texttt{pareto\_front\_sweep}, \texttt{non\_dominated\_sort\_sweep},
+        \texttt{dominance\_count\_chunked} \\
+    \ref{sec:front-epsilon} & \texttt{pareto}
+      & \texttt{epsilon\_pareto\_set}, \texttt{epsilon\_pareto\_front} \\
+    \ref{sec:reduction} & \texttt{pareto}
+      & \texttt{MetricReducer} \\
+    \ref{sec:ordres-plus} & \texttt{pareto}, \texttt{estimators}
+      & \texttt{ParetoScorer}, \texttt{DominanceCountScorer} \\
+    \ref{sec:cone} & \texttt{functions}, \texttt{estimators}
+      & \texttt{cone\_quantile\_bounds}, \texttt{cone\_quantile\_score},
+        \texttt{ConeQuantileScorer} \\
+    \addlinespace
+    \ref{sec:entropie} & \texttt{weights} & \texttt{entropy\_weights} \\
+    \ref{sec:critic} & \texttt{weights} & \texttt{critic\_weights} \\
+    \ref{sec:acp} & \texttt{weights}, \texttt{estimators}
+      & \texttt{pca\_weights}, \texttt{PcaWeightingReport},
+        \texttt{PcaProjectionScorer} \\
+    \ref{sec:meta} & \texttt{weights}
+      & \texttt{auto\_weights}, \texttt{AutoWeightingReport} \\
+    \ref{sec:bod} & \texttt{weights}, \texttt{estimators}
+      & \texttt{benefit\_of\_doubt\_weights}, \texttt{BenefitOfDoubtScorer} \\
+    \ref{sec:smaa-loi} & \texttt{weights} & \texttt{dirichlet\_weights} \\
+    \bottomrule
+  \end{tabularx}
+  \caption{Prétraitement, ordres partiels et pondérations.}
+  \label{tab:code-1}
+\end{table}
+
+\bigskip
+
+\begin{table}[htbp]
+  \centering
+  \small
+  \renewcommand{\arraystretch}{1.2}
+  \begin{tabularx}{\textwidth}{@{}l l Y@{}}
+    \toprule
+    \textbf{Section} & \textbf{Module} & \textbf{Objets} \\
+    \midrule
+    \ref{sec:somme} & \texttt{functions} & \texttt{weighted\_sum\_score} \\
+    \ref{sec:rang-moyen} & \texttt{functions} & \texttt{rank\_mean\_score} \\
+    \ref{sec:geo} & \texttt{functions} & \texttt{geometric\_mean\_score} \\
+    \ref{sec:mpi} & \texttt{functions} & \texttt{mpi\_score} \\
+    \ref{sec:topsis} & \texttt{functions} & \texttt{topsis\_score} \\
+    \ref{sec:vikor} & \texttt{functions} & \texttt{vikor\_score} \\
+    \ref{sec:maha} & \texttt{functions} & \texttt{mahalanobis\_score} \\
+    \ref{sec:projection-blanchie} & \texttt{functions}
+      & \texttt{whitened\_projection\_score} \\
+    \ref{sec:agregation-recap} & \texttt{estimators}
+      & \texttt{WeightedAggregator}, \texttt{AGGREGATION\_REGISTRY},
+        \texttt{WEIGHTING\_REGISTRY} \\
+    \addlinespace
+    \ref{sec:ot-cadre} & \texttt{optimal\_transport}
+      & \texttt{spherical\_uniform\_grid} \\
+    \ref{sec:ot-estimation} & \texttt{optimal\_transport}
+      & \texttt{OrientedKantorovichScorer.fit}, \texttt{.transport},
+        \texttt{.ranks}, \texttt{.signs} \\
+    \ref{sec:ot-orientation} & \texttt{optimal\_transport}
+      & \texttt{OrientedKantorovichScorer.predict},
+        \texttt{OrientedKantorovichReport} \\
+    \ref{sec:ot-elliptique} & \texttt{optimal\_transport}
+      & \texttt{ellipticity\_screen} \\
+    \ref{sec:ot-alerte} & \texttt{optimal\_transport}
+      & \texttt{OrientedKantorovichScorer.alert}, \texttt{.fit\_report} \\
+    \addlinespace
+    \ref{sec:smaa-sorties} & \texttt{diagnostics}, \texttt{estimators}
+      & \texttt{smaa\_rank\_acceptability}, \texttt{SmaaResult},
+        \texttt{SmaaScorer} \\
+    \bottomrule
+  \end{tabularx}
+  \caption{Fonctions d'agrégation, transport optimal et exploration des poids.}
+  \label{tab:code-2}
+\end{table}
+
+\bigskip
+
+\begin{table}[htbp]
+  \centering
+  \small
+  \renewcommand{\arraystretch}{1.2}
+  \begin{tabularx}{\textwidth}{@{}l l Y@{}}
+    \toprule
+    \textbf{Section} & \textbf{Module} & \textbf{Objets} \\
+    \midrule
+    \ref{sec:q1} & \texttt{diagnostics}
+      & \texttt{kendall\_tau\_b\_matrix}, \texttt{kendall\_w},
+        \texttt{cluster\_methods} \\
+    \ref{sec:q2} & \texttt{diagnostics}
+      & \texttt{topk\_overlap}, \texttt{rank\_biased\_overlap},
+        \texttt{weighted\_tau\_matrix} \\
+    \ref{sec:q3} & \texttt{diagnostics}
+      & \texttt{dominance\_violation\_rate}, \texttt{ViolationRates},
+        \texttt{front\_rank\_summary} \\
+    \ref{sec:q4} & \texttt{diagnostics}
+      & \texttt{bootstrap\_rank\_stability} \\
+    \ref{sec:q5} & \texttt{diagnostics}
+      & \texttt{leave\_one\_metric\_out} \\
+    \ref{sec:consensus} & \texttt{diagnostics}
+      & \texttt{borda\_rank}, \texttt{copeland\_rank}, \texttt{kemeny\_rank} \\
+    \ref{sec:tableau-bord} & \texttt{diagnostics}, \texttt{runner}
+      & \texttt{compute\_coherence\_report}, \texttt{CoherenceReport},
+        \texttt{run\_aggregation}, \texttt{AggregationReport} \\
+    \addlinespace
+    \ref{sec:app-config} & \texttt{methods}, \texttt{base}
+      & \texttt{MethodSpec}, \texttt{METHOD\_REGISTRY}, \texttt{MethodRegistryEntry},
+        \texttt{build\_method}, \texttt{resolve\_normalization},
+        \texttt{method\_metrics}, \texttt{method\_spec\_from\_mapping},
+        \texttt{AggregationConfig}, \texttt{polarity\_vector}, \texttt{split\_frame} \\
+    \ref{sec:app-niveaux} & \texttt{synthesis}
+      & \texttt{LEVELS}, \texttt{group\_keys}, \texttt{iter\_groups} \\
+    \ref{sec:app-lecture} & \texttt{synthesis}
+      & \texttt{run\_synthesis}, \texttt{SynthesisConfig}, \texttt{SynthesisReport},
+        \texttt{LevelReport}, \texttt{score\_columns},
+        \texttt{log\_synthesis\_artifacts} \\
+    \ref{sec:app-diagnostics} & \texttt{coherence}
+      & \texttt{run\_coherence}, \texttt{CoherenceConfig},
+        \texttt{CoherenceRunReport}, \texttt{CoherenceLevelReport},
+        \texttt{COHERENCE\_FAMILIES}, \texttt{pareto\_front\_share\_expected},
+        \texttt{log\_coherence\_artifacts} \\
+    \bottomrule
+  \end{tabularx}
+  \caption{Comparaison, contrôle et orchestration de l'application.}
+  \label{tab:code-3}
+\end{table}
+
+\bigskip
 
 %=======================================================================
 % Annexe D — bibliographie (le titre est produit par \bibsection, redéfini
