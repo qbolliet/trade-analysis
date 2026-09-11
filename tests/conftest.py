@@ -10,7 +10,9 @@ from __future__ import annotations
 
 import contextlib
 from pathlib import Path
+from typing import NamedTuple, Sequence
 
+import numpy as np
 import pandas as pd
 import pytest
 
@@ -165,3 +167,129 @@ def ducklake_conn(tmp_path: Path):
     finally:
         with contextlib.suppress(Exception):
             conn.close()
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Sources factices de la synthèse (schémas « indicators » / « network_indicators »)
+# ──────────────────────────────────────────────────────────────────────
+
+# Grille de la fixture : 2 périodes x 4 pays x 30 produits CN8 (S-2.2 / S-2.3)
+SYNTHESIS_PERIODS: tuple[str, ...] = ("2022", "2023")
+SYNTHESIS_REPORTERS: tuple[str, ...] = ("FR", "DE", "IT", "ES")
+SYNTHESIS_N_PRODUCTS = 30
+
+
+class SynthesisSources(NamedTuple):
+    """Connexion et métadonnées de la grille factice de la synthèse.
+
+    Attributes:
+        conn: Connexion DuckLake positionnée sur le catalogue temporaire, les
+            schémas ``indicators`` et ``network_indicators`` déjà écrits.
+        catalog_alias: Alias du catalogue attaché.
+        periods: Valeurs ``TIME_PERIOD`` de la grille.
+        reporters: Codes pays de la grille.
+        products: Codes produits CN8 de la grille (8 chiffres).
+    """
+    conn: object
+    catalog_alias: str
+    periods: Sequence[str]
+    reporters: Sequence[str]
+    products: Sequence[str]
+
+
+def _synthesis_products(n: int = SYNTHESIS_N_PRODUCTS) -> list[str]:
+    """Build ``n`` deterministic CN8 codes (HS6 base + ``'00'`` suffix).
+
+    Args:
+        n: Number of distinct products.
+
+    Returns:
+        Eight-digit product codes whose first six digits are unique.
+    """
+    return [f"{100000 + i:06d}00" for i in range(n)]
+
+
+@pytest.fixture
+def synthesis_source_tables(ducklake_conn) -> SynthesisSources:
+    """Write the fake ``indicators`` and ``network_indicators`` schemas (S-2.2/S-2.3).
+
+    ``indicators`` (famille partenaires, grille de la synthèse) : 2 périodes x 4
+    pays x 30 produits CN8, flux 1, indicateur ``VALUE_IN_EUROS``, fréquence
+    ``A``, colonnes ``HHI``, ``CDI2``, ``CDI3`` et ``_ALERT`` (colonne du schéma
+    réel non consommée par la méthodologie, incluse pour fidélité). Primary key
+    ``(freq, flow, indicators, TIME_PERIOD, reporter, product)``.
+
+    ``network_indicators`` (famille réseau) : les mêmes 30 produits ramenés à
+    leur code HS6 (six premiers chiffres du CN8), 2 années,
+    ``classification='HS2022'``, colonnes ``EXPORT_HHI``, ``CENTRALITY_RISK``,
+    ``CLUSTERING_W``. Primary key ``(product, year, classification)``, jointe à
+    la grille par ``substr(product, 1, 6) = product`` et ``year`` (S-2.2).
+
+    Args:
+        ducklake_conn: Connexion DuckLake sur catalogue temporaire.
+
+    Returns:
+        :class:`SynthesisSources` décrivant la grille écrite.
+    """
+    from statflows.storage.ducklake.tables import write_dataframe
+
+    conn, catalog_alias = ducklake_conn
+    rng = np.random.default_rng(0)
+    products = _synthesis_products()
+
+    df_indicators = pd.DataFrame(
+        [
+            {
+                "freq": "A",
+                "flow": 1,
+                "indicators": "VALUE_IN_EUROS",
+                "TIME_PERIOD": period,
+                "reporter": reporter,
+                "product": product,
+                "HHI": float(rng.uniform(0.0, 1.0)),
+                "CDI2": float(rng.uniform(0.0, 1.0)),
+                "CDI3": float(rng.uniform(0.0, 1.0)),
+                "_ALERT": bool(rng.integers(0, 2)),
+            }
+            for period in SYNTHESIS_PERIODS
+            for reporter in SYNTHESIS_REPORTERS
+            for product in products
+        ]
+    )
+    write_dataframe(
+        conn,
+        df_indicators,
+        ["freq", "flow", "indicators", "TIME_PERIOD", "reporter", "product"],
+        catalog_alias=catalog_alias,
+        schema="indicators",
+    )
+
+    df_network = pd.DataFrame(
+        [
+            {
+                "product": product[:6],
+                "year": int(period),
+                "classification": "HS2022",
+                "EXPORT_HHI": float(rng.uniform(0.0, 1.0)),
+                "CENTRALITY_RISK": float(rng.uniform(0.0, 1.0)),
+                "CLUSTERING_W": float(rng.uniform(0.0, 1.0)),
+            }
+            for period in SYNTHESIS_PERIODS
+            for product in products
+        ]
+    )
+    write_dataframe(
+        conn,
+        df_network,
+        ["product", "year", "classification"],
+        catalog_alias=catalog_alias,
+        schema="network_indicators",
+    )
+
+    return SynthesisSources(
+        conn=conn,
+        catalog_alias=catalog_alias,
+        periods=SYNTHESIS_PERIODS,
+        reporters=SYNTHESIS_REPORTERS,
+        products=products,
+    )

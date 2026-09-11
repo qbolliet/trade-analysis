@@ -64,6 +64,9 @@ dt-ducklake-manager = { git = "https://github.com/qbolliet/dt-ducklake-manager",
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-ra"
+markers = [
+    "slow: end-to-end test on a temporary DuckLake catalog (excluded by default with `-m \"not slow\"`)",
+]
 filterwarnings = [
     "ignore::DeprecationWarning",
     "ignore::FutureWarning",

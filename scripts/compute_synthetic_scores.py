@@ -578,6 +578,152 @@ def _result_connector(
 
 
 # ──────────────────────────────────────────────────────────────────────
+# Orchestration lecture -> run_synthesis -> écriture (S-2.3, S-2.4, S-2.6)
+# ──────────────────────────────────────────────────────────────────────
+
+# Fonction d'exécution de la partie « lecture -> run_synthesis -> écriture »
+def run_from_connections(
+    scores_conn: Any,
+    diagnostics_conn: Any,
+    query: str,
+    config: SynthesisConfig,
+    *,
+    catalog_alias: str,
+    result_schema: str,
+    diagnostics_schema: str,
+    tracker: Any = None,
+    log_artifacts: bool = True,
+) -> Tuple[List[SynthesisReport], Dict[str, Exception], bool, int]:
+    """Read the source query, run the synthesis per context, and write both schemas.
+
+    Isolates the DB-bound core of :func:`main` — the S-2.3 read, the
+    context-by-context call to ``run_synthesis`` and the S-2.4 / S-2.6 writes —
+    from connection setup (``DuckLakeConnector.from_postgres``, environment
+    variables) and freshness bookkeeping, so it is callable on any pair of
+    already-open connections, tests included. As in :func:`main`, the failure
+    of one context does not interrupt the others.
+
+    Args:
+        scores_conn: Open connection positioned to read the source tables and
+            write the ``result_schema`` fact table.
+        diagnostics_conn: Open connection to write the ``diagnostics_schema``
+            fact table (``fit`` family).
+        query: Source query built by :func:`build_source_query`.
+        config: Synthesis methodological configuration.
+        catalog_alias: DuckLake catalog alias both connections are attached to.
+        result_schema: Target schema of the scores.
+        diagnostics_schema: Target schema of the fit diagnostics.
+        tracker: Experiment tracker; the null tracker by default.
+        log_artifacts: Whether to log the S-2.7 artifacts to the tracker.
+
+    Returns:
+        Tuple ``(reports, failures, created_any, n_contexts)``: one
+        :class:`~macroforecast.trade.aggregation.SynthesisReport` per
+        successfully synthesised context, the per-context exceptions keyed by
+        their string representation, whether either schema was created on
+        this call, and the number of contexts attempted.
+    """
+    if tracker is None:
+        from macroforecast.tracking import NULL_TRACKER
+
+        tracker = NULL_TRACKER
+
+    context_columns = list(config.context_columns)
+    scores_keys = [
+        *context_columns, config.reporter_col, config.product_col, "method"
+    ]
+    diagnostics_keys = [
+        *context_columns,
+        "level",
+        config.reporter_col,
+        config.product_col,
+        "family",
+        "statistic",
+        "item_a",
+        "item_b",
+    ]
+
+    # Lecture de la table source combinée (une seule requête)
+    df_source = read_source_metrics(scores_conn, query)
+    logger.info(
+        f"{len(df_source)} ligne(s) source lue(s), "
+        f"{df_source[context_columns].drop_duplicates().shape[0]} contexte(s)."
+    )
+
+    reports: List[SynthesisReport] = []
+    failures: Dict[str, Exception] = {}
+    created_any = False
+    n_contexts = 0
+
+    with tracker:
+        # Un contexte après l'autre : l'échec de l'un n'emporte pas les autres
+        for context_value, df_context in df_source.groupby(
+            context_columns, sort=False, observed=True
+        ):
+            n_contexts += 1
+            context = (
+                context_value
+                if isinstance(context_value, tuple)
+                else (context_value,)
+            )
+            try:
+                # Calcul pur des scores et des diagnostics d'ajustement
+                df_scores, df_fit, report = run_synthesis(
+                    df_context,
+                    config,
+                    tracker=tracker,
+                    log_artifacts=log_artifacts,
+                )
+
+                # Écriture des scores (schéma « synthesis »)
+                created_scores = write_dataframe(
+                    scores_conn,
+                    df_scores,
+                    scores_keys,
+                    catalog_alias=catalog_alias,
+                    schema=result_schema,
+                )
+                # Écriture des diagnostics « fit » (schéma « synthesis_diagnostics »,
+                # même table longue que le script de cohérence, clé S-2.6)
+                created_diag = write_dataframe(
+                    diagnostics_conn,
+                    df_fit,
+                    diagnostics_keys,
+                    catalog_alias=catalog_alias,
+                    schema=diagnostics_schema,
+                )
+                created_any = created_any or created_scores or created_diag
+                reports.append(report)
+
+                # Logging
+                logger.info(
+                    f"Contexte {context} synthétisé : {report.n_cells} "
+                    f"cellule(s), {len(config.methods)} méthode(s)."
+                )
+            except Exception as exc:
+                # Journalisation de l'échec, poursuite avec les autres contextes
+                logger.exception(
+                    f"Échec de la synthèse pour le contexte {context}"
+                )
+                failures[str(context)] = exc
+
+        # Métriques et tags de l'exécution : un rapport agrégé sur tous
+        # les contextes réussis
+        aggregate = _aggregate_reports(reports)
+        aggregate.created = created_any
+        tracker.log_metrics(aggregate.to_metrics())
+        tracker.set_tags(
+            {
+                "result_schema": result_schema,
+                "n_contexts": str(len(reports)),
+                "created": str(created_any),
+            }
+        )
+
+    return reports, failures, created_any, n_contexts
+
+
+# ──────────────────────────────────────────────────────────────────────
 # Point d'entrée
 # ──────────────────────────────────────────────────────────────────────
 
@@ -665,104 +811,24 @@ def main() -> None:
         schema=diagnostics_schema,
     )
 
-    # Clés primaires des deux tables longues
-    context_columns = list(config.context_columns)
-    scores_keys = [
-        *context_columns, config.reporter_col, config.product_col, "method"
-    ]
-    diagnostics_keys = [
-        *context_columns,
-        "level",
-        config.reporter_col,
-        config.product_col,
-        "family",
-        "statistic",
-        "item_a",
-        "item_b",
-    ]
-
-    reports: List[SynthesisReport] = []
-    failures: Dict[str, Exception] = {}
-    created_any = False
-    n_contexts = 0
-
     # Ouverture des connexions : leur cycle de vie appartient au script, le
-    # runner ne les ouvre ni ne les ferme (`run_synthesis` est une fonction pure)
+    # runner ne les ouvre ni ne les ferme (`run_from_connections` orchestre
+    # lecture / calcul / écriture sur des connexions déjà ouvertes)
     scores_conn = scores_connector.connect()
     try:
         diagnostics_conn = diagnostics_connector.connect()
         try:
-            # Lecture de la table source combinée (une seule requête)
-            df_source = read_source_metrics(scores_conn, query)
-            logger.info(
-                f"{len(df_source)} ligne(s) source lue(s), "
-                f"{df_source[context_columns].drop_duplicates().shape[0]} contexte(s)."
+            reports, failures, created_any, n_contexts = run_from_connections(
+                scores_conn,
+                diagnostics_conn,
+                query,
+                config,
+                catalog_alias=catalog_alias,
+                result_schema=result_schema,
+                diagnostics_schema=diagnostics_schema,
+                tracker=tracker,
+                log_artifacts=log_artifacts,
             )
-
-            with tracker:
-                # Un contexte après l'autre : l'échec de l'un n'emporte pas les autres
-                for context_value, df_context in df_source.groupby(
-                    context_columns, sort=False, observed=True
-                ):
-                    n_contexts += 1
-                    context = (
-                        context_value
-                        if isinstance(context_value, tuple)
-                        else (context_value,)
-                    )
-                    try:
-                        # Calcul pur des scores et des diagnostics d'ajustement
-                        df_scores, df_fit, report = run_synthesis(
-                            df_context,
-                            config,
-                            tracker=tracker,
-                            log_artifacts=log_artifacts,
-                        )
-
-                        # Écriture des scores (schéma « synthesis »)
-                        created_scores = write_dataframe(
-                            scores_conn,
-                            df_scores,
-                            scores_keys,
-                            catalog_alias=catalog_alias,
-                            schema=result_schema,
-                        )
-                        # Écriture des diagnostics « fit » (schéma « synthesis_diagnostics »,
-                        # même table longue que le script de cohérence, clé S-2.6)
-                        created_diag = write_dataframe(
-                            diagnostics_conn,
-                            df_fit,
-                            diagnostics_keys,
-                            catalog_alias=catalog_alias,
-                            schema=diagnostics_schema,
-                        )
-                        created_any = created_any or created_scores or created_diag
-                        reports.append(report)
-
-                        # Logging
-                        logger.info(
-                            f"Contexte {context} synthétisé : {report.n_cells} "
-                            f"cellule(s), {len(config.methods)} méthode(s)."
-                        )
-                    except Exception as exc:
-                        # Journalisation de l'échec, poursuite avec les autres contextes
-                        logger.exception(
-                            f"Échec de la synthèse pour le contexte {context}"
-                        )
-                        failures[str(context)] = exc
-
-                # Métriques et tags de l'exécution : un rapport agrégé sur tous
-                # les contextes réussis
-                aggregate = _aggregate_reports(reports)
-                aggregate.created = created_any
-                tracker.log_metrics(aggregate.to_metrics())
-                tracker.set_tags(
-                    {
-                        "result_schema": result_schema,
-                        "n_contexts": str(len(reports)),
-                        "created": str(created_any),
-                    }
-                )
         finally:
             diagnostics_conn.close()
     finally:

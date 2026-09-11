@@ -363,6 +363,163 @@ def _aggregate_reports(
 
 
 # ──────────────────────────────────────────────────────────────────────
+# Orchestration lecture -> run_coherence -> écriture
+# ──────────────────────────────────────────────────────────────────────
+
+# Fonction d'exécution de la partie « lecture -> run_coherence -> écriture »
+def run_from_connections(
+    read_conn: Any,
+    diagnostics_conn: Any,
+    source_query: str,
+    scores_schema: str,
+    synthesis_config: SynthesisConfig,
+    coherence_config: CoherenceConfig,
+    *,
+    catalog_alias: str,
+    diagnostics_schema: str,
+    tracker: Any = None,
+    log_artifacts: bool = True,
+) -> Tuple[List[CoherenceRunReport], Dict[str, Exception], bool, int]:
+    """Read the metrics and scores, run the coherence per context, and write diagnostics.
+
+    Isolates the DB-bound core of :func:`main` — the metrics read, the
+    context-restricted scores read (S-2.4) and the context-by-context call to
+    ``run_coherence`` writing the S-2.6 table — from connection setup
+    (``DuckLakeConnector.from_postgres``, environment variables) and freshness
+    bookkeeping, so it is callable on any pair of already-open connections,
+    tests included. As in :func:`main`, the failure of one context does not
+    interrupt the others.
+
+    Args:
+        read_conn: Open connection positioned to read the metrics
+            (``source_query``) and the scores (``scores_schema``).
+        diagnostics_conn: Open connection to write the ``diagnostics_schema``
+            fact table (``metrics`` and ``methods`` families).
+        source_query: Metrics query built by
+            :func:`scripts.compute_synthetic_scores.build_source_query`
+            (S-2.3, same as the synthesis script).
+        scores_schema: Schema the score table (S-2.4) lives in.
+        synthesis_config: Configuration the scores were produced with.
+        coherence_config: Coherence methodological configuration.
+        catalog_alias: DuckLake catalog alias both connections are attached to.
+        diagnostics_schema: Target schema of the coherence diagnostics.
+        tracker: Experiment tracker; the null tracker by default.
+        log_artifacts: Whether to log the S-2.7 artifacts to the tracker.
+
+    Returns:
+        Tuple ``(reports, failures, created_any, n_contexts)``: one
+        :class:`~macroforecast.trade.aggregation.CoherenceRunReport` per
+        successfully analysed context, the per-context exceptions keyed by
+        their string representation, whether the diagnostics schema was
+        created on this call, and the number of contexts attempted.
+    """
+    if tracker is None:
+        from macroforecast.tracking import NULL_TRACKER
+
+        tracker = NULL_TRACKER
+
+    context_columns = list(synthesis_config.context_columns)
+    diagnostics_keys = [
+        *context_columns,
+        "level",
+        synthesis_config.reporter_col,
+        synthesis_config.product_col,
+        "family",
+        "statistic",
+        "item_a",
+        "item_b",
+    ]
+
+    # Lecture de la table des métriques combinées (une seule requête)
+    df_metrics = read_source_metrics(read_conn, source_query)
+    contexts = distinct_contexts(df_metrics, context_columns)
+    logger.info(
+        f"{len(df_metrics)} ligne(s) de métriques lue(s), "
+        f"{len(contexts)} contexte(s)."
+    )
+
+    # Lecture des scores, restreinte aux contextes lus (S-2.4)
+    scores_query = build_scores_query(
+        catalog_alias, scores_schema, context_columns, contexts
+    )
+    logger.info(f"Requête des scores :\n{scores_query}")
+    df_scores = read_source_metrics(read_conn, scores_query)
+    logger.info(f"{len(df_scores)} ligne(s) de scores lue(s).")
+
+    reports: List[CoherenceRunReport] = []
+    failures: Dict[str, Exception] = {}
+    created_any = False
+    n_contexts = 0
+
+    with tracker:
+        # Un contexte après l'autre : l'échec de l'un n'emporte pas les autres
+        for context_value, df_context in df_metrics.groupby(
+            context_columns, sort=False, observed=True
+        ):
+            n_contexts += 1
+            context = (
+                context_value
+                if isinstance(context_value, tuple)
+                else (context_value,)
+            )
+            # Sous-ensemble des scores du contexte courant
+            mask = pd.Series(True, index=df_scores.index)
+            for column, value in zip(context_columns, context):
+                mask &= df_scores[column] == value
+            df_scores_context = df_scores.loc[mask]
+
+            try:
+                # Calcul pur des diagnostics de cohérence du contexte
+                df_diagnostics, report = run_coherence(
+                    df_context,
+                    df_scores_context,
+                    synthesis_config,
+                    coherence_config,
+                    tracker=tracker,
+                    log_artifacts=log_artifacts,
+                )
+
+                # Écriture de la table longue (schéma « synthesis_diagnostics »,
+                # familles « metrics » et « methods », clé S-2.6)
+                created = write_dataframe(
+                    diagnostics_conn,
+                    df_diagnostics,
+                    diagnostics_keys,
+                    catalog_alias=catalog_alias,
+                    schema=diagnostics_schema,
+                )
+                created_any = created_any or created
+                reports.append(report)
+
+                # Logging
+                logger.info(
+                    f"Contexte {context} analysé : {report.n_groups} "
+                    f"groupe(s), {len(df_diagnostics)} ligne(s) de diagnostic."
+                )
+            except Exception as exc:
+                # Journalisation de l'échec, poursuite avec les autres contextes
+                logger.exception(
+                    f"Échec de la cohérence pour le contexte {context}"
+                )
+                failures[str(context)] = exc
+
+        # Métriques et tags de l'exécution : un rapport agrégé sur tous
+        # les contextes réussis
+        aggregate = _aggregate_reports(reports)
+        aggregate.created = created_any
+        tracker.log_metrics(aggregate.to_metrics())
+        tracker.set_tags(
+            {
+                "result_schema": diagnostics_schema,
+                "n_contexts": str(len(reports)),
+                "created": str(created_any),
+            }
+        )
+
+    return reports, failures, created_any, n_contexts
+
+
+# ──────────────────────────────────────────────────────────────────────
 # Point d'entrée
 # ──────────────────────────────────────────────────────────────────────
 
@@ -461,110 +618,25 @@ def main() -> None:
         schema=diagnostics_schema,
     )
 
-    # Clé primaire de la table longue des diagnostics (S-2.6)
-    context_columns = list(synthesis_config.context_columns)
-    diagnostics_keys = [
-        *context_columns,
-        "level",
-        synthesis_config.reporter_col,
-        synthesis_config.product_col,
-        "family",
-        "statistic",
-        "item_a",
-        "item_b",
-    ]
-
-    reports: List[CoherenceRunReport] = []
-    failures: Dict[str, Exception] = {}
-    created_any = False
-    n_contexts = 0
-
     # Ouverture des connexions : leur cycle de vie appartient au script, le
-    # runner ne les ouvre ni ne les ferme (`run_coherence` est une fonction pure)
+    # runner ne les ouvre ni ne les ferme (`run_from_connections` orchestre
+    # lecture / calcul / écriture sur des connexions déjà ouvertes)
     read_conn = read_connector.connect()
     try:
         diagnostics_conn = diagnostics_connector.connect()
         try:
-            # Lecture de la table des métriques combinées (une seule requête)
-            df_metrics = read_source_metrics(read_conn, source_query)
-            contexts = distinct_contexts(df_metrics, context_columns)
-            logger.info(
-                f"{len(df_metrics)} ligne(s) de métriques lue(s), "
-                f"{len(contexts)} contexte(s)."
+            reports, failures, created_any, n_contexts = run_from_connections(
+                read_conn,
+                diagnostics_conn,
+                source_query,
+                scores_schema,
+                synthesis_config,
+                coherence_config,
+                catalog_alias=catalog_alias,
+                diagnostics_schema=diagnostics_schema,
+                tracker=tracker,
+                log_artifacts=log_artifacts,
             )
-
-            # Lecture des scores, restreinte aux contextes lus (S-2.4)
-            scores_query = build_scores_query(
-                catalog_alias, scores_schema, context_columns, contexts
-            )
-            logger.info(f"Requête des scores :\n{scores_query}")
-            df_scores = read_source_metrics(read_conn, scores_query)
-            logger.info(f"{len(df_scores)} ligne(s) de scores lue(s).")
-
-            with tracker:
-                # Un contexte après l'autre : l'échec de l'un n'emporte pas les autres
-                for context_value, df_context in df_metrics.groupby(
-                    context_columns, sort=False, observed=True
-                ):
-                    n_contexts += 1
-                    context = (
-                        context_value
-                        if isinstance(context_value, tuple)
-                        else (context_value,)
-                    )
-                    # Sous-ensemble des scores du contexte courant
-                    mask = pd.Series(True, index=df_scores.index)
-                    for column, value in zip(context_columns, context):
-                        mask &= df_scores[column] == value
-                    df_scores_context = df_scores.loc[mask]
-
-                    try:
-                        # Calcul pur des diagnostics de cohérence du contexte
-                        df_diagnostics, report = run_coherence(
-                            df_context,
-                            df_scores_context,
-                            synthesis_config,
-                            coherence_config,
-                            tracker=tracker,
-                            log_artifacts=log_artifacts,
-                        )
-
-                        # Écriture de la table longue (schéma « synthesis_diagnostics »,
-                        # familles « metrics » et « methods », clé S-2.6)
-                        created = write_dataframe(
-                            diagnostics_conn,
-                            df_diagnostics,
-                            diagnostics_keys,
-                            catalog_alias=catalog_alias,
-                            schema=diagnostics_schema,
-                        )
-                        created_any = created_any or created
-                        reports.append(report)
-
-                        # Logging
-                        logger.info(
-                            f"Contexte {context} analysé : {report.n_groups} "
-                            f"groupe(s), {len(df_diagnostics)} ligne(s) de diagnostic."
-                        )
-                    except Exception as exc:
-                        # Journalisation de l'échec, poursuite avec les autres contextes
-                        logger.exception(
-                            f"Échec de la cohérence pour le contexte {context}"
-                        )
-                        failures[str(context)] = exc
-
-                # Métriques et tags de l'exécution : un rapport agrégé sur tous
-                # les contextes réussis
-                aggregate = _aggregate_reports(reports)
-                aggregate.created = created_any
-                tracker.log_metrics(aggregate.to_metrics())
-                tracker.set_tags(
-                    {
-                        "result_schema": diagnostics_schema,
-                        "n_contexts": str(len(reports)),
-                        "created": str(created_any),
-                    }
-                )
         finally:
             diagnostics_conn.close()
     finally:
