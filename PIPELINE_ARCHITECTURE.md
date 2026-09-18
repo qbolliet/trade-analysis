@@ -4,7 +4,7 @@
 > code de la branche `qb-vulnerabilities` (commit `6f24c6c`), des dépendances installées
 > (`statflows 0.1.0`, `dt-ducklake-manager 0.3.1`, `duckdb 1.5.3`) et du code source des
 > plugins `argo-kedro 0.1.41`, `kedro-mlflow 2.0.3`, `kedro-viz 12.4.0` (`kedro 1.6.0`).
-> **Révision 1 du 2026-09-18** (voir le journal ci-dessous). Aucune vérification n'a pu
+> **Révisions 1 et 2 du 2026-09-18** (voir le journal ci-dessous). Aucune vérification n'a pu
 > être faite sur le cluster (cf. C-20) : tout ce qui touche à Onyxia est une
 > **hypothèse**, recensée en §8 (questions ouvertes) ; les opérations qui **doivent** être
 > exécutées depuis Onyxia sont listées en §12.
@@ -25,10 +25,12 @@
 | 2026-09-18 | **Millésimes de nomenclature** : une seule table par famille, clé `classification`, drapeau `in_force` ; métriques partenaires calculées aussi par millésime HS | C-11, C-25, PD-20, PS-28 |
 | 2026-09-18 | Téléchargement : **ordre année-majeur**, plus de liste de produits prioritaires, même comportement en `demo` et en production | PD-06, PD-07, PS-12 |
 | 2026-09-18 | Paquet Kedro renommé **`kedro_pipeline/`** (ex-`kedro_pipeline/`) ; **suppression des scripts** en fin de migration | PD-01, PD-02, PS-01 |
-| 2026-09-18 | **Couche de restitution** : schéma PostgreSQL `serving` alimenté par le pipeline, tableaux de bord **Superset** (vulnérabilités + supervision par étape) | C-22, C-23, PD-13, PD-21, PS-29 à PS-31, §5.8 |
+| 2026-09-18 | **Couche de restitution** : schéma PostgreSQL `serving` alimenté par le pipeline, tableaux de bord **Superset** (vulnérabilités + supervision par étape) — *remplacé par la révision 2 ci-dessous* | C-22, C-23, PD-13, PD-21, PS-29 à PS-31, §5.8 |
 | 2026-09-18 | **Deux cadences** (quotidienne / hebdomadaire) sur un même `WorkflowTemplate` ; cohérence sans approximation | PD-12, PD-14, PD-23, PS-21 |
 | 2026-09-18 | Ressources Onyxia connues (100 pods, 0,1–30 CPU, 1–200 Gi) | PS-20, PQ-01 |
 | 2026-09-18 | Nouvelle section §12 : opérations à exécuter depuis Onyxia | §12 |
+| 2026-09-18 (rév. 2) | **Restitution sans PostgreSQL** : Superset lit **directement DuckLake** par `duckdb-engine` (déjà installé dans le chart Superset d'Onyxia, accès S3 déjà assuré) ; les tables de service sont matérialisées dans un **catalogue DuckLake `serving`** (transaction unique, partitionnement par année) ; suppression de la base `trade_serving`, du secret `trade-serving-credentials` et du basculement `psycopg2` | C-23, §2, PD-05, PD-16, PD-18, PD-21, PS-05, PS-07, PS-24, PS-29, PS-30, §6 à §12 |
+| 2026-09-18 (rév. 2) | **Supervision exclusivement dans MLflow** : plus de tableau de bord Superset de supervision ni de table `pipeline_metrics` ; chaque run porte un **rapport de contrôle** (description Markdown dans *Overview*, contrôles déclaratifs, tag `health`), des métriques système et un **rapport HTML** dans *Artifacts* (retour des figures BACI par étape) | PD-13, PS-19, PS-31, §5.1, §5.8, PR-19, PR-20, PQ-19 |
 
 ## Sommaire
 
@@ -77,8 +79,12 @@ Vocabulaire :
   sont déclarés (PD-20) ;
 - **tranche** : sous-ensemble d'une année (ou une année entière) traité en mémoire par
   BACI (PS-14) ; **passe** : une lecture complète des tranches d'un millésime ;
-- **couche de service** (*serving*) : tables PostgreSQL dérivées, lues par Superset
-  (PD-21).
+- **couche de service** (*serving*) : tables dénormalisées et libellées, dérivées des
+  tables de résultats et matérialisées dans le catalogue DuckLake `serving`, lues par
+  Superset (PD-21) ;
+- **rapport de run** : ce que chaque run MLflow expose pour juger, sans rien ouvrir
+  d'autre, de la bonne exécution d'une tâche — description Markdown, contrôles,
+  métriques, métriques système, rapport HTML (PS-31).
 
 Conventions de code inchangées (cf. `CLAUDE.md`) : commentaires en français à formulation
 nominale, docstrings Google Style en anglais, type hints systématiques, API sklearn pour
@@ -116,7 +122,7 @@ gravité pour la mise en production (🔴 bloquant, 🟠 à traiter avant le ré
 | C-20 | 🔴 | **Accès au cluster impossible depuis le poste local** : le jeton de rafraîchissement OIDC de `sspcloud_access_script.txt` est lié à une preuve DPoP (`oauth2: "invalid_grant" "DPoP proof is missing"`), que le fournisseur `oidc` de `kubectl` ne sait pas produire. Voir PQ-09. | `sspcloud_access_script.txt` |
 | C-21 | 🟡 | Aucune documentation mkdocs, aucun workflow GitHub Actions, aucun `.dockerignore` dans le dépôt. `sspcloud_access_script.txt` et `Trade deployment.md` sont bien ignorés par git, mais **seraient copiés dans une image** construite avec `COPY . .`. | racine |
 | C-22 | 🟠 | **Aucune table de référence** (libellés de produits par millésime, libellés de pays, tables de passage HS exposées) n'est produite : un tableau de bord ne peut afficher que des codes. Les codelists sont pourtant téléchargées à chaque exécution (`fetch_dimension_codelists`) et les concordances UNSD sont en cache Parquet. | `scripts/download_*.py`, `scripts/process_baci_hs.py:_ensure_concordances` |
-| C-23 | 🔴 | **Aucune couche de restitution** : les résultats ne sont lisibles que par une session DuckDB attachée au catalogue DuckLake (extensions, identifiants S3 et PostgreSQL). Un outil de tableau de bord comme Superset n'a pas de pilote DuckLake prêt à l'emploi (PQ-13). | — |
+| C-23 | 🔴 | **Aucune couche de restitution** : les résultats ne sont lisibles que par une session DuckDB attachée au catalogue DuckLake (extensions, identifiants S3 et PostgreSQL), sous forme de tables normalisées sans libellés. *(Révision 2 : l'accès technique est réglé — le chart Superset d'Onyxia embarque `duckdb-engine` et l'accès S3 est assuré, PQ-13 ; reste à produire des tables prêtes à l'affichage, PD-21.)* | — |
 | C-24 | 🔴 | La fraîcheur BACI envisagée initialement (unité = millésime × **année**) est **méthodologiquement fausse** : les paramètres estimés sur l'ensemble des années du millésime (C-06) changent dès qu'une année est ajoutée ou révisée, donc toutes les années du millésime doivent être réécrites. C'est aussi la pratique du CEPII, qui republie chaque année la totalité de chaque millésime. | ce document, PS-14 v0 |
 | C-25 | 🟠 | Les tables de résultats partenaires (`indicators`, `synthesis`, `synthesis_diagnostics`) n'ont **pas de dimension de nomenclature** : un code produit y désigne des définitions différentes selon l'année (SH6 révisé tous les ~5 ans, NC8 chaque année), ce qui rend toute lecture temporelle d'un produit ambiguë. | `config/vulnerabilities.yaml`, `config/synthesis.yaml` |
 | C-26 | 🟠 | L'ordre de construction des requêtes Comtrade est **produit-majeur** (`for lot in produits: for période …`, `build_split_queries`), et la période n'est pas une dimension de découpage (`period_start` fixé dans `fixed_dims`) : une requête rapporte toutes les années d'un lot. BACI ayant besoin d'**années complètes** (PD-06), c'est l'ordre inverse qui est utile. | `scripts/download_comtrade.py:163-190` |
@@ -139,8 +145,9 @@ Points solides sur lesquels on s'appuie :
 
 ```
 ┌──────────────────────────────────────────────────────────────────────────────┐
-│ Restitution : Superset (Onyxia) ← PostgreSQL `trade_serving` (schéma serving) │
-│               tableaux de bord « Vulnérabilités » et « Supervision pipeline » │
+│ Restitution : Superset (Onyxia, duckdb-engine) ← catalogue DuckLake `serving` │
+│               tableau de bord « Vulnérabilités »                              │
+│ Supervision : MLflow (Onyxia) — rapport de contrôle par run (PS-31)           │
 ├──────────────────────────────────────────────────────────────────────────────┤
 │ Infrastructure : GHCR (image) · Argo Workflows (WorkflowTemplate + 2 CronWorkflow)│
 │                  MLflow (Onyxia) · PostgreSQL (catalogues DuckLake) · Minio S3 │
@@ -182,7 +189,7 @@ flowchart LR
     S["compute_synthetic_scores — hebdo"]
     C["compute_synthesis_coherence — hebdo"]
   end
-  PUB["publish_serving<br/>(PostgreSQL serving → Superset) — les deux"]
+  PUB["publish_serving<br/>(catalogue DuckLake serving → Superset) — les deux"]
   M["maintain_ducklake<br/>(onExit Argo — MLflow : trade-00-maintenance)"]
 
   DC --> BS --> B92 & B96 & Bxx & B22 --> N
@@ -221,9 +228,10 @@ local, `kedro run` exécute tout le DAG dans un seul processus. Sur Argo, chaque
    qui est à recalculer (PD-06, PD-10).
 4. En fin de workflow, qu'il ait réussi ou non, le gestionnaire `onExit` lance la
    maintenance DuckLake (PD-16).
-5. Tous les pods journalisent dans MLflow sous un même `workflow_id` (PD-13) **et**
-   dans la table `serving.pipeline_metrics` lue par le tableau de bord de supervision
-   (PS-31).
+5. Tous les pods journalisent dans MLflow sous un même `workflow_id` (PD-13) ; chaque
+   run se termine par son **rapport de contrôle** (PS-31), qui suffit à juger de la
+   bonne exécution de la tâche. La maintenance (`onExit`) clôt en `FAILED` les runs du
+   workflow restés `RUNNING` (pod tué sans pouvoir fermer son run, PR-20).
 
 ---
 
@@ -315,6 +323,7 @@ passe par `argo submit` (PS-11) ou `kedro run` depuis un service Onyxia (§12).
    | *(nouveau)* | `config/base/parameters_runtime.yml` | `runtime` (dont les millésimes de nomenclature, PS-04.1) |
    | *(nouveau)* | `config/base/parameters_maintenance.yml` | `maintenance` |
    | *(nouveau)* | `config/base/parameters_serving.yml` | `serving` (PS-29) |
+   | *(nouveau)* | `config/base/parameters_tracking.yml` | `tracking` (contrôles et rapport de run, PS-31) |
 
    Les ancres YAML restent valides car chaque fichier est analysé isolément.
 2. Les identifiants de dataflow sortent du code (C-05) : clé `DATAFLOW` dans chaque bloc
@@ -393,7 +402,7 @@ un seul écrivain qui collecte les résultats et écrit par lots).
 | Vulnérabilités partenaires | **1 pod**, en parallèle du bloc BACI/réseau | Boucle sur les millésimes (en vigueur puis historiques, PD-20) et découpage par reporter ; calcul vectorisé narwhals ; backend `polars` multi-thread en option | Table unique `indicators`, clé étendue par `classification`. |
 | Synthèse | **1 pod** | `joblib` sur les contextes (`n_jobs = NUM_CPU`), écriture par lots de K contextes | Table unique `synthesis` ; grand nombre de petites unités CPU (contextes). |
 | Cohérence | **1 pod** | Idem | Table unique `synthesis_diagnostics`. |
-| Publication de service | **1 pod** (mutex `trade-serving`) | Séquentiel par table de service | Écrivain unique du schéma PostgreSQL `serving` (PD-21). |
+| Publication de service | **1 pod** (mutex `trade-serving`) | Séquentiel par table de service, dans une transaction | Écrivain unique du catalogue DuckLake `serving` (PD-21). |
 | Maintenance | **1 pod** (`onExit`, mutex `trade-maintenance`) | Séquentiel par table | Les opérations de maintenance DuckLake doivent être sérialisées sur un catalogue. |
 
 Conséquences : 2 + 1 + *n*<sub>millésimes</sub> + 4 + 1 + 1 tâches, soit **16 pods**
@@ -703,27 +712,38 @@ Kantorovitch), une synthèse complète ne tient pas dans 24 h ; plutôt que d'ap
 (moins de tirages, statistiques de cohérence tronquées), on **espace** les exécutions.
 Le registre global actuel (C-10) serait « tout ou rien ».
 
-### PD-13 — Suivi d'exécution : kedro-mlflow pour le détail, table `serving.pipeline_metrics` pour le tableau de bord de supervision
+### PD-13 — Suivi d'exécution : MLflow seul, avec un rapport de contrôle par run
 
 **Décision.**
 - **Serveur** : service MLflow Onyxia (lancé par l'utilisateur, §9), métadonnées en
-  PostgreSQL et artefacts sur S3. MLflow reste le magasin de **détail** (paramètres,
-  artefacts, comparaison de runs).
+  PostgreSQL et artefacts sur S3. MLflow est l'**unique** outil de supervision
+  (révision 2) : paramètres, métriques, contrôles, artefacts, comparaison de runs.
 - **kedro-mlflow 2.0.3** (MLflow ≥ 3) gère le cycle de vie des runs : un run par
   exécution de `kedro run`, soit **un run par tâche Argo**. Il fournit la configuration du
   serveur (`config/base/mlflow.yml`) et les datasets de journalisation.
-- **Tableau de bord de supervision** : l'utilisateur veut **un** tableau de bord à
-  onglets (téléchargement, BACI, vulnérabilités, synthèse, cohérence), pas une
-  navigation run par run dans MLflow ni un tableau par étape de BACI. L'interface MLflow
-  ne sait pas composer un tel tableau multi-expériences. Chaque métrique est donc
-  journalisée **deux fois par le même tracker composite** : dans MLflow et dans la table
-  PostgreSQL `serving.pipeline_metrics` (une ligne par run × métrique × pas), lue par un
-  tableau de bord **Superset** « Supervision du pipeline » (PS-31). Les artefacts
-  (tables CSV, coefficients) restent dans MLflow seulement. Les pages HTML Plotly par
-  étape BACI prévues initialement sont **abandonnées** : leur contenu (distribution des
-  taux de fret, `σ̂` par pays, parts réallouées NES…) devient des graphiques de l'onglet
-  BACI, alimentés par les métriques et par de petites tables d'artefacts publiées dans
-  `serving` (PS-31.3).
+- **Pas de tableau de bord de supervision dans Superset** (décision utilisateur,
+  révision 2) : ni table `serving.pipeline_metrics`, ni tracker composite, ni tables
+  d'artefacts publiées dans `serving`. Le besoin est de disposer, **dans chaque run
+  MLflow**, de tous les éléments qui permettent de s'assurer de sa bonne exécution.
+  L'interface d'un run MLflow 3 a des onglets fixes (on ne peut pas en ajouter sans
+  forker l'interface) ; le pipeline donne un rôle à chacun (PS-31.1) :
+
+  | Onglet du run | Rôle | Alimenté par |
+  |---|---|---|
+  | **Overview** | Verdict en un coup d'œil : **description Markdown** générée (statut, contrôles ✅/⚠️/❌, unités prévues/réussies/en échec, chiffres clés, liens), puis paramètres et tags | tag `mlflow.note.content`, tags `health`, `workflow_id`… (PS-31.3) |
+  | **Model metrics** | Toutes les métriques, regroupées en sections par préfixe `/` ; séries par `step` (année pour BACI) | `log_metrics` |
+  | **System metrics** | CPU, mémoire, disque, réseau du pod pendant le run | `MLFLOW_ENABLE_SYSTEM_METRICS_LOGGING=true` injecté dans les pods (PS-21) |
+  | **Artifacts** | `report/report.html` (rapport autonome avec figures Plotly, une section par étape pour BACI), `report/checks.csv`, tables CSV (couverture, `σ̂` par pays, coefficients de gravité…) | `log_text`, `log_table` (PS-31.4) |
+
+- **Contrôles déclaratifs** : les seuils qui qualifient un run (part de requêtes en
+  erreur, R² de la gravité, part convertie en tonnes, unités en échec…) sont des
+  **paramètres** de `config/base/parameters_tracking.yml` (PS-26, PS-31.2), évalués en
+  fin de nœud sur les métriques du `StepResult`. Résultat : métriques `checks/*`, tag
+  `health ∈ {ok, warning, failed}`, section « Contrôles » de la description.
+- **Pages HTML BACI rétablies** (elles avaient été abandonnées en révision 1 au profit
+  de Superset) sous la forme d'**un** rapport HTML autonome par run, une section par
+  étape (conversion, fobisation, gravité, qualité, valorisation, réconciliation, NES,
+  harmonisation, sortie) : une seule copie de plotly.js par run au lieu d'une par page.
 - **Expériences** : l'expérience est choisie par la variable `MLFLOW_EXPERIMENT_NAME`,
   que le rendu Argo injecte **par tâche** d'après le tag Kedro `experiment:<nom>` du nœud
   (PS-21). Correspondance :
@@ -738,7 +758,10 @@ Le registre global actuel (C-10) serait « tout ou rien ».
 
 - **Regroupement** : tous les runs d'une même exécution portent le tag
   `workflow_id=<WORKFLOW_ID>` (injecté par argo-kedro), `run_name =
-  <nœud>-<WORKFLOW_ID>`, `git_sha`, `image_tag`, `kedro_env`.
+  <nœud>-<WORKFLOW_ID>`, `git_sha`, `image_tag`, `kedro_env`, `node`, `health`. La vue
+  d'une exécution complète est la **liste des runs filtrée** par `tags.workflow_id`,
+  avec les colonnes `health`, `checks/n_failed`, durée et statut (PS-31.5) ; le DAG
+  lui-même se lit dans l'interface Argo (lien dans chaque description).
 - **Noms de métriques hiérarchisés par `/`**, que l'interface MLflow (vue *Chart*)
   regroupe automatiquement en sections :
   `conversion/…`, `gravity/…`, `quality/…`, `valuation/…`, `reconciliation/…`,
@@ -747,23 +770,42 @@ Le registre global actuel (C-10) serait « tout ou rien ».
   `partners/…`, `network/…`, `synthesis/<niveau>/…`, `coherence/<niveau>/…`,
   `drift/…`, `freshness/…` pour le bloc 3 ; `ducklake/<catalogue>/<schéma>/…` pour la
   maintenance.
-- Le protocole `RunTracker` est conservé. Deux implémentations s'ajoutent dans
-  `macroforecast/tracking/` (sans dépendance à PostgreSQL ni à Kedro) :
-  **`ActiveRunTracker`** journalise dans le run actif ouvert par kedro-mlflow ;
-  **`TableTracker(sink)`** accumule les métriques (nom, valeur, pas, horodatage) et les
-  remet à un `sink: Callable[[pd.DataFrame], None]` fourni par l'appelant ;
-  **`CompositeTracker(trackers)`** diffuse chaque appel à plusieurs trackers, chacun
-  isolé (un échec de journalisation n'interrompt jamais un calcul). Le puits PostgreSQL
-  (`kedro_pipeline/io/serving.py`) écrit dans `serving.pipeline_metrics`. `get_tracker()`
-  renvoie le composite lorsqu'un run est actif.
+- Le protocole `RunTracker` est conservé et gagne deux méthodes, `log_text(text,
+  artifact_file)` et `set_tags(tags)` (implémentées par `NullTracker` et
+  `MlflowTracker`). Une implémentation s'ajoute dans `macroforecast/tracking/` :
+  **`ActiveRunTracker`**, qui journalise dans le run actif ouvert par kedro-mlflow.
+  Toute erreur de journalisation est journalisée en WARNING et **jamais propagée** (un
+  serveur MLflow injoignable n'interrompt pas un calcul).
+- Le **rapport de run** est construit par du code pur, testable sans MLflow :
+  `macroforecast/tracking/report.py` (`Check`, `CheckResult`, `evaluate_checks`,
+  `RunReport` avec `to_markdown()` et `to_html()`) et
+  `macroforecast/tracking/figures.py` (figures Plotly, import paresseux, extra
+  `reports`). Sa publication (`publish_run_report(tracker, report, params)`) vit dans
+  `kedro_pipeline/io/tracking.py`. Le hook `on_node_error` publie une description
+  réduite (étape, exception tronquée, `health=failed`) ; les runs laissés `RUNNING` par
+  un pod tué (OOM, expiration) sont clos par la maintenance `onExit` (PR-20).
 - `flatten_metrics(payload, prefix, sep=".")` gagne un paramètre `sep`. Le pipeline
   utilise `sep="/"` ; le défaut `"."` préserve les tests existants.
 
-**Justification.** La demande est de présenter, dans un même tableau de bord, un onglet
-par étape (téléchargement, BACI, vulnérabilités, synthèse, cohérence), sans avoir à
-ouvrir les artefacts de chaque run. Les expériences MLflow séparent les blocs pour
-l'analyse fine ; la table `pipeline_metrics` et Superset donnent la vue d'ensemble ; le
-tag `workflow_id` (présent dans les deux) recolle une exécution complète.
+**Justification.** Chaque tâche Argo produit exactement un run : c'est la bonne maille
+pour répondre à « cette exécution s'est-elle bien passée ? ». En plaçant le verdict
+(description et contrôles) dans l'onglet *Overview* et le détail dans les trois autres,
+on n'a qu'un endroit à consulter, sans double journalisation ni second tableau de bord à
+maintenir. Les seuils étant en configuration, un run n'est plus « à interpréter » : il
+est `ok`, `warning` ou `failed`, et la colonne `health` de la liste des runs le montre
+pour toute une exécution.
+
+**Alternatives écartées.**
+- *Tableau de bord Superset « Supervision »* alimenté par `serving.pipeline_metrics`
+  (révision 1) : double écriture des métriques, table PostgreSQL écrite par petits lots
+  (ce que DuckLake gère mal), file de rejeu, tables d'artefacts à publier, second tableau
+  de bord à maintenir, pour une information déjà présente dans MLflow.
+- *Plugin ou fork de l'interface MLflow* pour ajouter des onglets : coût de maintenance
+  hors de proportion.
+- *Run parent par workflow et runs enfants par tâche* : kedro-mlflow ouvre un run par
+  `kedro run` (par pod) ; rattacher des runs de pods différents à un parent exigerait de
+  créer le parent avant le DAG et d'en propager l'identifiant. Gardé comme évolution si
+  la liste filtrée par `workflow_id` se révèle insuffisante.
 
 ### PD-14 — Ordonnancement : argo-kedro pour le DAG, rendu maison en `WorkflowTemplate` + `CronWorkflow`
 
@@ -789,6 +831,7 @@ tag `workflow_id` (présent dans les deux) recolle une exécution complète.
     `force-metrics`, `force-methods`, `max-runtime-hours`) transmis à
     `kedro run --env … --params …` ;
   - injecte les secrets et l'environnement (PS-05), `MLFLOW_EXPERIMENT_NAME` par tâche,
+    les variables des métriques système MLflow (depuis `tracking.SYSTEM_METRICS`, PS-31.2),
     les ressources par `machine_type`, `retryStrategy`, `activeDeadlineSeconds`, et les
     **mutex** (`synchronization.mutex`) des tâches taguées `mutex:<nom>` ;
   - convertit le nœud tagué `onexit` (maintenance) en gestionnaire `onExit` ;
@@ -820,7 +863,7 @@ fonctions.
   d'`imagePullSecret`, gratuit). Étiquettes : SHA court du commit (immuable, utilisée par
   Argo), `main`, `latest`, et tag git `vX.Y.Z` le cas échéant.
 - `Dockerfile` à deux étages (PS-22) : `python:3.13-slim`, `uv` épinglé, `uv sync
-  --frozen --no-dev --extra tracking --extra optimal-transport`, extensions DuckDB
+  --frozen --no-dev --extra tracking --extra reports --extra optimal-transport`, extensions DuckDB
   (`ducklake`, `postgres`, `httpfs`) **préinstallées** dans l'image, utilisateur non root.
 - GitHub Actions (PS-23) : `ci.yml` (tests + `render-argo --check`), `image.yml`
   (construction avec cache `type=gha` et publication sur GHCR), `docs.yml` (site statique
@@ -838,7 +881,7 @@ fonctions.
    catalogue (`DATA_INLINING_ROW_LIMIT`) est activé si la version DuckLake embarquée le
    supporte (à vérifier sur DuckDB 1.5.3).
 2. **Nœud `maintain_ducklake`** (`onExit`, chaque jour), par catalogue (`eurostat`,
-   `comtrade`, `vulnerabilities`) et pour **chaque table écrite dans les 24 h** (d'après
+   `comtrade`, `vulnerabilities`, `serving`) et pour **chaque table écrite dans les 24 h** (d'après
    les snapshots) :
    | Opération | Fréquence | Paramètre |
    |---|---|---|
@@ -852,7 +895,9 @@ fonctions.
 3. **Partitionnement**, posé une fois par le nœud à la création de la table (idempotent) :
    `comtrade/C_A_HS` par année (`refYear` ou `period`), `baci_hs*` par `year`,
    `eurostat/DS_045409` par `reporter`, `indicators` par `classification`,
-   `network_indicators` par `classification`, `synthesis` par `TIME_PERIOD`.
+   `network_indicators` par `classification`, `synthesis` par `TIME_PERIOD`. Les tables
+   de service volumineuses (`cell_scores`, `flows`) sont partitionnées par `year` par
+   `publish_serving` lui-même, à leur (re)création (PS-29.1).
 4. **Observabilité** : avant/après chaque opération, le nœud relève le nombre de fichiers
    de données, leur taille moyenne, le nombre de fichiers de suppression et le nombre de
    snapshots (tables `__ducklake_metadata_*`), et les publie dans
@@ -861,6 +906,9 @@ fonctions.
 5. Les opérations sont non fatales une à une (sémantique déjà en place dans
    `DuckLakeMaintenance`) ; le nœud échoue seulement si **toutes** échouent sur un
    catalogue.
+6. **Clôture des runs orphelins** : le nœud passe en `FAILED` les runs MLflow du même
+   `workflow_id` restés `RUNNING` (pod tué avant d'avoir pu fermer son run), avec une
+   description « tâche interrompue — voir Argo » (PR-20, PS-31.5).
 
 **Justification.** Un pipeline quotidien qui fait des upserts crée chaque jour des
 petits fichiers, des tombstones et des snapshots. Sans compaction, expiration et
@@ -883,7 +931,7 @@ défauts `oc.env`.
 
 ### PD-18 — Contrat des secrets et de l'environnement d'exécution
 
-**Décision.** Cinq secrets Kubernetes, exposés comme variables d'environnement dans
+**Décision.** Quatre secrets Kubernetes, exposés comme variables d'environnement dans
 toutes les tâches (injectés par le rendu) :
 
 | Secret | Clés | Statut |
@@ -892,11 +940,19 @@ toutes les tâches (injectés par le rendu) :
 | `comtrade-api-credentials` | `COMTRADE_FREE_SUBSCRIPTION_KEY`, `COMTRADE_PREMIUM_INSTITUTIONNAL_SUBSCRIPTION_KEY` | **existe** |
 | `trade-postgres-credentials` | `PGHOST`, `PGPORT`, `PGUSER`, `PGPASSWORD`, `PGDATABASE`, `PGADMINUSER` | **à créer** (§9) |
 | `trade-mlflow-credentials` | `MLFLOW_TRACKING_URI`, et si l'authentification est active `MLFLOW_TRACKING_USERNAME`, `MLFLOW_TRACKING_PASSWORD` | **à créer** (§9) |
-| `trade-serving-credentials` | `SERVING_PGHOST`, `SERVING_PGPORT`, `SERVING_PGUSER`, `SERVING_PGPASSWORD`, `SERVING_PGDATABASE` (base `trade_serving`, PD-21) — peut pointer sur la même instance PostgreSQL que les catalogues, avec un rôle dédié en lecture pour Superset | **à créer** (§9) |
+
+Le secret `trade-serving-credentials` de la révision 1 est **supprimé** (révision 2) :
+le catalogue DuckLake `serving` est écrit avec `trade-postgres-credentials`, comme les
+autres catalogues. Superset lit ce catalogue avec ses **propres** identifiants (rôle
+PostgreSQL en lecture seule `superset_reader` sur la base de métadonnées `serving`,
+accès S3 déjà assuré par le service), configurés dans Superset et jamais dans le
+pipeline (PS-30.1, §9).
 
 Variables non secrètes (valeurs dans le template) : `AWS_S3_ENDPOINT=minio.lab.sspcloud.fr`,
 `AWS_DEFAULT_REGION=us-east-1`, `MLFLOW_S3_ENDPOINT_URL=https://minio.lab.sspcloud.fr`,
-`KEDRO_ENV`, `PYTHONUNBUFFERED=1`, `WORKFLOW_ID` et `NUM_CPU` (injectées par argo-kedro).
+`KEDRO_ENV`, `PYTHONUNBUFFERED=1`, `WORKFLOW_ID` et `NUM_CPU` (injectées par argo-kedro),
+`MLFLOW_ENABLE_SYSTEM_METRICS_LOGGING` et `MLFLOW_SYSTEM_METRICS_SAMPLING_INTERVAL`
+(depuis `tracking.SYSTEM_METRICS`, PS-31.2).
 `AWS_SESSION_TOKEN` devient **optionnelle** (C-03).
 
 ### PD-19 — Phasage : un « jalon démonstration » indépendant de la migration Kedro
@@ -910,7 +966,8 @@ voies :
   publier l'image, déployer un `WorkflowTemplate`/`CronWorkflow` **écrit à la main** qui
   enchaîne les scripts existants selon le DAG de §2.2, sur le **périmètre `demo`**
   (une centaine de codes produits, années récentes d'abord), puis **publier la couche de
-  service et construire le tableau de bord Superset** (K-03b, K-03c). Les
+  service et construire le tableau de bord Superset** (K-03b, K-03c), et doter les runs
+  des scripts de leur **rapport de contrôle MLflow** (K-03d). Les
   téléchargements tournent dès J1. Le workflow de transition est remplacé par le
   workflow généré en phase 4.
 - **Phases 1 à 4** : robustesse `statflows`, méthodologie paramétrable, Kedro, puis
@@ -1011,28 +1068,38 @@ partenaires historiques et de BACI ; les tables de passage et les libellés sont
 exposés dans un schéma `reference` (PS-28.4) ; la clé primaire d'`indicators` change
 (migration : recréation de la table, runbook §5.3).
 
-### PD-21 — Couche de restitution : schéma PostgreSQL `serving` alimenté par le pipeline, tableaux de bord Superset
+### PD-21 — Couche de restitution : catalogue DuckLake `serving` alimenté par le pipeline, lu directement par Superset
 
-**Décision.**
-- **Superset** (service Onyxia, PQ-13) est l'outil de restitution : tableau de bord
-  « Vulnérabilités » (PS-30) et tableau de bord « Supervision du pipeline » (PS-31).
-- Superset lit une base **PostgreSQL `trade_serving`** (schéma `serving`), et **non le
-  catalogue DuckLake directement** : le pilote PostgreSQL est fourni dans toute
-  distribution de Superset, alors qu'une lecture DuckLake exige un pilote DuckDB
-  (`duckdb-engine`) à installer dans l'image Superset, un `ATTACH` du catalogue à
-  chaque session avec des identifiants S3 et PostgreSQL, et une gestion des extensions :
-  trois points de fragilité pour une démonstration dans une semaine. La lecture directe
-  reste une évolution possible (PQ-13).
+**Décision** (révision 2, qui remplace la base PostgreSQL `trade_serving` de la
+révision 1).
+- **Superset** (service Onyxia) est l'outil de restitution, pour le seul tableau de bord
+  « Vulnérabilités » (PS-30) ; la supervision est dans MLflow (PD-13).
+- Superset lit **DuckLake directement**, par le pilote **`duckdb-engine`**, déjà
+  installé dans le chart Superset d'Onyxia ; l'accès du service au bucket S3 est déjà
+  assuré (PQ-13 résolue). Une connexion Superset = une session DuckDB en mémoire qui
+  attache **en lecture seule** le seul catalogue `serving` (PS-30.1).
 - Le nœud **`publish_serving`** (fonction d'étape `kedro_pipeline/steps/serving.py`,
-  PS-29), en fin des deux points d'entrée, **dérive** des tables DuckLake les tables de
-  service par des requêtes SQL DuckDB déclarées en configuration
-  (`config/base/parameters_serving.yml`), et les écrit dans PostgreSQL via l'extension
-  DuckDB `postgres` (`ATTACH … AS pg (TYPE postgres)` puis `CREATE TABLE pg.serving.x__new
-  AS SELECT …`), avant un **basculement atomique** (`ALTER TABLE … RENAME`) exécuté par
-  `psycopg2` (déjà dépendance transitive) dans une transaction. Les index sont recréés
-  après basculement. Aucune écriture incrémentale en phase 0 (tables reconstruites à
-  chaque exécution) ; en production, les tables volumineuses sont reconstruites **par
-  année** (`SERVING.MODE: by_year`).
+  PS-29), en fin des deux points d'entrée, **dérive** des tables de résultats les tables
+  de service par des requêtes SQL DuckDB déclarées en configuration
+  (`config/base/parameters_serving.yml`), et les **matérialise dans un catalogue DuckLake
+  dédié `serving`** (base de métadonnées PostgreSQL `serving` sur la même instance que
+  les autres catalogues, fichiers sous `trade/datasets/serving/`, schéma
+  `serving.SCHEMA` : `dashboard`, `demo_dashboard` en `demo`) :
+  - toutes les tables d'une publication sont écrites dans **une seule transaction**
+    DuckDB : Superset voit l'état précédent jusqu'au `COMMIT`, puis le nouvel état en
+    entier (un snapshot DuckLake). Plus de tables `__new`, de `RENAME` ni de `psycopg2` ;
+  - les tables volumineuses (`cell_scores`, `flows`) sont **partitionnées par `year`**
+    et insérées triées (`ORDER BY year, reporter, product`) pour que les filtres du
+    tableau de bord élaguent les fichiers lus (statistiques min/max) ;
+  - mode `full` (phase 0) : recréation de chaque table ; mode `by_year` (production) :
+    `DELETE … WHERE year IN (…)` + `INSERT` des seules années dont l'amont a changé, avec
+    retour automatique en `full` si les colonnes produites par la requête diffèrent de
+    celles de la table (nouvelle colonne de restitution).
+- **Pourquoi un catalogue dédié** plutôt qu'un schéma de `vulnerabilities` : Superset
+  n'attache qu'un catalogue, avec un rôle PostgreSQL qui ne lit que la base de
+  métadonnées `serving` (moindre privilège) ; les écritures de restitution ne créent pas
+  de snapshots dans les catalogues de calcul ; la maintenance le traite comme les autres
+  (PD-16).
 - Les tables de service sont **larges et prêtes à l'affichage** (une ligne par cellule,
   libellés joints, scores et rangs des méthodes de synthèse retenues en colonnes), pour
   qu'un utilisateur néophyte de Superset n'ait à écrire ni jointure ni requête (PS-29.2).
@@ -1046,10 +1113,27 @@ exposés dans un schéma `reference` (PS-28.4) ; la clé primaire d'`indicators`
   `reporter` de DS-045409 (PQ-17).
 
 **Justification.** Le pipeline produit des tables analytiques normalisées ; un tableau
-de bord a besoin de tables dénormalisées, de libellés et d'un pilote standard. Séparer
-les deux par un nœud de publication garde DuckLake comme source de vérité (les tables
-de service sont jetables et reconstruites) et laisse Superset hors du chemin critique
-du calcul.
+de bord a besoin de tables dénormalisées et libellées, qu'un utilisateur néophyte de
+Superset n'ait pas à joindre lui-même. Le nœud de publication reste donc nécessaire ;
+seule sa **cible** change. Le pilote DuckDB étant disponible dans Superset, une copie
+PostgreSQL n'apporte plus rien et coûte une base, un secret, un rôle, un basculement
+maison et une recopie de dizaines de millions de lignes (ancien PR-15). DuckLake apporte
+en outre l'isolation par snapshot, qui rend la publication atomique sans mécanisme
+supplémentaire. Les tables de service restent jetables et reconstruites ; Superset
+reste hors du chemin critique du calcul.
+
+**Alternatives écartées.**
+- *Base PostgreSQL `trade_serving`* (révision 1) : voir ci-dessus.
+- *Superset branché sur les catalogues de calcul, avec des vues* : chaque graphique
+  referait les jointures (libellés, réseau, scores des méthodes) sur des tables non
+  partitionnées pour cet usage, et Superset devrait attacher trois catalogues avec des
+  droits de lecture sur toutes les données brutes.
+
+**Conséquences.** La version de DuckDB (et donc de l'extension `ducklake`) de l'image
+Superset doit être **compatible avec celle du pipeline** (1.5.3) : un catalogue écrit
+par une version plus récente peut être illisible par une plus ancienne (PR-14). La
+latence d'un graphique dépend de la lecture de Parquet sur S3 : partitionnement, tri et
+**cache des graphiques** Superset y répondent (PS-30.1, PR-15).
 
 ### PD-22 — BACI : estimation exacte par passes et statistiques suffisantes ; réestimation du millésime entier
 
@@ -1124,23 +1208,24 @@ trade-analysis/
 │   │   ├── parameters_vulnerabilities.yml
 │   │   ├── parameters_synthesis.yml
 │   │   ├── parameters_serving.yml          # PS-29 (tables de service, requêtes SQL)
+│   │   ├── parameters_tracking.yml         # PS-31 (contrôles, rapport de run, métriques système)
 │   │   └── parameters_maintenance.yml
 │   ├── cloud/  {parameters_runtime.yml, …}  # surcharges Argo
 │   ├── demo/   {parameters_*.yml}           # périmètre présentation (supprimé en K-18)
 │   ├── test/   {parameters_*.yml, catalog.yml}  # environnement des tests e2e
 │   └── local/  .gitkeep
 ├── docker/Dockerfile
-├── docs/ {index.md, architecture.md → lien, runbooks.md, configuration.md, dashboards.md}
+├── docs/ {index.md, architecture.md → lien, runbooks.md, configuration.md, dashboards.md, supervision.md}
 ├── mkdocs.yml
 ├── kubernetes/
 │   ├── generated/{workflowtemplate.yaml, cronworkflow-daily.yaml, cronworkflow-weekly.yaml}  # rendus (PS-21)
 │   ├── transition/{workflowtemplate.yaml, cronworkflow.yaml}  # phase 0 (PD-19), supprimé en K-18
 │   └── examples/ (ancien workflow.yaml, configmap.yaml déplacés ; supprimé en K-18)
 ├── superset/
-│   ├── README.md                            # guide pas à pas (PS-30, PS-31)
-│   ├── vulnerabilites/                      # export Superset versionné (datasets, charts, dashboard)
-│   └── supervision/                         # export Superset versionné
-├── macroforecast/ (inchangé dans son rôle ; baci.py réorganisé en estimateurs par passes, PS-14)
+│   ├── README.md                            # guide pas à pas (connexion DuckDB, PS-30)
+│   └── vulnerabilites/                      # export Superset versionné (datasets, charts, dashboard)
+├── macroforecast/ (inchangé dans son rôle ; baci.py réorganisé en estimateurs par passes, PS-14 ;
+│                   tracking/report.py et tracking/figures.py : rapport de run pur, PS-31)
 ├── scripts/ (phase 0 → enveloppes minces → supprimés en K-18, PD-02)
 ├── tools/ (utilitaires hors pipeline : migrations de registres, mesures ponctuelles)
 ├── kedro_pipeline/
@@ -1154,11 +1239,11 @@ trade-analysis/
 │   ├── parallel.py             # resolve_n_jobs, parallel_map (PS-18)
 │   ├── io/
 │   │   ├── ducklake.py         # fabrique de connecteur, DuckLakeTable (PS-06)
-│   │   ├── datasets.py         # DuckLakeTableDataset, FreshnessRegistryDataset, ServingDataset (PS-07)
+│   │   ├── datasets.py         # DuckLakeTableDataset, FreshnessRegistryDataset, ServingCatalogDataset (PS-07)
 │   │   ├── freshness.py        # FreshnessRegistry, empreintes, décision (PS-10)
 │   │   ├── registry_views.py   # DownloadRegistryView (PS-12.3)
-│   │   ├── serving.py          # connexion PostgreSQL serving, basculement atomique, puits de métriques (PS-29, PS-31)
-│   │   └── tracking.py         # construction du tracker composite, conventions de nommage (PS-19)
+│   │   ├── serving.py          # ServingCatalog : écriture transactionnelle du catalogue DuckLake `serving` (PS-29)
+│   │   └── tracking.py         # build_tracker, publish_run_report, close_stale_runs, conventions de nommage (PS-19, PS-31)
 │   ├── steps/
 │   │   ├── downloads.py  baci.py  partners.py  network.py  coverage.py  reference.py
 │   │   ├── synthesis.py  coherence.py  serving.py  maintenance.py
@@ -1166,7 +1251,7 @@ trade-analysis/
 │   │   ├── downloads/{__init__.py, pipeline.py, nodes.py}
 │   │   ├── baci/… vulnerabilities/… synthesis/… serving/… maintenance/…
 │   └── deploy/{render.py, templates/workflowtemplate.yaml.j2, templates/cronworkflow.yaml.j2}
-├── tests/ (existants + tests/pipeline/, tests/deploy/, tests/serving/)
+├── tests/ (existants + tests/pipeline/, tests/deploy/, tests/serving/, tests/tracking/)
 ├── PIPELINE_ARCHITECTURE.md
 └── PIPELINE_PROMPTS.md
 ```
@@ -1186,11 +1271,17 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-tracking = ["mlflow>=3,<4"]              # aligné sur kedro-mlflow 2.x
+tracking = ["mlflow>=3,<4", "psutil>=5.9"]   # aligné sur kedro-mlflow 2.x ; psutil : métriques système
+reports = ["plotly>=5.24"]               # figures du rapport HTML de run (PS-31), incluses dans l'image
 optimal-transport = ["jax>=0.4.30", "ott-jax>=0.4.6"]
 viz = ["kedro-viz==12.4.0"]              # hors image de production
 docs = ["mkdocs-material>=9.5", "kedro-viz==12.4.0"]
-dashboards = ["plotly>=5.24"]            # artefacts HTML BACI (inclus dans l'image)
+
+[dependency-groups]
+dev = [
+    # … existant …
+    "duckdb-engine",                     # tests : lecture du catalogue `serving` comme Superset (SQLAlchemy)
+]
 
 [project.scripts]
 # phase 0 → phase 3 : comtrade-script, eurostat-script, baci-hs-script,
@@ -1209,10 +1300,11 @@ source_dir = "."
 packages = ["macroforecast", "scripts", "kedro_pipeline"]   # "scripts" retiré en K-18
 ```
 
-Remarques : l'extra `dashboards` (Plotly) est **abandonné** (PD-13) ; `psycopg2` est
-déjà une dépendance transitive de `dt-ducklake-manager` et sert au basculement atomique
-des tables de service (PD-21) ; `kedro-viz` n'est pas dans l'image (inutile à
-l'exécution).
+Remarques : l'ancien extra `dashboards` devient `reports` (révision 2 : rapport HTML de
+run, PD-13) ; plotly n'est importé que par `macroforecast/tracking/figures.py`, de façon
+paresseuse (sans l'extra, le rapport est produit sans figures). `psutil` est requis par
+les métriques système de MLflow. Plus aucun usage direct de `psycopg2` pour la
+restitution (PD-21). `kedro-viz` n'est pas dans l'image (inutile à l'exécution).
 
 ### PS-03 — `kedro_pipeline/settings.py`
 
@@ -1517,12 +1609,8 @@ s3:
 comtrade_api:
   subscription_key: ${oc.env:COMTRADE_PREMIUM_INSTITUTIONNAL_SUBSCRIPTION_KEY,""}
 
-serving_postgres:                      # PD-21, secret trade-serving-credentials
-  host: ${oc.env:SERVING_PGHOST,""}
-  port: ${oc.env:SERVING_PGPORT,"5432"}
-  user: ${oc.env:SERVING_PGUSER,""}
-  password: ${oc.env:SERVING_PGPASSWORD,""}
-  dbname: ${oc.env:SERVING_PGDATABASE,"trade_serving"}
+# Pas de bloc de service dédié (révision 2) : le catalogue DuckLake `serving` est écrit
+# avec `ducklake_postgres`, comme les autres catalogues (PD-21).
 ```
 
 `OmegaConfigLoader` n'autorise `oc.env` que dans `credentials*` : c'est voulu, les
@@ -1618,10 +1706,12 @@ synthesis.diagnostics:    { <<: *pg, location: { …, schema: synthesis_diagnost
   credentials: s3
   path_template: "${…}"                # renseigné via paramètres (PS-10.1)
 
-serving.tables:                        # poignée PostgreSQL du schéma serving (PS-29)
-  type: kedro_pipeline.io.datasets.ServingDataset
-  credentials: serving_postgres
-  schema: serving
+serving.tables:                        # poignée du catalogue DuckLake `serving` (PD-21, PS-29)
+  type: kedro_pipeline.io.datasets.ServingCatalogDataset
+  credentials: ducklake_postgres
+  location: {dbname: serving, catalog_alias: serving, schema: dashboard,   # demo_dashboard dans config/demo/catalog.yml
+             bucket: qbollietdgddi, data_path: trade/datasets/serving/}
+  sources: [eurostat, comtrade, vulnerabilities]   # catalogues attachés en lecture pour les requêtes
 
 "mlflow.metrics.{node}":
   type: kedro_mlflow.io.metrics.MlflowMetricsHistoryDataset
@@ -1680,7 +1770,7 @@ def run_coherence(catalog: DuckLakeTable, scores: DuckLakeTable, diagnostics: Du
                   params: Mapping, runtime: Mapping, tracker: RunTracker) -> StepResult
 def publish_reference(codelists: Mapping[str, pd.DataFrame], reference: DuckLakeTable, *,
                       source: str, params: Mapping) -> StepResult              # PS-28.4
-def publish_serving(sources: Mapping[str, DuckLakeTable], serving: ServingHandle, *,
+def publish_serving(sources: Mapping[str, DuckLakeTable], serving: ServingCatalog, *,
                     params: Mapping, runtime: Mapping, tracker: RunTracker) -> StepResult   # PS-29
 def run_maintenance(tables: Sequence[DuckLakeTable], *, params: Mapping,
                     tracker: RunTracker) -> StepResult
@@ -1696,7 +1786,8 @@ Invariants communs (hérités des scripts, à conserver) :
 2. le registre n'avance **qu'après** une écriture réussie, et seulement pour les unités
    réussies ;
 3. l'échec d'une unité n'interrompt pas les autres ; `raise_if_failed()` est appelé par le
-   nœud **après** la persistance du registre et la journalisation ;
+   nœud **après** la persistance du registre, la journalisation et la publication du
+   rapport de run (PS-31) : un run en échec porte donc lui aussi son rapport ;
 4. aucune lecture de variable d'environnement, aucun chemin YAML.
 
 ### PS-09 — Pipelines et nœuds
@@ -1711,8 +1802,8 @@ Invariants communs (hérités des scripts, à conserver) :
 | `vulnerabilities` | `compute_network_vulnerabilities` | `baci.<vintage>` (tous), `state.baci_*`, `state.network`, `params:vulnerabilities`, `params:runtime` | `vulnerabilities.network`, `state.network`, metrics, artifacts | `experiment:trade-03-vulnerabilities`, `cadence:weekly` | `compute-medium` |
 | `synthesis` | `compute_synthetic_scores` | `vulnerabilities.partners`, `vulnerabilities.network`, `state.partners`, `state.network`, `state.synthesis`, `params:synthesis`, `params:runtime` | `synthesis.scores`, `state.synthesis`, metrics, artifacts | idem, `cadence:weekly` | `synthesis-cpu` |
 | `synthesis` | `compute_synthesis_coherence` | `synthesis.scores`, `vulnerabilities.partners`, `vulnerabilities.network`, `state.synthesis`, `state.coherence`, `params:synthesis`, `params:runtime` | `synthesis.diagnostics`, `state.coherence`, metrics, artifacts | idem, `cadence:weekly` | `synthesis-cpu` |
-| `serving` | `publish_serving` | `vulnerabilities.partners`, `vulnerabilities.network`, `synthesis.scores`, `synthesis.diagnostics`, `reference.*`, `eurostat.comext`, `params:serving`, `params:runtime` | `serving.tables`, metrics | `experiment:trade-04-serving`, `cadence:daily`, `cadence:weekly`, `mutex:trade-serving` | `compute-medium` |
-| `maintenance` | `maintain_ducklake` | `params:maintenance` *(aucune entrée de données : exécuté en `onExit`)* | `mlflow.metrics.maintain_ducklake` | `experiment:trade-00-maintenance`, `onexit`, `mutex:trade-maintenance` | `io-small` |
+| `serving` | `publish_serving` | `vulnerabilities.partners`, `vulnerabilities.network`, `synthesis.scores`, `synthesis.diagnostics`, `reference.*`, `eurostat.comext`, `params:serving`, `params:runtime` | `serving.tables` (catalogue DuckLake), metrics | `experiment:trade-04-serving`, `cadence:daily`, `cadence:weekly`, `mutex:trade-serving` | `compute-medium` |
+| `maintenance` | `maintain_ducklake` | `params:maintenance`, `params:tracking` *(aucune entrée de données : exécuté en `onExit` ; clôt aussi les runs orphelins, PD-16.6)* | `mlflow.metrics.maintain_ducklake` | `experiment:trade-00-maintenance`, `onexit`, `mutex:trade-maintenance` | `io-small` |
 
 Dans Kedro, `publish_serving` dépend de **toutes** les tables de résultats ; dans le
 point d'entrée `daily`, seules les tâches `cadence:daily` sont instanciées et le rendu
@@ -2154,14 +2245,17 @@ Conventions :
   `StepResult.artifacts` vers des `MlflowArtifactDataset` ;
 - les runners de `macroforecast` continuent de journaliser **pendant** le calcul via le
   `RunTracker` (métriques par étape BACI, artefacts) ; le tracker reçu par les étapes est
-  un `CompositeTracker([ActiveRunTracker(), TableTracker(sink)])` construit par
-  `kedro_pipeline/io/tracking.py::build_tracker(...)`, où `sink` écrit dans
-  `serving.pipeline_metrics` (PS-31.2) ; chaque tracker membre est isolé (exception
-  journalisée en WARNING, jamais propagée) ;
+  l'`ActiveRunTracker` renvoyé par `kedro_pipeline/io/tracking.py::build_tracker(...)`
+  (`NullTracker` si aucun run n'est actif) ; toute exception de journalisation est
+  journalisée en WARNING, jamais propagée ;
 - **pas de paramètre sensible** : `credentials` n'est jamais passé en `params:` ;
-- pas de tableau de bord HTML par étape (PD-13) : les graphiques de supervision sont
-  construits dans Superset à partir de `pipeline_metrics` et des petites tables
-  d'artefacts publiées (PS-31.3).
+- en fin de nœud, **avant** `raise_if_failed()`, le nœud appelle
+  `publish_run_report(tracker, report, params["tracking"])` : description Markdown,
+  contrôles, `report/report.html`, `report/checks.csv`, tags `health` et
+  `checks_failed` (PS-31) ; le hook `on_node_error` publie une description réduite si le
+  nœud lève avant d'y arriver ;
+- les métriques système sont activées par variable d'environnement dans les pods
+  (PS-21.1) : aucune ligne de code dans les nœuds.
 
 ### PS-20 — `config/base/argo.yml`
 
@@ -2250,13 +2344,14 @@ spec:
           - {name: AWS_S3_ENDPOINT, value: minio.lab.sspcloud.fr}
           - {name: AWS_DEFAULT_REGION, value: us-east-1}
           - {name: MLFLOW_S3_ENDPOINT_URL, value: "https://minio.lab.sspcloud.fr"}
+          - {name: MLFLOW_ENABLE_SYSTEM_METRICS_LOGGING, value: "true"}      # tracking.SYSTEM_METRICS.ENABLED
+          - {name: MLFLOW_SYSTEM_METRICS_SAMPLING_INTERVAL, value: "30"}     # tracking.SYSTEM_METRICS.SAMPLING_SECONDS
           - {name: AWS_ACCESS_KEY_ID, valueFrom: {secretKeyRef: {name: trade-s3-credentials, key: S3_ACCESS_KEY}}}
           - {name: AWS_SECRET_ACCESS_KEY, valueFrom: {secretKeyRef: {name: trade-s3-credentials, key: S3_SECRET_KEY}}}
           - {name: COMTRADE_PREMIUM_INSTITUTIONNAL_SUBSCRIPTION_KEY, valueFrom: {secretKeyRef: {name: comtrade-api-credentials, key: COMTRADE_PREMIUM_INSTITUTIONNAL_SUBSCRIPTION_KEY}}}
         envFrom:
           - secretRef: {name: trade-postgres-credentials}
           - secretRef: {name: trade-mlflow-credentials}
-          - secretRef: {name: trade-serving-credentials}
     - name: kedro-serving                 # même conteneur, sérialisé (PD-23)
       synchronization: {mutex: {name: trade-serving}}
       # … identique à `kedro` …
@@ -2370,7 +2465,7 @@ WORKDIR /app
 COPY pyproject.toml uv.lock README.md ./
 RUN --mount=type=cache,target=/root/.cache/uv \
     uv sync --frozen --no-dev --no-install-project \
-      --extra tracking --extra optimal-transport
+      --extra tracking --extra reports --extra optimal-transport
 COPY macroforecast/ macroforecast/
 COPY scripts/ scripts/
 COPY kedro_pipeline/ kedro_pipeline/
@@ -2378,7 +2473,7 @@ COPY config/base/ config/base/
 COPY config/cloud/ config/cloud/
 COPY config/demo/ config/demo/
 RUN --mount=type=cache,target=/root/.cache/uv \
-    uv sync --frozen --no-dev --extra tracking --extra optimal-transport
+    uv sync --frozen --no-dev --extra tracking --extra reports --extra optimal-transport
 # Extensions DuckDB préinstallées (pas de téléchargement au démarrage des pods)
 ENV HOME=/app
 RUN /app/.venv/bin/python -c "import duckdb; c=duckdb.connect(); [c.install_extension(e) for e in ('ducklake','postgres','httpfs')]"
@@ -2424,6 +2519,7 @@ maintenance:
     - {dbname: eurostat,        catalog_alias: eurostat,        bucket: qbollietdgddi, data_path: trade/datasets/comext}
     - {dbname: comtrade,        catalog_alias: comtrade,        bucket: qbollietdgddi, data_path: trade/datasets/comtrade}
     - {dbname: vulnerabilities, catalog_alias: vulnerabilities, bucket: qbollietdgddi, data_path: trade/datasets/vulnerabilities/}
+    - {dbname: serving,         catalog_alias: serving,         bucket: qbollietdgddi, data_path: trade/datasets/serving/}   # PD-21
   ONLY_TABLES_WRITTEN_WITHIN_HOURS: 24
   DELETE_RATIO_THRESHOLD: 0.1
   WEEKLY_DAY: 6                       # 0 = lundi … 6 = dimanche (Europe/Paris)
@@ -2438,6 +2534,10 @@ maintenance:
     vulnerabilities.indicators: ["classification"]
     vulnerabilities.network_indicators: ["classification"]
     vulnerabilities.synthesis: ["TIME_PERIOD"]
+    # serving.* : partitionné par publish_serving à la création (PD-21), non repris ici
+  STALE_RUNS:                         # clôture des runs MLflow orphelins (PD-16.6)
+    ENABLED: true
+    MIN_AGE_MINUTES: 10               # marge pour ne pas clore un run en cours de fermeture
   BACKUP:
     ENABLED: true
     WEEKLY_DAY: 6
@@ -2447,7 +2547,10 @@ maintenance:
 
 Ordre par table : `flush_inlined` → `merge_adjacent_files` → `rewrite_data_files`
 (conditionnel) ; puis par catalogue : `expire_snapshots` → `cleanup_old_files` ; puis
-`VACUUM ANALYZE` et la sauvegarde si c'est le jour hebdomadaire. Les requêtes
+`VACUUM ANALYZE` et la sauvegarde si c'est le jour hebdomadaire ; enfin la clôture des
+runs orphelins du workflow (`STALE_RUNS`). Le catalogue `serving` est entièrement
+réécrit à chaque publication en mode `full` : `expire_snapshots` et `cleanup_old_files`
+y sont ce qui borne le stockage. Les requêtes
 d'inspection lisent les tables de métadonnées DuckLake (`ducklake_data_file`,
 `ducklake_delete_file`, `ducklake_snapshot`) : leurs noms exacts sont **à vérifier sur
 la version DuckLake embarquée** (K-14).
@@ -2556,28 +2659,59 @@ contrôle de la table de passage utilisée (une table UNSD corrigée déclenche 
 | `hs_concordance` | `(source_classification, source_code, target_classification, target_code)` | `relationship` (1:1, n:1, 1:n, n:n), `checksum` | `prepare_baci` (cache UNSD) |
 | `hs_vintages` | `classification` | `entry_year`, `in_force_until` | `runtime.NOMENCLATURES` |
 
-Ces tables sont recopiées telles quelles dans `serving` (PS-29) pour les libellés du
-tableau de bord.
+Ces tables sont recopiées telles quelles dans le catalogue `serving` (PS-29) pour les
+libellés du tableau de bord.
 
-### PS-29 — Couche de service PostgreSQL (`serving`)
+### PS-29 — Couche de service : catalogue DuckLake `serving`
 
 #### PS-29.1 Contrat
 
-- Base `trade_serving`, schéma `serving`, identifiants `trade-serving-credentials`
-  (PD-18) ; un rôle **lecture seule** `superset_reader` pour Superset.
-- Écriture par `publish_serving` (PS-08) : pour chaque table déclarée dans
-  `serving.TABLES`, exécution de la requête SQL DuckDB (catalogues DuckLake attachés)
-  vers `pg.serving.<table>__new` via l'extension DuckDB `postgres`, puis basculement
-  atomique (`psycopg2`, une transaction : `DROP … ; ALTER TABLE … RENAME`), puis
-  création des index déclarés et `ANALYZE`. Mode `by_year` : `DELETE WHERE year = ?` +
-  insertion, pour les tables volumineuses.
-- Idempotence : reconstruire une table déjà à jour est sans effet visible ; la fraîcheur
+- Catalogue DuckLake `serving` : base de métadonnées PostgreSQL `serving` (même
+  instance que les autres catalogues, identifiants `trade-postgres-credentials`),
+  fichiers sous `s3://qbollietdgddi/trade/datasets/serving/`, schéma `serving.SCHEMA`
+  (`dashboard` ; `demo_dashboard` en `demo`). Lecture par Superset avec un rôle
+  PostgreSQL **lecture seule** `superset_reader` sur la base `serving` (§9).
+- Poignée `kedro_pipeline/io/serving.py::ServingCatalog(location, pg, s3, sources)` :
+  aucune connexion à l'instanciation ; `connect()` ouvre une session DuckDB qui attache
+  le catalogue `serving` en écriture et les catalogues sources (`eurostat`, `comtrade`,
+  `vulnerabilities`) en **lecture seule** (`READ_ONLY`), afin que les requêtes de
+  `serving.TABLES` les référencent par leur alias.
+- Écriture par `publish_serving` (PS-08), **une transaction pour toute la
+  publication** :
+  ```sql
+  BEGIN;
+  -- pour chaque table de serving.TABLES, mode full :
+  CREATE OR REPLACE TABLE serving.dashboard.cell_scores AS (<SQL>) LIMIT 0;  -- schéma seul
+  ALTER TABLE serving.dashboard.cell_scores SET PARTITIONED BY (year);       -- si PARTITIONED
+  INSERT INTO serving.dashboard.cell_scores <SQL> ORDER BY year, reporter, product;
+  -- mode by_year (tables PARTITIONED, colonnes inchangées) :
+  DELETE FROM serving.dashboard.cell_scores WHERE year IN (<années périmées>);
+  INSERT INTO serving.dashboard.cell_scores <SQL filtré sur ces années> ORDER BY …;
+  COMMIT;
+  ```
+  Superset lit l'ancien snapshot jusqu'au `COMMIT`. En cas d'échec d'une table :
+  `ROLLBACK` complet (le tableau de bord reste sur l'état précédent, cohérent) et
+  échec du nœud après publication du rapport de run. **À vérifier dans K-03b** sur
+  catalogue fichier : `SET PARTITIONED BY` dans la même transaction que la création,
+  `CREATE OR REPLACE` dans une transaction multi-tables, élagage effectif par partition
+  (`EXPLAIN ANALYZE` d'une requête filtrée sur `year`). Repli si la transaction unique
+  pose problème : une transaction par table (cohérence inter-tables relâchée,
+  documentée).
+- Années périmées (mode `by_year`) : années des lignes de l'amont dont
+  `last_computed` est postérieur à la dernière publication (registre de fraîcheur de
+  `serving`, PS-10) ; retour automatique en `full` si l'ensemble des colonnes produites
+  par la requête diffère de celui de la table (nouvelle colonne de restitution).
+- Métriques (vers MLflow) : `serving/<table>/rows`, `serving/<table>/seconds`,
+  `serving/<table>/files`, `serving/mode_full` ; contrôle par défaut « `rows > 0` pour
+  `cell_scores` et `countries` » (PS-31.2).
+- Idempotence : republier des tables déjà à jour est sans effet visible ; la fraîcheur
   (PS-10) évite le travail inutile en régime nominal.
 
 #### PS-29.2 Tables de service (`config/base/parameters_serving.yml`, extrait)
 
 ```yaml
 serving:
+  SCHEMA: dashboard                # schéma du catalogue DuckLake `serving` (demo : demo_dashboard)
   MODE: full                       # full | by_year (tables marquées PARTITIONED)
   METHODS: ["borda", "auto_sum", "critic_sum"]   # scores synthétiques exposés en colonnes
   LEVELS: ["by_reporter", "by_product"]          # niveaux exposés
@@ -2585,8 +2719,8 @@ serving:
   TOP_PARTNERS: 12                 # partenaires conservés par cellule dans flows
   TABLES:
     cell_scores:                   # une ligne par cellule (classification, reporter, product, flow, year)
-      PARTITIONED: true
-      INDEXES: [["reporter", "year", "flow"], ["product", "year", "flow"], ["classification"]]
+      PARTITIONED: true            # partition DuckLake par year (PS-29.1)
+      SORT_BY: ["year", "reporter", "product"]   # ordre d'insertion : élagage min/max des fichiers
       SQL: |
         SELECT p.classification, p.hs_vintage, p.in_force, p.reporter, rr.label AS reporter_label,
                p.product, pr.label AS product_label, pr.level AS product_level,
@@ -2609,6 +2743,7 @@ serving:
       SQL: SELECT … FROM vulnerabilities.synthesis_diagnostics WHERE family = 'methods'
     flows:                         # parts des partenaires : (reporter, product, flow, year, partner, partner_label, value, share, rank) — TOP_PARTNERS + WORLD + EXT_EU
       PARTITIONED: true
+      SORT_BY: ["year", "product", "reporter"]
       SQL: SELECT … FROM eurostat.DS_045409 QUALIFY rank() OVER (…) <= ${serving.TOP_PARTNERS} …
     products:   {SQL: SELECT * FROM reference_eurostat.products}
     countries:  {SQL: SELECT * FROM reference_eurostat.reporters UNION … partners}
@@ -2637,18 +2772,52 @@ lecture du tableau de bord est donc **stable** de la phase 0 à la production.
 | `flows` | ~3 M | ~80 M (12 partenaires/cellule) | idem |
 | `coherence_*` | faible | quelques M | idem |
 
-PostgreSQL tient ces volumes avec les index déclarés ; au-delà (années mensuelles,
-`TOP_PARTNERS` élevé), la lecture directe DuckLake par Superset devient préférable
-(PQ-13, PR-15).
+Ces volumes ne sont plus recopiés ailleurs : ils restent en Parquet dans le catalogue
+`serving`. Le filtre `year` du tableau de bord (toujours renseigné, PS-30.2) élague les
+partitions ; le tri d'insertion rend efficaces les filtres `reporter` et `product` au
+sein d'une partition. **Objectif de latence** à mesurer en K-03c (démo) puis K-17
+(production) : moins de 5 s pour un graphique à froid, instantané une fois en cache
+Superset. Au-delà, leviers dans l'ordre : cache des graphiques, `TOP_PARTNERS`,
+`serving.YEARS_BACK`, ressources DuckDB de la connexion Superset (`threads`,
+`memory_limit`), tables d'agrégats dédiées (PR-15).
 
 ### PS-30 — Tableau de bord Superset « Vulnérabilités »
 
 #### PS-30.1 Connexion et jeux de données
 
-1. Superset (service Onyxia, PQ-13) → *Settings → Database Connections → + Database →
-   PostgreSQL* ; URI `postgresql://superset_reader:…@<hôte>:5432/trade_serving` ;
-   cocher *Allow DML* **non**, *Expose in SQL Lab* oui.
-2. *Datasets → + Dataset* : schéma `serving`, tables `cell_scores`, `flows`,
+0. **Prérequis vérifiés en tête de K-03c** (consignés dans PQ-13) : version de
+   `duckdb` et de l'extension `ducklake` dans l'image Superset (`SELECT version()` ;
+   `SELECT extension_name, extension_version FROM duckdb_extensions() WHERE loaded`)
+   **compatible** avec celle du pipeline (1.5.3), sinon épingler `duckdb==1.5.3` dans
+   la configuration du chart (PR-14) ; extensions `ducklake`, `postgres`, `httpfs`
+   installables ou préinstallées dans le pod Superset ; mécanisme d'accès S3 déjà en
+   place dans le service (variables du service, secret DuckDB persistant ou paramètres
+   du moteur : le relever, ne pas le dupliquer).
+1. Superset → *Settings → Database Connections → + Database → DuckDB* (ou *Other* avec
+   l'URI SQLAlchemy). La connexion ouvre une session DuckDB **en mémoire** et attache le
+   **seul** catalogue `serving`, **en lecture seule**. Deux mécanismes possibles, le
+   premier qui fonctionne sur la version déployée est retenu et documenté :
+   - **(a) secrets DuckDB persistants + URI** : créer une fois, dans le pod Superset,
+     un secret `postgres` (rôle `superset_reader`) et un secret `ducklake`
+     (`METADATA_PATH 'postgres:dbname=serving host=…'`,
+     `DATA_PATH 's3://qbollietdgddi/trade/datasets/serving/'`) stockés dans
+     `~/.duckdb/stored_secrets` (volume persistant), puis attacher par l'URI ou par les
+     paramètres du moteur ;
+   - **(b) écouteur SQLAlchemy `connect`** déclaré dans `superset_config.py` (surcharge
+     de configuration du chart), qui exécute `LOAD ducklake; LOAD httpfs; ATTACH
+     'ducklake:postgres:dbname=serving host=…' AS serving (READ_ONLY); USE serving;` à
+     chaque nouvelle connexion DuckDB, identifiants lus dans les variables
+     d'environnement du service.
+   *Engine parameters* (onglet *Advanced → Other*) : `{"connect_args": {"config":
+   {"threads": 4, "memory_limit": "4GB"}}}` (à ajuster aux ressources du service).
+   *Allow DML* **non** ; *Expose in SQL Lab* oui ; *Advanced → Performance → Chart
+   cache timeout* = `86400` (données rafraîchies une fois par jour : le cache absorbe
+   la latence S3). À vérifier : qu'un `ATTACH … (READ_ONLY)` n'exige aucun droit
+   d'écriture sur la base de métadonnées `serving`.
+2. *Datasets → + Dataset* : schéma `dashboard` du catalogue `serving` (selon la façon
+   dont `duckdb-engine` présente les catalogues attachés : `serving.dashboard` ou, après
+   `USE serving`, `dashboard` ; à défaut, un dataset virtuel `SELECT * FROM
+   serving.dashboard.<table>`), tables `cell_scores`, `flows`,
    `coherence_metrics`, `coherence_methods`, `products`, `countries`. Dans chaque
    dataset, marquer `year` comme **temporel** (type entier → *Is temporal* avec
    expression `make_date(year,1,1)` dans une **colonne calculée** `period`), et définir
@@ -2722,47 +2891,162 @@ Une fois construit, le tableau de bord est **exporté** (*Dashboards → Export*
 YAML : base, datasets, charts, dashboard) et commité sous `superset/vulnerabilites/`.
 Réimport : *Dashboards → Import* (ou `superset import-dashboards -p …` dans le conteneur
 Superset). Les identifiants de connexion ne sont pas dans l'export (mot de passe
-demandé à l'import).
+demandé à l'import). Passage de `demo` à la production : les datasets pointent sur le
+schéma `demo_dashboard` ; remplacer `demo_dashboard` par `dashboard` dans les YAML de
+l'export (`datasets/*.yaml`, clé `schema` ou SQL des datasets virtuels) puis réimporter.
 
-### PS-31 — Tableau de bord Superset « Supervision du pipeline »
+### PS-31 — Rapport de run MLflow (supervision)
 
-#### PS-31.1 Source
+Révision 2 : la supervision est **exclusivement** dans MLflow (PD-13). Objectif : pour
+n'importe quel run, pouvoir répondre à « la tâche s'est-elle bien passée, et sinon
+pourquoi ? » sans ouvrir de fichier, écrire de requête ni consulter un autre outil que
+l'interface Argo pour le DAG.
 
-Table `serving.pipeline_metrics` (écrite par `TableTracker`, PD-13) :
+#### PS-31.1 Rôle des onglets d'un run
 
-| Colonne | Contenu |
-|---|---|
-| `run_id`, `workflow_id`, `experiment`, `node`, `kedro_env`, `git_sha`, `image_tag` | identité du run (tags) |
-| `vintage`, `source`, `flow` | dimensions optionnelles (tags de run) |
-| `metric` | nom hiérarchisé (`gravity/mean_freight_rate`, `download/errors`…) |
-| `step` | pas (année pour BACI, index de requête pour les téléchargements, 0 sinon) |
-| `value` | valeur |
-| `recorded_at` | horodatage UTC |
+| Onglet MLflow 3 | Ce qu'on y lit | Produit par |
+|---|---|---|
+| **Overview** | **Description** (Markdown rendu en tête de page) : verdict (`ok` / `warning` / `failed`), contrôles, unités, chiffres clés, liens ; puis paramètres (configuration aplatie par kedro-mlflow) et tags (`workflow_id`, `node`, `health`, `git_sha`, `image_tag`, `kedro_env`, `forced`, `checks_failed`) | `publish_run_report` : tag `mlflow.note.content` + `set_tags` (PS-31.3) |
+| **Model metrics** | Toutes les métriques, en sections par préfixe (`gravity/`, `download/`, `checks/`…) ; courbes par `step` (année pour BACI, index de requête pour les téléchargements) | `log_metrics` des étapes et des runners |
+| **System metrics** | CPU, mémoire, disque, réseau du pod au cours du temps (remplace la seule valeur `memory/peak_mb` pour dimensionner les `machine_types`, PS-20) | variables `MLFLOW_ENABLE_SYSTEM_METRICS_LOGGING` / `MLFLOW_SYSTEM_METRICS_SAMPLING_INTERVAL` (PS-21.1), `psutil` |
+| **Artifacts** | `report/report.html` (rapport autonome : mêmes informations que la description, plus figures et tables, une section par étape pour BACI) ; `report/summary.md` (copie intégrale de la description, jamais tronquée) ; `report/checks.csv` ; `tables/*.csv` (couverture, `σ̂` par pays, coefficients…) ; `failures.csv` (unités en échec et message) | `log_text`, `log_table` (PS-31.4) |
 
-Table `serving.pipeline_runs` : un enregistrement par run (début, fin, statut, raison
-d'échec tronquée, `n_units_planned/succeeded`, `reason` de fraîcheur agrégée).
+#### PS-31.2 Paramètres et contrôles déclaratifs (`config/base/parameters_tracking.yml`)
 
-#### PS-31.2 Écriture
+```yaml
+tracking:
+  SYSTEM_METRICS:
+    ENABLED: true                     # injecté dans les pods par le rendu (PS-21.1)
+    SAMPLING_SECONDS: 30
+  REPORT:
+    HTML: true                        # report/report.html
+    PLOTLY_JS: inline                 # inline (autonome, ~3,5 Mo) | cdn (léger, exige internet côté navigateur)
+    MAX_DESCRIPTION_CHARS: 7500       # sous la limite de longueur des tags du serveur (PQ-19)
+    MAX_TABLE_ROWS: 50                # lignes affichées par table dans le rapport HTML
+    MAX_FAILURES_LISTED: 20
+  LINKS:                              # liens insérés dans la description ({workflow_id}, {run_id}…)
+    ARGO_WORKFLOW: "https://<argo-ui>/workflows/user-qbollietdgddi/{workflow_id}"
+  CHECKS:                             # clé = nom de nœud, joker `*` accepté ; valeurs initiales à calibrer (K-17)
+    "download_*":
+      - {metric: download/error_share,       op: "<=", threshold: 0.05, severity: warning, label: "Part de requêtes en erreur"}
+      - {metric: download/queries_done,      op: ">",  threshold: 0,    severity: warning, label: "Au moins une requête traitée"}
+      - {metric: rate_limit/wait_share,      op: "<=", threshold: 0.5,  severity: warning, label: "Temps passé en attente du limiteur"}
+    prepare_baci:
+      - {metric: coverage/years_eligible,    op: ">",  threshold: 0,    severity: error,   label: "Au moins une année complète"}
+    "process_baci_*":
+      - {metric: output/rows,                op: ">",  threshold: 0,    severity: error,   label: "Lignes écrites"}
+      - {metric: conversion/share_converted, op: ">=", threshold: 0.95, severity: warning, label: "Quantités converties en tonnes"}
+      - {metric: gravity/r_squared,          op: ">=", threshold: 0.5,  severity: warning, label: "R² de l'équation de gravité"}
+      - {metric: fobisation/share_clipped_to_zero, op: "<=", threshold: 0.01, severity: warning, label: "Valeurs FOB tronquées à zéro"}
+    compute_partner_vulnerabilities:
+      - {metric: freshness/units_waiting_sources, op: "<=", threshold: 1000, severity: warning, label: "Unités historiques en attente de sources"}
+    compute_synthetic_scores:
+      - {metric: synthesis/contexts_computed, op: ">=", threshold: 0,   severity: warning, label: "Contextes calculés"}
+    publish_serving:
+      - {metric: serving/cell_scores/rows,   op: ">",  threshold: 0,    severity: error,   label: "Table cell_scores non vide"}
+      - {metric: serving/countries/rows,     op: ">",  threshold: 0,    severity: error,   label: "Table countries non vide"}
+    maintain_ducklake:
+      - {metric: ducklake/max_files_per_table, op: "<=", threshold: 2000, severity: warning, label: "Fichiers par table après maintenance"}
+```
 
-`TableTracker` accumule en mémoire ; le puits (`kedro_pipeline/io/serving.py::
-MetricsSink`) insère par lots (`COPY`/`executemany`) à chaque `log_metrics` et à la
-fermeture du run. Aucune écriture ne bloque un calcul : erreur → WARNING et
-mise en file locale (fichier JSONL dans `data/`) rejouée à la prochaine exécution.
+Les noms de métriques ci-dessus sont **indicatifs** : K-03d (scripts) puis K-13 (nœuds)
+les alignent sur les noms réellement émis, et un test vérifie que chaque contrôle
+configuré vise une métrique que l'étape émet (sinon le contrôle serait silencieusement
+`skipped`).
 
-#### PS-31.3 Onglets et graphiques
+Sémantique :
+- deux contrôles **implicites**, hors configuration, sur tout nœud : « aucune unité en
+  échec » (`error`, d'après `StepResult.failures`) et « toutes les unités prévues
+  traitées » (`warning`, `n_units_succeeded < n_units_planned` hors échecs, par exemple
+  budget de temps épuisé) ;
+- `op ∈ {<, <=, >, >=, ==, !=}` ; métrique absente → `skipped` (listé, sans effet sur le
+  verdict) ; `severity ∈ {warning, error}` ;
+- verdict `health` : `failed` si un contrôle `error` échoue, sinon `warning` si un
+  contrôle `warning` échoue, sinon `ok` ;
+- journalisé : métriques `checks/n_passed`, `checks/n_warnings`, `checks/n_failed`,
+  `checks/n_skipped` ; tags `health` et `checks_failed` (libellés, tronqués) ; artefact
+  `report/checks.csv` (contrôle, métrique, valeur, opérateur, seuil, sévérité,
+  résultat).
 
-| Onglet | Graphiques (dataset `pipeline_metrics` sauf mention) |
-|---|---|
-| **Téléchargement** | `coverage/share_downloaded` par source dans le temps ; `coverage/queries_never_downloaded` ; `download/errors`, `http/*`, `rate_limit/*` par run ; `coverage/eta_days` (*Big Number*) ; table des derniers runs (`pipeline_runs`) |
-| **BACI** | par millésime (filtre) : `gravity/mean_freight_rate`, `gravity/r_squared`, `gravity/n_cook_dropped` ; `quality/sigma_*_median`, `quality/sigma_floor` ; `conversion/share_converted` ; `fobisation/share_reverted_fas`, `share_clipped_to_zero` ; `nes/value_reallocated` ; `output/rows` et `timing/seconds` par `step` = année ; `memory/peak_mb` ; distribution des `σ̂` par pays et coefficients de gravité depuis les tables d'artefacts publiées `serving.baci_sigma_by_country`, `serving.baci_gravity_coefficients` (extraits des artefacts MLflow par `publish_serving`) |
-| **Vulnérabilités** | `partners/<flux>/<métrique>/mean`, comptes d'alertes, `drift/*`, `freshness/units_*` par raison ; réseau : `network/<métrique>/*` par millésime |
-| **Synthèse** | `synthesis/<niveau>/*`, `freshness/*`, `timing/wall_seconds`, `parallel/n_jobs`, nombre de contextes par run |
-| **Cohérence** | `coherence/<niveau>/*`, durée, contextes ; et un rappel des statistiques principales depuis `coherence_methods` (dataset de PS-29) |
-| **Maintenance** (bonus) | `ducklake/<catalogue>/<schéma>/files_{before,after}`, snapshots, alertes `MAX_FILES_PER_TABLE` |
+#### PS-31.3 Description du run (onglet *Overview*)
 
-Filtres natifs : `workflow_id` (dernier par défaut), `kedro_env`, `vintage`. Chaque
-onglet commence par une ligne de *Big Numbers* « dernier run » (statut, durée, unités
-calculées / échouées).
+Générée par `RunReport.to_markdown()` et posée dans le tag `mlflow.note.content`,
+tronquée à `MAX_DESCRIPTION_CHARS` avec renvoi vers `report/summary.md`. Structure
+fixe, dans cet ordre (exemple) :
+
+```markdown
+### ⚠️ process_baci_hs2017 — avertissement
+Exécution `trade-pipeline-weekly-7k2qd` · env `cloud` · image `sha-6f24c6c` · 3 h 12 min · [DAG Argo](…)
+
+| Unités prévues | Réussies | En échec |
+|---:|---:|---:|
+| 1 millésime (24 années) | 1 | 0 |
+
+**Contrôles** : 6 ✅ · 1 ⚠️ · 0 ❌ · 0 ⏭️
+
+| | Contrôle | Valeur | Seuil |
+|---|---|---:|---|
+| ⚠️ | R² de l'équation de gravité | 0,42 | ≥ 0,5 |
+
+**Chiffres clés** : 24 années écrites · 212 M flux · part convertie 97,8 % · taux de
+fret médian 4,1 % · pic mémoire 21,4 Go
+
+**Détail** : rapport complet `report/report.html` (Artifacts) · métriques par section
+(Model metrics) · ressources (System metrics)
+```
+
+Les contrôles réussis ne sont pas détaillés dans la description (seulement comptés) ;
+ils figurent dans `report/checks.csv` et le rapport HTML. Les chiffres clés sont
+déclarés par étape (PS-31.4) ; ce sont des métriques déjà journalisées, remises en
+forme.
+
+Description réduite en cas d'exception non rattrapée (hook `on_node_error`) : titre
+`❌ <nœud> — échec`, type et message de l'exception (tronqués), dernière étape atteinte
+si connue, lien Argo ; tag `health=failed`.
+
+#### PS-31.4 Contenu par étape (chiffres clés, rapport HTML, tables)
+
+| Nœud | Chiffres clés (description) | Sections et figures du rapport HTML | Tables (`tables/`) |
+|---|---|---|---|
+| `download_eurostat`, `download_comtrade` | requêtes traitées / en erreur / jamais téléchargées restantes ; budget consommé ; `coverage/eta_days` | couverture par année (barres : part téléchargée) ; requêtes et erreurs au fil du run (`step` = index de requête) ; attentes du limiteur ; audit de couverture par reporter (alertes `EXPECTED_FULL_HISTORY_REPORTERS`) | `coverage_by_year.csv`, `coverage_by_reporter.csv`, `errors.csv` (requête, code HTTP, message) |
+| `prepare_baci` | années éligibles par millésime ; part minimale de complétude | complétude par année et millésime (heatmap) | `scope.csv` |
+| `process_baci_<millésime>` | années écrites, lignes, part convertie, taux de fret médian, `σ̂` plancher, valeur NES réallouée, durée par passe, pic mémoire | **une section par étape BACI** : conversion (distribution des taux par unité), fobisation (distribution des taux de fret, parts FAS rétablies / tronquées), gravité (coefficients, R², points de Cook exclus), qualité des déclarants (`σ̂` par pays, triés), valorisation et réconciliation (part des flux miroirs retenus par source), NES (valeur réallouée par zone), harmonisation, sortie (lignes par année), temps par passe et par année | `conversion_rates.csv`, `gravity_coefficients.csv`, `sigma_by_country.csv`, `rows_by_year.csv` |
+| `compute_partner_vulnerabilities` | unités calculées par raison (`first`, `new_data`, `fingerprint`, `forced`), en attente, en échec ; par flux : nombre de cellules en alerte | distribution de chaque métrique par flux (histogrammes) ; alertes par métrique ; dérive (`drift/*`) ; unités par millésime | `units_by_reason.csv`, `alerts_by_metric.csv` |
+| `compute_network_vulnerabilities` | groupes calculés par millésime | distributions des métriques réseau par millésime | `groups_by_vintage.csv` |
+| `compute_synthetic_scores` | contextes calculés / à jour / en échec ; méthodes recalculées ; durée | durée par méthode ; contextes par niveau ; `n_jobs` | `contexts.csv` |
+| `compute_synthesis_coherence` | contextes calculés ; concordance médiane entre méthodes (statistique `PRIMARY` de PQ-18) | distribution des concordances par paire de méthodes ; paires de métriques les moins cohérentes | `coherence_summary.csv` |
+| `publish_serving` | tables publiées, lignes par table, mode (`full` / `by_year`), durée | lignes et fichiers par table | `tables.csv` |
+| `maintain_ducklake` | tables maintenues, fichiers avant → après, snapshots expirés, sauvegarde, runs orphelins clos | fichiers par table avant / après | `maintenance.csv` |
+
+Les figures sont construites par `macroforecast/tracking/figures.py` à partir des
+métriques et des DataFrames d'artefacts que les étapes produisent déjà ; aucune
+relecture de données. Chaque figure a un équivalent tabulaire (CSV) : si le rendu HTML
+n'est pas disponible dans l'interface (PQ-19), l'information reste accessible.
+
+#### PS-31.5 Vue d'une exécution complète
+
+- **Liste des runs** d'une expérience, filtre `tags.workflow_id = '<id>'` ; colonnes à
+  afficher : `tags.node`, `tags.health`, `metrics.checks/n_failed`,
+  `metrics.checks/n_warnings`, statut, durée. L'URL de l'interface conserve filtre et
+  colonnes : le runbook §5.1 en donne le modèle. Pour voir toutes les expériences d'une
+  exécution d'un coup : sélection de plusieurs expériences dans la liste, puis vue
+  comparée (à vérifier sur la version déployée, PQ-19).
+- **DAG et statut des pods** : interface Argo (lien dans chaque description).
+- **Runs orphelins** : un pod tué (OOM, `activeDeadlineSeconds`) ne peut pas fermer son
+  run, qui resterait `RUNNING`. La maintenance `onExit` les passe en `FAILED` avec une
+  description « tâche interrompue — voir Argo » (PD-16.6, PR-20).
+
+#### PS-31.6 Points à vérifier (K-03d, K-13)
+
+1. Rendu d'un HTML Plotly dans l'onglet *Artifacts* de MLflow 3 (iframe : scripts
+   exécutés ?). Repli : figures statiques PNG (`matplotlib`, `mlflow.log_figure`), le
+   HTML ne gardant que texte et tables (PR-19).
+2. Longueur maximale d'une valeur de tag sur le serveur (description) ; ajuster
+   `MAX_DESCRIPTION_CHARS`.
+3. Métriques système sur les runs ouverts par kedro-mlflow (activation par variable
+   d'environnement suffisante ?).
+4. Affichage de la description en tête de l'onglet *Overview* sur la version déployée.
+5. Vue multi-expériences et conservation des colonnes dans l'URL.
 
 ---
 
@@ -2770,12 +3054,20 @@ calculées / échouées).
 
 ### 5.1 Exécution quotidienne (rien à faire)
 
-Le `CronWorkflow` se lance à 01:00. Contrôles recommandés, sans obligation :
-- interface Argo : statut du dernier `trade-pipeline-daily-*` ;
-- MLflow `trade-01-downloads` : `coverage/share_downloaded` progresse, `download/errors`
-  reste stable ;
-- MLflow `trade-00-maintenance` : `ducklake/*/files_after` reste sous
-  `MAX_FILES_PER_TABLE`.
+Le `CronWorkflow` se lance à 01:00. Contrôle recommandé, sans obligation, en deux
+minutes :
+1. interface Argo : statut du dernier `trade-pipeline-daily-*`, noter son nom
+   (`workflow_id`) ;
+2. MLflow, dans chaque expérience concernée (`trade-01-downloads`,
+   `trade-03-vulnerabilities`, `trade-04-serving`, `trade-00-maintenance`) : liste des
+   runs filtrée par `tags.workflow_id = '<workflow_id>'`, colonnes `tags.health` et
+   `metrics.checks/n_failed` (PS-31.5). Tout `ok` : rien à faire ;
+3. pour un run `warning` ou `failed` : onglet *Overview* (description : contrôle en
+   défaut, unités en échec), puis *Artifacts → report/report.html* pour le détail et
+   *System metrics* pour un problème de ressources.
+
+Modèle d'URL de la liste filtrée (à compléter en K-17 avec l'URL réelle et les
+colonnes retenues) : `<mlflow>/#/experiments/<id>?searchFilter=tags.workflow_id%3D'<workflow_id>'`.
 
 ### 5.2 Ajouter une métrique de vulnérabilité ou une méthode de synthèse
 
@@ -2813,7 +3105,8 @@ Le `CronWorkflow` se lance à 01:00. Contrôles recommandés, sans obligation :
 
 ### 5.4 Rattrapage (backfill) et suivi de l'avancement
 
-- Suivre `coverage/eta_days` et `coverage/by_year.csv` dans MLflow.
+- Suivre `coverage/eta_days` (description des runs de téléchargement) et
+  `tables/coverage_by_year.csv` / la figure de couverture du rapport HTML dans MLflow.
 - Accélérer temporairement : `argo submit --from workflowtemplate/trade-pipeline -p
   kedro-env=cloud` avec une surcharge de `MAX_RUNTIME` via `config/cloud`, en respectant
   `concurrencyPolicy` : **ne pas** lancer pendant un run quotidien.
@@ -2838,18 +3131,27 @@ kubernetes/generated/`).
 apply -f -` : les pods suivants lisent les nouvelles valeurs, aucun redéploiement
 nécessaire.
 
-### 5.8 Tableaux de bord Superset
+### 5.8 Restitution (Superset) et supervision (MLflow)
 
-- **Supervision** : tableau de bord « Supervision du pipeline » (PS-31), un onglet par
-  étape ; filtrer par `workflow_id` pour une exécution donnée. Le détail (artefacts,
-  paramètres) reste dans MLflow, expérience correspondante, run `<nœud>-<workflow_id>`.
-- **Vulnérabilités** : tableau de bord « Vulnérabilités » (PS-30). Il lit `serving`,
-  rafraîchi par `publish_serving` à la fin de chaque exécution `daily` (métriques
-  partenaires) et `weekly` (synthèse, cohérence, réseau).
-- Après modification d'un tableau de bord dans l'interface : *Export* → remplacer le
-  dossier `superset/<nom>/` → commit. Après changement de tables de service
-  (`parameters_serving.yml`) : republier (`argo submit … --entrypoint daily`) puis, dans
-  Superset, *Datasets → Sync columns from source*.
+- **Supervision** : dans MLflow uniquement (PS-31). Un run par tâche, nommé
+  `<nœud>-<workflow_id>` ; verdict dans la description (*Overview*), détail dans
+  *Model metrics*, *System metrics* et *Artifacts* (`report/report.html`). Vue d'une
+  exécution : §5.1. **Ajuster un seuil de contrôle** : modifier
+  `config/base/parameters_tracking.yml` (`CHECKS`), pousser, republier l'image ; aucune
+  donnée n'est recalculée (les contrôles ne font pas partie des empreintes, PS-10.2).
+- **Vulnérabilités** : tableau de bord Superset « Vulnérabilités » (PS-30), branché par
+  `duckdb-engine` sur le catalogue DuckLake `serving` en lecture seule, rafraîchi par
+  `publish_serving` à la fin de chaque exécution `daily` (métriques partenaires) et
+  `weekly` (synthèse, cohérence, réseau). Si un graphique affiche des données
+  anciennes : vider le cache du graphique (*… → Force refresh*) ; le cache expire de
+  toute façon après 24 h (PS-30.1).
+- Après modification du tableau de bord dans l'interface : *Export* → remplacer le
+  dossier `superset/vulnerabilites/` → commit. Après changement de tables de service
+  (`parameters_serving.yml`) : republier (`argo submit … --entrypoint daily`, le
+  changement de colonnes force le mode `full`) puis, dans Superset, *Datasets → Sync
+  columns from source*.
+- Si Superset ne lit plus le catalogue après une mise à jour de DuckDB côté pipeline :
+  aligner la version de `duckdb` du service Superset (PR-14).
 
 ### 5.9 Relancer BACI à la main (rattrapage ou après correction)
 
@@ -2870,7 +3172,8 @@ première passe complète (K-17).
 | Kedro | `kedro run --env test` sur jeu fictif (environnement `config/test/`, datasets pointant sur des catalogues fichiers) | `tests/pipeline/test_kedro_run.py` | `slow` |
 | BACI par passes | égalité monobloc / passes (PS-14.4) sur données fictives multi-années ; découpage par chapitres ; reprise après interruption (`fit_id`) | `tests/processing/test_baci_streaming.py` | — / `slow` |
 | Nomenclatures | `vintage_in_force`, conversion Comext → millésime (n:1 exact, 1:n selon la règle `HsHarmonizer`), égalité ligne en vigueur / ligne du millésime en vigueur | `tests/pipeline/test_vintages.py` | — |
-| Couche de service | PostgreSQL éphémère (`testing.postgresql` ou conteneur si disponible, sinon **SQLite en repli** pour la logique de basculement) : tables construites, basculement atomique, index, `pipeline_metrics` rejouée après échec | `tests/serving/` | `slow` |
+| Couche de service | Catalogue DuckLake **fichier** `serving` + catalogues sources fichiers : colonnes et maille des tables, transaction unique (un snapshot par publication ; `ROLLBACK` complet si une table échoue), partitionnement par `year`, mode `by_year` et retour en `full` sur changement de colonnes ; **lecture concurrente** pendant une publication (ancien état visible jusqu'au `COMMIT`) ; lecture **par SQLAlchemy `duckdb-engine`** avec `ATTACH … (READ_ONLY)`, comme Superset | `tests/serving/` | — / `slow` |
+| Rapport de run | `evaluate_checks` (opérateurs, jokers de nœuds, `skipped`, verdict), `to_markdown` (golden file, troncature), `to_html` avec et sans plotly ; publication dans un MLflow `file:` temporaire (description, tags, artefacts, métriques `checks/*`) ; chaque contrôle configuré vise une métrique émise par son étape ; clôture des runs orphelins | `tests/tracking/` | — |
 | Rendu | `render-argo --check` en CI ; validation de schéma `argo lint` si le binaire est disponible ; deux points d'entrée, mutex, `onExit` | CI | — |
 | Recette cluster | exécution `demo` réelle (K-17), check-list §9 | manuel | — |
 
@@ -2900,11 +3203,14 @@ ni le cluster.
 | PR-11 | Métriques d'export non validées méthodologiquement | Moyenne / moyen | `FLOWS: [import]` par défaut (PD-09) |
 | PR-12 | Coût mémoire de JAX/Kantorovitch en parallèle `loky` | Moyenne / moyen | `n_jobs` spécifique à la méthode (`kantorovich` exécuté en séquentiel dans le processus parent), préallocation XLA désactivée |
 | PR-13 | Image lourde (JAX + MLflow 3) : démarrage de pod lent | Certaine / faible | Cache de nœud, `imagePullPolicy: IfNotPresent` avec étiquettes immuables (SHA) |
-| PR-14 | Superset indisponible dans le catalogue Onyxia, ou sans droit d'installer un pilote | Moyenne / fort pour la démonstration | Cible PostgreSQL (pilote natif, PD-21) ; repli : image `apache/superset` lancée comme service générique Onyxia ; dernier repli : `superset` en local (Docker) connecté au PostgreSQL Onyxia via port-forward |
-| PR-15 | Tables de service trop volumineuses pour PostgreSQL en production (`flows`) | Moyenne / moyen | `TOP_PARTNERS`, mode `by_year`, années limitées (`serving.YEARS_BACK`) ; lecture directe DuckLake (PQ-13) |
+| PR-14 | Version de DuckDB / de l'extension `ducklake` de l'image Superset **incompatible** avec celle du pipeline (catalogue illisible, ou lisible mais écrit dans un format plus récent) | Moyenne / fort pour la démonstration | Vérification en tête de K-03c (PS-30.1 point 0) ; épingler `duckdb==1.5.3` dans la configuration du chart ; toute montée de version DuckDB du pipeline s'accompagne de celle de Superset (§5.8) |
+| PR-15 | Latence des graphiques Superset (lecture de Parquet sur S3 à chaque requête non mise en cache) sur les volumes de production (`cell_scores` ~30 M, `flows` ~80 M lignes) | Moyenne / moyen | Partitionnement par `year` et tri d'insertion (PS-29.1), cache des graphiques 24 h, `TOP_PARTNERS`, `serving.YEARS_BACK`, `threads`/`memory_limit` de la connexion ; en dernier recours, tables d'agrégats dédiées dans `serving` |
 | PR-16 | Tables `indicators` multipliées par ~3,6 au niveau SH6 (PD-20) : durée du calcul partenaires et volume | Certaine / faible | `VINTAGES` configurable, calcul incrémental par unité, partition par `classification` |
-| PR-17 | Recouvrement `daily`/`weekly` : `publish_serving` lu pendant un basculement | Faible / faible | Basculement atomique par transaction PostgreSQL ; mutex Argo |
+| PR-17 | Recouvrement `daily`/`weekly` : `publish_serving` lu pendant une publication | Faible / faible | Publication en une transaction DuckLake (Superset lit le snapshot précédent jusqu'au `COMMIT`) ; mutex Argo (écrivain unique) |
 | PR-18 | Code reporter `EU27_2020` absent ou différent dans DS-045409 | Moyenne / moyen | PQ-17 : vérification de la codelist au premier téléchargement ; repli : agrégation des membres avec partenaires extra-UE seulement (documentée comme approximation) |
+| PR-19 | L'onglet *Artifacts* de MLflow n'exécute pas le JavaScript d'un HTML Plotly (iframe restreinte) : figures invisibles | Moyenne / faible | Chaque figure a son équivalent CSV (PS-31.4) ; repli PNG statique (`matplotlib`, `log_figure`) ; vérifié en K-03d (PQ-19) |
+| PR-20 | Pod tué (OOM, dépassement de délai) : le run MLflow reste `RUNNING` sans rapport, et un échec passe inaperçu dans MLflow | Moyenne / moyen | Clôture des runs orphelins par la maintenance `onExit` (PD-16.6) ; tag `health` absent = run à regarder ; statut du workflow dans Argo |
+| PR-21 | Seuils de contrôle mal calibrés : fausses alertes (bruit) ou alertes manquées | Certaine au début / faible | Valeurs initiales `warning` sauf évidences ; recalibrage en K-17 sur les premières exécutions réelles ; seuils en configuration (§5.8) |
 
 ---
 
@@ -2924,12 +3230,13 @@ ni le cluster.
 | PQ-10 | ~~Accepte-t-on un traitement BACI par fenêtres glissantes ?~~ **Résolu (2026-09-18)** : **non** ; fidélité à la méthodologie originale par statistiques suffisantes (PD-22, PS-14), aucune approximation. | — |
 | PQ-11 | Faut-il calculer des **métriques partenaires pour les pays non-UE**, à partir de BACI (Eurostat ne couvre que les reporters UE) ? | Hors périmètre de cette architecture ; prévu comme extension (nouvelle source de grille `baci_partners`) |
 | PQ-12 | Faut-il conserver les **flux mensuels** (`C_M_HS`) ? | Non : seul l'annuel est ordonnancé |
-| PQ-13 | **Superset** est-il disponible dans le catalogue Onyxia (version, possibilité d'installer `duckdb-engine`) ? | Superset ≥ 3 lancé depuis le catalogue ; connexion PostgreSQL seulement (PD-21) ; lecture DuckLake directe = évolution ultérieure |
-| PQ-14 | La base `trade_serving` peut-elle vivre sur la **même instance PostgreSQL** que les catalogues DuckLake (taille du volume, charge) ? | Oui, même instance, base séparée, rôle lecture seule pour Superset |
+| PQ-13 | ~~**Superset** est-il disponible dans le catalogue Onyxia, avec `duckdb-engine` ?~~ **Résolu (2026-09-18, rév. 2)** : `duckdb-engine` est installé dans le chart Superset d'Onyxia et l'accès du service au bucket S3 est assuré. Restent à relever en K-03c : version de Superset, version de `duckdb` dans l'image (PR-14), mécanisme d'`ATTACH` retenu (PS-30.1). | Lecture directe du catalogue `serving` (PD-21) |
+| PQ-14 | La base de métadonnées du catalogue `serving` peut-elle vivre sur la **même instance PostgreSQL** que les autres catalogues ? | Oui (métadonnées seulement, les données sont sur S3) ; rôle `superset_reader` en lecture seule sur cette base |
 | PQ-15 | Le client Eurostat de `statflows` accepte-t-il `startPeriod`/`endPeriod` (nécessaire à `PERIOD_WINDOWS` et au filtre 1988) ? | Oui (SDMX 3.0 `c[TIME_PERIOD]`) ; sinon, filtrage après téléchargement et `PERIOD_WINDOWS` non supporté |
 | PQ-16 | **Quota total** du namespace (somme CPU/mémoire des pods actifs) ? | Suffisant pour `parallelism: 8` × `baci-large` ; à relever (`kubectl describe resourcequota`) en K-03 |
 | PQ-17 | Le reporter agrégé **`EU27_2020`** existe-t-il dans la codelist `reporter` de DS-045409 avec des flux extra-UE ? | Oui ; sinon repli de PR-18 |
 | PQ-18 | Quelle **statistique de cohérence** et quelle **méthode de synthèse** afficher par défaut dans le tableau de bord (« indicateur synthétique le plus pertinent ») ? | `PRIMARY_METHOD: borda` (consensus) et corrélation de Spearman ; changeable en configuration `serving` |
+| PQ-19 | Sur le MLflow 3 déployé : le rapport HTML Plotly s'affiche-t-il dans *Artifacts* ? Quelle longueur maximale pour la description (tag) ? Les métriques système s'activent-elles par variable d'environnement sur les runs de kedro-mlflow ? La vue multi-expériences existe-t-elle ? | Oui pour tout ; limite de tag 8 000 caractères ; replis de PS-31.6 sinon. Vérifié en K-03d (serveur `file:` local puis MLflow Onyxia) |
 
 ---
 
@@ -2966,17 +3273,24 @@ main, réglages GitHub. À faire **avant** K-03 (phase 0), sauf mention contrair
    PS-04.4.
 8. ~~Méthodologie export (PQ-06) et HS1992 (PQ-05)~~ : tranchées le 2026-09-18.
 9. **Quota total** (PQ-16) : relever `kubectl describe resourcequota` (K-03 le fait).
-10. **Base de service** (PQ-14, PD-21) : créer la base `trade_serving` et le rôle
-    `superset_reader` sur l'instance PostgreSQL, puis :
-    ```bash
-    kubectl create secret generic trade-serving-credentials \
-      --from-literal=SERVING_PGHOST='…' --from-literal=SERVING_PGPORT='5432' \
-      --from-literal=SERVING_PGUSER='…' --from-literal=SERVING_PGPASSWORD='…' \
-      --from-literal=SERVING_PGDATABASE='trade_serving'
+10. **Lecture du catalogue `serving` par Superset** (PQ-14, PD-21) : **après** la
+    première publication (K-03b exécuté sur Onyxia, qui crée la base de métadonnées
+    `serving` et ses tables), créer le rôle en lecture seule sur l'instance
+    PostgreSQL :
+    ```sql
+    CREATE ROLE superset_reader LOGIN PASSWORD '…';
+    GRANT CONNECT ON DATABASE serving TO superset_reader;
+    \c serving
+    GRANT USAGE ON SCHEMA public TO superset_reader;
+    GRANT SELECT ON ALL TABLES IN SCHEMA public TO superset_reader;
+    ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT SELECT ON TABLES TO superset_reader;
     ```
-11. **Superset** (PQ-13) : lancer le service depuis le catalogue Onyxia (persistance
-    activée), relever son URL, créer la connexion PostgreSQL vers `trade_serving`
-    (PS-30.1). À faire **avant K-03c**.
+    (schéma des tables de métadonnées DuckLake à confirmer par `\dt` ; aucun secret
+    Kubernetes à créer pour le pipeline.)
+11. **Superset** : le service existe dans le catalogue Onyxia avec `duckdb-engine` et
+    l'accès S3 (PQ-13). Le lancer (persistance activée) et relever son URL ; la
+    connexion DuckDB au catalogue `serving` est créée **dans K-03c** (PS-30.1), avec les
+    identifiants de `superset_reader` saisis par vous. À faire **avant K-03c**.
 
 ---
 
@@ -2986,17 +3300,18 @@ Révision du **vendredi 2026-09-18**. Présentation : **semaine du 2026-09-21**.
 
 | Phase | Prompts | Objectif | Échéance cible |
 |---|---|---|---|
-| **0 — Démonstration** | K-01, K-02, K-03 🔌 (+ §9 points 1 à 5, 7, 10, 11) | Scripts corrigés, image GHCR, workflow de transition sur le périmètre `demo` : **téléchargements lancés** | J+1 |
-| 0 bis | K-03b, **K-03c 🔌** | Couche de service publiée, **tableau de bord Superset** « Vulnérabilités » construit sur les produits `demo` ; supervision minimale | J+2 → J+4 |
+| **0 — Démonstration** | K-01, K-02, K-03 🔌 (+ §9 points 1 à 5, 7, 11) | Scripts corrigés, image GHCR, workflow de transition sur le périmètre `demo` : **téléchargements lancés** | J+1 |
+| 0 bis | K-03b, K-03d, **K-03c 🔌** (+ §9 point 10) | Catalogue `serving` publié, **tableau de bord Superset** « Vulnérabilités » construit sur les produits `demo` ; **rapport de contrôle MLflow** sur les runs des scripts | J+2 → J+4 |
 | 🎯 **Jalon tableau de bord** | — | Vulnérabilités + synthèse + cohérence pour ~100 produits visibles dans Superset | avant la présentation |
 | **1 — Robustesse de l'acquisition** | K-04 (dépôt `statflows`), K-04b | Registres et écritures tamponnés, options d'écriture 0.3.1 : prérequis du rattrapage complet | après la présentation |
 | **2 — Méthodologie paramétrable** | K-05, K-06, K-06b, K-07, K-08, K-09 | Fraîcheur v2, import/export, millésimes de nomenclature, BACI exact par passes, évolution de schéma et synthèse incrémentale, parallélisme | après la présentation |
-| **3 — Kedro** | K-10, K-11, K-12, K-13, K-14 | Projet Kedro `kedro_pipeline`, étapes partagées, pipelines (deux cadences), suivi composite, maintenance | après la présentation |
+| **3 — Kedro** | K-10, K-11, K-12, K-13, K-14 | Projet Kedro `kedro_pipeline`, étapes partagées, pipelines (deux cadences), rapport de run kedro-mlflow, maintenance | après la présentation |
 | **4 — Production** | K-15, K-16, K-17 🔌, K-18 | Rendu Argo (deux CronWorkflow), documentation, recette, suppression des scripts et des fichiers de démonstration | après la présentation |
 
 Ce qui sera montrable à la présentation (phase 0 seule) : le tableau de bord Superset
-(page pays avec la France et l'Union, page produit, cohérence), la supervision par
-onglet sur les runs de la semaine, métriques partenaires sur les produits `demo`, BACI
+(page pays avec la France et l'Union, page produit, cohérence), les rapports de
+contrôle MLflow des runs de la semaine (description, contrôles, rapport HTML BACI),
+métriques partenaires sur les produits `demo`, BACI
 `demo` sur au moins une année complète, réseau sur ce BACI, scores synthétiques et
 diagnostics de cohérence sur les contextes disponibles, avec la mention explicite du
 caractère **provisoire** (périmètre réduit). Les évolutions temporelles (PS-30, blocs
@@ -3030,8 +3345,14 @@ accepté.
   (disponibilité à vérifier sur la version embarquée par DuckDB 1.5.3).
 - Superset : documentation *Creating your first dashboard*, *Cross-filtering*,
   *Native filters*, *Importing and exporting datasources and dashboards*
-  (<https://superset.apache.org/docs/>). Extension DuckDB `postgres`
-  (<https://duckdb.org/docs/extensions/postgres>) pour l'écriture des tables de service.
+  (<https://superset.apache.org/docs/>), page *Connecting to Databases → DuckDB* ;
+  `duckdb-engine` (<https://github.com/Mause/duckdb_engine>, `connect_args`,
+  `preload_extensions`) ; DuckLake : `ATTACH 'ducklake:postgres:…' (READ_ONLY)`,
+  partitionnement (`ALTER TABLE … SET PARTITIONED BY`), secrets DuckDB persistants
+  (<https://ducklake.select/docs/>, <https://duckdb.org/docs/configuration/secrets_manager>).
+- MLflow 3 : description de run (tag `mlflow.note.content`), métriques système
+  (`MLFLOW_ENABLE_SYSTEM_METRICS_LOGGING`, `psutil`), `log_text` / `log_table` /
+  `log_figure`, recherche de runs par tag (<https://mlflow.org/docs/latest/>).
 
 ---
 
@@ -3045,13 +3366,14 @@ les autres depuis le poste local.
 
 | Opération | Quand | Prompt / action | Pourquoi Onyxia |
 |---|---|---|---|
-| Création des secrets (`trade-postgres-credentials`, `trade-mlflow-credentials`, `trade-serving-credentials`) | avant K-03 | §9, à la main | valeurs secrètes saisies dans le cluster |
+| Création des secrets (`trade-postgres-credentials`, `trade-mlflow-credentials`) | avant K-03 | §9, à la main | valeurs secrètes saisies dans le cluster |
 | Lancement des services MLflow, PostgreSQL (vérification), Superset | avant K-03 / K-03c | §9, catalogue Onyxia | services du namespace |
-| Création de la base `trade_serving` et du rôle `superset_reader` | avant K-03b | §9 point 10 | accès réseau à PostgreSQL |
+| Création du rôle `superset_reader` sur la base de métadonnées `serving` | après la 1ʳᵉ publication (K-03b), avant K-03c | §9 point 10 | accès réseau à PostgreSQL |
+| Vérification du rendu du rapport de run (description, HTML, métriques système) sur le MLflow du namespace | K-03d (fin), K-13 | exécution d'un script `demo`, interface MLflow | serveur MLflow réel (PQ-19) |
 | Relevé des quotas (`resourcequota`, `limitrange`), version d'Argo, service account | K-03 étape 0 | K-03 🔌 | `kubectl` |
 | Déploiement et première exécution du workflow de transition ; diagnostic des pods | K-03 | K-03 🔌 | `kubectl`, logs |
-| Première publication de la couche de service et vérification des volumes | K-03b (exécution), K-03c | `argo submit`, `psql` | données réelles, PostgreSQL |
-| Construction du tableau de bord Superset, export versionné | K-03c | K-03c 🔌 | interface Superset du namespace |
+| Première publication de la couche de service et vérification des volumes | K-03b (exécution), K-03c | `argo submit`, session DuckDB | données réelles, catalogue `serving` |
+| Connexion DuckDB de Superset, construction du tableau de bord, export versionné | K-03c | K-03c 🔌 | interface et pod Superset du namespace |
 | Mesure des limites de l'API Eurostat pour `products_step` (PR-03) | K-01 ou K-04b | local possible (réseau public), **mais** l'adresse IP et le limiteur diffèrent en production → mesurer aussi depuis un pod | débit réel |
 | Migration des registres v1 → v2 sur S3 (`adopt_legacy_fingerprints`) | après K-05 | `tools/migrate_registries.py` depuis un pod ou VSCode Onyxia | S3 réel, irréversible : sauvegarder le préfixe avant |
 | Recréation de la table `indicators` avec la nouvelle clé (`classification`) | après K-06b | runbook §5.3, depuis un service Onyxia | catalogue et Parquet réels |
