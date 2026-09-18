@@ -385,7 +385,7 @@ def run_from_connections(
     Isolates the DB-bound core of :func:`main` — the metrics read, the
     context-restricted scores read (S-2.4) and the context-by-context call to
     ``run_coherence`` writing the S-2.6 table — from connection setup
-    (``DuckLakeConnector.from_postgres``, environment variables) and freshness
+    (``kedro_pipeline.io.ducklake.build_connector``, environment variables) and freshness
     bookkeeping, so it is callable on any pair of already-open connections,
     tests included. As in :func:`main`, the failure of one context does not
     interrupt the others.

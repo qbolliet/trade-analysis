@@ -1,3 +1,12 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# PROFIL DEMO (PD-19, PS-04.4) — copie COMPLÈTE de config/datasets/eurostat.yaml.
+# Périmètre PROVISOIRE (PQ-07) : produits dont le code commence par 2805, 2846,
+# 8105, 8112, 2844, 3004, 8541, 8542, 8507 (≈ 100 codes SH6), Comtrade ≥ 2015,
+# BACI HS2017 seul. Le demo ne diffère de la production QUE par le périmètre et
+# par l'isolement de ses sorties (catalogues/schémas préfixés demo_, chemins
+# trade/demo/…, expériences MLflow demo-) : même ordre de téléchargement,
+# max_queries null. Sélection via la variable d'environnement EUROSTAT_CONFIG_PATH.
+# ─────────────────────────────────────────────────────────────────────────────
 # Dataflow téléchargé (C-05) : commerce international Comext
 DATAFLOW: "DS-045409"
 
@@ -8,7 +17,7 @@ MLFLOW:
   # inchangée. Surchargeable par MLFLOW_TRACKING_URI (convention MLflow).
   TRACKING_URI: null
   # Expérience de destination, créée à la volée si absente
-  EXPERIMENT: "eurostat-download"
+  EXPERIMENT: "demo-eurostat-download"
   # Publication de la table de diagnostic par requête
   LOG_ARTIFACTS: true
 
@@ -122,7 +131,7 @@ split_filters:
       exclude_regex: null
     product:
       include: null           # partir de tous les codes disponibles
-      include_regex: '^(\d{2}|\d{4}|\d{6}|\d{8})$'   # SH2/SH4/SH6/NC8 valides
+      include_regex: '^(2805|2846|8105|8112|2844|3004|8541|8542|8507)\d{2,4}$'   # demo : SH6/NC8 des produits retenus (PQ-07)
       exclude:                # agrégats confidentiels (vrais chapitres = 01-99)
         - "00"
         - "0090"
@@ -131,15 +140,15 @@ split_filters:
       exclude_regex: null
 
 DOWNLOADS :
-  DBNAME: "eurostat"
+  DBNAME: "demo_eurostat"   # catalogue brut isolé (le schéma est imposé par le dataflow)
   CATALOG_ALIAS: "eurostat"
   # Commerce international Comext
   DS-045409:
     BUCKET: "qbollietdgddi" # null
     PATHS:
-      DATA_PATH: "trade/datasets/comext"
-      STRUCTURES_PATH: "trade/datasets/structures/comext.json"
-      LAST_DOWNLOAD_PATH: "trade/datasets/last_downloads/comext.json"
+      DATA_PATH: "trade/demo/datasets/comext"
+      STRUCTURES_PATH: "trade/demo/datasets/structures/comext.json"
+      LAST_DOWNLOAD_PATH: "trade/demo/datasets/last_downloads/comext.json"
     N_LAST_OBSERVATIONS: 10
     # Durée maximale d'un run (arrêt propre, ARCH §2.3)
     MAX_RUNTIME:

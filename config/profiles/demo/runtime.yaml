@@ -1,0 +1,46 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# PROFIL DEMO (PD-19, PS-04.4) — copie COMPLÈTE de config/runtime.yaml.
+# Périmètre PROVISOIRE (PQ-07) : produits dont le code commence par 2805, 2846,
+# 8105, 8112, 2844, 3004, 8541, 8542, 8507 (≈ 100 codes SH6), Comtrade ≥ 2015,
+# BACI HS2017 seul. Le demo ne diffère de la production QUE par le périmètre et
+# par l'isolement de ses sorties (catalogues/schémas préfixés demo_, chemins
+# trade/demo/…, expériences MLflow demo-) : même ordre de téléchargement,
+# max_queries null. Sélection via la variable d'environnement RUNTIME_CONFIG_PATH.
+# ─────────────────────────────────────────────────────────────────────────────
+# Paramètres d'exécution partagés par les scripts du pipeline (PS-04.1).
+# Lu via la variable d'environnement RUNTIME_CONFIG_PATH (défaut : config/runtime.yaml).
+# Les fichiers de configuration ne sont pas encore fusionnés (pas d'OmegaConf en
+# phase 0) : chaque script lit ce fichier et y applique les valeurs lui-même.
+runtime:
+  # Première année de l'analyse, PAR SOURCE (PD-08) : Comext existe depuis 1988 ;
+  # la couverture déclarative Comtrade en SH est jugée satisfaisante à partir de
+  # 1994 (Gaulier & Zignago 2010)
+  ANALYSIS_START_YEAR:
+    eurostat: 1988
+    comtrade: 1994
+  # Millésimes du Système harmonisé et année d'entrée en vigueur (PD-20). Source
+  # unique pour les cibles BACI (START_YEAR nul → max(entrée en vigueur,
+  # ANALYSIS_START_YEAR.comtrade)). HS1992 (H0) est en vigueur depuis 1988.
+  NOMENCLATURES:
+    HS:
+      HS1992: 1988
+      HS1996: 1996
+      HS2002: 2002
+      HS2007: 2007
+      HS2012: 2012
+      HS2017: 2017
+      HS2022: 2022
+  # Jour de la cadence hebdomadaire (0 = lundi … 6 = dimanche), partagé par BACI,
+  # la synthèse, la cohérence et la maintenance hebdomadaire (PD-23)
+  WEEKLY_DAY: 5
+  # Parallélisme intra-pod : null → NUM_CPU (injecté par Argo) ou os.cpu_count()
+  N_JOBS: null
+  # Forçage ponctuel (PS-11) : chaînes séparées par des virgules, vides par défaut
+  FORCE_STEPS: ""        # ex. "partners,synthesis" ou "all"
+  FORCE_METRICS: ""      # ex. "HHI,CDI2"
+  FORCE_METHODS: ""      # ex. "critic_sum"
+  FORCE_SCOPE:
+    REPORTERS: ""        # ex. "FR,DE"
+    PRODUCTS: ""         # préfixes acceptés : "28,8541"
+    PERIODS: ""          # ex. "2020,2021"
+    VINTAGES: ""         # ex. "HS2017"

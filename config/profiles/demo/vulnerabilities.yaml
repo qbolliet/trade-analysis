@@ -1,0 +1,128 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# PROFIL DEMO (PD-19, PS-04.4) — copie COMPLÈTE de config/vulnerabilities.yaml.
+# Périmètre PROVISOIRE (PQ-07) : produits dont le code commence par 2805, 2846,
+# 8105, 8112, 2844, 3004, 8541, 8542, 8507 (≈ 100 codes SH6), Comtrade ≥ 2015,
+# BACI HS2017 seul. Le demo ne diffère de la production QUE par le périmètre et
+# par l'isolement de ses sorties (catalogues/schémas préfixés demo_, chemins
+# trade/demo/…, expériences MLflow demo-) : même ordre de téléchargement,
+# max_queries null. Sélection via la variable d'environnement VULNERABILITIES_CONFIG_PATH.
+# ─────────────────────────────────────────────────────────────────────────────
+# Configuration du calcul des indicateurs de vulnérabilité commerciale.
+#
+# Deux familles d'indicateurs, deux scripts ordonnançables indépendamment, mais
+# un seul catalogue DuckLake (VULNERABILITIES.DBNAME / CATALOG_ALIAS) :
+#   - compute_trade_vulnerabilities.py  : indices partenaires (HHI, CDI2, CDI3)
+#     sur les flux Eurostat Comext          -> bloc VULNERABILITIES + MLFLOW + PARAMETERS
+#   - compute_network_vulnerabilities.py : indices de réseau (centralité,
+#     clustering, diamètre, SPOF) sur les flux BACI
+#                                           -> bloc NETWORK_VULNERABILITIES
+
+VULNERABILITIES:
+  DBNAME: "vulnerabilities"
+  CATALOG_ALIAS: "vulnerabilities"
+
+  DS-045409:
+    BUCKET: "qbollietdgddi"
+    RESULT_SCHEMA: "demo_indicators"
+    PATHS:
+      DATA_PATH: "trade/demo/datasets/vulnerabilities/"
+      # Registre des dates de dernier calcul, tenu par ce script (même
+      # principe que LAST_DOWNLOAD_PATH côté téléchargement)
+      LAST_COMPUTATION_PATH: "trade/demo/vulnerabilities/comext/last_computation.json"
+
+# Suivi d'exécution MLflow. Dépendance optionnelle : installer l'extra
+# « tracking » (uv sync --extra tracking) pour l'activer.
+MLFLOW:
+  # URI du serveur ou du magasin MLflow. null → aucun suivi, exécution
+  # inchangée. Surchargeable par la variable d'environnement
+  # MLFLOW_TRACKING_URI (convention MLflow, pratique en déploiement Kubernetes),
+  # qui prime sur la valeur ci-dessous.
+  TRACKING_URI: null
+  # Expérience de destination, créée à la volée si absente
+  EXPERIMENT: "demo-vulnerabilities"
+  # Publication des artefacts de synthèse (cellules les plus vulnérables,
+  # comptes d'alertes, agrégats manquants, déciles)
+  LOG_ARTIFACTS: true
+  # Relecture du résultat de l'exécution précédente pour mesurer la dérive
+  DRIFT: true
+
+# Paramètres méthodologiques : toute clé portant le nom d'un champ de
+# VulnerabilityConfig surcharge le défaut correspondant (listes YAML → tuples) ;
+# les clés inconnues sont ignorées avec un avertissement.
+PARAMETERS:
+  # Backend de calcul narwhals ("pandas", ou "polars"/"pyarrow" si installés)
+  BACKEND: "pandas"
+  # Seuils d'interprétation des scores
+  high_score_threshold: 0.5
+  unit_score_threshold: 1.0
+  # Seuils de contrôle de cohérence des agrégats
+  shares_lower_bound: 0.9
+  # Comparaison inter-exécutions
+  drift_relative_change: 0.1
+  psi_n_bins: 10
+  # Seuils d'alerte par métrique, matérialisés en colonnes booléennes
+  # « {métrique}_ALERT » à côté du score continu dans la table résultat.
+  # Tous issus de la littérature
+  metric_alert_thresholds:
+    - ["HHI", 0.5]   # littérature (seuil de forte concentration)
+    - ["CDI2", 0.5]  # littérature (seuil de forte concentration)
+    - ["CDI3", 1.0]  # littérature (parité extra-UE / exportations)
+  artifact_top_n: 50
+
+# ──────────────────────────────────────────────────────────────────────
+# Indicateurs de réseau, calculés sur les flux réconciliés BACI
+# ──────────────────────────────────────────────────────────────────────
+# Le catalogue est celui du bloc VULNERABILITIES ci-dessus ; seul le schéma
+# résultat change (clé primaire supplémentaire : le millésime de nomenclature).
+# Les schémas sources, eux, sont ceux de config/baci.yaml
+NETWORK_VULNERABILITIES:
+  BUCKET: "qbollietdgddi"
+  RESULT_SCHEMA: "demo_network_indicators"
+  PATHS:
+    DATA_PATH: "trade/demo/datasets/vulnerabilities/network/"
+    # Registre des dates de dernier calcul, par millésime de nomenclature,
+    # confronté au registre de traitement BACI (baci.yaml : LAST_PROCESSING_PATH)
+    # pour ne recalculer que les millésimes réécrits depuis.
+    LAST_COMPUTATION_PATH: "trade/demo/vulnerabilities/baci/last_computation.json"
+  # Suivi d'exécution MLflow, un run par millésime recalculé.
+  MLFLOW:
+    TRACKING_URI: null
+    EXPERIMENT: "demo-network-vulnerabilities"
+    # Publication des artefacts de synthèse (produits les plus exposés, comptes
+    # d'alertes, cellules non scorées, déciles)
+    LOG_ARTIFACTS: true
+    # Relecture du résultat précédent du millésime pour mesurer la dérive
+    DRIFT: true
+
+  # Paramètres méthodologiques : toute clé portant le nom d'un champ de
+  # NetworkVulnerabilityConfig surcharge le défaut correspondant (listes YAML →
+  # tuples) ; les clés inconnues sont ignorées avec un avertissement.
+  PARAMETERS:
+    # Backend de calcul narwhals ("pandas", ou "polars"/"pyarrow" si installés)
+    BACKEND: "pandas"
+    # Seuils d'interprétation des scores
+    centrality_risk_threshold: 2.5
+    high_score_threshold: 0.5
+    unit_score_threshold: 1.0
+    # Nombre minimal de pays sous lequel clustering et diamètre ne sont pas
+    # calculés (un graphe de moins de trois nœuds ne ferme aucun triangle)
+    min_graph_nodes: 3
+    # Risque de point de défaillance unique : les produits sont rangés au sein
+    # d'un millésime x année, jamais entre millésimes, puis groupés en déciles
+    spof_rank_keys: ["classification", "year"]
+    spof_n_quantiles: 10
+    # Comparaison inter-exécutions
+    drift_relative_change: 0.1
+    psi_n_bins: 10
+    # Seuils d'alerte par métrique, matérialisés en colonnes booléennes
+    # « {métrique}_ALERT » à côté du score continu dans la table résultat.
+    metric_alert_thresholds:
+      - ["CENTRALITY_RISK", 2.5]  # littérature (1er exportateur ~2/3 du monde)
+      - ["CLUSTERING_W", 0.5]     # hors littérature (convention)
+      - ["DIAMETER", 4.0]         # hors littérature (convention)
+      - ["EXPORT_HHI", 0.5]       # littérature (seuil de forte concentration)
+      - ["SPOF", 0.9]            # hors littérature (convention)
+      - ["SPOF_DECILE", 9.0]     # hors littérature (dernier décile sur 10)
+    # Métrique servant de critère de tri du palmarès des produits exposés
+    ranking_metric: "SPOF"
+    artifact_top_n: 50

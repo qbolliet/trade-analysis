@@ -1,3 +1,12 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# PROFIL DEMO (PD-19, PS-04.4) — copie COMPLÈTE de config/datasets/comtrade.yaml.
+# Périmètre PROVISOIRE (PQ-07) : produits dont le code commence par 2805, 2846,
+# 8105, 8112, 2844, 3004, 8541, 8542, 8507 (≈ 100 codes SH6), Comtrade ≥ 2015,
+# BACI HS2017 seul. Le demo ne diffère de la production QUE par le périmètre et
+# par l'isolement de ses sorties (catalogues/schémas préfixés demo_, chemins
+# trade/demo/…, expériences MLflow demo-) : même ordre de téléchargement,
+# max_queries null. Sélection via la variable d'environnement COMTRADE_CONFIG_PATH.
+# ─────────────────────────────────────────────────────────────────────────────
 # Configuration des dimensions scindées UN Comtrade
 # Filtres de codes appliqués aux codelists des dimensions itérées pour
 # construire la liste des requêtes (année × lot de produits, PD-07).
@@ -64,7 +73,7 @@ split_filters:
     # l'analyse runtime.ANALYSIS_START_YEAR.comtrade (config/runtime.yaml, PD-08) ;
     # end null → dernière année complète (l'année en cours est exclue)
     periods:
-      start: null
+      start: 2015              # demo : années récentes seulement (PS-04.4)
       end: null
     reporters:
       include: null            # tous filtres nuls → reporters=None (tous) en une requête
@@ -73,7 +82,7 @@ split_filters:
       exclude_regex: null
     products:
       include: null            # partir de tous les codes disponibles
-      include_regex: '^\d{6}$' # HS6 uniquement (PD-07) : les agrégats se déduisent par somme
+      include_regex: '^(2805|2846|8105|8112|2844|3004|8541|8542|8507)\d{2}$' # demo : HS6 des produits retenus (PQ-07)
       exclude:                 # agrégats confidentiels / totaux
         - "00"
         - "0090"
@@ -86,15 +95,15 @@ split_filters:
 
 # Configuration des téléchargements
 DOWNLOADS:
-  DBNAME: "comtrade"
+  DBNAME: "demo_comtrade"   # catalogue brut isolé (le schéma est imposé par le dataflow)
   CATALOG_ALIAS: "comtrade"
   # Données annuelles, commodities, nomenclature HS
   C_A_HS:
     BUCKET: "qbollietdgddi"
     PATHS:
-      DATA_PATH: "trade/datasets/comtrade"
-      STRUCTURES_PATH: "trade/datasets/structures/comtrade.json"
-      LAST_DOWNLOAD_PATH: "trade/datasets/last_downloads/comtrade.json"
+      DATA_PATH: "trade/demo/datasets/comtrade"
+      STRUCTURES_PATH: "trade/demo/datasets/structures/comtrade.json"
+      LAST_DOWNLOAD_PATH: "trade/demo/datasets/last_downloads/comtrade.json"
     N_LAST_OBSERVATIONS: 10
     # Durée maximale d'un run (arrêt propre, ARCH §2.3)
     MAX_RUNTIME:

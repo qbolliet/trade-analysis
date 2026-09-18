@@ -38,6 +38,24 @@ le registre JSON ``PATHS.LAST_PROCESSING_PATH`` (même principe que le
 ``LAST_DOWNLOAD_PATH`` du téléchargement). C'est la seule chose que
 ``scripts/compute_network_vulnerabilities.py`` lit de ce script : le couplage
 reste faible, aucun état en mémoire n'étant partagé.
+
+Périmètre borné avant tout calcul (PS-14.1, en attendant le traitement par
+passes de K-07) :
+
+- **porte de complétude** : le registre de téléchargement Comtrade
+  (``LAST_DOWNLOAD_PATH``) est confronté à la liste des requêtes PLANIFIÉES,
+  reconstruite par la même fonction que le script de téléchargement
+  (``scripts.download_comtrade.plan_queries``) ; seules les années dont la part
+  de lots téléchargés au moins une fois atteint ``COMPLETENESS.MIN_SHARE`` sont
+  redressées ;
+- **lecture poussée en SQL** : seules ces années, bornées par le plus petit
+  ``START_YEAR`` des cibles et ``PARAMETERS.period_end``, sont lues ;
+- **étiquette ``is_provisional``** : vraie quand le périmètre produit planifié
+  n'est qu'un sous-ensemble strict du périmètre HS6 complet (profil ``demo``,
+  PD-06 point 3).
+
+Fichiers de configuration lus : ``BACI_CONFIG_PATH``, ``COMTRADE_CONFIG_PATH``
+et ``RUNTIME_CONFIG_PATH``.
 """
 # Importation des modules
 # Modules de base
@@ -47,7 +65,7 @@ import os
 from pathlib import Path
 from dataclasses import fields, replace
 from datetime import datetime, timezone
-from typing import Dict, Optional, Sequence, Set, Tuple
+from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Set, Tuple
 import yaml
 
 # Modules de manipulation de données
@@ -55,8 +73,22 @@ from botocore.exceptions import ClientError
 import duckdb
 import pandas as pd
 
-# Module de gestion de la connexion à la base de données
-from dt_ducklake_manager import DuckLakeConnector
+# Fabrique de connecteur DuckLake (seul point de lecture des identifiants)
+from kedro_pipeline.io.ducklake import (
+    DuckLakeLocation,
+    build_connector,
+    pg_credentials_from_env,
+    s3_credentials_from_env,
+)
+# Planification des requêtes Comtrade : même liste que le téléchargement
+from scripts.download_comtrade import (
+    fetch_dimension_codelists,
+    load_runtime_config,
+    plan_queries,
+    _SUBSCRIPTION_KEY_ENV,
+)
+from statflows import ComtradeClient
+from statflows.core.factory import filter_codes
 # Modules de chargement/sauvegarde de données (xls/parquet, puis json)
 from macroforecast.storage import Loader as TableLoader, Saver as TableSaver
 # Helpers DuckLake partagés (création puis upsert de la table de faits)
@@ -97,9 +129,10 @@ _PROCESSING_ROOT = "BACI"
 
 
 # ──────────────────────────────────────────────────────────────────────
-# Plomberie dupliquée de scripts/process_baci.py (chargement config, lecture
-# de la table de faits, écriture du résultat) : script autonome, sans
-# dépendance croisée entre scripts.
+# Plomberie du script (chargement config, lecture de la table de faits). Seule
+# dépendance croisée : la planification des requêtes Comtrade, importée de
+# scripts/download_comtrade.py pour que la porte de complétude raisonne sur
+# exactement les mêmes lots que le téléchargement.
 # ──────────────────────────────────────────────────────────────────────
 
 # Fonction de chargement de la configuration associée à la base comtrade
@@ -149,26 +182,252 @@ def _read_comtrade_fact_table(
     conn: duckdb.DuckDBPyConnection,
     source_schema: str,
     columns: Sequence[str],
+    period_col: str,
+    years: Sequence[int],
+    period_start: Optional[int] = None,
+    period_end: Optional[int] = None,
 ) -> pd.DataFrame:
-    """Read selected columns of the COMTRADE fact table, read-only.
+    """Read selected columns of the COMTRADE fact table for some years, read-only.
 
     Source and result live in two schemas of the same DuckLake catalog (cf.
     module docstring), so a plain schema-qualified ``SELECT`` on the shared
-    connection is enough — no separate ``ATTACH`` is required.
+    connection is enough — no separate ``ATTACH`` is required. The year filter
+    is pushed down to SQL with bound parameters (identifiers — schema and
+    column names from the configuration — are quoted, never values).
 
     Args:
         conn: Open DuckLake connection (result-schema-bound connector).
         source_schema: Schema holding the COMTRADE ``fact_table``.
         columns: Columns to project.
+        period_col: Period column (year, or ``YYYYMM``, as text or integer).
+        years: Years to read (e.g. the years passing the completeness gate).
+        period_start: Lower bound (included), ``None`` for none.
+        period_end: Upper bound (included), ``None`` for none.
 
     Returns:
-        A pandas DataFrame of the projected fact table.
+        A pandas DataFrame of the projected, year-filtered fact table.
+
+    Examples:
+        >>> df = _read_comtrade_fact_table(
+        ...     conn, "C_A_HS", ["period", "primaryValue"], "period", [2022, 2023],
+        ...     period_start=2017,
+        ... )  # doctest: +SKIP
     """
     # Construction de la clause de projection
     col_list = ", ".join(f'"{c}"' for c in columns)
+    # Expression de l'année (les 4 premiers caractères de la période)
+    year_expr = f'CAST(substr(CAST("{period_col}" AS VARCHAR), 1, 4) AS INTEGER)'
     return conn.execute(
-        f"SELECT {col_list} FROM {source_schema}.{_FACT_TABLE}"
+        f'SELECT {col_list} FROM "{source_schema}".{_FACT_TABLE} '
+        f"WHERE list_contains(?::INTEGER[], {year_expr}) "
+        f"AND (?::INTEGER IS NULL OR {year_expr} >= ?::INTEGER) "
+        f"AND (?::INTEGER IS NULL OR {year_expr} <= ?::INTEGER)",
+        [
+            [int(y) for y in years],
+            period_start, period_start,
+            period_end, period_end,
+        ],
     ).df()
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Porte de complétude et périmètre (PS-14.1) : logique pure, testable sur un
+# registre fictif ; seul main() lit le registre et appelle l'API
+# ──────────────────────────────────────────────────────────────────────
+
+# Racine du registre de téléchargement statflows
+_DOWNLOAD_REGISTRY_ROOT = "DOWNLOADS"
+
+
+# Fonction de chargement du registre de téléchargement Comtrade
+def load_download_registry(
+    last_download_path: os.PathLike, bucket: Optional[str]
+) -> Dict[str, Dict[str, Any]]:
+    """Load the ``statflows`` download registry (empty when absent).
+
+    Args:
+        last_download_path: Registry path (``DOWNLOADS.<dataflow>.PATHS.LAST_DOWNLOAD_PATH``).
+        bucket: S3 bucket, or ``None`` for a local file.
+
+    Returns:
+        Mapping ``identity_key -> {agency, dataflow, params, last_download}``.
+    """
+    data = JsonLoader().load(Path(last_download_path), bucket=bucket, missing_ok=True) or {}
+    return data.get(_DOWNLOAD_REGISTRY_ROOT, {})
+
+
+# Fonction de normalisation d'une sélection de produits
+def _products_key(products: Any) -> Optional[Tuple[str, ...]]:
+    """Normalise a product selection (list, scalar or ``None``) into a tuple key."""
+    if products is None:
+        return None
+    if isinstance(products, (list, tuple)):
+        return tuple(str(p) for p in products)
+    return tuple(str(products).split(","))
+
+
+# Fonction d'extraction de l'année d'une période
+def _period_year(period: Any) -> int:
+    """Return the year of a Comtrade period (``YYYY`` or ``YYYYMM``)."""
+    return int(str(period)[:4])
+
+
+# Fonction de calcul de la part des lots téléchargés par année
+def completeness_by_year(
+    planned: Iterable[Any],
+    registry: Mapping[str, Mapping[str, Any]],
+    dataflow: str,
+) -> Dict[int, float]:
+    """Share, per year, of the planned product batches downloaded at least once.
+
+    A planned query (one period x one product batch) counts as downloaded when
+    the registry holds an entry of the same dataflow with the same
+    ``params.periods`` and ``params.products`` and a ``last_download`` date.
+    Matching on these parameters, rather than on the registry key, keeps the
+    gate independent of the physical registry layout (PS-12.3).
+
+    Args:
+        planned: Planned ``ComtradeQueryRequest`` objects (``periods``,
+            ``products``), as built by ``plan_queries``.
+        registry: Download registry (``identity_key -> entry``).
+        dataflow: Dataflow of the planned queries.
+
+    Returns:
+        Mapping ``year -> share`` in ``[0, 1]``, for every planned year.
+
+    Examples:
+        >>> completeness_by_year(planned, registry, "C_A_HS")  # doctest: +SKIP
+        {2024: 1.0, 2023: 0.5}
+    """
+    # Lots téléchargés au moins une fois : (période, produits)
+    downloaded: Set[Tuple[str, Optional[Tuple[str, ...]]]] = set()
+    for entry in registry.values():
+        params = entry.get("params") or {}
+        if entry.get("dataflow") != dataflow or not entry.get("last_download"):
+            continue
+        if params.get("periods") is None:
+            continue
+        downloaded.add((str(params["periods"]), _products_key(params.get("products"))))
+
+    # Décompte des lots planifiés et téléchargés, par année
+    totals: Dict[int, int] = {}
+    done: Dict[int, int] = {}
+    for query in planned:
+        year = _period_year(query.periods)
+        totals[year] = totals.get(year, 0) + 1
+        if (str(query.periods), _products_key(query.products)) in downloaded:
+            done[year] = done.get(year, 0) + 1
+
+    return {year: done.get(year, 0) / total for year, total in totals.items()}
+
+
+# Fonction de sélection des années éligibles
+def eligible_years(
+    shares: Mapping[int, float],
+    min_share: float,
+    period_end: Optional[int] = None,
+) -> List[int]:
+    """Years whose share of downloaded batches reaches ``min_share``.
+
+    Args:
+        shares: Mapping ``year -> share`` (:func:`completeness_by_year`).
+        min_share: Completeness threshold (``COMPLETENESS.MIN_SHARE``).
+        period_end: Last year kept (``PARAMETERS.period_end``), ``None`` for none.
+
+    Returns:
+        Sorted eligible years.
+
+    Examples:
+        >>> eligible_years({2022: 1.0, 2023: 0.5, 2024: 1.0}, 1.0, period_end=2023)
+        [2022]
+    """
+    return sorted(
+        year
+        for year, share in shares.items()
+        if share >= min_share and (period_end is None or year <= period_end)
+    )
+
+
+# Fonction de résolution des premières années des millésimes cibles
+def resolve_target_start_years(
+    targets: Mapping[str, Mapping[str, Any]],
+    runtime_config: Mapping[str, Any],
+) -> Dict[str, int]:
+    """Resolve the first year of each BACI target vintage (PD-08).
+
+    An explicit ``START_YEAR`` is kept; a null one resolves to
+    ``max(runtime.NOMENCLATURES.HS[vintage], runtime.ANALYSIS_START_YEAR.comtrade)``.
+
+    Args:
+        targets: ``CLASSIFICATIONS.TARGETS`` of ``baci.yaml``.
+        runtime_config: Parsed ``runtime`` mapping.
+
+    Returns:
+        Mapping ``vintage -> first year``.
+
+    Raises:
+        KeyError: If a null ``START_YEAR`` vintage is absent from
+            ``runtime.NOMENCLATURES.HS``.
+
+    Examples:
+        >>> resolve_target_start_years(
+        ...     {"HS1992": {"START_YEAR": None}, "HS2017": {"START_YEAR": 2017}},
+        ...     {"NOMENCLATURES": {"HS": {"HS1992": 1988}},
+        ...      "ANALYSIS_START_YEAR": {"comtrade": 1994}},
+        ... )
+        {'HS1992': 1994, 'HS2017': 2017}
+    """
+    analysis_start = int(runtime_config["ANALYSIS_START_YEAR"]["comtrade"])
+    in_force = runtime_config["NOMENCLATURES"]["HS"]
+    return {
+        label: (
+            int(cfg["START_YEAR"])
+            if cfg.get("START_YEAR") is not None
+            else max(int(in_force[label]), analysis_start)
+        )
+        for label, cfg in targets.items()
+    }
+
+
+# Fonction de détection d'un périmètre produit restreint
+def is_provisional_scope(
+    available_products: Iterable[str],
+    planned_products: Iterable[str],
+    full_product_regex: str,
+    exclude: Optional[Sequence[str]] = None,
+) -> bool:
+    """Tell whether the planned products are a strict subset of the full BACI scope.
+
+    A BACI computed on a product subset is not the full BACI (reporter quality
+    is estimated on every product): it is labelled provisional (PD-06, point 3).
+
+    Args:
+        available_products: Product codelist of the source.
+        planned_products: Products actually planned for download.
+        full_product_regex: Pattern of the full product scope (HS6).
+        exclude: Codes excluded from the full scope (same deny-list as the
+            download filters).
+
+    Returns:
+        ``True`` when some code of the full scope is not planned.
+
+    Examples:
+        >>> is_provisional_scope(["010121", "854140"], ["854140"], r"^\\d{6}$")
+        True
+        >>> is_provisional_scope(["010121", "854140", "01"], ["010121", "854140"], r"^\\d{6}$")
+        False
+    """
+    full_scope = set(
+        filter_codes(available_products, include_regex=full_product_regex, exclude=exclude)
+    )
+    return not full_scope.issubset(set(map(str, planned_products)))
+
+
+# Fonction de calcul de la part minimale sur une plage d'années
+def _share_min(shares: Mapping[int, float], start: int, end: Optional[int]) -> float:
+    """Minimum download share over the planned years of ``[start, end]`` (0 if none)."""
+    values = [s for y, s in shares.items() if y >= start and (end is None or y <= end)]
+    return float(min(values)) if values else 0.0
 
 
 
@@ -415,6 +674,7 @@ def main() -> None:
     # Chargement des configurations (chemins, identifiants et paramètres méthodologiques)
     comtrade_config = load_comtrade_config()
     baci_config = load_baci_config()
+    runtime_config = load_runtime_config()
 
     # Construction des paramètres de modélisation
     baci_parameters_config = baci_config_from_params(baci_config.get("PARAMETERS"))
@@ -438,14 +698,60 @@ def main() -> None:
     concordance_path = classifications_config["CONCORDANCE_PATH"]
     force_refresh = classifications_config.get("FORCE_REFRESH", False)
     bucket = baci_config["BUCKET"]
+    # Premières années des millésimes cibles (START_YEAR nul → règle PD-08)
+    start_years = resolve_target_start_years(targets_config, runtime_config)
+    # Borne haute optionnelle du périmètre temporel
+    period_end = baci_parameters_config.period_end
 
     # Spécification du dataflow téléchargé auquel on souhaite appliquer la méthodologie BACI
-    DATAFLOW = "C_A_HS"
+    DATAFLOW = comtrade_config["DATAFLOW"]
+    downloads_config = comtrade_config["DOWNLOADS"][DATAFLOW]
+    completeness_config = baci_config.get("COMPLETENESS") or {}
 
     # Instant de référence capturé avant le traitement : la date consignée
     # correspond au début du redressement, jamais à sa fin, pour ne pas masquer
     # une mise à jour COMTRADE survenue pendant l'exécution
     processed_at = datetime.now(timezone.utc)
+
+    # Porte de complétude (PS-14.1) : liste PLANIFIÉE reconstruite par la même
+    # fonction que le téléchargement, confrontée au registre de téléchargement
+    comtrade_client = ComtradeClient(subscription_key=os.environ.get(_SUBSCRIPTION_KEY_ENV))
+    try:
+        dims_codes = {
+            "reporters": fetch_dimension_codelists("reporter", client=comtrade_client),
+            "products": fetch_dimension_codelists("cmd:HS", client=comtrade_client),
+        }
+        planned = plan_queries(comtrade_config, runtime_config, comtrade_client, dims_codes)
+    finally:
+        comtrade_client.close()
+    registry = load_download_registry(
+        downloads_config["PATHS"]["LAST_DOWNLOAD_PATH"], bucket=downloads_config["BUCKET"]
+    )
+    shares = completeness_by_year(planned, registry, DATAFLOW)
+    years_eligible = eligible_years(
+        shares, float(completeness_config.get("MIN_SHARE", 1.0)), period_end=period_end
+    )
+    # Étiquette provisoire : périmètre produit planifié restreint (profil demo)
+    products_filters = comtrade_config["split_filters"][DATAFLOW]["products"]
+    # (produits non restreints → None dans les requêtes : périmètre complet)
+    is_provisional = not any(q.products is None for q in planned) and is_provisional_scope(
+        available_products=dims_codes["products"]["code"],
+        planned_products={str(p) for q in planned for p in q.products},
+        full_product_regex=completeness_config.get("FULL_PRODUCT_REGEX", r"^\d{6}$"),
+        exclude=products_filters.get("exclude"),
+    )
+    # Logging
+    logger.info(
+        "Porte de complétude : %d année(s) éligible(s) sur %d planifiée(s) %s "
+        "(seuil %s) ; périmètre provisoire : %s",
+        len(years_eligible), len(shares), years_eligible,
+        completeness_config.get("MIN_SHARE", 1.0), is_provisional,
+    )
+
+    # Sortie anticipée : aucune année complète (rattrapage en cours)
+    if not years_eligible:
+        logger.info("Aucune année complète : aucun millésime n'est redressé.")
+        return
 
     # Lecture des fichiers Excel CEPII
     table_loader = TableLoader()
@@ -455,29 +761,27 @@ def main() -> None:
 
     # Initialisation du connecteur au catalogue (schéma par défaut : la source,
     # les schémas résultat étant adressés explicitement à l'écriture)
-    connector = DuckLakeConnector.from_postgres(
-        data_path=f"s3://{comtrade_config['DOWNLOADS'][DATAFLOW]['BUCKET']}/{comtrade_config['DOWNLOADS'][DATAFLOW]['PATHS']['DATA_PATH']}",
-        dbname=comtrade_config["DOWNLOADS"]["DBNAME"],
-        host=os.environ["PGHOST"],
-        port=os.environ["PGPORT"],
-        user=os.environ["PGUSER"],
-        password=os.environ["PGPASSWORD"],
-        create_db_if_missing=True,
-        admin_dbname=os.environ["PGDATABASE"],
-        catalog_alias=comtrade_config["DOWNLOADS"]["CATALOG_ALIAS"],
-        schema=_schema_name(DATAFLOW),
-        s3_endpoint=os.environ["AWS_S3_ENDPOINT"],
-        s3_access_key_id=os.environ["AWS_ACCESS_KEY_ID"],
-        s3_secret_access_key=os.environ["AWS_SECRET_ACCESS_KEY"],
-        s3_session_token=os.environ["AWS_SESSION_TOKEN"],
+    connector = build_connector(
+        DuckLakeLocation(
+            dbname=comtrade_config["DOWNLOADS"]["DBNAME"],
+            catalog_alias=comtrade_config["DOWNLOADS"]["CATALOG_ALIAS"],
+            schema=_schema_name(DATAFLOW),
+            bucket=downloads_config["BUCKET"],
+            data_path=downloads_config["PATHS"]["DATA_PATH"],
+        ),
+        pg=pg_credentials_from_env(),
+        s3=s3_credentials_from_env(),
     )
 
     # Etablissement d'une connexion
     conn = connector.connect()
     try:
-        # Lecture unique de la table de faits COMTRADE, colonnes requises par
-        # run_baci plus la colonne de classification (absente de
-        # required_columns, indispensable à l'harmonisation des nomenclatures)
+        # Lecture de la table de faits COMTRADE restreinte en SQL aux années
+        # éligibles, bornées par le plus petit START_YEAR des cibles et
+        # period_end : colonnes requises par run_baci plus la colonne de
+        # classification (absente de required_columns, indispensable à
+        # l'harmonisation des nomenclatures). Le monobloc reste en mémoire
+        # jusqu'au traitement par passes (K-07)
         columns = list(
             dict.fromkeys(required_columns(baci_parameters_config) + [schema.classification_col])
         )
@@ -485,6 +789,10 @@ def main() -> None:
             conn=conn,
             source_schema=_schema_name(DATAFLOW),
             columns=columns,
+            period_col=schema.period_col,
+            years=years_eligible,
+            period_start=min(start_years.values()),
+            period_end=period_end,
         )
         years = df_comtrade[schema.period_col].astype(str).str[:4].astype(int)
 
@@ -494,7 +802,7 @@ def main() -> None:
         slices: Dict[str, pd.DataFrame] = {}
         pairs: Set[Tuple[str, str]] = set()
         for label, target_cfg in targets_config.items():
-            df_slice = df_comtrade[years >= target_cfg["START_YEAR"]]
+            df_slice = df_comtrade[years >= start_years[label]]
             slices[label] = df_slice
             codes_present = df_slice[schema.classification_col].dropna().unique()
             for code in codes_present:
@@ -524,6 +832,14 @@ def main() -> None:
         # Entrées de registre des millésimes effectivement réécrits
         processed: Dict[str, Dict[str, object]] = {}
         for label, target_cfg in targets_config.items():
+            # Millésime sans année complète (rattrapage année-majeur en cours) :
+            # rien à redresser, ce n'est pas un échec
+            if slices[label].empty:
+                logger.info(
+                    "Millésime %s : aucune année éligible >= %d, ignoré",
+                    label, start_years[label],
+                )
+                continue
             try:
                 harmonizer = HsHarmonizer(
                     concordances,
@@ -543,9 +859,22 @@ def main() -> None:
                     tracking_uri=mlflow_config.get("TRACKING_URI"),
                     experiment=mlflow_config.get("EXPERIMENT", "baci"),
                     run_name=f"baci-{label}-{datetime.now():%Y%m%d-%H%M}",
-                    tags={"vintage": label},
+                    tags={"vintage": label, "is_provisional": str(is_provisional)},
                 )
                 with tracker:
+                    # Couverture du millésime : années éligibles et part minimale
+                    # de lots téléchargés sur ses années planifiées
+                    tracker.log_metrics(
+                        {
+                            "coverage/years_eligible": float(
+                                sum(y >= start_years[label] for y in years_eligible)
+                            ),
+                            "coverage/share_min": _share_min(
+                                shares, start_years[label], period_end
+                            ),
+                        }
+                    )
+
                     # Application de la méthodologie sur la tranche harmonisée
                     df_reconciled, report = run_baci(
                         df_comtrade=df_harmonised,
@@ -555,6 +884,9 @@ def main() -> None:
                         tracker=tracker,
                         log_artifacts=log_artifacts,
                     )
+                    # Étiquette du périmètre (PD-06) : BACI sur un sous-ensemble
+                    # de produits, distinct du BACI complet
+                    df_reconciled["is_provisional"] = is_provisional
 
                     # Écriture du résultat dans le schéma dédié au millésime
                     report.created = write_dataframe(
@@ -604,7 +936,10 @@ def main() -> None:
 
     # Registre des dates de traitement : écrit après succès de l'écriture des
     # millésimes concernés, jamais avant — une date avancée à tort ferait
-    # silencieusement sauter le recalcul des vulnérabilités de réseau
+    # silencieusement sauter le recalcul des vulnérabilités de réseau.
+    # Écriture fusionnée unique en fin de script : sans course entre millésimes
+    # tant qu'ils sont traités séquentiellement dans ce pod. Le fan-out d'un pod
+    # par millésime (PD-05) imposera un fragment de registre par millésime (PD-10)
     if processed:
         last_processing_path = Path(baci_config["PATHS"]["LAST_PROCESSING_PATH"])
         # Fusion avec le registre existant : seuls les millésimes traités bougent

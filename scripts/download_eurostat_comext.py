@@ -1,8 +1,18 @@
 """Script de téléchargement des données Comext (commerce extérieur) Eurostat.
 
-Télécharge le dataflow DS-045409 depuis l'API SDMX 3.0 d'Eurostat en scindant
-les requêtes par pays reporter x code produit. Peut être ordonnancé (Argo, cron)
-ou intégré directement comme nœud Kedro via les fonctions exportées.
+Télécharge le dataflow configuré (``DATAFLOW``, DS-045409) depuis l'API SDMX 3.0
+d'Eurostat en scindant les requêtes par code produit x pays reporter, toutes les
+années dans une même requête à partir de
+``runtime.ANALYSIS_START_YEAR.eurostat`` (PD-07, PD-08). La liste est
+**produit-majeure** (PS-12.2) : un produit est complet pour tous les reporters
+avant le suivant, maille utile aux indicateurs partenaires (couple reporter x
+produit). ``download_updates`` trie de façon stable les requêtes jamais
+téléchargées en tête : l'ordre de la liste fait donc foi pour le rattrapage.
+
+Fichiers de configuration lus : ``EUROSTAT_CONFIG_PATH`` (défaut
+``config/datasets/eurostat.yaml``) et ``RUNTIME_CONFIG_PATH`` (défaut
+``config/runtime.yaml``). Peut être ordonnancé (Argo, cron) ou intégré
+directement comme nœud Kedro via les fonctions exportées.
 """
 # Importation des modules
 # Modules de base
@@ -10,9 +20,7 @@ import os
 from datetime import datetime, timedelta
 import itertools
 import logging
-import sys
-from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple, Union
+from typing import Any, Dict, List, Mapping, Optional, Sequence, TypeVar, Union
 import yaml
 
 # Modules de manipulation de données
@@ -35,9 +43,14 @@ from statflows.core.reports import QueryReport
 # Module de suivi d'exécution
 from macroforecast.tracking import get_tracker
 
-# Module de connexion à la base de données
-from dt_ducklake_manager import DuckLakeConnector
-    
+# Fabrique de connecteur DuckLake (seul point de lecture des identifiants)
+from kedro_pipeline.io.ducklake import (
+    DuckLakeLocation,
+    build_connector,
+    pg_credentials_from_env,
+    s3_credentials_from_env,
+)
+
 
 # Configuration de logging
 logging.basicConfig(
@@ -48,15 +61,20 @@ logging.basicConfig(
 # Initialisation du logger
 logger = logging.getLogger(__name__)
 
+# Dimension découpée en boucle externe (ordre produit-majeur, PS-12.2)
+_PRODUCT_DIM = "product"
+
+T = TypeVar("T")
+
 
 # Fonction de chargement de la configuration
 def load_config(config_path: Optional[os.PathLike] = None) -> dict:
     """Load configuration from file.
-    
+
     Args:
         config_path: Path to config file. If None, uses default location
                      or CONFIG_PATH environment variable.
-    
+
     Returns:
         dict: Configuration dictionary
     """
@@ -64,10 +82,30 @@ def load_config(config_path: Optional[os.PathLike] = None) -> dict:
     if config_path is None:
         # Priorité 1 : variable d'environnement (pour flexibilité Kubernetes)
         config_path = os.environ.get('EUROSTAT_CONFIG_PATH', 'config/datasets/eurostat.yaml')
-    
+
     # Chargement du fichier
     with open(config_path, "r", encoding="utf-8") as file:
         return yaml.safe_load(file)
+
+
+# Fonction de chargement de la configuration d'exécution partagée
+def load_runtime_config(config_path: Optional[os.PathLike] = None) -> dict:
+    """Load the shared runtime configuration (``runtime`` root key, PS-04.1).
+
+    Args:
+        config_path: Path to config file. If None, uses the
+            RUNTIME_CONFIG_PATH environment variable or ``config/runtime.yaml``.
+
+    Returns:
+        dict: The mapping under the ``runtime`` root key.
+    """
+    # Détermination du chemin de configuration
+    if config_path is None:
+        config_path = os.environ.get("RUNTIME_CONFIG_PATH", "config/runtime.yaml")
+
+    # Chargement du fichier
+    with open(config_path, "r", encoding="utf-8") as file:
+        return yaml.safe_load(file)["runtime"]
 
 
 # Fonction récupération des listes de codes associées à une dimension d'un dataflow
@@ -123,23 +161,74 @@ def fetch_dimension_codelists(
     return dimension_codes
 
 
+# Fonction de plafonnement du nombre de requêtes
+def cap_queries(queries: Sequence[T], max_queries: Optional[int]) -> List[T]:
+    """Keep at most ``max_queries`` queries, in list order (C-01).
+
+    Args:
+        queries: Ordered queries.
+        max_queries: Maximum number of queries; ``None`` means no cap.
+
+    Returns:
+        The (possibly truncated) list of queries.
+
+    Examples:
+        >>> cap_queries([1, 2, 3], None)
+        [1, 2, 3]
+        >>> cap_queries([1, 2, 3], 1)
+        [1]
+    """
+    return list(itertools.islice(queries, max_queries))
+
+
+# Fonction de filtrage d'une codelist en conservant l'ordre de la liste d'inclusion
+def _ordered_codes(codes: pd.DataFrame, filters: Mapping[str, Any]) -> List[str]:
+    """Filter a codelist, keeping the order of the ``include`` list when given.
+
+    ``filter_codes`` returns sorted codes; the configured ``include`` order is
+    the query order of the dimension (e.g. reporters), so it is restored here.
+
+    Args:
+        codes: Codelist DataFrame with a ``code`` column.
+        filters: include/exclude filters forwarded to ``filter_codes``.
+
+    Returns:
+        Selected codes, in ``include`` order if set, else in natural order.
+    """
+    selected = filter_codes(codes["code"], **filters)
+    include = filters.get("include")
+    # Pas de liste d'inclusion : ordre naturel des codes
+    if include is None:
+        return selected
+    # Ordre de la liste d'inclusion (codes absents déjà signalés par filter_codes)
+    kept = set(selected)
+    return [code for code in dict.fromkeys(str(c) for c in include) if code in kept]
+
+
 # Fonction de construction des requêtes
 def build_split_queries(
     dataflow: str,
     dims_codes: Dict[str, pd.DataFrame],
     fixed_dims: Dict[str, Union[List[str], str]] = {},
-    split_filters: Dict[str, Dict[str, Union[List[str], str]]] = {}
-) -> List[Any]:
-    """Build the split queries for a Comext dataflow.
+    split_filters: Dict[str, Dict[str, Union[List[str], str]]] = {},
+    products_step: int = 1,
+    period_windows: Optional[Sequence[Sequence[Optional[int]]]] = None,
+    start_period: Optional[str] = None,
+) -> List[EurostatQueryRequestV30]:
+    """Build the split queries for a Comext dataflow, product-major.
 
     Applies the include/exclude filters declared in the YAML configuration to
-    the reporter and product codelists, then returns one query per
-    (reporter, product) pair in the cartesian product.
+    the split-dimension codelists, then returns one query per product and per
+    combination of the other split dimensions (typically reporters), every
+    period in a single query. Order (PS-12.2): outer loop over the products in
+    natural code order, inner loop over the other dimensions in the order of
+    their ``include`` list (natural order when unset).
 
     Args:
         dataflow: Eurostat dataflow identifier (e.g. ``"DS-045409"``).
         dims_codes: Mapping of split-dimension name to its codelist DataFrame
             (column ``code``), as returned by :func:`fetch_dimension_codelists`.
+            Must contain ``"product"``.
         fixed_dims: Dimensions shared by every query (e.g. freq=A, partner=*,
             flow=1, indicators=QUANTITY_IN_100KG), read from the YAML
             ``fixed_dims`` section.
@@ -147,40 +236,79 @@ def build_split_queries(
             to :func:`~statflows.core.factory.filter_codes`), read from
             the YAML ``split_filters`` section. Must share the same keys as
             ``dims_codes``.
+        products_step: Number of products per query; only ``1`` is supported
+            (product batches are an open risk, PR-03).
+        period_windows: Optional ordered period windows (PD-07); only ``None``
+            is supported.
+        start_period: First period requested (``startPeriod``, sent as
+            ``c[TIME_PERIOD]=ge:<start>`` by the SDMX 3.0 client); ``None``
+            requests every available period.
 
     Returns:
-        List of ``EurostatQueryRequestV30`` objects, one per combination of
-        the cartesian product of the filtered split-dimension codes.
+        List of ``EurostatQueryRequestV30`` objects, product-major.
 
     Raises:
         ValueError: If ``split_filters`` and ``dims_codes`` do not share the
-            same keys.
+            same keys, or ``"product"`` is not a split dimension.
+        NotImplementedError: If ``products_step > 1`` or ``period_windows`` is
+            set.
 
     Examples:
         >>> queries = build_split_queries(
         ...     "DS-045409",
-        ...     dims_codes={"reporter": reporter_codes, "product": product_codes},
+        ...     dims_codes={"reporter": pd.DataFrame({"code": ["DE", "FR"]}),
+        ...                 "product": pd.DataFrame({"code": ["01", "02"]})},
         ...     fixed_dims={"freq": "A"},
-        ...     split_filters={"reporter": {}, "product": {}},
-        ... )  # doctest: +SKIP
-        >>> len(queries) > 0
-        True
+        ...     split_filters={"reporter": {"include": ["FR", "DE"]}, "product": {}},
+        ... )
+        >>> [(q.dimensions["product"], q.dimensions["reporter"]) for q in queries]
+        [('01', 'FR'), ('01', 'DE'), ('02', 'FR'), ('02', 'DE')]
     """
-    
+    # Paramètres non encore supportés (granularité inchangée tant que PR-03 est ouvert)
+    if products_step is not None and products_step > 1:
+        raise NotImplementedError(
+            f"products_step={products_step} is not supported yet: product batches "
+            "require measuring the Eurostat API limits first (PR-03). Use 1."
+        )
+    if period_windows is not None:
+        raise NotImplementedError(
+            "period_windows is not supported yet (PD-07): set it to null."
+        )
+
     # Vérification que 'split_filters' et 'dims_codes' partagent les mêmes clés
     if set(split_filters.keys()) != set(dims_codes.keys()):
         raise ValueError(f"'split_filters' and 'dims_codes' should have similar keys. Found {split_filters.keys()} for 'split_filters' and {dims_codes.keys()} for 'dims_codes'")
+    if _PRODUCT_DIM not in split_filters:
+        raise ValueError(f"'{_PRODUCT_DIM}' must be a split dimension (product-major order)")
 
-    # Construction des codes associés aux dimensions splitées à croiser
-    split_dims_codes = [filter_codes(dims_codes[split_dim]["code"], **split_filters[split_dim]) for split_dim in split_filters.keys()]
+    # Codes des dimensions scindées, dans l'ordre des requêtes
+    split_dims_codes = {
+        split_dim: (
+            filter_codes(dims_codes[split_dim]["code"], **filters)
+            if split_dim == _PRODUCT_DIM
+            else _ordered_codes(dims_codes[split_dim], filters)
+        )
+        for split_dim, filters in split_filters.items()
+    }
+    # Dimensions de la boucle interne (ordre de la configuration)
+    inner_dims = [dim for dim in split_filters if dim != _PRODUCT_DIM]
 
-    # Construction des requêtes
+    # Construction produit-majeure (l'ordre d'insertion des dimensions suit la
+    # configuration, comme auparavant)
     queries = [
         EurostatQueryRequestV30(
             dataflow=dataflow,
-            dimensions={**fixed_dims, **{key: value for key, value in zip(split_filters.keys(), dim_values)}},
+            dimensions={
+                **fixed_dims,
+                **{
+                    dim: (product if dim == _PRODUCT_DIM else inner[inner_dims.index(dim)])
+                    for dim in split_filters
+                },
+            },
+            start_period=start_period,
         )
-        for dim_values in itertools.product(*split_dims_codes)
+        for product in split_dims_codes[_PRODUCT_DIM]
+        for inner in itertools.product(*(split_dims_codes[dim] for dim in inner_dims))
     ]
 
     # Logging
@@ -192,10 +320,13 @@ def build_split_queries(
 # Fonction principale de téléchargement
 def main() -> None:
     """CLI entry point for the Comext download script."""
-    # Chargement de la configuration
+    # Chargement des configurations
     config = load_config()
-    # Spécification du dataflow que l'on souhaite télécharger
-    DATAFLOW = "DS-045409"
+    runtime_config = load_runtime_config()
+    # Dataflow à télécharger (C-05)
+    DATAFLOW = config["DATAFLOW"]
+    parameters = config["parameters"][DATAFLOW]
+    downloads_config = config["DOWNLOADS"][DATAFLOW]
 
     # Initialisation du client eurostat
     client = EurostatClient()
@@ -205,34 +336,31 @@ def main() -> None:
         # Extraction des codes associés au reporter et au produit (qui sont les dimensions selon lesquelles on souhaite scinder les requêtes)
         dims_codes = {split_dim: fetch_dimension_codelists(structure=structure, dimension=split_dim, client=client) for split_dim in config["split_filters"][DATAFLOW].keys()}
 
-        # Construction des requêtes selon les dimensions souhaitées
+        # Construction des requêtes produit-majeures, toutes années depuis la
+        # première année de l'analyse (PD-08)
         queries = build_split_queries(
             dataflow=DATAFLOW,
             dims_codes=dims_codes,
             fixed_dims=config["fixed_dims"][DATAFLOW],
-            split_filters=config["split_filters"][DATAFLOW]
+            split_filters=config["split_filters"][DATAFLOW],
+            products_step=parameters.get("products_step", 1),
+            period_windows=parameters.get("period_windows"),
+            start_period=str(runtime_config["ANALYSIS_START_YEAR"]["eurostat"]),
         )
-        # Restriction de test à 5 requêtes
-        queries = queries[:5]  # queries[:5]
+        # Plafond optionnel (null = aucun, C-01)
+        queries = cap_queries(queries, parameters.get("max_queries"))
 
         # Initialisation du connecteur au catalogue
-        connector = DuckLakeConnector.from_postgres(
-            data_path=f"s3://{config['DOWNLOADS'][DATAFLOW]['BUCKET']}/{config['DOWNLOADS'][DATAFLOW]['PATHS']['DATA_PATH']}",
-            dbname=config['DOWNLOADS']['DBNAME'],
-            host=os.environ['PGHOST'],
-            port=os.environ['PGPORT'],
-            user=os.environ['PGUSER'],
-            password=os.environ['PGPASSWORD'],
-            create_db_if_missing=True,
-            admin_dbname=os.environ['PGDATABASE'],
-            admin_user="postgres",
-            admin_password=os.environ["PGPASSWORD"],
-            catalog_alias=config['DOWNLOADS']['CATALOG_ALIAS'],
-            schema=_schema_name(DATAFLOW),
-            s3_endpoint=os.environ["AWS_S3_ENDPOINT"],
-            s3_access_key_id=os.environ["AWS_ACCESS_KEY_ID"],
-            s3_secret_access_key=os.environ["AWS_SECRET_ACCESS_KEY"],
-            s3_session_token=os.environ["AWS_SESSION_TOKEN"],
+        connector = build_connector(
+            DuckLakeLocation(
+                dbname=config["DOWNLOADS"]["DBNAME"],
+                catalog_alias=config["DOWNLOADS"]["CATALOG_ALIAS"],
+                schema=_schema_name(DATAFLOW),
+                bucket=downloads_config["BUCKET"],
+                data_path=downloads_config["PATHS"]["DATA_PATH"],
+            ),
+            pg=pg_credentials_from_env(),
+            s3=s3_credentials_from_env(),
         )
 
         # Construction du suivi d'exécution : sans URI (ou sans MLflow installé,
@@ -263,19 +391,19 @@ def main() -> None:
                 client=client,
                 queries=queries,
                 connector=connector,
-                structures_path=config["DOWNLOADS"][DATAFLOW]["PATHS"]["STRUCTURES_PATH"],
-                last_download_path=config["DOWNLOADS"][DATAFLOW]["PATHS"]["LAST_DOWNLOAD_PATH"],
-                n_observations=config["DOWNLOADS"][DATAFLOW]["N_LAST_OBSERVATIONS"],
+                structures_path=downloads_config["PATHS"]["STRUCTURES_PATH"],
+                last_download_path=downloads_config["PATHS"]["LAST_DOWNLOAD_PATH"],
+                n_observations=downloads_config["N_LAST_OBSERVATIONS"],
                 fresh_registry=False,
                 max_runtime=timedelta(
-                    weeks=config["DOWNLOADS"][DATAFLOW]["MAX_RUNTIME"]["WEEKS"],
-                    days=config["DOWNLOADS"][DATAFLOW]["MAX_RUNTIME"]["DAYS"],
-                    hours=config["DOWNLOADS"][DATAFLOW]["MAX_RUNTIME"]["HOURS"],
-                    minutes=config["DOWNLOADS"][DATAFLOW]["MAX_RUNTIME"]["MINUTES"],
-                    seconds=config["DOWNLOADS"][DATAFLOW]["MAX_RUNTIME"]["SECONDS"]
+                    weeks=downloads_config["MAX_RUNTIME"]["WEEKS"],
+                    days=downloads_config["MAX_RUNTIME"]["DAYS"],
+                    hours=downloads_config["MAX_RUNTIME"]["HOURS"],
+                    minutes=downloads_config["MAX_RUNTIME"]["MINUTES"],
+                    seconds=downloads_config["MAX_RUNTIME"]["SECONDS"]
                 ),
                 categorical_threshold=None,  # A supprimer avec la nouvelle version de la base de données
-                bucket=config['DOWNLOADS'][DATAFLOW]['BUCKET'],
+                bucket=downloads_config['BUCKET'],
                 storage_options=None,
                 on_query_complete=stream_query_metrics,
             )

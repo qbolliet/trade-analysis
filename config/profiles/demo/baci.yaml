@@ -1,3 +1,12 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# PROFIL DEMO (PD-19, PS-04.4) — copie COMPLÈTE de config/baci.yaml.
+# Périmètre PROVISOIRE (PQ-07) : produits dont le code commence par 2805, 2846,
+# 8105, 8112, 2844, 3004, 8541, 8542, 8507 (≈ 100 codes SH6), Comtrade ≥ 2015,
+# BACI HS2017 seul. Le demo ne diffère de la production QUE par le périmètre et
+# par l'isolement de ses sorties (catalogues/schémas préfixés demo_, chemins
+# trade/demo/…, expériences MLflow demo-) : même ordre de téléchargement,
+# max_queries null. Sélection via la variable d'environnement BACI_CONFIG_PATH.
+# ─────────────────────────────────────────────────────────────────────────────
 # Configuration du redressement BACI des flux de commerce international.
 
 # Bucket S3 des fichiers CEPII (null → lecture locale)
@@ -17,7 +26,7 @@ PATHS:
   # Écrit après succès de l'écriture, il est la source de fraîcheur de
   # scripts/compute_network_vulnerabilities.py, qui ne recalcule que les
   # millésimes réécrits depuis son dernier passage.
-  LAST_PROCESSING_PATH: "trade/datasets/last_processing/baci.json"
+  LAST_PROCESSING_PATH: "trade/demo/datasets/last_processing/baci.json"
 
 # Porte de complétude (PD-06, PS-14.1) : une année n'est redressée que si la part
 # de ses lots Comtrade PLANIFIÉS téléchargés au moins une fois (registre
@@ -40,7 +49,7 @@ MLFLOW:
   # qui prime sur la valeur ci-dessous.
   TRACKING_URI: null
   # Expérience de destination, créée à la volée si absente
-  EXPERIMENT: "baci"
+  EXPERIMENT: "demo-baci"
   # Publication des artefacts d'étape (taux de conversion, coefficients de
   # gravité, régimes de valorisation inférés, sigma par pays)
   LOG_ARTIFACTS: true
@@ -118,10 +127,5 @@ CLASSIFICATIONS:
   # commence ainsi avec l'analyse Comtrade (1994) sans dupliquer la constante.
   # Ordre : du plus récent au plus ancien.
   TARGETS:
-    HS2022: { START_YEAR: 2022, RESULT_SCHEMA: "baci_hs2022" }
-    HS2017: { START_YEAR: 2017, RESULT_SCHEMA: "baci_hs2017" }
-    HS2012: { START_YEAR: 2012, RESULT_SCHEMA: "baci_hs2012" }
-    HS2007: { START_YEAR: 2007, RESULT_SCHEMA: "baci_hs2007" }
-    HS2002: { START_YEAR: 2002, RESULT_SCHEMA: "baci_hs2002" }
-    HS1996: { START_YEAR: 1996, RESULT_SCHEMA: "baci_hs1996" }
-    HS1992: { START_YEAR: null, RESULT_SCHEMA: "baci_hs1992" }
+    # demo : cible unique HS2017
+    HS2017: { START_YEAR: 2017, RESULT_SCHEMA: "demo_baci_hs2017" }

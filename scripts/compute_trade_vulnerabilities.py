@@ -39,8 +39,13 @@ import yaml
 
 # Modules de chargement/sauvegarde JSON (local ou S3), même brique que le téléchargement
 from statflows.storage.json import Loader, Saver
-# Module de connexion à la base de données
-from dt_ducklake_manager import DuckLakeConnector
+# Fabrique de connecteur DuckLake (seul point de lecture des identifiants)
+from kedro_pipeline.io.ducklake import (
+    DuckLakeLocation,
+    build_connector,
+    pg_credentials_from_env,
+    s3_credentials_from_env,
+)
 # Module d'utilitaires de téléchargement
 from statflows.core.download import _now, _parse_iso, _schema_name
 
@@ -348,7 +353,7 @@ def main() -> None:
     measure_drift = bool(mlflow_config.get("DRIFT", True))
 
     # Initialisation du Dataflow sur lequel sont calculées les métriques de vulnérabilité
-    DATAFLOW = "DS-045409"
+    DATAFLOW = eurostat_config["DATAFLOW"]
 
     # Initialisation des loaders et savers
     loader = Loader()
@@ -387,44 +392,34 @@ def main() -> None:
     # mise à jour survenue pendant le calcul)
     computed_at = _now()
 
+    # Identifiants du catalogue et du stockage (lus une fois dans l'environnement)
+    pg_credentials = pg_credentials_from_env()
+    s3_credentials = s3_credentials_from_env()
+
     # Connecteur DuckLake aux données sources
-    source_connector = DuckLakeConnector.from_postgres(
-            data_path=f"s3://{eurostat_config['DOWNLOADS'][DATAFLOW]['BUCKET']}/{eurostat_config['DOWNLOADS'][DATAFLOW]['PATHS']['DATA_PATH']}",
-            dbname=eurostat_config['DOWNLOADS']['DBNAME'],
-            host=os.environ['PGHOST'],
-            port=os.environ['PGPORT'],
-            user=os.environ['PGUSER'],
-            password=os.environ['PGPASSWORD'],
-            create_db_if_missing=True,
-            admin_dbname=os.environ['PGDATABASE'],
-            admin_user="postgres",
-            admin_password=os.environ["PGPASSWORD"],
-            catalog_alias=eurostat_config['DOWNLOADS']['CATALOG_ALIAS'],
-            schema=_schema_name(DATAFLOW),  # re.sub(r'[^a-zA-Z0-9]', '', DATAFLOW),
-            s3_endpoint=os.environ["AWS_S3_ENDPOINT"],
-            s3_access_key_id=os.environ["AWS_ACCESS_KEY_ID"],
-            s3_secret_access_key=os.environ["AWS_SECRET_ACCESS_KEY"],
-            s3_session_token=os.environ["AWS_SESSION_TOKEN"],
-        )
+    source_connector = build_connector(
+        DuckLakeLocation(
+            dbname=eurostat_config["DOWNLOADS"]["DBNAME"],
+            catalog_alias=eurostat_config["DOWNLOADS"]["CATALOG_ALIAS"],
+            schema=_schema_name(DATAFLOW),
+            bucket=eurostat_config["DOWNLOADS"][DATAFLOW]["BUCKET"],
+            data_path=eurostat_config["DOWNLOADS"][DATAFLOW]["PATHS"]["DATA_PATH"],
+        ),
+        pg=pg_credentials,
+        s3=s3_credentials,
+    )
 
     # Connecteur DuckLake résultat : catalogue Postgres positionné sur le schéma résultat des vulnérabilités.
-    result_connector = DuckLakeConnector.from_postgres(
-        data_path=f"s3://{vulnerability_config['VULNERABILITIES'][DATAFLOW]['BUCKET']}/{vulnerability_config['VULNERABILITIES'][DATAFLOW]['PATHS']['DATA_PATH']}",
-        dbname=vulnerability_config['VULNERABILITIES']["DBNAME"],
-        host=os.environ["PGHOST"],
-        port=os.environ["PGPORT"],
-        user=os.environ["PGUSER"],
-        password=os.environ["PGPASSWORD"],
-        create_db_if_missing=True,
-        admin_dbname=os.environ['PGDATABASE'],
-        admin_user="postgres",
-        admin_password=os.environ["PGPASSWORD"],
-        catalog_alias=vulnerability_config['VULNERABILITIES']['CATALOG_ALIAS'],
-        schema=_schema_name(vulnerability_config['VULNERABILITIES'][DATAFLOW]["RESULT_SCHEMA"]),
-        s3_endpoint=os.environ["AWS_S3_ENDPOINT"],
-        s3_access_key_id=os.environ["AWS_ACCESS_KEY_ID"],
-        s3_secret_access_key=os.environ["AWS_SECRET_ACCESS_KEY"],
-        s3_session_token=os.environ["AWS_SESSION_TOKEN"],
+    result_connector = build_connector(
+        DuckLakeLocation(
+            dbname=vulnerability_config["VULNERABILITIES"]["DBNAME"],
+            catalog_alias=vulnerability_config["VULNERABILITIES"]["CATALOG_ALIAS"],
+            schema=_schema_name(vulnerability_config["VULNERABILITIES"][DATAFLOW]["RESULT_SCHEMA"]),
+            bucket=vulnerability_config["VULNERABILITIES"][DATAFLOW]["BUCKET"],
+            data_path=vulnerability_config["VULNERABILITIES"][DATAFLOW]["PATHS"]["DATA_PATH"],
+        ),
+        pg=pg_credentials,
+        s3=s3_credentials,
     )
 
     # Schéma résultat, commun à la relecture et à l'écriture

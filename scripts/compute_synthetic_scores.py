@@ -51,8 +51,13 @@ import yaml
 
 # Modules de chargement/sauvegarde JSON (local ou S3), même brique que le téléchargement
 from statflows.storage.json import Loader, Saver
-# Module de connexion à la base de données
-from dt_ducklake_manager import DuckLakeConnector
+# Fabrique de connecteur DuckLake (seul point de lecture des identifiants)
+from kedro_pipeline.io.ducklake import (
+    DuckLakeLocation,
+    build_connector,
+    pg_credentials_from_env,
+    s3_credentials_from_env,
+)
 # Module d'écriture des tables de faits DuckLake (upsert par clé primaire)
 from statflows.storage.ducklake.tables import FACT_TABLE, write_dataframe
 # Module d'utilitaires de téléchargement (instants, parsing ISO, noms de schéma)
@@ -543,7 +548,7 @@ def _result_connector(
     bucket: str,
     data_path: str,
     schema: str,
-) -> DuckLakeConnector:
+) -> Any:
     """Build a DuckLake connector on the shared ``vulnerabilities`` catalog.
 
     Args:
@@ -554,26 +559,19 @@ def _result_connector(
         schema: Result schema the connector is positioned on.
 
     Returns:
-        An unconnected :class:`DuckLakeConnector`.
+        An unconnected ``dt_ducklake_manager.DuckLakeConnector``.
     """
     catalog = vulnerability_config[_PARTNERS_ROOT]
-    return DuckLakeConnector.from_postgres(
-        data_path=f"s3://{bucket}/{data_path}",
-        dbname=catalog["DBNAME"],
-        host=os.environ["PGHOST"],
-        port=os.environ["PGPORT"],
-        user=os.environ["PGUSER"],
-        password=os.environ["PGPASSWORD"],
-        create_db_if_missing=True,
-        admin_dbname=os.environ["PGDATABASE"],
-        admin_user="postgres",
-        admin_password=os.environ["PGPASSWORD"],
-        catalog_alias=catalog["CATALOG_ALIAS"],
-        schema=schema,
-        s3_endpoint=os.environ["AWS_S3_ENDPOINT"],
-        s3_access_key_id=os.environ["AWS_ACCESS_KEY_ID"],
-        s3_secret_access_key=os.environ["AWS_SECRET_ACCESS_KEY"],
-        s3_session_token=os.environ["AWS_SESSION_TOKEN"],
+    return build_connector(
+        DuckLakeLocation(
+            dbname=catalog["DBNAME"],
+            catalog_alias=catalog["CATALOG_ALIAS"],
+            schema=schema,
+            bucket=bucket,
+            data_path=data_path,
+        ),
+        pg=pg_credentials_from_env(),
+        s3=s3_credentials_from_env(),
     )
 
 
@@ -598,7 +596,7 @@ def run_from_connections(
 
     Isolates the DB-bound core of :func:`main` — the S-2.3 read, the
     context-by-context call to ``run_synthesis`` and the S-2.4 / S-2.6 writes —
-    from connection setup (``DuckLakeConnector.from_postgres``, environment
+    from connection setup (``kedro_pipeline.io.ducklake.build_connector``, environment
     variables) and freshness bookkeeping, so it is callable on any pair of
     already-open connections, tests included. As in :func:`main`, the failure
     of one context does not interrupt the others.
