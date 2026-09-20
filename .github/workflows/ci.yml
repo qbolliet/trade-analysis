@@ -1,0 +1,23 @@
+name: ci
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: astral-sh/setup-uv@v10
+        with:
+          enable-cache: true
+
+      # Sans l'extra `optimal-transport` (jax) pour la vitesse : import paresseux
+      - run: uv sync --frozen --group dev --extra tracking
+
+      - run: uv run pytest -m "not slow"

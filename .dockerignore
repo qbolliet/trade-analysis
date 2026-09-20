@@ -1,0 +1,24 @@
+# Dépôt et environnements locaux
+.git
+.github
+.venv
+.claude/
+.env
+**/__pycache__
+.pytest_cache
+
+# Secrets : ne jamais copier dans une image
+sspcloud_access_script.txt
+Trade deployment.md
+config/local/
+
+# Non nécessaires à l'exécution
+notebooks/
+tests/
+logs/
+data/
+mlruns/
+site/
+*.tex
+*.pdf
+*.bbl

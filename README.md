@@ -94,6 +94,30 @@ pytest
 pytest -m "not slow"
 ```
 
+## Image Docker
+
+Une image de production (Python 3.13, dépendances figées par `uv.lock`, extensions
+DuckDB `ducklake` / `postgres` / `httpfs` préinstallées, utilisateur non root) est
+publiée sur GitHub Container Registry par le workflow `.github/workflows/image.yml` :
+
+```bash
+docker pull ghcr.io/qbolliet/trade-analysis:latest
+# les scripts du pipeline s'appellent explicitement
+docker run --rm ghcr.io/qbolliet/trade-analysis:latest baci-hs-script --help
+```
+
+Étiquettes : `sha-<court>` (immuable), nom de branche, `latest` (branche `main`) et
+`vX.Y.Z` sur tag git. Construction locale :
+
+```bash
+docker build -f docker/Dockerfile --build-arg GIT_SHA=$(git rev-parse HEAD) -t trade-analysis .
+```
+
+> **Action manuelle unique** : après la première publication, le paquet est privé par
+> défaut. Le rendre public dans GitHub (*Packages* → `trade-analysis` → *Package
+> settings* → *Change visibility* → *Public*) pour permettre le `docker pull` sans
+> authentification.
+
 ## Feuille de route
 
 Migration des étapes de `scripts/` vers Kedro (kedro-viz pour la documentation,
