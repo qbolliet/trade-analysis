@@ -1,0 +1,15 @@
+apiVersion: argoproj.io/v1alpha1
+kind: CronWorkflow
+metadata:
+  name: trade-pipeline-transition-daily
+  namespace: user-qbollietdgddi
+  labels: {app: trade-analysis, stage: transition}
+spec:
+  schedules: ["0 1 * * *"]              # Argo ≥ 3.6 (contrôleur déployé : v3.6.10)
+  timezone: Europe/Paris
+  concurrencyPolicy: Forbid
+  startingDeadlineSeconds: 3600
+  successfulJobsHistoryLimit: 7
+  failedJobsHistoryLimit: 7
+  workflowSpec:
+    workflowTemplateRef: {name: trade-pipeline-transition}

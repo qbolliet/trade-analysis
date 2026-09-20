@@ -1,3 +1,5 @@
+# Exemple historique, non déployé (cf. C-15 dans PIPELINE_ARCHITECTURE.md) : conservé pour mémoire.
+# Le workflow déployé est kubernetes/transition/ (puis kubernetes/generated/ après K-15).
 apiVersion: argoproj.io/v1alpha1
 kind: Workflow
 metadata:

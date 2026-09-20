@@ -1,0 +1,139 @@
+# Workflow « de transition » (PD-19, phase 0) : enchaîne les scripts existants selon le DAG
+# cible de PIPELINE_ARCHITECTURE.md §2.2. Écrit à la main ; remplacé par le workflow généré
+# depuis Kedro (K-15). Voir kubernetes/transition/README.md.
+apiVersion: argoproj.io/v1alpha1
+kind: WorkflowTemplate
+metadata:
+  name: trade-pipeline-transition
+  namespace: user-qbollietdgddi
+  labels: {app: trade-analysis, stage: transition}
+spec:
+  entrypoint: main
+  serviceAccountName: workflow
+  activeDeadlineSeconds: 82800          # 23 h : borne le workflow quotidien
+  ttlStrategy: {secondsAfterSuccess: 259200, secondsAfterFailure: 604800}
+  podGC: {strategy: OnPodSuccess}
+  parallelism: 8
+  arguments:
+    parameters:
+      - name: image-tag                 # tag GHCR : sha-<SHA court> ou nom de branche
+        value: sha-543f256
+      - name: profile                   # demo | base (base = chemins de configuration historiques)
+        value: demo
+      - name: max-runtime-hours         # RÉSERVÉ : le budget des téléchargements est lu dans
+        value: "10"                     # <profil>/{comtrade,eurostat}.yaml (MAX_RUNTIME), pas ici
+      - name: publish-serving           # serving-script (K-03b) n'existe pas encore
+        value: "false"
+
+  templates:
+    # ------------------------------------------------------------------ DAG
+    - name: main
+      dag:
+        tasks:
+          - name: download-eurostat
+            template: script
+            arguments: {parameters: [{name: command, value: eurostat-script}, {name: cpu, value: "1"}, {name: mem, value: "2"}, {name: retries, value: "0"}]}
+          - name: download-comtrade
+            template: script
+            arguments: {parameters: [{name: command, value: comtrade-script}, {name: cpu, value: "1"}, {name: mem, value: "2"}, {name: retries, value: "0"}]}
+          # Étapes aval tolérantes à l'échec amont : elles ne lisent que des données commitées
+          # et décident seules, par leurs registres de fraîcheur, de ce qui est à recalculer
+          - name: baci
+            depends: "(download-comtrade.Succeeded || download-comtrade.Failed)"
+            template: script
+            arguments: {parameters: [{name: command, value: baci-hs-script}, {name: cpu, value: "4"}, {name: mem, value: "32"}]}
+          - name: network
+            depends: "(baci.Succeeded || baci.Failed)"
+            template: script
+            arguments: {parameters: [{name: command, value: vulnerabilities-network-script}, {name: cpu, value: "4"}, {name: mem, value: "16"}]}
+          - name: partners
+            depends: "(download-eurostat.Succeeded || download-eurostat.Failed)"
+            template: script
+            arguments: {parameters: [{name: command, value: vulnerabilities-eurostat-script}, {name: cpu, value: "4"}, {name: mem, value: "16"}]}
+          - name: synthesis
+            depends: "(partners.Succeeded || partners.Failed) && (network.Succeeded || network.Failed)"
+            template: script
+            arguments: {parameters: [{name: command, value: vulnerabilities-synthesis-script}, {name: cpu, value: "4"}, {name: mem, value: "16"}]}
+          - name: coherence
+            depends: "(synthesis.Succeeded || synthesis.Failed)"
+            template: script
+            arguments: {parameters: [{name: command, value: vulnerabilities-coherence-script}, {name: cpu, value: "4"}, {name: mem, value: "16"}]}
+          # Écrivain unique du catalogue `serving` (mutex porté par le template serving-locked)
+          - name: serving
+            depends: "(coherence.Succeeded || coherence.Failed) && (partners.Succeeded || partners.Failed)"
+            when: "{{workflow.parameters.publish-serving}} == true"
+            template: serving-locked
+            arguments: {parameters: [{name: command, value: serving-script}, {name: cpu, value: "4"}, {name: mem, value: "16"}]}
+
+    # ------------------------------------------------ serving : mutex + script
+    - name: serving-locked
+      inputs:
+        parameters: [{name: command}, {name: cpu}, {name: mem}]
+      synchronization: {mutex: {name: trade-serving}}
+      steps:
+        - - name: run
+            template: script
+            arguments:
+              parameters:
+                - {name: command, value: "{{inputs.parameters.command}}"}
+                - {name: cpu, value: "{{inputs.parameters.cpu}}"}
+                - {name: mem, value: "{{inputs.parameters.mem}}"}
+
+    # ------------------------------------------------- template conteneur générique
+    - name: script
+      inputs:
+        parameters:
+          - name: command               # point d'entrée [project.scripts] du pyproject
+          - name: cpu
+          - name: mem                   # en GiB
+          - name: retries               # reprises sur erreur d'infrastructure (0 = aucune)
+            value: "1"
+      retryStrategy: {limit: "{{inputs.parameters.retries}}", retryPolicy: OnError}
+      podSpecPatch: |
+        containers:
+          - name: main
+            resources:
+              requests: {cpu: "{{inputs.parameters.cpu}}", memory: "{{inputs.parameters.mem}}Gi"}
+              limits:   {cpu: "{{inputs.parameters.cpu}}", memory: "{{inputs.parameters.mem}}Gi"}
+      container:
+        image: "ghcr.io/qbolliet/trade-analysis:{{workflow.parameters.image-tag}}"
+        # Entrée shell : pointe les *_CONFIG_PATH vers config/profiles/<profil>/ ; pour le profil
+        # `base`, ne les définit pas → les scripts utilisent leurs chemins historiques par défaut
+        # (config/datasets/*.yaml, config/baci.yaml, …). Un seul jeu de variables, sans doublon.
+        command: [sh, -c]
+        args:
+          - |
+            if [ "$PROFILE" != "base" ]; then
+              d="config/profiles/$PROFILE"
+              export COMTRADE_CONFIG_PATH="$d/comtrade.yaml"
+              export EUROSTAT_CONFIG_PATH="$d/eurostat.yaml"
+              export BACI_CONFIG_PATH="$d/baci.yaml"
+              export VULNERABILITIES_CONFIG_PATH="$d/vulnerabilities.yaml"
+              export SYNTHESIS_CONFIG_PATH="$d/synthesis.yaml"
+              export RUNTIME_CONFIG_PATH="$d/runtime.yaml"
+            fi
+            exec "$1"
+          - entry
+          - "{{inputs.parameters.command}}"
+        env:
+          - {name: PROFILE, value: "{{workflow.parameters.profile}}"}
+          - {name: PYTHONUNBUFFERED, value: "1"}
+          - {name: WORKFLOW_ID, valueFrom: {fieldRef: {fieldPath: "metadata.labels['workflows.argoproj.io/workflow']"}}}
+          - {name: NUM_CPU, value: "{{inputs.parameters.cpu}}"}
+          - {name: AWS_S3_ENDPOINT, value: minio.lab.sspcloud.fr}
+          - {name: AWS_DEFAULT_REGION, value: us-east-1}
+          - {name: MLFLOW_S3_ENDPOINT_URL, value: "https://minio.lab.sspcloud.fr"}
+          # Onglet « System metrics » des runs MLflow (sans effet si psutil manque dans l'image)
+          - {name: MLFLOW_ENABLE_SYSTEM_METRICS_LOGGING, value: "true"}
+          - {name: MLFLOW_SYSTEM_METRICS_SAMPLING_INTERVAL, value: "30"}
+          - {name: AWS_ACCESS_KEY_ID, valueFrom: {secretKeyRef: {name: trade-s3-credentials, key: S3_ACCESS_KEY}}}
+          - {name: AWS_SECRET_ACCESS_KEY, valueFrom: {secretKeyRef: {name: trade-s3-credentials, key: S3_SECRET_KEY}}}
+          # Clés Minio permanentes : pas de jeton de session. statflows (storage/_connection.py) lit
+          # os.environ["AWS_SESSION_TOKEN"] sans défaut → valeur vide en contournement (C-03, à
+          # corriger dans statflows)
+          - {name: AWS_SESSION_TOKEN, value: ""}
+          - {name: COMTRADE_FREE_SUBSCRIPTION_KEY, valueFrom: {secretKeyRef: {name: comtrade-api-credentials, key: COMTRADE_FREE_SUBSCRIPTION_KEY}}}
+          - {name: COMTRADE_PREMIUM_INSTITUTIONNAL_SUBSCRIPTION_KEY, valueFrom: {secretKeyRef: {name: comtrade-api-credentials, key: COMTRADE_PREMIUM_INSTITUTIONNAL_SUBSCRIPTION_KEY}}}
+        envFrom:
+          - secretRef: {name: trade-postgres-credentials}
+          - secretRef: {name: trade-mlflow-credentials}
