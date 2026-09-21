@@ -372,15 +372,6 @@ wheels = [
 ]
 
 [[package]]
-name = "comtradeapicall"
-version = "1.3.2"
-source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/23/e2/e9b5541e67d62ddb17292b62dbd16f894286dc446c0e56db912c44463e71/comtradeapicall-1.3.2.tar.gz", hash = "sha256:09738d4d7156c621f023dca08da1ced72bbaa2e82e9371fbb7cb843dbf3317fc", size = 21013, upload-time = "2026-06-11T18:38:06.348Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/e3/0c/627a3c9cde91cbc6ac2ab6a0e8a7cbe76c158c3ba37bdf114c0c1e682fa9/comtradeapicall-1.3.2-py3-none-any.whl", hash = "sha256:9771514b3c11b6c19f955028b76234127aa407b6688e64fab2bf98fcda6fe279", size = 24096, upload-time = "2026-06-11T18:38:05.43Z" },
-]
-
-[[package]]
 name = "contourpy"
 version = "1.3.3"
 source = { registry = "https://pypi.org/simple" }
@@ -2776,9 +2767,8 @@ wheels = [
 [[package]]
 name = "statflows"
 version = "0.1.0"
-source = { git = "https://github.com/qbolliet/statflows?branch=main#a0f3c2a653eb1f38d567e2e8c7c6c02ff7255978" }
+source = { git = "https://github.com/qbolliet/statflows?branch=main#9d98979a09d646302087dce86e4fb7c7b7958f3d" }
 dependencies = [
-    { name = "comtradeapicall" },
     { name = "pandas" },
     { name = "pyarrow" },
     { name = "pyyaml" },
