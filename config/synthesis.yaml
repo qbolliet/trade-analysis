@@ -50,7 +50,7 @@ SYNTHESIS:
         "ON":
           # CAST + lpad : `product` peut être stocké en entier (zéro initial perdu pour les chapitres 01-09)
           - 'substr(lpad(CAST(p."product" AS VARCHAR), 8, ''0''), 1, 6) = lpad(CAST(n."product" AS VARCHAR), 6, ''0'')'
-          - 'CAST(substr(p."TIME_PERIOD", 1, 4) AS INTEGER) = n."year"'
+          - 'CAST(substr(CAST(p."TIME_PERIOD" AS VARCHAR), 1, 4) AS INTEGER) = n."year"'
         # Filtre sur la source jointe, placé dans le ON (jointure gauche) :
         # un seul millésime de nomenclature réseau
         WHERE: 'n."classification" = ''HS2022'''
