@@ -37,6 +37,9 @@ download-comtrade ──► baci ──► network ─────┘           
 | `profile` | `demo` | `config/profiles/<profil>/` ; `base` = chemins de configuration historiques |
 | `publish-serving` | `false` | active la tâche `serving` |
 | `max-runtime-hours` | `10` | **réservé, sans effet** : le budget des téléchargements est `MAX_RUNTIME` dans le YAML du profil |
+| `comtrade-mode` | `download` | `download` : API Comtrade ; `synthetic` : monde fictif (cf. plus bas) |
+| `eurostat-mode` | `download` | `download` : API Comext ; `complete` : API puis complément fictif des requêtes manquantes ; `synthetic` : fictif seul |
+| `eurostat-budget-minutes` | *(vide)* | durée max du téléchargement Comext RÉEL avant arrêt propre (vide = `MAX_RUNTIME` du profil) |
 
 Profil : un `sh -c` d'entrée exporte `COMTRADE|EUROSTAT|BACI|VULNERABILITIES|SYNTHESIS|RUNTIME_CONFIG_PATH`
 vers `config/profiles/<profil>/…` ; pour `base` il n'exporte rien et les scripts retombent sur
@@ -83,6 +86,56 @@ kubectl patch wf <nom> --type merge -p '{"spec":{"shutdown":"Terminate"}}'
 kubectl patch cronworkflow trade-pipeline-transition-daily --type merge -p '{"spec":{"suspend":true}}'
 kubectl patch cronworkflow trade-pipeline-transition-daily --type merge -p '{"spec":{"suspend":false}}'
 ```
+
+## Données fictives (démonstration, source indisponible ou trop lente)
+
+Quand le fournisseur Comtrade est en panne, ou que le téléchargement Comext est trop long, deux
+étapes optionnelles remplacent / complètent les téléchargements par des données **simulées**
+(modèle gravitaire, paramètres dans `config/profiles/demo/synthetic.yaml`) afin d'éprouver les
+étapes aval (BACI, vulnérabilités, synthèse, cohérence, service) et de préparer le tableau de bord.
+**Aucune valeur statistique** : ne jamais présenter ces chiffres comme des données réelles.
+
+| Étape | Point d'entrée | Ce qu'elle fait |
+|---|---|---|
+| `seed-comtrade` | `synthetic-comtrade-script` | Exécute le téléchargement Comtrade *inchangé* (mêmes requêtes planifiées, même écriture DuckLake, même registre) mais les lignes tariffline sont simulées : déclarations export FOB / import CIF avec bruit, flux miroirs incomplets, lignes « Areas, nes » et « Monde ». BACI s'exécute ensuite sans adaptation. |
+| `complete-eurostat` | `complete-synthetic-comext-script` | Planifie les mêmes requêtes que `eurostat-script`, **écarte celles déjà téléchargées** (données réelles jamais touchées) et simule les autres. Le schéma (colonnes, types, codes `WORLD` / `EXT_EU…`) est appris sur les lignes déjà présentes dans la table. |
+
+Seules les codelists de référence (pays, produits) sont lues auprès de l'API Comtrade (fichiers
+statiques, distincts de l'API de données). Les entrées de registre écrites portent `"synthetic": true`.
+Le monde simulé couvre 47 pays (UE27 + 20 partenaires), 2015-2025 (`synthetic.YEARS`) ; les
+produits, périodes et reporters viennent de `comtrade.yaml` / `eurostat.yaml` du profil, comme pour
+un vrai téléchargement.
+
+**Écrit dans les catalogues `demo_*`** (choix explicite) : les tables mélangent donc réel et fictif.
+
+```bash
+# Comtrade fictif ; Comext réel pendant 60 min puis complément fictif de ce qui manque
+kubectl create -f - <<'YAML'
+apiVersion: argoproj.io/v1alpha1
+kind: Workflow
+metadata: {generateName: trade-transition-synth-}
+spec:
+  workflowTemplateRef: {name: trade-pipeline-transition}
+  arguments:
+    parameters:
+      - {name: image-tag, value: sha-XXXXXXX}      # image contenant les scripts fictifs
+      - {name: comtrade-mode, value: synthetic}
+      - {name: eurostat-mode, value: complete}
+      - {name: eurostat-budget-minutes, value: "60"}
+YAML
+```
+
+`eurostat-mode: synthetic` saute totalement le téléchargement réel. Relancer le workflow est sans
+danger : une requête déjà écrite n'est pas régénérée (`synthetic-comtrade-script --force` pour la
+refaire). Le CronWorkflow n'est pas modifié (il garde `download`).
+
+**Revenir aux vraies données** : un téléchargement réel ultérieur ne remplace que les dernières
+observations de chaque série Comext (mise à jour incrémentale) et les périodes Comtrade republiées ;
+les lignes fictives des autres périodes subsistent. Pour repartir proprement : supprimer les catalogues
+`demo_comtrade` et `demo_eurostat` (base PostgreSQL + préfixes S3 `trade/demo/datasets/comtrade` et
+`…/comext`), les registres `trade/demo/datasets/last_downloads/{comtrade,comext}.json`, puis relancer
+avec `FORCE_STEPS=all` pour recalculer BACI, vulnérabilités, synthèse et cohérence. À faire
+consciemment : ce sont des suppressions.
 
 ## Remplacement
 

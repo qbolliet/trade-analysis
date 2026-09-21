@@ -293,3 +293,67 @@ def synthesis_source_tables(ducklake_conn) -> SynthesisSources:
         reporters=SYNTHESIS_REPORTERS,
         products=products,
     )
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Monde fictif (données synthétiques) : petit univers, aucun réseau
+# ──────────────────────────────────────────────────────────────────────
+
+# Pays du petit univers : (ISO3, ISO2, code M49 fictif, taille, région)
+SYNTHETIC_COUNTRIES = (
+    ("FRA", "FR", 251, 3.0, "EU"),
+    ("DEU", "DE", 276, 4.0, "EU"),
+    ("ITA", "IT", 380, 2.0, "EU"),
+    ("CHN", "CN", 156, 18.0, "ASIA"),
+    ("USA", "US", 842, 27.0, "NORTH_AMERICA"),
+    ("JPN", "JP", 392, 4.0, "ASIA"),
+    ("KOR", "KR", 410, 2.0, "ASIA"),
+    ("COD", "CD", 180, 0.1, "AFRICA"),
+    ("CAN", "CA", 124, 2.0, "NORTH_AMERICA"),
+    ("BRA", "BR", 76, 2.0, "SOUTH_AMERICA"),
+)
+
+
+@pytest.fixture
+def synthetic_section() -> dict:
+    """Section ``synthetic`` d'un petit monde fictif (10 pays, 2019-2021)."""
+    return {
+        "SEED": 7,
+        "YEARS": {"START": 2019, "END": 2021},
+        "COUNTRIES": [
+            {"iso3": iso3, "iso2": iso2, "size": size, "region": region}
+            for iso3, iso2, _, size, region in SYNTHETIC_COUNTRIES
+        ],
+        "MODEL": {
+            "DENSITY": 0.8,
+            "MIN_VALUE": 100,
+            "CONCENTRATION": {"DEFAULT": 1.0, "BY_PREFIX": {"8105": 0.5}},
+            "SUPPLIER_BIAS": {"8105": {"COD": 5.0}},
+        },
+        "REPORTING": {"FOB_IMPORT_REPORTERS": ["CAN"], "NES_SHARE": 0.02},
+        "COMEXT": {"PRODUCTS_PER_WRITE": 2},
+    }
+
+
+@pytest.fixture
+def synthetic_world(synthetic_section: dict):
+    """Monde fictif construit depuis ``synthetic_section``."""
+    from kedro_pipeline.synthetic.world import SyntheticWorld, WorldConfig
+
+    return SyntheticWorld(WorldConfig.from_mapping(synthetic_section))
+
+
+@pytest.fixture
+def synthetic_reference():
+    """Référence pays (codes M49 fictifs) du petit univers, sans appel réseau."""
+    from kedro_pipeline.synthetic.comtrade import CountryReference
+
+    codelist = pd.DataFrame(
+        {
+            "reporterCode": [m49 for _, _, m49, _, _ in SYNTHETIC_COUNTRIES],
+            "reporterDesc": [iso3.title() for iso3, *_ in SYNTHETIC_COUNTRIES],
+            "reporterCodeIsoAlpha2": [iso2 for _, iso2, *_ in SYNTHETIC_COUNTRIES],
+            "reporterCodeIsoAlpha3": [iso3 for iso3, *_ in SYNTHETIC_COUNTRIES],
+        }
+    )
+    return CountryReference.from_codelist(codelist, [c[0] for c in SYNTHETIC_COUNTRIES])

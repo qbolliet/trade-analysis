@@ -17,29 +17,51 @@ spec:
   arguments:
     parameters:
       - name: image-tag                 # tag GHCR : sha-<SHA court> ou nom de branche
-        value: sha-a3cb72a
+        value: sha-3095bec
       - name: profile                   # demo | base (base = chemins de configuration historiques)
         value: demo
       - name: max-runtime-hours         # RÉSERVÉ : le budget des téléchargements est lu dans
         value: "10"                     # <profil>/{comtrade,eurostat}.yaml (MAX_RUNTIME), pas ici
       - name: publish-serving           # serving-script (K-03b) n'existe pas encore
         value: "false"
+      # --- Données FICTIVES (config/profiles/demo/synthetic.yaml) : à n'utiliser que pour éprouver
+      # les étapes aval quand une source est indisponible ou trop lente. Écrites dans les catalogues demo_*.
+      - name: comtrade-mode             # download = API Comtrade ; synthetic = monde fictif (même écriture)
+        value: download
+      - name: eurostat-mode             # download = API Comext seule ; complete = API puis complément
+        value: download                 # fictif des requêtes manquantes ; synthetic = fictif seul
+      - name: eurostat-budget-minutes   # durée max du téléchargement Comext RÉEL avant arrêt propre
+        value: ""                       # (vide = MAX_RUNTIME du profil) ; le complément prend le relais
 
   templates:
     # ------------------------------------------------------------------ DAG
     - name: main
       dag:
         tasks:
+          # Comext : téléchargement réel (sauf mode synthetic), puis complément fictif des requêtes
+          # jamais téléchargées (modes complete et synthetic)
           - name: download-eurostat
+            when: "'{{workflow.parameters.eurostat-mode}}' != 'synthetic'"
             template: script
-            arguments: {parameters: [{name: command, value: eurostat-script}, {name: cpu, value: "1"}, {name: mem, value: "2"}, {name: retries, value: "0"}]}
+            arguments: {parameters: [{name: command, value: eurostat-script}, {name: cpu, value: "1"}, {name: mem, value: "2"}, {name: retries, value: "0"}, {name: soft-timeout-minutes, value: "{{workflow.parameters.eurostat-budget-minutes}}"}]}
+          - name: complete-eurostat
+            depends: "(download-eurostat.Succeeded || download-eurostat.Failed || download-eurostat.Skipped)"
+            when: "'{{workflow.parameters.eurostat-mode}}' != 'download'"
+            template: script
+            arguments: {parameters: [{name: command, value: complete-synthetic-comext-script}, {name: cpu, value: "2"}, {name: mem, value: "8"}, {name: retries, value: "0"}]}
+          # Comtrade : API réelle, ou monde fictif écrit exactement comme un téléchargement
           - name: download-comtrade
+            when: "'{{workflow.parameters.comtrade-mode}}' == 'download'"
             template: script
             arguments: {parameters: [{name: command, value: comtrade-script}, {name: cpu, value: "1"}, {name: mem, value: "2"}, {name: retries, value: "0"}]}
+          - name: seed-comtrade
+            when: "'{{workflow.parameters.comtrade-mode}}' == 'synthetic'"
+            template: script
+            arguments: {parameters: [{name: command, value: synthetic-comtrade-script}, {name: cpu, value: "2"}, {name: mem, value: "8"}, {name: retries, value: "0"}]}
           # Étapes aval tolérantes à l'échec amont : elles ne lisent que des données commitées
           # et décident seules, par leurs registres de fraîcheur, de ce qui est à recalculer
           - name: baci
-            depends: "(download-comtrade.Succeeded || download-comtrade.Failed)"
+            depends: "(download-comtrade.Succeeded || download-comtrade.Failed || download-comtrade.Skipped) && (seed-comtrade.Succeeded || seed-comtrade.Failed || seed-comtrade.Skipped)"
             template: script
             arguments: {parameters: [{name: command, value: baci-hs-script}, {name: cpu, value: "4"}, {name: mem, value: "32"}]}
           - name: network
@@ -47,7 +69,7 @@ spec:
             template: script
             arguments: {parameters: [{name: command, value: vulnerabilities-network-script}, {name: cpu, value: "4"}, {name: mem, value: "16"}]}
           - name: partners
-            depends: "(download-eurostat.Succeeded || download-eurostat.Failed)"
+            depends: "(complete-eurostat.Succeeded || complete-eurostat.Failed || complete-eurostat.Skipped)"
             template: script
             arguments: {parameters: [{name: command, value: vulnerabilities-eurostat-script}, {name: cpu, value: "4"}, {name: mem, value: "16"}]}
           - name: synthesis
@@ -88,6 +110,8 @@ spec:
           - name: mem                   # en GiB
           - name: retries               # reprises sur erreur d'infrastructure (0 = aucune)
             value: "1"
+          - name: soft-timeout-minutes  # budget de temps : au-delà, arrêt propre (SIGINT) et sortie 0
+            value: ""
       retryStrategy: {limit: "{{inputs.parameters.retries}}", retryPolicy: OnError}
       podSpecPatch: |
         containers:
@@ -111,6 +135,18 @@ spec:
               export VULNERABILITIES_CONFIG_PATH="$d/vulnerabilities.yaml"
               export SYNTHESIS_CONFIG_PATH="$d/synthesis.yaml"
               export RUNTIME_CONFIG_PATH="$d/runtime.yaml"
+              export SYNTHETIC_CONFIG_PATH="$d/synthetic.yaml"
+            fi
+            # Budget de temps optionnel : SIGINT (arrêt propre du script, les écritures commitées sont
+            # conservées) puis sortie 0, l'étape suivante prenant le relais sur ce qui manque
+            if [ -n "$SOFT_TIMEOUT_MINUTES" ]; then
+              timeout -s INT -k 120 "${SOFT_TIMEOUT_MINUTES}m" "$1"
+              rc=$?
+              if [ "$rc" -eq 124 ]; then
+                echo "Budget de ${SOFT_TIMEOUT_MINUTES} min épuisé : arrêt propre, sortie en succès"
+                exit 0
+              fi
+              exit "$rc"
             fi
             exec "$1"
           - entry
@@ -120,6 +156,7 @@ spec:
           - {name: PYTHONUNBUFFERED, value: "1"}
           - {name: WORKFLOW_ID, valueFrom: {fieldRef: {fieldPath: "metadata.labels['workflows.argoproj.io/workflow']"}}}
           - {name: NUM_CPU, value: "{{inputs.parameters.cpu}}"}
+          - {name: SOFT_TIMEOUT_MINUTES, value: "{{inputs.parameters.soft-timeout-minutes}}"}
           - {name: AWS_S3_ENDPOINT, value: minio.lab.sspcloud.fr}
           - {name: AWS_DEFAULT_REGION, value: us-east-1}
           - {name: MLFLOW_S3_ENDPOINT_URL, value: "https://minio.lab.sspcloud.fr"}

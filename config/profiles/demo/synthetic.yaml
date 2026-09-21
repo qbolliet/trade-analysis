@@ -1,0 +1,201 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# DONNÉES FICTIVES (profil demo) — paramètres du monde simulé qui remplace
+# Comtrade (indisponible côté fournisseur) et complète Comext (téléchargement
+# trop lent). Lu via SYNTHETIC_CONFIG_PATH (défaut : ce fichier).
+#
+# ATTENTION : ce sont des données SIMULÉES, sans valeur statistique. Elles servent
+# uniquement à éprouver les étapes aval (BACI, vulnérabilités, synthèse,
+# cohérence, service) et à préparer le tableau de bord. Elles sont écrites dans
+# les catalogues demo_* (choix explicite) : pour revenir aux vraies données,
+# vider ces catalogues (cf. kubernetes/transition/README.md).
+#
+# Les périmètres (produits, périodes, reporters) ne sont PAS définis ici : ils
+# viennent de comtrade.yaml / eurostat.yaml du profil, comme pour un vrai
+# téléchargement. Ce fichier ne décrit que le modèle de génération.
+# ─────────────────────────────────────────────────────────────────────────────
+synthetic:
+  # Graine de reproductibilité : même graine → mêmes données, quel que soit le
+  # découpage des requêtes
+  SEED: 20260921
+
+  # Bornes temporelles du monde simulé (années incluses). Une requête portant sur
+  # une année hors bornes ne renvoie rien
+  YEARS:
+    START: 2015
+    END: 2025
+
+  # Univers des pays (déclarants ET partenaires). Les codes numériques M49, ISO2 et
+  # les libellés sont lus dans la codelist de référence Comtrade (par ISO3) ; `iso2`
+  # sert de code partenaire Comext ;
+  # `size` est un poids économique relatif (PIB en milliers de milliards de USD),
+  # `region` porte la proximité (échanges intra-régionaux favorisés). Doit contenir
+  # les 27 États membres de l'UE (reporters Comext) et le partenaire CHN.
+  COUNTRIES:
+    # Union européenne
+    - {iso3: DEU, iso2: DE, size: 4.5,  region: EU}
+    - {iso3: FRA, iso2: FR, size: 3.1,  region: EU}
+    - {iso3: ITA, iso2: IT, size: 2.3,  region: EU}
+    - {iso3: ESP, iso2: ES, size: 1.6,  region: EU}
+    - {iso3: NLD, iso2: NL, size: 1.1,  region: EU}
+    - {iso3: POL, iso2: PL, size: 0.8,  region: EU}
+    - {iso3: BEL, iso2: BE, size: 0.65, region: EU}
+    - {iso3: SWE, iso2: SE, size: 0.6,  region: EU}
+    - {iso3: IRL, iso2: IE, size: 0.55, region: EU}
+    - {iso3: AUT, iso2: AT, size: 0.5,  region: EU}
+    - {iso3: DNK, iso2: DK, size: 0.4,  region: EU}
+    - {iso3: ROU, iso2: RO, size: 0.35, region: EU}
+    - {iso3: FIN, iso2: FI, size: 0.3,  region: EU}
+    - {iso3: CZE, iso2: CZ, size: 0.3,  region: EU}
+    - {iso3: PRT, iso2: PT, size: 0.28, region: EU}
+    - {iso3: GRC, iso2: GR, size: 0.24, region: EU}
+    - {iso3: HUN, iso2: HU, size: 0.2,  region: EU}
+    - {iso3: SVK, iso2: SK, size: 0.13, region: EU}
+    - {iso3: BGR, iso2: BG, size: 0.1,  region: EU}
+    - {iso3: LUX, iso2: LU, size: 0.09, region: EU}
+    - {iso3: HRV, iso2: HR, size: 0.08, region: EU}
+    - {iso3: SVN, iso2: SI, size: 0.07, region: EU}
+    - {iso3: LTU, iso2: LT, size: 0.07, region: EU}
+    - {iso3: LVA, iso2: LV, size: 0.04, region: EU}
+    - {iso3: EST, iso2: EE, size: 0.04, region: EU}
+    - {iso3: CYP, iso2: CY, size: 0.03, region: EU}
+    - {iso3: MLT, iso2: MT, size: 0.02, region: EU}
+    # Hors Union européenne
+    - {iso3: USA, iso2: US, size: 27.0, region: NORTH_AMERICA}
+    - {iso3: CAN, iso2: CA, size: 2.1,  region: NORTH_AMERICA}
+    - {iso3: MEX, iso2: MX, size: 1.8,  region: NORTH_AMERICA}
+    - {iso3: CHN, iso2: CN, size: 18.0, region: ASIA}
+    - {iso3: JPN, iso2: JP, size: 4.2,  region: ASIA}
+    - {iso3: IND, iso2: IN, size: 3.7,  region: ASIA}
+    - {iso3: KOR, iso2: KR, size: 1.7,  region: ASIA}
+    - {iso3: IDN, iso2: ID, size: 1.4,  region: ASIA}
+    - {iso3: VNM, iso2: VN, size: 0.43, region: ASIA}
+    - {iso3: KAZ, iso2: KZ, size: 0.26, region: ASIA}
+    - {iso3: GBR, iso2: GB, size: 3.3,  region: EUROPE_OTHER}
+    - {iso3: CHE, iso2: CH, size: 0.9,  region: EUROPE_OTHER}
+    - {iso3: NOR, iso2: NO, size: 0.5,  region: EUROPE_OTHER}
+    - {iso3: TUR, iso2: TR, size: 1.1,  region: EUROPE_OTHER}
+    - {iso3: RUS, iso2: RU, size: 2.0,  region: EUROPE_OTHER}
+    - {iso3: BRA, iso2: BR, size: 2.1,  region: SOUTH_AMERICA}
+    - {iso3: CHL, iso2: CL, size: 0.33, region: SOUTH_AMERICA}
+    - {iso3: AUS, iso2: AU, size: 1.7,  region: OCEANIA}
+    - {iso3: ZAF, iso2: ZA, size: 0.38, region: AFRICA}
+    - {iso3: COD, iso2: CD, size: 0.06, region: AFRICA}
+
+  # Modèle gravitaire des flux « vrais » (avant erreurs de déclaration)
+  MODEL:
+    # Probabilité qu'un couple exportateur → importateur échange un produit
+    # (structurelle : constante d'une année à l'autre)
+    DENSITY: 0.4
+    # Élasticités de l'offre et de la demande à la taille du pays
+    SUPPLY_SIZE_EXPONENT: 0.8
+    DEMAND_SIZE_EXPONENT: 0.9
+    # Pénalité (log) d'un échange entre régions différentes
+    REGION_PENALTY: 1.2
+    # Écart-type du bruit propre à chaque couple, fixe dans le temps
+    PAIR_SIGMA: 0.3
+    # Écart-type du bruit annuel de chaque flux
+    FLOW_SIGMA: 0.15
+    # Écart-type de la marche aléatoire annuelle de l'offre de chaque exportateur
+    SUPPLY_DRIFT_SIGMA: 0.12
+    # Croissance annuelle moyenne du commerce mondial d'un produit (log)
+    TREND_GROWTH: 0.03
+    # Chocs annuels communs (log), ex. 2020 : creux conjoncturel
+    YEAR_SHOCKS:
+      2020: -0.12
+      2021: 0.06
+    # Commerce mondial d'un produit : médiane (USD) et dispersion (log-normale)
+    WORLD_TRADE_MEDIAN: 1.5e8
+    WORLD_TRADE_SIGMA: 1.4
+    # Prix unitaire (USD/kg) : médiane et dispersion (log-normale par produit)
+    UNIT_PRICE_MEDIAN: 6.0
+    UNIT_PRICE_SIGMA: 1.5
+    # Valeur minimale (USD) d'un flux : en deçà, le flux est supprimé
+    MIN_VALUE: 2000
+    # Concentration de l'offre (écart-type du log de la capacité d'exportation) :
+    # plus elle est grande, plus l'offre du produit est concentrée (HHI élevé).
+    # Valeur par défaut puis surcharges par préfixe de code SH (le plus long gagne)
+    CONCENTRATION:
+      DEFAULT: 1.2
+      BY_PREFIX:
+        "2805": 2.4    # métaux alcalins, terres rares
+        "2846": 2.6    # composés de terres rares
+        "8105": 2.8    # cobalt
+        "8112": 2.2    # béryllium, gallium, germanium…
+        "2844": 2.0    # éléments radioactifs
+        "3004": 0.9    # médicaments : offre diversifiée
+        "8541": 1.4    # semi-conducteurs
+        "8542": 1.6    # circuits intégrés
+        "8507": 1.5    # accumulateurs électriques
+    # Part des pays qui exportent effectivement le produit (les autres n'en
+    # exportent pas, quelle que soit leur taille)
+    PRODUCER_SHARE:
+      DEFAULT: 0.6
+      BY_PREFIX:
+        "2805": 0.35
+        "2846": 0.3
+        "8105": 0.25
+        "8112": 0.3
+    # Avantage (log) de pays précis sur un produit, additif à la capacité
+    # d'exportation : ancre la concentration sur des fournisseurs plausibles
+    SUPPLIER_BIAS:
+      "2805": {CHN: 3.5}
+      "2846": {CHN: 5.0}
+      "8105": {COD: 6.5, CHN: 3.5}
+      "8112": {CHN: 3.5, RUS: 2.0}
+      "2844": {RUS: 2.5, USA: 2.0, FRA: 2.0}
+      "8541": {CHN: 2.0, KOR: 1.8, JPN: 1.4}
+      "8542": {KOR: 2.2, CHN: 1.8, JPN: 1.2}
+      "8507": {CHN: 3.0, KOR: 2.0, JPN: 1.4}
+
+  # Erreurs de déclaration (flux miroirs, redressement BACI)
+  REPORTING:
+    # Probabilité qu'une déclaration existe (flux vu par le déclarant)
+    REPORT_PROBABILITY: 0.9
+    # Probabilité qu'un déclarant manque une année entière
+    REPORTER_MISSING_YEAR: 0.03
+    # Écart-type (relatif) du bruit de déclaration, indépendant par déclarant
+    VALUE_NOISE_SIGMA: 0.06
+    WEIGHT_NOISE_SIGMA: 0.10
+    # Majoration CIF des importations : moyenne et écart-type (relatifs)
+    CIF_MARKUP_MEAN: 0.06
+    CIF_MARKUP_SIGMA: 0.02
+    # Déclarants valorisant leurs importations FOB (cf. baci.yaml PARAMETERS.fas_countries)
+    FOB_IMPORT_REPORTERS: ["CAN"]
+    # Part des déclarations sans quantité (unité -1, quantité nulle)
+    NO_QUANTITY_SHARE: 0.1
+    # Part du total d'un déclarant rangée sous « Areas, nes » (code partenaire 899) ;
+    # 0 désactive ces lignes
+    NES_SHARE: 0.02
+    # Lignes d'agrégat « Monde » (code partenaire 0), somme des lignes déclarées
+    WORLD_ROWS: true
+    # Nomenclature déclarée (H5 = HS2017) ; simplification : la même pour toutes
+    # les années (le profil demo ne redresse que HS2017)
+    CLASSIFICATION_CODE: "H5"
+    # Unité de quantité par préfixe de code SH : 8 = kg, 5 = nombre d'articles
+    QUANTITY_UNIT:
+      DEFAULT: 8
+      BY_PREFIX:
+        "8541": 5
+        "8542": 5
+        "8507": 5
+
+  # Complément Comext (Eurostat) : ne comble que les requêtes jamais téléchargées
+  COMEXT:
+    # Taux de change USD → EUR appliqué aux valeurs
+    USD_TO_EUR: 0.92
+    # Codes de partenaires agrégés : préfixe recherché dans les codes DÉJÀ présents
+    # dans la table Comext (repli : le préfixe lui-même si la table est vide)
+    AGGREGATE_PREFIXES:
+      WORLD: "WORLD"
+      EXTRA_EU: "EXT_EU"
+      INTRA_EU: "INT_EU"
+    # Reporter agrégé « Union européenne » : somme des États membres vis-à-vis des
+    # partenaires hors Union
+    UNION_REPORTER: "EU27_2020"
+    # Région des États membres dans COUNTRIES
+    EU_REGION: "EU"
+    # Requêtes (produit × reporter) écrites par lot de produits : un lot = une
+    # écriture DuckLake, pour ne pas payer 2 800 commits
+    PRODUCTS_PER_WRITE: 5
+    # Répartition d'un code SH6 entre ses lignes NC8 : part tirée dans [MIN, 1]
+    NC8_SHARE_MIN: 0.2
