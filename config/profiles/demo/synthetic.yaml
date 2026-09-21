@@ -18,6 +18,12 @@ synthetic:
   # découpage des requêtes
   SEED: 20260921
 
+  # Garde d'isolation : les scripts refusent d'écrire dans un catalogue dont le nom
+  # (DOWNLOADS.DBNAME) ne commence pas par ce préfixe, avant toute connexion. Empêche
+  # qu'un profil de production reçoive des données simulées (cf. PD-24)
+  SAFETY:
+    REQUIRED_CATALOG_PREFIX: "demo_"
+
   # Bornes temporelles du monde simulé (années incluses). Une requête portant sur
   # une année hors bornes ne renvoie rien
   YEARS:

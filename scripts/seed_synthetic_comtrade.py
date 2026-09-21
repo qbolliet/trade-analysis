@@ -45,6 +45,7 @@ from kedro_pipeline.synthetic.comtrade import (
     SyntheticComtradeClient,
 )
 from kedro_pipeline.synthetic.io import (
+    ensure_isolated_catalog,
     load_synthetic_config,
     mark_synthetic_entries,
     read_table_sample,
@@ -99,6 +100,8 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
     # Dataflow à remplir (C-05)
     DATAFLOW = config["DATAFLOW"]
     downloads_config = config["DOWNLOADS"][DATAFLOW]
+    # Garde d'isolation, avant toute connexion ou appel réseau
+    ensure_isolated_catalog(config["DOWNLOADS"]["DBNAME"], synthetic.get("SAFETY"))
 
     # Monde simulé et paramètres de déclaration
     world = SyntheticWorld(WorldConfig.from_mapping(synthetic))

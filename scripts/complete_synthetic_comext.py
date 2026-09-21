@@ -53,6 +53,7 @@ from kedro_pipeline.synthetic.comext import (
 from kedro_pipeline.synthetic.io import (
     SYNTHETIC_FLAG,
     _REGISTRY_ROOT,
+    ensure_isolated_catalog,
     load_registry,
     load_synthetic_config,
     read_distinct_codes,
@@ -121,6 +122,8 @@ def main() -> None:
     parameters = config["parameters"][DATAFLOW]
     downloads_config = config["DOWNLOADS"][DATAFLOW]
     schema = _schema_name(DATAFLOW)
+    # Garde d'isolation, avant toute connexion ou appel réseau
+    ensure_isolated_catalog(config["DOWNLOADS"]["DBNAME"], synthetic.get("SAFETY"))
 
     # Monde simulé et paramètres du complément
     world = SyntheticWorld(WorldConfig.from_mapping(synthetic))

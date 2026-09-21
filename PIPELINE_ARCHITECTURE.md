@@ -32,6 +32,7 @@
 | 2026-09-18 (rév. 2) | **Restitution sans PostgreSQL** : Superset lit **directement DuckLake** par `duckdb-engine` (déjà installé dans le chart Superset d'Onyxia, accès S3 déjà assuré) ; les tables de service sont matérialisées dans un **catalogue DuckLake `serving`** (transaction unique, partitionnement par année) ; suppression de la base `trade_serving`, du secret `trade-serving-credentials` et du basculement `psycopg2` | C-23, §2, PD-05, PD-16, PD-18, PD-21, PS-05, PS-07, PS-24, PS-29, PS-30, §6 à §12 |
 | 2026-09-18 (rév. 2) | **Supervision exclusivement dans MLflow** : plus de tableau de bord Superset de supervision ni de table `pipeline_metrics` ; chaque run porte un **rapport de contrôle** (description Markdown dans *Overview*, contrôles déclaratifs, tag `health`), des métriques système et un **rapport HTML** dans *Artifacts* (retour des figures BACI par étape) | PD-13, PS-19, PS-31, §5.1, §5.8, PR-19, PR-20, PQ-19 |
 | 2026-09-18 (phase 0) | **Jalon démonstration, scripts** : fabrique de connecteur `kedro_pipeline/io/ducklake.py` (sans Kedro) ; `config/runtime.yaml` ; `DATAFLOW` et `max_queries` en configuration ; ordre Comtrade année-majeur (`reporters=None` si non filtrés), Eurostat produit-majeur avec `start_period` ; porte de complétude BACI, lecture SQL bornée, colonne `is_provisional` ; profil `config/profiles/demo/` (copies complètes, sorties préfixées `demo_` / `trade/demo/`) ; suppression de `process_baci.py` et `test_baci.py`. PQ-15 résolue, PQ-17 à vérifier au premier téléchargement. Constats : `get_valid_periods` exclut la borne de fin qu'on lui passe (appel sans fin, borne appliquée par le script) ; une table `baci_hs20xx` déjà créée sans `is_provisional` refusera l'upsert tant que `statflows.write_dataframe` ne transmet pas `allow_new_columns` (C-13) → supprimer les schémas BACI de test avant le premier run de production ; le `Dockerfile` (C-14) doit copier `kedro_pipeline/` et `config/` | C-01 à C-05, C-17, C-18, C-26, PD-06, PD-07, PD-08, PS-04, PS-06, PS-12, PS-14.1, PQ-15, PQ-17 |
+| 2026-09-21 (phase 0) | **Données fictives de démonstration** (Comtrade indisponible, Comext trop lent) : monde simulé isolé dans les catalogues `demo_*` (garde d'écriture testée), entrées de registre marquées `synthetic`, code non migré dans Kedro ; **retrait en deux prompts** : K-17b 🔌 (données sur le cluster) puis K-18 (code et fichiers) | PD-24, PS-04.4, PR-22, PQ-20, §12, K-17b, K-18 |
 
 ## Sommaire
 
@@ -1185,6 +1186,73 @@ quotidienne (`Forbid` sur un workflow unique aurait sauté les téléchargements
 toute la durée de la cohérence). Un seul template, un seul DAG Kedro : la préférence
 pour « un seul workflow » est respectée dans sa substance.
 
+### PD-24 — Données fictives de démonstration : isolées, marquées, retirables
+
+**Contexte.** Pendant la phase 0, le fournisseur Comtrade a cessé de répondre (API de
+données) et le téléchargement Comext était trop lent pour la présentation. Pour éprouver
+les étapes aval (BACI, vulnérabilités, synthèse, cohérence, service) et construire le
+tableau de bord, un **monde simulé** remplace Comtrade et complète Comext (2026-09-21).
+Ce n'est pas une brique de la cible : c'est un **échafaudage transitoire**, à retirer
+entièrement une fois les données réelles complètes disponibles.
+
+**Décision.**
+
+1. **Périmètre.** Modèle gravitaire (`kedro_pipeline/synthetic/`, paramètres dans
+   `config/profiles/demo/synthetic.yaml`) ; deux scripts : `synthetic-comtrade-script`
+   (remplace `comtrade-script` : mêmes requêtes planifiées, même écriture DuckLake, même
+   registre — seules les lignes tariffline sont simulées) et
+   `complete-synthetic-comext-script` (simule uniquement les requêtes Comext **absentes du
+   registre**, schéma appris sur la table existante). Activés par les paramètres du
+   workflow de transition `comtrade-mode` et `eurostat-mode` (défaut : `download`, donc
+   aucun effet sans demande explicite).
+2. **Isolation.** Les données fictives sont écrites **uniquement dans les catalogues
+   `demo_*`** (jamais dans un catalogue de production). Garde exécutée avant toute
+   connexion : `synthetic.SAFETY.REQUIRED_CATALOG_PREFIX` (`demo_`) est comparé au
+   `DOWNLOADS.DBNAME` du fichier de configuration sélectionné ; un profil de production
+   (`comtrade`, `eurostat`…) lève `RuntimeError`. Testée (`tests/test_synthetic_isolation.py`).
+3. **Marquage.** Chaque entrée de registre écrite est marquée `"synthetic": true`
+   (`statflows` ne lit que `last_download` et `params`, l'ajout est inoffensif). Un registre
+   de **production** ne doit **jamais** en contenir : c'est le contrôle de non-contamination
+   du retrait (point 5). Les tables `demo_*` mélangent réel et fictif (choix explicite du
+   2026-09-21) ; leur suppression complète est donc le seul retour arrière propre.
+4. **Retirabilité.** Aucun code de production ne dépend du code fictif (testé). Il n'est
+   **pas** porté dans Kedro : K-10 à K-12 ne le migrent pas ; il vit dans `scripts/` (dont il
+   importe la planification des requêtes) jusqu'à K-18. Si une étape de migration le
+   casse, on le **supprime** (K-18) au lieu de le maintenir.
+5. **Retrait en deux prompts, dans cet ordre.** **K-17b 🔌** (cluster, données) puis
+   **K-18** (dépôt, code). Précondition commune : la production tourne sur les **données
+   réelles complètes**.
+   - *Données réelles complètes* (précondition de K-17b, à mesurer, PQ-20) : pour chaque
+     source de production, part des requêtes planifiées présentes au registre (Comext :
+     toutes ; Comtrade : `COMPLETENESS.MIN_SHARE` atteint sur toutes les années), au moins
+     une exécution `daily` et une `weekly` de production réussies, tableau de bord recette
+     validé sur les schémas de production (`dashboard`, PS-30.5).
+   - *K-17b* : inventaire en lecture seule des objets `demo` (bases PostgreSQL
+     `demo_*`, schémas `demo_*` des catalogues partagés, préfixes S3 `trade/demo/`,
+     registres JSON du profil, expériences MLflow `demo-*`, objets Superset du demo,
+     workflows Argo de transition) ; contrôle de non-contamination (aucun registre de
+     production marqué `synthetic`, tailles et instantanés des catalogues de production
+     relevés avant/après) ; suppression **après confirmation explicite, objet par objet** ;
+     vérification qu'aucun objet `demo` ne subsiste et que la production est inchangée.
+   - *K-18* : suppression du code (`kedro_pipeline/synthetic/`, les deux scripts et leurs
+     entrées `[project.scripts]`, `synthetic.yaml`, `tests/test_synthetic_*.py`, fixtures
+     synthétiques de `tests/conftest.py`, paramètres et tâches `*-mode` du workflow de
+     transition, sections de README) et de toute référence (`grep`, critères de K-18).
+
+**Justification.** Des chiffres simulés qui atteindraient un catalogue ou un tableau de
+bord de production seraient pris pour des mesures : d'où l'isolation par préfixe vérifiée
+par du code (pas par convention), le marquage des registres (seule trace durable de
+l'origine d'une série) et un retrait en deux temps où la partie irréversible (données)
+est isolée, inventoriée et confirmée avant la partie mécanique (fichiers, réversible par
+`git`). Ne pas porter le code dans Kedro évite de financer la maintenance d'un
+échafaudage voué à disparaître.
+
+**Alternatives écartées.** *Profil `synthetic` à catalogues séparés* : isolation plus forte
+mais K-03b/K-03c et les schémas `demo_*` auraient été à dupliquer à J-2 de la présentation
+(choix de l'utilisateur : `demo_*`). *Colonne `is_synthetic` dans les tables de faits* :
+change le schéma de tables que les étapes aval lisent telles quelles, et ne protège pas les
+agrégats calculés dessus.
+
 ---
 
 ## 4. Spécifications détaillées
@@ -1587,6 +1655,12 @@ synthesis:
 > n'est **pas** le BACI complet (la qualité des déclarants est estimée sur tous les
 > produits). Les résultats `demo` sont écrits dans des schémas préfixés `demo_` et
 > étiquetés `is_provisional`.
+
+> **Données fictives (2026-09-21, PD-24).** En phase 0, le profil `demo` peut être alimenté par
+> un monde simulé (`config/profiles/demo/synthetic.yaml`, paramètres `comtrade-mode` /
+> `eurostat-mode` du workflow de transition). Ces données ne sont écrites que dans les
+> catalogues `demo_*` et sont **entièrement retirées** avant la production (K-17b, K-18) ;
+> elles ne figurent pas dans l'environnement Kedro `config/demo/`.
 
 ### PS-05 — `credentials.yml` et variables d'environnement
 
@@ -3212,6 +3286,7 @@ ni le cluster.
 | PR-19 | L'onglet *Artifacts* de MLflow n'exécute pas le JavaScript d'un HTML Plotly (iframe restreinte) : figures invisibles | Moyenne / faible | Chaque figure a son équivalent CSV (PS-31.4) ; repli PNG statique (`matplotlib`, `log_figure`) ; vérifié en K-03d (PQ-19) |
 | PR-20 | Pod tué (OOM, dépassement de délai) : le run MLflow reste `RUNNING` sans rapport, et un échec passe inaperçu dans MLflow | Moyenne / moyen | Clôture des runs orphelins par la maintenance `onExit` (PD-16.6) ; tag `health` absent = run à regarder ; statut du workflow dans Argo |
 | PR-21 | Seuils de contrôle mal calibrés : fausses alertes (bruit) ou alertes manquées | Certaine au début / faible | Valeurs initiales `warning` sauf évidences ; recalibrage en K-17 sur les premières exécutions réelles ; seuils en configuration (§5.8) |
+| PR-22 | Données fictives prises pour des mesures : écrites dans un catalogue de production, restées dans un tableau de bord, ou données `demo_*` mélangeant réel et fictif conservées après le retour au réel | Faible avec la garde / **critique** (décisions sur des chiffres simulés) | Garde `REQUIRED_CATALOG_PREFIX` avant toute connexion (PD-24, testée), marquage `synthetic` des registres, mention « données simulées » sur tout support de démonstration, retrait K-17b (contrôle de non-contamination) puis K-18 |
 
 ---
 
@@ -3238,6 +3313,7 @@ ni le cluster.
 | PQ-17 | Le reporter agrégé **`EU27_2020`** existe-t-il dans la codelist `reporter` de DS-045409 avec des flux extra-UE ? **Non vérifiable hors ligne (2026-09-18)** : aucune structure DS-045409 en cache dans le dépôt. `EU27_2020` est ajouté à `reporter.include` ; **à vérifier au premier téléchargement** (un code inclus absent de la codelist est signalé par un avertissement de `filter_codes`, sans échec). | Oui ; sinon repli de PR-18 |
 | PQ-18 | Quelle **statistique de cohérence** et quelle **méthode de synthèse** afficher par défaut dans le tableau de bord (« indicateur synthétique le plus pertinent ») ? | `PRIMARY_METHOD: borda` (consensus) et corrélation de Spearman ; changeable en configuration `serving` |
 | PQ-19 | Sur le MLflow 3 déployé : le rapport HTML Plotly s'affiche-t-il dans *Artifacts* ? Quelle longueur maximale pour la description (tag) ? Les métriques système s'activent-elles par variable d'environnement sur les runs de kedro-mlflow ? La vue multi-expériences existe-t-elle ? | Oui pour tout ; limite de tag 8 000 caractères ; replis de PS-31.6 sinon. Vérifié en K-03d (serveur `file:` local puis MLflow Onyxia) |
+| PQ-20 | À partir de quel seuil les **données réelles sont-elles « complètes »** pour retirer le demo (K-17b) ? | Toutes les requêtes Comext planifiées présentes au registre ; Comtrade : `COMPLETENESS.MIN_SHARE` (1,0) atteint sur toutes les années de `ANALYSIS_START_YEAR.comtrade` à l'année complète la plus récente ; au moins une exécution `daily` et une `weekly` de production réussies (PR-01 : plusieurs jours à semaines). K-17b mesure ces critères et **s'arrête** s'ils ne sont pas remplis |
 
 ---
 
@@ -3307,7 +3383,7 @@ Révision du **vendredi 2026-09-18**. Présentation : **semaine du 2026-09-21**.
 | **1 — Robustesse de l'acquisition** | K-04 (dépôt `statflows`), K-04b | Registres et écritures tamponnés, options d'écriture 0.3.1 : prérequis du rattrapage complet | après la présentation |
 | **2 — Méthodologie paramétrable** | K-05, K-06, K-06b, K-07, K-08, K-09 | Fraîcheur v2, import/export, millésimes de nomenclature, BACI exact par passes, évolution de schéma et synthèse incrémentale, parallélisme | après la présentation |
 | **3 — Kedro** | K-10, K-11, K-12, K-13, K-14 | Projet Kedro `kedro_pipeline`, étapes partagées, pipelines (deux cadences), rapport de run kedro-mlflow, maintenance | après la présentation |
-| **4 — Production** | K-15, K-16, K-17 🔌, K-18 | Rendu Argo (deux CronWorkflow), documentation, recette, suppression des scripts et des fichiers de démonstration | après la présentation |
+| **4 — Production** | K-15, K-16, K-17 🔌, **K-17b 🔌**, K-18 | Rendu Argo (deux CronWorkflow), documentation, recette, **retrait des données de démonstration et fictives** (K-17b), puis suppression des scripts, du code fictif et des fichiers de démonstration (K-18) | après la présentation |
 
 Ce qui sera montrable à la présentation (phase 0 seule) : le tableau de bord Superset
 (page pays avec la France et l'Union, page produit, cohérence), les rapports de
@@ -3380,7 +3456,8 @@ les autres depuis le poste local.
 | Recréation de la table `indicators` avec la nouvelle clé (`classification`) | après K-06b | runbook §5.3, depuis un service Onyxia | catalogue et Parquet réels |
 | Première passe BACI par millésime sur données réelles ; relevé de `memory/peak_mb` et de la durée | après K-07 | `argo submit --entrypoint weekly` | seul moyen d'avoir les vraies volumétries |
 | Déploiement des manifestes générés, bascule, recette, runbooks | K-17 | K-17 🔌 | `kubectl apply`, `argo` |
-| Suppression du workflow de transition et des fichiers de démonstration | K-18 (après validation) | K-18 + `kubectl delete` | ressources du cluster |
+| **Retrait des données de démonstration et fictives** : bases `demo_*`, schémas `demo_*`, préfixes S3 `trade/demo/`, registres du profil, expériences MLflow `demo-*`, objets Superset du demo, workflow de transition ; contrôle de non-contamination de la production | K-17b (après K-17, données réelles complètes — PQ-20) | K-17b 🔌, confirmation objet par objet | suppressions **irréversibles** sur PostgreSQL, S3, MLflow, Superset |
+| Suppression du code et des fichiers de démonstration (dépôt) | K-18 (après K-17b) | K-18 (local) | — |
 | Restauration d'une sauvegarde PostgreSQL (test) | K-17 | K-17 🔌 | instance réelle |
 
 Tout ce qui n'est pas dans cette table (code, tests sur données fictives, rendu des

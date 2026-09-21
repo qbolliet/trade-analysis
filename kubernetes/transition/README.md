@@ -108,6 +108,11 @@ un vrai téléchargement.
 
 **Écrit dans les catalogues `demo_*`** (choix explicite) : les tables mélangent donc réel et fictif.
 
+**Garde d'isolation** : les deux scripts refusent de s'exécuter (avant toute connexion) si
+`DOWNLOADS.DBNAME` ne commence pas par `demo_` (`synthetic.SAFETY.REQUIRED_CATALOG_PREFIX`) : un profil
+`base` ne peut pas recevoir de données simulées. Ce dispositif est un échafaudage transitoire, **retiré**
+en fin de parcours (ARCH PD-24 ; prompts K-17b puis K-18).
+
 ```bash
 # Comtrade fictif ; Comext réel pendant 60 min puis complément fictif de ce qui manque
 kubectl create -f - <<'YAML'

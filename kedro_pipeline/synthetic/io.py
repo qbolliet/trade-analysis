@@ -35,6 +35,44 @@ _REGISTRY_ROOT = "DOWNLOADS"
 SYNTHETIC_FLAG = "synthetic"
 
 
+# Fonction de garde d'isolation des catalogues
+def ensure_isolated_catalog(dbname: str, safety: Optional[Mapping[str, Any]]) -> None:
+    """Refuse to write simulated data outside an isolated (demo) catalog.
+
+    Simulated data must never reach a production catalog: the scripts call this
+    guard before any connection or network access.
+
+    Args:
+        dbname: PostgreSQL database of the catalog the script is about to write to
+            (``DOWNLOADS.DBNAME`` of the dataset configuration).
+        safety: ``SAFETY`` section of the synthetic configuration; its
+            ``REQUIRED_CATALOG_PREFIX`` is the prefix an isolated catalog must
+            carry (e.g. ``"demo_"``).
+
+    Raises:
+        RuntimeError: If the prefix is not configured, or ``dbname`` does not
+            start with it (typically: the production profile is selected).
+
+    Examples:
+        >>> ensure_isolated_catalog("demo_comtrade", {"REQUIRED_CATALOG_PREFIX": "demo_"})
+        >>> ensure_isolated_catalog("comtrade", {"REQUIRED_CATALOG_PREFIX": "demo_"})
+        Traceback (most recent call last):
+            ...
+        RuntimeError: Refus d'écrire des données FICTIVES dans le catalogue 'comtrade' : ...
+    """
+    prefix = (safety or {}).get("REQUIRED_CATALOG_PREFIX")
+    if not prefix:
+        raise RuntimeError(
+            "synthetic.SAFETY.REQUIRED_CATALOG_PREFIX absent de la configuration : "
+            "refus d'écrire des données fictives sans garde d'isolation"
+        )
+    if not str(dbname).startswith(str(prefix)):
+        raise RuntimeError(
+            f"Refus d'écrire des données FICTIVES dans le catalogue '{dbname}' : seuls les "
+            f"catalogues préfixés '{prefix}' sont autorisés (profil de production sélectionné ?)"
+        )
+
+
 # Fonction de chargement de la configuration des données fictives
 def load_synthetic_config(config_path: Optional[os.PathLike] = None) -> Dict[str, Any]:
     """Load the ``synthetic`` section of the configuration file.

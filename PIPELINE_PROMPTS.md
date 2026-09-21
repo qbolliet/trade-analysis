@@ -12,6 +12,9 @@
 > `serving`, `duckdb-engine`) au lieu d'une base PostgreSQL ; la supervision est
 > **exclusivement dans MLflow** (rapport de contrôle par run) — K-03b, K-03c, K-13
 > réécrits, nouveau K-03d, ajustements de K-02, K-03, K-10 à K-12 et K-14 à K-18.
+> **Révision 3 du 2026-09-21** : données fictives de démonstration (Comtrade indisponible) et
+> leur **retrait** — nouveau **K-17b 🔌** (données sur le cluster), K-18 étendu au code fictif,
+> notes de K-10 et K-11 (ARCH PD-24).
 > Identifiants : `K-xx` (prompts), `PD-xx` / `PS-xx` / `PR-xx` / `PQ-xx` / `C-xx` (ARCH).
 
 ## Mode d'emploi
@@ -35,6 +38,11 @@
 7. 🎯 marque le **jalon « tableau de bord »** : à partir de là, la démonstration peut
    être préparée dans Superset ; les prompts suivants n'en changent pas le contrat de
    lecture (ARCH PD-19, PS-29.3).
+8. **Données fictives** (ARCH PD-24) : si un fournisseur est indisponible en phase 0, un monde
+   simulé peut remplacer Comtrade / compléter Comext, **uniquement dans les catalogues
+   `demo_*`** (garde d'écriture). C'est un échafaudage : il n'est pas migré dans Kedro (K-10 à
+   K-12) et il est **retiré** en fin de parcours, données d'abord (**K-17b 🔌**), code ensuite
+   (**K-18**), une fois les données réelles complètes.
 
 ## Vue d'ensemble
 
@@ -63,7 +71,8 @@
 | K-15 | Rendu Argo (argo-kedro → WorkflowTemplate + 2 CronWorkflow) | 4 | **Opus** | **Oui** | K-13, K-14 | trade-analysis |
 | K-16 | Site de documentation (mkdocs + kedro-viz) | 4 | Sonnet | Non | K-12 | trade-analysis |
 | K-17 🔌 | Déploiement, recette sur Onyxia et runbooks | 4 | Sonnet | **Oui** | K-15, K-16 | trade-analysis |
-| K-18 | Nettoyage final : suppression des scripts et des fichiers de démonstration, documentation | 4 | Sonnet | Non | K-17 | trade-analysis |
+| K-17b 🔌 | Retrait des données de démonstration et fictives sur le cluster (inventaire, non-contamination, suppression confirmée) | 4 | Sonnet | **Oui** | K-17, **données réelles complètes** (PQ-20) | trade-analysis |
+| K-18 | Nettoyage final : suppression des scripts, du code fictif et des fichiers de démonstration, documentation | 4 | Sonnet | Non | K-17b | trade-analysis |
 
 ```mermaid
 flowchart LR
@@ -78,7 +87,7 @@ flowchart LR
   K12 --> K13 --> K15
   K12 --> K14 --> K15
   K12 --> K16 --> K17
-  K15 --> K17 --> K18
+  K15 --> K17 --> K17b --> K18
 ```
 
 Justification des choix de modèle : **Opus** pour les prompts qui demandent des arbitrages
@@ -1480,6 +1489,13 @@ migrer la configuration vers le format Kedro en conservant la paramétrisation e
 et implémenter les datasets. Les scripts doivent continuer de fonctionner (lecture de la
 nouvelle configuration) jusqu'à leur suppression en K-18.
 
+NE MIGRE PAS le code fictif de démonstration (ARCH PD-24) : `kedro_pipeline/synthetic/`,
+`scripts/seed_synthetic_comtrade.py`, `scripts/complete_synthetic_comext.py`,
+`config/profiles/demo/synthetic.yaml` restent tels quels dans `scripts/` / `config/profiles/`
+(échafaudage jetable, supprimé en K-18). Ne les fais figurer ni dans `config/` Kedro, ni
+dans les pipelines. Si le nouveau chargement de configuration les casse, ne les répare pas :
+signale-le (ils seront retirés).
+
 TRAVAIL
 1. Dépendances (PS-02) : `kedro>=1.6,<2`, `kedro-mlflow==2.0.3`, `argo-kedro==0.1.41`,
    `jinja2`, extras `viz`, `docs`, `tracking` (`mlflow>=3,<4`, `psutil`) et `reports`
@@ -1575,6 +1591,11 @@ OBJECTIF : déplacer la logique d'orchestration de chaque script dans
 variables d'environnement), et réduire chaque script à une enveloppe CLI (chargement des
 paramètres, construction des poignées et du tracker, appel de l'étape, gestion du code de
 sortie). Aucun changement de comportement.
+
+NE PORTE PAS les deux scripts fictifs (`scripts/seed_synthetic_comtrade.py`,
+`scripts/complete_synthetic_comext.py`, ARCH PD-24) en fonctions d'étape ; laisse-les
+fonctionner tels quels (les fonctions de planification qu'ils importent restent ré-exportées
+par les scripts de téléchargement jusqu'à K-18). Ne modifie pas `tests/test_synthetic_*.py`.
 
 TRAVAIL
 1. `kedro_pipeline/steps/result.py` : `StepResult` (PS-08) avec `raise_if_failed()`.
@@ -2050,9 +2071,121 @@ CRITÈRES D'ACCEPTATION
 
 ---
 
-## K-18 — Nettoyage final : suppression des scripts et des fichiers de démonstration, documentation
+## K-17b 🔌 — Retrait des données de démonstration et fictives sur le cluster
 
-- **Modèle** : Sonnet · **Mode plan** : Non · **Phase** : 4 · **Dépend de** : K-17 (les deux cadences en production, workflow de transition retiré du cluster)
+- **Modèle** : Sonnet · **Mode plan** : Oui · **Phase** : 4 · **Dépend de** : K-17 (production en `cloud` : les deux `CronWorkflow` générés actifs), **données réelles complètes** (ARCH PQ-20)
+- **Dépôt** : `trade-analysis` — **session lancée depuis un service VSCode Onyxia** (accès `kubectl`, PostgreSQL, S3, MLflow, Superset). **Toutes les suppressions sont irréversibles.**
+
+````text
+Dépôt `trade-analysis`. Lis `CLAUDE.md`, puis dans `PIPELINE_ARCHITECTURE.md` : PD-24 (en
+entier), PQ-20, PR-22, PR-01, PD-16, PD-19, PS-04.4, PS-30.5, §5, §12. Lis
+`config/demo/` (ou `config/profiles/demo/` si K-10 n'est pas passé), `config/demo/catalog.yml`,
+`kubernetes/transition/README.md` (section « Données fictives »), `kedro_pipeline/synthetic/`
+(pour savoir ce qui a pu être écrit) et `kedro_pipeline/io/` (fabrique de connecteur :
+c'est par elle que tu te connectes aux catalogues, identifiants lus dans l'environnement).
+
+CONTEXTE : pendant la phase 0, le profil `demo` a pu être alimenté par un monde simulé
+(données FICTIVES, sans valeur statistique) mêlé aux vraies données, dans des catalogues et
+schémas préfixés `demo_`, des préfixes S3 `trade/demo/`, des expériences MLflow `demo-`.
+Je veux ne conserver que le pipeline de production sur les données réelles complètes.
+
+OBJECTIF : inventorier, puis supprimer sur le cluster tout ce qui appartient au demo et aux
+données fictives, en prouvant que la production n'a pas été touchée ni contaminée.
+
+RÈGLES
+- Ne JAMAIS afficher ni recopier la valeur d'un secret.
+- Étapes 0 à 2 en LECTURE SEULE. Aucune suppression avant ma confirmation EXPLICITE, objet
+  par objet (une confirmation de catégorie ne vaut pas confirmation de l'objet suivant).
+- Ne supprime jamais un objet dont le nom ne commence pas par `demo` / `demo_` / `demo-`
+  ou qui ne se trouve pas sous `trade/demo/` : en cas de doute, ARRÊTE-TOI et demande.
+- Une commande de suppression est affichée en entier, avec sa cible exacte, avant exécution.
+
+ÉTAPE 0 — PRÉCONDITION « DONNÉES RÉELLES COMPLÈTES » (PQ-20) — rapporte, puis ARRÊTE-TOI
+si un critère n'est pas rempli (ne supprime alors RIEN)
+- Comext et Comtrade de production : part des requêtes planifiées présentes au registre
+  v2 (Comext : toutes ; Comtrade : `COMPLETENESS.MIN_SHARE` atteint sur toutes les années
+  de `ANALYSIS_START_YEAR.comtrade` à l'année complète la plus récente), à l'aide des
+  fonctions d'étape de planification (aucune requête vers les API).
+- Au moins une exécution `daily` et une `weekly` de production (env `cloud`) réussies :
+  `kubectl get wf`, rapport de run MLflow des expériences de production (`health: ok`).
+- Tableau de bord recetté sur les schémas de PRODUCTION (`dashboard`, PS-30.5) : demande-moi
+  de confirmer que je l'ai validé et que ses datasets ne pointent plus sur `demo_dashboard`.
+
+ÉTAPE 1 — INVENTAIRE (lecture seule) ; produis un tableau (type, nom exact, taille /
+nombre d'objets, rôle, marqué fictif oui/non/inconnu)
+- PostgreSQL : bases dont le nom commence par `demo_` (catalogues DuckLake) ; dans les
+  catalogues PARTAGÉS (`vulnerabilities`, `serving`, …), schémas commençant par `demo_`.
+  Liste aussi les bases et schémas de PRODUCTION (sans les modifier) pour l'étape 2.
+- S3 : préfixe `trade/demo/` (comptage d'objets et taille, par sous-préfixe) : données
+  DuckLake, registres `last_downloads/`, `last_processing/`, `last_computation`, cache de
+  correspondances du demo s'il en a un propre. Vérifie que rien sous `trade/datasets/` et
+  `trade/…` hors `demo` ne sera concerné.
+- MLflow : expériences dont le nom commence par `demo-` (avec nombre de runs).
+- Superset : tableau de bord, graphiques, datasets propres au demo (exports `superset/` du
+  dépôt en référence) ; la CONNEXION DuckDB au catalogue `serving` est partagée avec la
+  production : ne pas la supprimer.
+- Argo / Kubernetes : `WorkflowTemplate` et `CronWorkflow` de transition
+  (`trade-pipeline-transition*`), workflows et pods `trade-transition-*` restants.
+- Registres : parcours de TOUS les registres de production (téléchargements, traitement
+  BACI, calcul) à la recherche de la clé `"synthetic": true` (PD-24 point 3) ; compte
+  d'entrées marquées par registre, demo et production séparés.
+
+ÉTAPE 2 — CONTRÔLE DE NON-CONTAMINATION ET INSTANTANÉ DE RÉFÉRENCE (lecture seule)
+- Aucun registre de production ne doit contenir d'entrée marquée `synthetic`, et aucune
+  base / schéma de production ne doit avoir de `write_dataframe` issu des scripts fictifs
+  (cherche, dans les snapshots DuckLake de production, des écritures antérieures à la mise
+  en production et attribuables au workflow de transition : si le moindre doute existe,
+  RAPPORTE et ARRÊTE-TOI). Si une contamination est trouvée, ne supprime rien : propose
+  un plan de correction (recalcul des schémas concernés, `FORCE_STEPS`) et attends ma décision.
+- Relevé de référence de la PRODUCTION, à comparer après : pour chaque catalogue de
+  production, identifiant de snapshot courant et nombre de fichiers de données ; taille et
+  nombre d'objets des préfixes S3 de production ; liste des expériences MLflow de production.
+
+ÉTAPE 3 — PRÉSENTATION ET CONFIRMATION
+Montre-moi l'inventaire (étape 1), le résultat de l'étape 2 et l'ordre de suppression
+proposé. Attends ma confirmation objet par objet.
+
+ÉTAPE 4 — SUPPRESSION (après confirmation, dans cet ordre)
+1. Argo : suspendre puis supprimer le `CronWorkflow` de transition ; supprimer le
+   `WorkflowTemplate` de transition et les workflows / pods `trade-transition-*` (si K-17
+   ne l'a pas déjà fait).
+2. Superset : supprimer le tableau de bord, les graphiques et les datasets du demo
+   (API ou interface, selon la voie de K-03c) ; conserver la connexion partagée.
+3. Catalogue `serving` : `DROP SCHEMA demo_dashboard CASCADE` (idem pour tout autre schéma
+   `demo_*` d'un catalogue PARTAGÉ), via la fabrique de connecteur, transaction unique.
+4. PostgreSQL : bases des catalogues `demo_*` (métadonnées DuckLake). La suppression de
+   la base seule laisse les fichiers Parquet : ils sont traités à l'étape 5.
+5. S3 : suppression du préfixe `trade/demo/` UNIQUEMENT (liste d'abord, compte affiché,
+   puis suppression par lots) ; jamais un préfixe parent.
+6. MLflow : suppression des expériences `demo-*` (elles passent en `deleted` ; demande-moi
+   si je veux la purge définitive côté serveur, `mlflow gc`, opération séparée).
+
+ÉTAPE 5 — VÉRIFICATION
+- Aucun objet `demo` ne subsiste : refais l'inventaire de l'étape 1, il doit être vide.
+- La PRODUCTION est inchangée : compare au relevé de l'étape 2 (snapshots, fichiers,
+  tailles, expériences MLflow). Toute différence est expliquée (exécution planifiée
+  intervenue entre-temps) ou signalée.
+- Une exécution `daily` de production soumise (`argo submit --from
+  workflowtemplate/trade-pipeline --entrypoint daily`, après ma confirmation) réussit et
+  le tableau de bord de production s'ouvre avec des données réelles.
+- Mets à jour ARCH §12 (opération réalisée, date), PD-24 (statut « retiré (données) le
+  <date> ») et §8 (PQ-20 résolue avec les valeurs constatées).
+
+CRITÈRES D'ACCEPTATION
+- L'étape 0 est documentée (critères de complétude mesurés) ; sinon, aucune suppression n'a eu lieu.
+- Inventaire final vide pour `demo` ; production inchangée (comparaison consignée) ; aucun
+  registre de production marqué `synthetic`.
+- Rapport final : liste de ce qui a été supprimé (nom, taille), ce qui a été refusé ou
+  reporté, le relevé avant/après de la production, et rappel que K-18 (code et fichiers)
+  peut désormais être lancé.
+- Ne crée pas de commit.
+````
+
+---
+
+## K-18 — Nettoyage final : suppression des scripts, du code fictif et des fichiers de démonstration, documentation
+
+- **Modèle** : Sonnet · **Mode plan** : Non · **Phase** : 4 · **Dépend de** : K-17b (données de démonstration et fictives retirées du cluster ; les deux cadences en production, workflow de transition retiré)
 - **Dépôt** : `trade-analysis`
 
 ````text
@@ -2061,10 +2194,11 @@ entier, survol ; PD-02 pour le sort des scripts) et `PIPELINE_PROMPTS.md` (table
 synthèse).
 
 OBJECTIF : laisser le dépôt dans un état cohérent après la migration : ne conserver que
-les fichiers utiles à la production. AVANT toute suppression, vérifie avec moi que le
-workflow de transition a bien été retiré du cluster et que la présentation est passée
-(demande-le explicitement ; sans confirmation, marque les fichiers obsolètes au lieu de
-les supprimer).
+les fichiers utiles à la production — plus aucun script, plus aucun profil `demo`, plus
+aucun code de génération de données fictives. AVANT toute suppression, vérifie avec moi que
+le workflow de transition a bien été retiré du cluster, que la présentation est passée ET que
+K-17b a été exécuté (données `demo_*` supprimées, production vérifiée ; demande-le
+explicitement ; sans confirmation, marque les fichiers obsolètes au lieu de les supprimer).
 
 TRAVAIL
 1. Suppression des scripts (PD-02) : `scripts/` en entier et toutes les entrées
@@ -2074,8 +2208,19 @@ TRAVAIL
    (ré-exportée en K-11) — MÊMES assertions ; supprime les ré-exports devenus inutiles.
    Vérifie que les utilitaires ponctuels (migrations de registres, mesures) sont dans
    `tools/` et documentés dans le README.
-2. Suppression des fichiers de démonstration et d'exemple : `kubernetes/transition/`,
-   `kubernetes/examples/`, `config/demo/` (et toute référence dans `settings.py`,
+1 bis. Suppression du code fictif de démonstration (ARCH PD-24) : `kedro_pipeline/synthetic/`,
+   `scripts/seed_synthetic_comtrade.py`, `scripts/complete_synthetic_comext.py` (déjà couverts
+   par la suppression de `scripts/`), leurs entrées `synthetic-comtrade-script` et
+   `complete-synthetic-comext-script` de `[project.scripts]`, `config/profiles/demo/synthetic.yaml`
+   (ou sa migration éventuelle sous `config/demo/`), `tests/test_synthetic_*.py` (world,
+   comtrade, comext, ducklake, download_e2e, isolation) et la section « Monde fictif » de
+   `tests/conftest.py` (`SYNTHETIC_COUNTRIES`, fixtures `synthetic_*`). Avant de supprimer,
+   lance `uv run pytest tests/test_synthetic_isolation.py` : il prouve qu'aucun code de
+   production ne référence le code fictif ; s'il échoue, corrige la dépendance AVANT de
+   supprimer. Le test d'isolation est lui-même supprimé avec les autres.
+2. Suppression des fichiers de démonstration et d'exemple : `kubernetes/transition/`
+   (workflow de transition, paramètres `comtrade-mode` / `eurostat-mode` / `eurostat-budget-minutes`,
+   section « Données fictives » de son README), `kubernetes/examples/`, `config/demo/` (et toute référence dans `settings.py`,
    `render.py`, le `Dockerfile`, la CI), `superset/*/` exports SPÉCIFIQUES à la
    démonstration s'ils ont été remplacés par les exports de production (sinon,
    conserve). Conserve `config/test/`.
@@ -2104,5 +2249,11 @@ CRITÈRES D'ACCEPTATION
 - Aucune référence morte à `scripts/`, `config/datasets/`, `config/*.yaml`,
   `*_CONFIG_PATH`, `config/profiles/`, `config/demo/`, `kubernetes/workflow.yaml`,
   `kubernetes/transition/` (`grep -rn`).
+- Aucune référence au code fictif : `grep -rniE "synthetic|fictif|demo_|SYNTHETIC_CONFIG_PATH|
+  comtrade-mode|eurostat-mode"` ne renvoie que des occurrences justifiées (à lister : ex.
+  historique dans ARCH PD-24 marqué « retiré », colonne `is_provisional` conservée si
+  elle sert la production) ; `[project.scripts]` ne contient plus de point d'entrée
+  fictif ; `uv run pytest` vert sans `tests/test_synthetic_*.py`.
+- ARCH : PD-24 marqué « retiré (code) le <date> », journal mis à jour.
 - Ne crée pas de commit.
 ````
