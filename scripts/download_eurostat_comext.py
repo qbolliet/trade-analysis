@@ -44,6 +44,7 @@ from statflows.core.reports import QueryReport
 from macroforecast.tracking import get_tracker
 
 # Fabrique de connecteur DuckLake (seul point de lecture des identifiants)
+from kedro_pipeline.io.download_report import check_download_report
 from kedro_pipeline.io.ducklake import (
     DuckLakeLocation,
     build_connector,
@@ -423,6 +424,9 @@ def main() -> None:
 
         # Logging
         logger.info(f"Téléchargement terminé : {report.to_metrics()}")
+        # Statut de sortie : contrôle après la clôture du tracker, pour que les métriques et la
+        # table de diagnostic des requêtes en échec soient publiées avant l'échec de l'étape
+        check_download_report(report, downloads_config.get("MAX_ERROR_RATIO"))
     finally:
         client.close()
 

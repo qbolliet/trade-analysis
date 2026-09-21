@@ -35,6 +35,7 @@ from statflows.core.factory import filter_codes
 from statflows.core.download import download_updates, _schema_name
 
 # Fabrique de connecteur DuckLake (seul point de lecture des identifiants)
+from kedro_pipeline.io.download_report import check_download_report
 from kedro_pipeline.io.ducklake import (
     DuckLakeLocation,
     build_connector,
@@ -453,6 +454,9 @@ def main() -> None:
         )
         # Logging
         logger.info("Téléchargement terminé : %s", report.to_metrics())
+        # Statut de sortie : statflows isole les erreurs par requête, le script doit donc
+        # échouer explicitement au-delà du seuil toléré (sinon l'étape resterait « réussie »)
+        check_download_report(report, downloads_config.get("MAX_ERROR_RATIO"))
     finally:
         client.close()
 

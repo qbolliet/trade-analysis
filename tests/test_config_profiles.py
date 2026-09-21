@@ -163,6 +163,22 @@ def test_dataset_configs_have_uncapped_queries(path: Path) -> None:
     assert config["DOWNLOADS"][dataflow]["MAX_RUNTIME"]["HOURS"] == 10
 
 
+@pytest.mark.parametrize(
+    "path",
+    [
+        CONFIG / "datasets" / "comtrade.yaml",
+        CONFIG / "datasets" / "eurostat.yaml",
+        DEMO / "comtrade.yaml",
+        DEMO / "eurostat.yaml",
+    ],
+)
+def test_dataset_configs_declare_tolerated_error_ratio(path: Path) -> None:
+    """Seuil d'échec des téléchargements déclaré, dans [0, 1] (sinon l'étape resterait « réussie »)."""
+    config = _load(path)
+    ratio = config["DOWNLOADS"][config["DATAFLOW"]]["MAX_ERROR_RATIO"]
+    assert 0.0 <= ratio < 1.0
+
+
 def test_eurostat_reporters_include_union() -> None:
     """Le reporter agrégé EU27_2020 suit les 27 États membres (PD-21)."""
     reporters = _load(CONFIG / "datasets" / "eurostat.yaml")["split_filters"]["DS-045409"]["reporter"]["include"]

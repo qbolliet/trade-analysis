@@ -148,3 +148,7 @@ DOWNLOADS :
       HOURS: 10
       MINUTES: 0
       SECONDS: 0
+    # Part maximale de requêtes en échec tolérée : au-delà, le script sort en erreur et l'étape
+    # du workflow échoue (0 = aucune tolérance, 1 = jamais d'échec, null = pas de contrôle).
+    # Les requêtes en échec ne sont pas marquées comme téléchargées : elles sont retentées au run suivant
+    MAX_ERROR_RATIO: 0.5

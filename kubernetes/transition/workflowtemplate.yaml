@@ -17,7 +17,7 @@ spec:
   arguments:
     parameters:
       - name: image-tag                 # tag GHCR : sha-<SHA court> ou nom de branche
-        value: sha-543f256
+        value: sha-a3cb72a
       - name: profile                   # demo | base (base = chemins de configuration historiques)
         value: demo
       - name: max-runtime-hours         # RÉSERVÉ : le budget des téléchargements est lu dans
