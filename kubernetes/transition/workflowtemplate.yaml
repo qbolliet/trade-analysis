@@ -22,8 +22,8 @@ spec:
         value: demo
       - name: max-runtime-hours         # RÉSERVÉ : le budget des téléchargements est lu dans
         value: "10"                     # <profil>/{comtrade,eurostat}.yaml (MAX_RUNTIME), pas ici
-      - name: publish-serving           # serving-script (K-03b) n'existe pas encore
-        value: "false"
+      - name: publish-serving           # serving-script (K-03b) : catalogue DuckLake `serving` lu par Superset
+        value: "true"
       # --- Données FICTIVES (config/profiles/demo/synthetic.yaml) : à n'utiliser que pour éprouver
       # les étapes aval quand une source est indisponible ou trop lente. Écrites dans les catalogues demo_*.
       - name: comtrade-mode             # download = API Comtrade ; synthetic = monde fictif (même écriture)
@@ -136,6 +136,7 @@ spec:
               export SYNTHESIS_CONFIG_PATH="$d/synthesis.yaml"
               export RUNTIME_CONFIG_PATH="$d/runtime.yaml"
               export SYNTHETIC_CONFIG_PATH="$d/synthetic.yaml"
+              export SERVING_CONFIG_PATH="$d/serving.yaml"
             fi
             # Budget de temps optionnel : SIGINT (arrêt propre du script, les écritures commitées sont
             # conservées) puis sortie 0, l'étape suivante prenant le relais sur ce qui manque

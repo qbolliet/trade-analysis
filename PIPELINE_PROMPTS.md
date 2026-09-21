@@ -1822,6 +1822,9 @@ TRAVAIL
    données, fichiers de suppression, snapshots) et requête d'accès depuis une connexion
    attachée (préfixe `__ducklake_metadata_<alias>`). Consigne les résultats dans ARCH
    PS-24 (remplace les mentions « à vérifier »).
+   (Note K-03b : aucune liste de catalogues maintenus n'existait en phase 0 ; crée
+   `maintenance.CATALOGS` en y incluant le catalogue `serving` — schémas `dashboard` et
+   `demo_dashboard` — cf. la note sous PS-24. `ducklake_list_files` est disponible.)
 2. `run_maintenance(catalogs, *, params, tracker, now)` :
    - pour chaque catalogue : lister les tables écrites depuis
      `ONLY_TABLES_WRITTEN_WITHIN_HOURS` (via les snapshots) ;

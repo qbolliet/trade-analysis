@@ -80,6 +80,7 @@ from kedro_pipeline.io.ducklake import (
     pg_credentials_from_env,
     s3_credentials_from_env,
 )
+from kedro_pipeline.steps.reference import publish_hs_reference
 # Planification des requêtes Comtrade : même liste que le téléchargement
 from scripts.download_comtrade import (
     fetch_dimension_codelists,
@@ -824,6 +825,19 @@ def main() -> None:
             )
         finally:
             client.close()
+
+        # Référentiels de nomenclature (tables de passage du cache UNSD, millésimes),
+        # publiés dans le catalogue Comtrade (PS-28.4) ; non bloquant
+        reference = publish_hs_reference(
+            concordances,
+            connector,
+            params={
+                "SCHEMA_PREFIX": comtrade_config["DOWNLOADS"]["REFERENCE"]["SCHEMA_PREFIX"],
+                "NOMENCLATURES": runtime_config["NOMENCLATURES"]["HS"],
+            },
+            conn=conn,
+        )
+        logger.info(f"Référentiels SH : {reference['rows']} ; échecs : {reference['failures']}")
 
         # Passe 2 : harmonisation puis redressement BACI, par millésime cible.
         # L'échec d'un millésime n'interrompt pas les autres.

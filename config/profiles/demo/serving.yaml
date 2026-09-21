@@ -1,0 +1,397 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# PROFIL DEMO (PD-19, PS-04.4) — copie COMPLÈTE de config/serving.yaml.
+# Périmètre PROVISOIRE (PQ-07) : celui des tables sources demo_* du profil.
+# Le demo ne diffère de la production QUE par l'isolement de ses sorties : schéma
+# demo_dashboard du MÊME catalogue `serving` (un catalogue = un DATA_PATH ; Superset
+# n'attache que ce catalogue), expérience MLflow demo-serving. Les tables sources
+# demo_* sont lues dans les fichiers du profil (VULNERABILITIES_CONFIG_PATH, …).
+# Sélection via la variable d'environnement SERVING_CONFIG_PATH.
+# ─────────────────────────────────────────────────────────────────────────────
+# Couche de service : catalogue DuckLake `serving` lu directement par Superset (PD-21, PS-29).
+#
+# Lu par scripts/publish_serving.py (serving-script) via la variable d'environnement
+# SERVING_CONFIG_PATH (défaut : config/serving.yaml). Les tables de service sont DÉRIVÉES
+# des tables de résultats par les requêtes SQL DuckDB ci-dessous, puis matérialisées dans
+# le catalogue `serving` en UNE transaction (Superset voit l'état précédent jusqu'au
+# COMMIT). Elles sont larges, libellées et prêtes à l'affichage : un utilisateur de
+# Superset n'écrit ni jointure ni requête.
+#
+# Gabarits SQL : syntaxe string.Template ($nom ou ${nom}) ; une variable inconnue est une
+# erreur. Variables disponibles :
+#   - tables sources (noms qualifiés, lus depuis les configurations des étapes amont,
+#     schémas demo_* compris en profil demo) : $comext, $indicators, $network,
+#     $synthesis, $diagnostics, $ref_eurostat_products, $ref_eurostat_reporters,
+#     $ref_eurostat_partners, $ref_comtrade_products, $ref_comtrade_reporters,
+#     $hs_concordance, $hs_vintages ;
+#   - fragments générés depuis les paramètres ci-dessous : $cell_filter, $comext_filter,
+#     $synthesis_pivot (METHODS × LEVELS, et méthode principale), $norm_columns,
+#     $individual_partner, $top_partners, $world_code, $extra_eu_code ;
+#   - macros SQL de session, générées depuis runtime.NOMENCLATURES.HS (PS-29.3) :
+#     vintage_in_force(année), classification_of(code, année), product_code(code)
+#     (restitue le zéro initial des codes stockés en entier).
+serving:
+  # Identité du catalogue DuckLake `serving` : base de métadonnées PostgreSQL dédiée (même
+  # instance et mêmes identifiants trade-postgres-credentials que les autres catalogues,
+  # créée si absente), fichiers Parquet sous BUCKET/DATA_PATH. Un catalogue n'a qu'un
+  # DATA_PATH : identique en profil demo, seul SCHEMA change.
+  DBNAME: "serving"
+  CATALOG_ALIAS: "serving"
+  BUCKET: "qbollietdgddi"
+  DATA_PATH: "trade/datasets/serving/"
+  # Schéma des tables de service (production : dashboard)
+  SCHEMA: "demo_dashboard"
+
+  # Mode de publication : full (recréation de chaque table) | by_year (DELETE + INSERT des
+  # seules années YEARS dans les tables PARTITIONED, retour automatique en full si les
+  # colonnes produites diffèrent de celles de la table). Phase 0 : full.
+  MODE: "full"
+  # Années republiées en mode by_year ; null → runtime.FORCE_SCOPE.PERIODS, sinon repli
+  # en full (la fraîcheur par registre viendra avec K-05/K-12)
+  YEARS: null
+
+  # Méthodes de synthèse exposées en colonnes (<méthode>_score_<niveau>,
+  # <méthode>_rank_<niveau>) : noms de la colonne `method` de la table synthesis
+  # (les règles de consensus y sont préfixées « consensus_ »)
+  METHODS: ["consensus_borda", "auto_sum", "critic_sum"]
+  # Niveaux de comparaison exposés (colonnes score_/rank_<niveau> de synthesis)
+  LEVELS: ["by_reporter", "by_product"]
+  # Indicateur synthétique principal (tri par défaut du tableau de bord) : dupliqué dans
+  # primary_score_<niveau>, primary_rank_<niveau>, primary_n_<niveau>
+  PRIMARY_METHOD: "consensus_borda"
+  # Nombre de partenaires individuels conservés par cellule dans flows (plus WORLD, EXT_EU)
+  TOP_PARTNERS: 12
+
+  # Grille de cell_scores : prédicat sur la table indicators (alias p), mêmes modalités
+  # que les contextes de la synthèse (config/synthesis.yaml FILTERS), les deux flux gardés
+  CELL_FILTER: 'CAST(p."indicators" AS VARCHAR) = ''VALUE_IN_EUROS'' AND CAST(p."freq" AS VARCHAR) = ''A'''
+  # Flux Comext retenus pour flows (alias c)
+  COMEXT_FILTER: 'CAST(c."indicators" AS VARCHAR) = ''VALUE_IN_EUROS'' AND CAST(c."freq" AS VARCHAR) = ''A'''
+  # Métriques normalisées min-max (<métrique>_norm, dans [0, 1]) pour la heatmap, et
+  # colonnes définissant le contexte de normalisation
+  NORM_METRICS: ["HHI", "CDI2", "CDI3", "EXPORT_HHI", "CENTRALITY_RISK", "CLUSTERING_W", "SPOF"]
+  NORM_PARTITION: ["flow", "year"]
+
+  # Codes partenaires agrégés de Comext, alignés sur VulnerabilityConfig (world_code,
+  # extra_eu_code, aggregate_codes, exclude_underscore_partners)
+  PARTNERS:
+    WORLD: "WORLD"
+    EXTRA_EU: "EXT_EU"
+    AGGREGATE_CODES: ["WORLD", "QW"]
+    EXCLUDE_UNDERSCORE: true
+
+  # Sources facultatives : si la table n'existe pas encore (référentiels non publiés,
+  # étape amont jamais exécutée), la variable est remplacée par une table VIDE typée et la
+  # publication continue (libellés ou scores NULL, avertissement, métrique
+  # serving/missing_sources). Valeur « reference » : colonnes du référentiel (PS-28.4) ;
+  # sinon, colonnes lues par les requêtes et leur type DuckDB. Toute autre source est
+  # obligatoire (son absence fait échouer la publication, sans rien modifier).
+  OPTIONAL_SOURCES:
+    ref_eurostat_products: "reference"
+    ref_eurostat_reporters: "reference"
+    ref_eurostat_partners: "reference"
+    ref_comtrade_products: "reference"
+    ref_comtrade_reporters: "reference"
+    hs_concordance: "reference"
+    hs_vintages: "reference"
+    network:
+      classification: "VARCHAR"
+      product: "VARCHAR"
+      year: "INTEGER"
+      EXPORT_HHI: "DOUBLE"
+      CENTRALITY_RISK: "DOUBLE"
+      CLUSTERING_W: "DOUBLE"
+      SPOF: "DOUBLE"
+      EXPORT_HHI_ALERT: "BOOLEAN"
+      CENTRALITY_RISK_ALERT: "BOOLEAN"
+      CLUSTERING_W_ALERT: "BOOLEAN"
+      SPOF_ALERT: "BOOLEAN"
+    synthesis:
+      freq: "VARCHAR"
+      flow: "VARCHAR"
+      indicators: "VARCHAR"
+      TIME_PERIOD: "VARCHAR"
+      reporter: "VARCHAR"
+      product: "VARCHAR"
+      method: "VARCHAR"
+      score_by_product: "DOUBLE"
+      score_by_reporter: "DOUBLE"
+      score_global: "DOUBLE"
+      rank_by_product: "DOUBLE"
+      rank_by_reporter: "DOUBLE"
+      rank_global: "DOUBLE"
+      n_by_product: "INTEGER"
+      n_by_reporter: "INTEGER"
+      n_global: "INTEGER"
+    diagnostics:
+      freq: "VARCHAR"
+      flow: "VARCHAR"
+      indicators: "VARCHAR"
+      TIME_PERIOD: "VARCHAR"
+      level: "VARCHAR"
+      reporter: "VARCHAR"
+      product: "VARCHAR"
+      family: "VARCHAR"
+      statistic: "VARCHAR"
+      item_a: "VARCHAR"
+      item_b: "VARCHAR"
+      value: "DOUBLE"
+      n: "INTEGER"
+
+  # Suivi d'exécution MLflow : un run par publication. TRACKING_URI null → la variable
+  # d'environnement MLFLOW_TRACKING_URI, sinon aucun suivi.
+  MLFLOW:
+    TRACKING_URI: null
+    EXPERIMENT: "demo-serving"
+
+  # Tables de service, publiées dans cet ordre. PARTITIONED : partition DuckLake par year
+  # (élagage des fichiers lus par les filtres du tableau de bord) ; SORT_BY : ordre
+  # d'insertion (statistiques min/max efficaces sur les filtres reporter / product).
+  TABLES:
+    # Une ligne par cellule (classification, reporter, product, flow, year) : métriques
+    # partenaires et réseau, alertes, scores et rangs de synthèse, métriques normalisées.
+    # classification / hs_vintage / in_force sont DÉRIVÉS tant qu'indicators ne les porte
+    # pas (PS-29.3) ; la jointure réseau se fait sur le millésime en vigueur (corrige C-11).
+    cell_scores:
+      PARTITIONED: true
+      SORT_BY: ["year", "reporter", "product"]
+      SQL: |
+        WITH grid AS (
+          SELECT
+            CAST(p."freq" AS VARCHAR) AS freq,
+            CAST(p."flow" AS VARCHAR) AS flow,
+            CAST(p."indicators" AS VARCHAR) AS indicators,
+            CAST(p."TIME_PERIOD" AS VARCHAR) AS time_period,
+            CAST(substr(CAST(p."TIME_PERIOD" AS VARCHAR), 1, 4) AS INTEGER) AS year,
+            CAST(p."reporter" AS VARCHAR) AS reporter,
+            product_code(p."product") AS product,
+            CAST(p."HHI" AS DOUBLE) AS "HHI",
+            CAST(p."CDI2" AS DOUBLE) AS "CDI2",
+            CAST(p."CDI3" AS DOUBLE) AS "CDI3",
+            CAST(p."HHI_ALERT" AS BOOLEAN) AS "HHI_ALERT",
+            CAST(p."CDI2_ALERT" AS BOOLEAN) AS "CDI2_ALERT",
+            CAST(p."CDI3_ALERT" AS BOOLEAN) AS "CDI3_ALERT"
+          FROM $indicators AS p
+          WHERE $cell_filter
+        ),
+        net AS (
+          SELECT
+            CAST(n."classification" AS VARCHAR) AS classification,
+            lpad(CAST(n."product" AS VARCHAR), 6, '0') AS hs6,
+            CAST(n."year" AS INTEGER) AS year,
+            CAST(n."EXPORT_HHI" AS DOUBLE) AS "EXPORT_HHI",
+            CAST(n."CENTRALITY_RISK" AS DOUBLE) AS "CENTRALITY_RISK",
+            CAST(n."CLUSTERING_W" AS DOUBLE) AS "CLUSTERING_W",
+            CAST(n."SPOF" AS DOUBLE) AS "SPOF",
+            CAST(n."EXPORT_HHI_ALERT" AS BOOLEAN) AS "EXPORT_HHI_ALERT",
+            CAST(n."CENTRALITY_RISK_ALERT" AS BOOLEAN) AS "CENTRALITY_RISK_ALERT",
+            CAST(n."CLUSTERING_W_ALERT" AS BOOLEAN) AS "CLUSTERING_W_ALERT",
+            CAST(n."SPOF_ALERT" AS BOOLEAN) AS "SPOF_ALERT"
+          FROM $network AS n
+        ),
+        scores AS (
+          SELECT
+            CAST(s."freq" AS VARCHAR) AS freq,
+            CAST(s."flow" AS VARCHAR) AS flow,
+            CAST(s."indicators" AS VARCHAR) AS indicators,
+            CAST(s."TIME_PERIOD" AS VARCHAR) AS time_period,
+            CAST(s."reporter" AS VARCHAR) AS reporter,
+            product_code(s."product") AS product,
+            $synthesis_pivot
+          FROM $synthesis AS s
+          GROUP BY ALL
+        ),
+        product_labels AS (
+          SELECT code, arg_max(label, classification) AS label
+          FROM $ref_eurostat_products
+          GROUP BY code
+        ),
+        reporter_labels AS (
+          SELECT code, first(label) AS label
+          FROM $ref_eurostat_reporters
+          GROUP BY code
+        ),
+        cells AS (
+          SELECT
+            classification_of(g.product, g.year) AS classification,
+            vintage_in_force(g.year) AS hs_vintage,
+            TRUE AS in_force,
+            g.year, g.time_period, g.freq, g.flow, g.indicators,
+            g.reporter, rl.label AS reporter_label,
+            g.product, pl.label AS product_label, length(g.product) AS product_level,
+            g."HHI", g."CDI2", g."CDI3",
+            net."EXPORT_HHI", net."CENTRALITY_RISK", net."CLUSTERING_W", net."SPOF",
+            g."HHI_ALERT", g."CDI2_ALERT", g."CDI3_ALERT",
+            net."EXPORT_HHI_ALERT", net."CENTRALITY_RISK_ALERT", net."CLUSTERING_W_ALERT",
+            net."SPOF_ALERT",
+            sc.* EXCLUDE (freq, flow, indicators, time_period, reporter, product)
+          FROM grid AS g
+          LEFT JOIN net
+            ON net.classification = vintage_in_force(g.year)
+           AND net.hs6 = substr(g.product, 1, 6)
+           AND length(g.product) >= 6
+           AND net.year = g.year
+          LEFT JOIN scores AS sc
+            ON sc.freq = g.freq AND sc.flow = g.flow AND sc.indicators = g.indicators
+           AND sc.time_period = g.time_period AND sc.reporter = g.reporter
+           AND sc.product = g.product
+          LEFT JOIN product_labels AS pl ON pl.code = g.product
+          LEFT JOIN reporter_labels AS rl ON rl.code = g.reporter
+        )
+        SELECT *, $norm_columns
+        FROM cells
+
+    # Cohérence entre métriques (famille « metrics » de synthesis_diagnostics) : une ligne
+    # par contexte × niveau × groupe × statistique × paire de métriques. reporter / product
+    # NULL quand le groupe est « ALL » ; metric_a / metric_b NULL quand sans objet.
+    coherence_metrics:
+      SQL: |
+        WITH d AS (
+          SELECT *, CAST(substr(CAST("TIME_PERIOD" AS VARCHAR), 1, 4) AS INTEGER) AS _year
+          FROM $diagnostics
+        )
+        SELECT
+          CASE WHEN CAST(d."product" AS VARCHAR) = 'ALL' THEN vintage_in_force(d._year)
+               ELSE classification_of(d."product", d._year) END AS classification,
+          vintage_in_force(d._year) AS hs_vintage,
+          d._year AS year,
+          CAST(d."TIME_PERIOD" AS VARCHAR) AS time_period,
+          CAST(d."freq" AS VARCHAR) AS freq,
+          CAST(d."flow" AS VARCHAR) AS flow,
+          CAST(d."indicators" AS VARCHAR) AS indicators,
+          CAST(d."level" AS VARCHAR) AS level,
+          NULLIF(CAST(d."reporter" AS VARCHAR), 'ALL') AS reporter,
+          CASE WHEN CAST(d."product" AS VARCHAR) = 'ALL' THEN NULL
+               ELSE product_code(d."product") END AS product,
+          CAST(d."statistic" AS VARCHAR) AS statistic,
+          NULLIF(CAST(d."item_a" AS VARCHAR), '') AS metric_a,
+          NULLIF(CAST(d."item_b" AS VARCHAR), '') AS metric_b,
+          CAST(d."value" AS DOUBLE) AS value,
+          CAST(d."n" AS INTEGER) AS n
+        FROM d
+        WHERE CAST(d."family" AS VARCHAR) = 'metrics'
+
+    # Cohérence entre méthodes (famille « methods ») : method_a / method_b sont des
+    # méthodes, sauf pour lomo_* et score_metric_tau où method_b est une MÉTRIQUE (S-2.5).
+    coherence_methods:
+      SQL: |
+        WITH d AS (
+          SELECT *, CAST(substr(CAST("TIME_PERIOD" AS VARCHAR), 1, 4) AS INTEGER) AS _year
+          FROM $diagnostics
+        )
+        SELECT
+          CASE WHEN CAST(d."product" AS VARCHAR) = 'ALL' THEN vintage_in_force(d._year)
+               ELSE classification_of(d."product", d._year) END AS classification,
+          vintage_in_force(d._year) AS hs_vintage,
+          d._year AS year,
+          CAST(d."TIME_PERIOD" AS VARCHAR) AS time_period,
+          CAST(d."freq" AS VARCHAR) AS freq,
+          CAST(d."flow" AS VARCHAR) AS flow,
+          CAST(d."indicators" AS VARCHAR) AS indicators,
+          CAST(d."level" AS VARCHAR) AS level,
+          NULLIF(CAST(d."reporter" AS VARCHAR), 'ALL') AS reporter,
+          CASE WHEN CAST(d."product" AS VARCHAR) = 'ALL' THEN NULL
+               ELSE product_code(d."product") END AS product,
+          CAST(d."statistic" AS VARCHAR) AS statistic,
+          NULLIF(CAST(d."item_a" AS VARCHAR), '') AS method_a,
+          NULLIF(CAST(d."item_b" AS VARCHAR), '') AS method_b,
+          CAST(d."value" AS DOUBLE) AS value,
+          CAST(d."n" AS INTEGER) AS n
+        FROM d
+        WHERE CAST(d."family" AS VARCHAR) = 'methods'
+
+    # Parts des partenaires par cellule (reporter, product, flow, year) : les TOP_PARTNERS
+    # premiers partenaires individuels (rank 1 = premier fournisseur / client) plus les
+    # agrégats WORLD et EXT_EU (rank NULL, is_aggregate vrai) ; share = value / WORLD.
+    flows:
+      PARTITIONED: true
+      SORT_BY: ["year", "product", "reporter"]
+      SQL: |
+        WITH f AS (
+          SELECT
+            CAST(substr(CAST(c."TIME_PERIOD" AS VARCHAR), 1, 4) AS INTEGER) AS year,
+            CAST(c."reporter" AS VARCHAR) AS reporter,
+            product_code(c."product") AS product,
+            CAST(c."flow" AS VARCHAR) AS flow,
+            CAST(c."partner" AS VARCHAR) AS partner,
+            CAST(c."OBS_VALUE" AS DOUBLE) AS value
+          FROM $comext AS c
+          WHERE $comext_filter
+        ),
+        world AS (
+          SELECT year, reporter, product, flow, sum(value) AS world_value
+          FROM f
+          WHERE partner = '$world_code'
+          GROUP BY ALL
+        ),
+        ranked AS (
+          SELECT f.*,
+                 CAST(rank() OVER (PARTITION BY year, reporter, product, flow
+                                   ORDER BY value DESC NULLS LAST) AS INTEGER) AS rank,
+                 FALSE AS is_aggregate
+          FROM f
+          WHERE $individual_partner
+          QUALIFY rank() OVER (PARTITION BY year, reporter, product, flow
+                               ORDER BY value DESC NULLS LAST) <= $top_partners
+        ),
+        aggregates AS (
+          SELECT f.*, CAST(NULL AS INTEGER) AS rank, TRUE AS is_aggregate
+          FROM f
+          WHERE partner IN ('$world_code', '$extra_eu_code')
+        ),
+        partner_labels AS (
+          SELECT code, first(label) AS label FROM $ref_eurostat_partners GROUP BY code
+        ),
+        reporter_labels AS (
+          SELECT code, first(label) AS label FROM $ref_eurostat_reporters GROUP BY code
+        ),
+        product_labels AS (
+          SELECT code, arg_max(label, classification) AS label
+          FROM $ref_eurostat_products
+          GROUP BY code
+        )
+        SELECT
+          classification_of(r.product, r.year) AS classification,
+          vintage_in_force(r.year) AS hs_vintage,
+          r.year, r.reporter, rl.label AS reporter_label,
+          r.product, pl.label AS product_label, length(r.product) AS product_level,
+          r.flow, r.partner, ptl.label AS partner_label, r.is_aggregate,
+          r.value, r.value / NULLIF(w.world_value, 0) AS share, r.rank
+        FROM (SELECT * FROM ranked UNION ALL BY NAME SELECT * FROM aggregates) AS r
+        LEFT JOIN world AS w
+          ON w.year = r.year AND w.reporter = r.reporter AND w.product = r.product
+         AND w.flow = r.flow
+        LEFT JOIN partner_labels AS ptl ON ptl.code = r.partner
+        LEFT JOIN reporter_labels AS rl ON rl.code = r.reporter
+        LEFT JOIN product_labels AS pl ON pl.code = r.product
+
+    # Libellés des produits, par source et classification (codelists non millésimées :
+    # classification = celle en vigueur l'année du téléchargement)
+    products:
+      SQL: |
+        SELECT 'eurostat' AS source, classification, code, label, level, parent_code
+        FROM $ref_eurostat_products
+        UNION ALL BY NAME
+        SELECT 'comtrade' AS source, classification, code, label, level, parent_code
+        FROM $ref_comtrade_products
+
+    # Pays et agrégats, une ligne par (source, code), rôles déclarant / partenaire
+    countries:
+      SQL: |
+        WITH c AS (
+          SELECT *, TRUE AS is_reporter, FALSE AS is_partner FROM $ref_eurostat_reporters
+          UNION ALL BY NAME
+          SELECT *, FALSE AS is_reporter, TRUE AS is_partner FROM $ref_eurostat_partners
+          UNION ALL BY NAME
+          SELECT *, TRUE AS is_reporter, FALSE AS is_partner FROM $ref_comtrade_reporters
+        )
+        SELECT source, code, first(label) AS label, max(iso3) AS iso3, max(m49) AS m49,
+               bool_or(is_aggregate) AS is_aggregate,
+               bool_or(is_reporter) AS is_reporter, bool_or(is_partner) AS is_partner
+        FROM c
+        GROUP BY source, code
+
+    # Tables de passage entre millésimes SH (cache UNSD) et millésimes en vigueur
+    hs_concordance:
+      SQL: SELECT * FROM $hs_concordance
+    hs_vintages:
+      SQL: SELECT * FROM $hs_vintages

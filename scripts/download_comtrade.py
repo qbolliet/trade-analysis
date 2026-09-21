@@ -21,7 +21,7 @@ Fichiers de configuration lus : ``COMTRADE_CONFIG_PATH`` (défaut
 import os
 import itertools
 import logging
-from datetime import timedelta
+from datetime import datetime, timedelta
 from typing import Any, Dict, List, Mapping, Optional, Sequence, TypeVar, Union
 
 import yaml
@@ -36,6 +36,7 @@ from statflows.core.download import download_updates, _schema_name
 
 # Fabrique de connecteur DuckLake (seul point de lecture des identifiants)
 from kedro_pipeline.io.download_report import check_download_report
+from kedro_pipeline.steps.reference import publish_reference
 from kedro_pipeline.io.ducklake import (
     DuckLakeLocation,
     build_connector,
@@ -104,39 +105,53 @@ def load_runtime_config(config_path: Optional[os.PathLike] = None) -> dict:
         return yaml.safe_load(file)["runtime"]
 
 
+# Colonne portant le code dans les métadonnées de référence Comtrade, par catégorie
+_REFERENCE_CODE_COLUMNS = {"reporter": "reporterCode", "partner": "PartnerCode"}
+
+
 # Fonction de récupération de la liste des codes d'une catégorie de référence
 def fetch_dimension_codelists(
     dimension: str,
     client: Optional[ComtradeClient] = None,
 ) -> pd.DataFrame:
-    """Fetch the codelist of a UN Comtrade reference dimension.
+    """Fetch the codelist of a UN Comtrade reference dimension, with its labels.
 
     Generic counterpart of the Comext ``fetch_dimension_codelists`` helper:
     UN Comtrade exposes no Data Structure Definition, so valid codes are read
     directly from the reference metadata of ``dimension`` rather than deduced
-    from a dataflow structure.
+    from a dataflow structure. The metadata rows of the valid codes are kept
+    (labels, ISO codes, ``isGroup``, ``parent``…) so the reference tables can
+    be published without a second network call (PS-28.4).
 
     Args:
         dimension: Reference dimension (e.g. ``"reporter"`` or ``"cmd:HS"``).
         client: ComtradeClient instance; a new one is created if ``None``.
 
     Returns:
-        DataFrame with a single ``code`` column.
+        DataFrame with a leading ``code`` column (valid codes, as text, in the
+        order of the metadata) followed by the metadata columns.
 
     Examples:
         >>> reporter_codes = fetch_dimension_codelists("reporter")  # doctest: +SKIP
+        >>> reporter_codes[["code", "reporterDesc"]].head(1)  # doctest: +SKIP
     """
+    from statflows.sources.comtrade.parsing import extract_codes
+
     # Initialisation du client s'il n'est pas spécifié
     if client is None:
         client = ComtradeClient()
 
-    # Extraction des codes valides de la catégorie
-    codes = [str(code) for code in client._extract_codes(dimension)]
+    # Métadonnées de la catégorie (un seul appel) puis codes valides
+    metadata = client.get_metadata(category=dimension)
+    codes = {str(code) for code in extract_codes(metadata, dimension)}
+    code_column = _REFERENCE_CODE_COLUMNS.get(dimension, "id")
+    codelist = metadata[metadata[code_column].astype(str).isin(codes)].copy()
+    codelist.insert(0, "code", codelist[code_column].astype(str))
 
     # Logging
-    logger.info("%d codes for dimension '%s'", len(codes), dimension)
+    logger.info("%d codes for dimension '%s'", len(codelist), dimension)
 
-    return pd.DataFrame({"code": codes})
+    return codelist.reset_index(drop=True)
 
 
 # Fonction de plafonnement du nombre de requêtes
@@ -414,8 +429,13 @@ def main() -> None:
     # Initialisation du client comtrade
     client = ComtradeClient(subscription_key=os.environ.get(_SUBSCRIPTION_KEY_ENV))
     try:
+        # Codelists des dimensions scindées (libellés compris, réutilisés par les référentiels)
+        dims_codes = {
+            "reporters": fetch_dimension_codelists("reporter", client=client),
+            "products": fetch_dimension_codelists("cmd:HS", client=client),
+        }
         # Construction de la liste ordonnée des requêtes (année-majeure)
-        queries = plan_queries(config, runtime_config, client)
+        queries = plan_queries(config, runtime_config, client, dims_codes=dims_codes)
         # Plafond optionnel (null = aucun, C-01)
         queries = cap_queries(queries, config["parameters"][DATAFLOW].get("max_queries"))
 
@@ -431,6 +451,20 @@ def main() -> None:
             pg=pg_credentials_from_env(),
             s3=s3_credentials_from_env(),
         )
+
+        # Référentiels (libellés des déclarants et des produits, PS-28.4) depuis les
+        # codelists déjà récupérées ; non bloquant pour le téléchargement
+        reference = publish_reference(
+            {"reporter": dims_codes["reporters"], "cmd:HS": dims_codes["products"]},
+            connector,
+            source="comtrade",
+            params={
+                **config["DOWNLOADS"]["REFERENCE"],
+                "NOMENCLATURES": runtime_config["NOMENCLATURES"]["HS"],
+                "YEAR": datetime.now().year,
+            },
+        )
+        logger.info(f"Référentiels Comtrade : {reference['rows']} ; échecs : {reference['failures']}")
 
         # Téléchargement des données (mise à jour incrémentale via fetch_updates)
         report = download_updates(

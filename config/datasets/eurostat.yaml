@@ -133,6 +133,20 @@ split_filters:
 DOWNLOADS :
   DBNAME: "eurostat"
   CATALOG_ALIAS: "eurostat"
+  # Tables de référence (libellés, PS-28.4, C-22) publiées dans ce catalogue à chaque
+  # téléchargement, depuis les codelists déjà récupérées : un schéma par table
+  # (<SCHEMA_PREFIX>_<table>, écriture par statflows.write_dataframe), recopiées par serving
+  REFERENCE:
+    SCHEMA_PREFIX: "reference"
+    # Dimension SDMX -> table de référence (la codelist « partner » est récupérée en plus
+    # des dimensions de découpage, un appel SDMX supplémentaire)
+    DIMENSIONS:
+      reporter: "reporters"
+      partner: "partners"
+      product: "products"
+    # Codes partenaires agrégés (en plus de la règle « tout code hors ISO2 »), alignés sur
+    # VulnerabilityConfig.aggregate_codes
+    AGGREGATE_CODES: ["WORLD", "QW"]
   # Commerce international Comext
   DS-045409:
     BUCKET: "qbollietdgddi" # null

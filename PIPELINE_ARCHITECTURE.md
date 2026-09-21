@@ -32,6 +32,7 @@
 | 2026-09-18 (rév. 2) | **Restitution sans PostgreSQL** : Superset lit **directement DuckLake** par `duckdb-engine` (déjà installé dans le chart Superset d'Onyxia, accès S3 déjà assuré) ; les tables de service sont matérialisées dans un **catalogue DuckLake `serving`** (transaction unique, partitionnement par année) ; suppression de la base `trade_serving`, du secret `trade-serving-credentials` et du basculement `psycopg2` | C-23, §2, PD-05, PD-16, PD-18, PD-21, PS-05, PS-07, PS-24, PS-29, PS-30, §6 à §12 |
 | 2026-09-18 (rév. 2) | **Supervision exclusivement dans MLflow** : plus de tableau de bord Superset de supervision ni de table `pipeline_metrics` ; chaque run porte un **rapport de contrôle** (description Markdown dans *Overview*, contrôles déclaratifs, tag `health`), des métriques système et un **rapport HTML** dans *Artifacts* (retour des figures BACI par étape) | PD-13, PS-19, PS-31, §5.1, §5.8, PR-19, PR-20, PQ-19 |
 | 2026-09-18 (phase 0) | **Jalon démonstration, scripts** : fabrique de connecteur `kedro_pipeline/io/ducklake.py` (sans Kedro) ; `config/runtime.yaml` ; `DATAFLOW` et `max_queries` en configuration ; ordre Comtrade année-majeur (`reporters=None` si non filtrés), Eurostat produit-majeur avec `start_period` ; porte de complétude BACI, lecture SQL bornée, colonne `is_provisional` ; profil `config/profiles/demo/` (copies complètes, sorties préfixées `demo_` / `trade/demo/`) ; suppression de `process_baci.py` et `test_baci.py`. PQ-15 résolue, PQ-17 à vérifier au premier téléchargement. Constats : `get_valid_periods` exclut la borne de fin qu'on lui passe (appel sans fin, borne appliquée par le script) ; une table `baci_hs20xx` déjà créée sans `is_provisional` refusera l'upsert tant que `statflows.write_dataframe` ne transmet pas `allow_new_columns` (C-13) → supprimer les schémas BACI de test avant le premier run de production ; le `Dockerfile` (C-14) doit copier `kedro_pipeline/` et `config/` | C-01 à C-05, C-17, C-18, C-26, PD-06, PD-07, PD-08, PS-04, PS-06, PS-12, PS-14.1, PQ-15, PQ-17 |
+| 2026-09-21 (phase 0, K-03b) | **Couche de service et référentiels** : `kedro_pipeline/config.py` (millésimes, macros SQL), `kedro_pipeline/steps/reference.py` (référentiels, un schéma par table `reference_<table>`), `kedro_pipeline/io/serving.py` (`ServingCatalog`, transaction unique vérifiée sur DuckDB 1.5.3), `kedro_pipeline/steps/serving.py` + `config/serving.yaml` (8 tables), `serving-script` ; `product` des tables Comext/partenaires stocké en `BIGINT` → macro `product_code` | C-22, C-23, PS-27, PS-28.4, PS-29.1, PS-29.2 |
 | 2026-09-21 (phase 0) | **Données fictives de démonstration** (Comtrade indisponible, Comext trop lent) : monde simulé isolé dans les catalogues `demo_*` (garde d'écriture testée), entrées de registre marquées `synthetic`, code non migré dans Kedro ; **retrait en deux prompts** : K-17b 🔌 (données sur le cluster) puis K-18 (code et fichiers) | PD-24, PS-04.4, PR-22, PQ-20, §12, K-17b, K-18 |
 
 ## Sommaire
@@ -123,8 +124,8 @@ gravité pour la mise en production (🔴 bloquant, 🟠 à traiter avant le ré
 | C-19 | 🟡 | Le suivi MLflow crée une expérience par script, avec des noms de métriques séparés par des points (`gravity.r2`) : l'interface MLflow ne regroupe pas automatiquement les graphiques par étape. | `macroforecast/tracking/` |
 | C-20 | 🔴 | **Accès au cluster impossible depuis le poste local** : le jeton de rafraîchissement OIDC de `sspcloud_access_script.txt` est lié à une preuve DPoP (`oauth2: "invalid_grant" "DPoP proof is missing"`), que le fournisseur `oidc` de `kubectl` ne sait pas produire. Voir PQ-09. | `sspcloud_access_script.txt` |
 | C-21 | 🟡 | Aucune documentation mkdocs, aucun workflow GitHub Actions, aucun `.dockerignore` dans le dépôt. `sspcloud_access_script.txt` et `Trade deployment.md` sont bien ignorés par git, mais **seraient copiés dans une image** construite avec `COPY . .`. | racine |
-| C-22 | 🟠 | **Aucune table de référence** (libellés de produits par millésime, libellés de pays, tables de passage HS exposées) n'est produite : un tableau de bord ne peut afficher que des codes. Les codelists sont pourtant téléchargées à chaque exécution (`fetch_dimension_codelists`) et les concordances UNSD sont en cache Parquet. | `scripts/download_*.py`, `scripts/process_baci_hs.py:_ensure_concordances` |
-| C-23 | 🔴 | **Aucune couche de restitution** : les résultats ne sont lisibles que par une session DuckDB attachée au catalogue DuckLake (extensions, identifiants S3 et PostgreSQL), sous forme de tables normalisées sans libellés. *(Révision 2 : l'accès technique est réglé — le chart Superset d'Onyxia embarque `duckdb-engine` et l'accès S3 est assuré, PQ-13 ; reste à produire des tables prêtes à l'affichage, PD-21.)* | — |
+| C-22 | 🟠 | **Aucune table de référence** (libellés de produits par millésime, libellés de pays, tables de passage HS exposées) n'est produite : un tableau de bord ne peut afficher que des codes. Les codelists sont pourtant téléchargées à chaque exécution (`fetch_dimension_codelists`) et les concordances UNSD sont en cache Parquet. *(Traité en phase 0, K-03b, 2026-09-21 : `publish_reference` / `publish_hs_reference` appelées par `download_*.py` et `process_baci_hs.py`, PS-28.4.)* | `scripts/download_*.py`, `scripts/process_baci_hs.py:_ensure_concordances` |
+| C-23 | 🔴 | **Aucune couche de restitution** : les résultats ne sont lisibles que par une session DuckDB attachée au catalogue DuckLake (extensions, identifiants S3 et PostgreSQL), sous forme de tables normalisées sans libellés. *(Révision 2 : l'accès technique est réglé — le chart Superset d'Onyxia embarque `duckdb-engine` et l'accès S3 est assuré, PQ-13 ; reste à produire des tables prêtes à l'affichage, PD-21.)* *(Traité en phase 0, K-03b, 2026-09-21 : catalogue `serving`, `serving-script`, PS-29 ; première publication à faire sur Onyxia.)* | — |
 | C-24 | 🔴 | La fraîcheur BACI envisagée initialement (unité = millésime × **année**) est **méthodologiquement fausse** : les paramètres estimés sur l'ensemble des années du millésime (C-06) changent dès qu'une année est ajoutée ou révisée, donc toutes les années du millésime doivent être réécrites. C'est aussi la pratique du CEPII, qui republie chaque année la totalité de chaque millésime. | ce document, PS-14 v0 |
 | C-25 | 🟠 | Les tables de résultats partenaires (`indicators`, `synthesis`, `synthesis_diagnostics`) n'ont **pas de dimension de nomenclature** : un code produit y désigne des définitions différentes selon l'année (SH6 révisé tous les ~5 ans, NC8 chaque année), ce qui rend toute lecture temporelle d'un produit ambiguë. | `config/vulnerabilities.yaml`, `config/synthesis.yaml` |
 | C-26 | ✅ | L'ordre de construction des requêtes Comtrade est **produit-majeur** (`for lot in produits: for période …`, `build_split_queries`), et la période n'est pas une dimension de découpage (`period_start` fixé dans `fixed_dims`) : une requête rapporte toutes les années d'un lot. BACI ayant besoin d'**années complètes** (PD-06), c'est l'ordre inverse qui est utile. *(Traité en phase 0, 2026-09-18 : liste année-majeure (`build_split_queries` + `periods_order`), période = dimension de découpage (`periods=<année>`), `reporters=None` quand le filtre est vide ; bug de la branche sans découpage produit corrigé.)* | `scripts/download_comtrade.py:163-190` |
@@ -2620,6 +2621,16 @@ maintenance:
     RETENTION: 4
 ```
 
+> **Note K-03b (2026-09-21) pour K-14.** Aucune liste de catalogues maintenus n'existe
+> encore dans la configuration de phase 0 (pas de `parameters_maintenance.yml`) : K-14
+> doit créer `maintenance.CATALOGS` avec l'entrée `serving` ci-dessus (base `serving`,
+> alias `serving`, `trade/datasets/serving/`), qui porte **les deux schémas**
+> `dashboard` et `demo_dashboard`. Chaque publication `full` recrée ses tables : les
+> fichiers remplacés deviennent orphelins d'un snapshot à l'autre, d'où l'intérêt
+> d'`expire_snapshots` + `cleanup_old_files` quotidiens sur ce catalogue ;
+> `merge_adjacent_files` y a peu d'effet attendu en mode `full` (une écriture triée par
+> partition et par publication), davantage en `by_year`.
+
 Ordre par table : `flush_inlined` → `merge_adjacent_files` → `rewrite_data_files`
 (conditionnel) ; puis par catalogue : `expire_snapshots` → `cleanup_old_files` ; puis
 `VACUUM ANALYZE` et la sauvegarde si c'est le jour hebdomadaire ; enfin la clôture des
@@ -2675,7 +2686,16 @@ réalisés **dans le dépôt `statflows`** (K-04), puis la dépendance est mise 
 6. **Codelists persistées** : `SDMXDownloader` (ou un utilitaire de `statflows.core`)
    expose les codelists résolues (`code`, `label`, dimension, dataflow) sous forme de
    DataFrame, afin que le nœud de téléchargement les publie dans `reference` (PS-28.4)
-   sans second appel réseau.
+   sans second appel réseau. *Constat K-03b :* côté Eurostat, `parse_codelist_response`
+   renvoie déjà `(code, name)` (libellé anglais) ; côté Comtrade, `ComtradeClient.
+   _extract_codes` ne rendait que les codes alors que `get_metadata(category)` porte les
+   libellés — `scripts/download_comtrade.py::fetch_dimension_codelists` conserve
+   désormais ces métadonnées (même appel). **Manque côté Comtrade** : (a) `cmd:HS` n'est
+   pas millésimée (codes et libellés de l'édition la plus récente) — exposer les
+   catégories par édition (`cmd:H0` … `cmd:H6`) pour des libellés par millésime ;
+   (b) la catégorie `partner` n'est pas récupérée par le téléchargement (seuls
+   `reporter` et `cmd:HS` le sont) ; (c) `extract_codes` écarte les entrées expirées,
+   donc les pays disparus n'ont pas de libellé pour les années anciennes.
 7. Tests : un faux client produisant 2 000 requêtes → nombre de PUT du registre ≤ 5,
    nombre de snapshots DuckLake ≤ 5, contenu final identique au mode non tamponné.
 
@@ -2737,6 +2757,32 @@ contrôle de la table de passage utilisée (une table UNSD corrigée déclenche 
 Ces tables sont recopiées telles quelles dans le catalogue `serving` (PS-29) pour les
 libellés du tableau de bord.
 
+**Mise en œuvre (K-03b, 2026-09-21).** `statflows.write_dataframe` écrit toujours une
+table `<schéma>.fact_table` : chaque référentiel occupe donc **son propre schéma**,
+`<SCHEMA_PREFIX>_<table>` (`reference_products`, `reference_reporters`,
+`reference_partners` dans `eurostat` ; `reference_reporters`, `reference_products`,
+`reference_hs_concordance`, `reference_hs_vintages` dans `comtrade`), le préfixe étant
+`DOWNLOADS.REFERENCE.SCHEMA_PREFIX` des configurations de téléchargement (les tables SH
+réutilisent celui de Comtrade, même catalogue). Écriture par upsert idempotent
+(`kedro_pipeline/steps/reference.py` : `publish_reference`, `publish_hs_reference`),
+**non bloquante** pour l'étape appelante. Les noms « propres » n'existent que dans
+`serving`. Précisions :
+- `products` : les codelists ne sont **pas millésimées** ; un code est rattaché à la
+  classification en vigueur l'année du téléchargement (`classification_of` :
+  `HS<millésime>` pour 2/4/6 chiffres, `CN<année>` pour 8) ; `level` = nombre de
+  chiffres (NULL pour `TOTAL`…), `parent_code` fourni par Comtrade (`parent`) ou déduit
+  (8 → 6 → 4 → 2 chiffres) ;
+- `reporters`/`partners` : Comtrade fournit `m49` (`reporterCode`), `iso3`
+  (`reporterCodeIsoAlpha3`) et `isGroup` ; Comext ne fournit que le libellé (`iso3`,
+  `m49` NULL) et `is_aggregate` suit la règle de `VulnerabilityConfig` (code listé dans
+  `AGGREGATE_CODES` ou non ISO2 : `EXT_EU`, `EU27_2020`…) ;
+- `hs_concordance` : `relationship` calculée par cardinalités dans chaque paire
+  (`1:1`, `n:1`, `1:n`, `n:n` ; les tables UNSD de conversion sont des fonctions, donc
+  `1:1` ou `n:1`), `checksum` = SHA-256 du contenu de la paire (même règle que le
+  registre du cache) ;
+- Comext : la codelist `partner` est récupérée **en plus** des dimensions de découpage
+  (un appel SDMX supplémentaire, `parse_codelist_response` → `code`, `name`).
+
 ### PS-29 — Couche de service : catalogue DuckLake `serving`
 
 #### PS-29.1 Contrat
@@ -2766,76 +2812,134 @@ libellés du tableau de bord.
   ```
   Superset lit l'ancien snapshot jusqu'au `COMMIT`. En cas d'échec d'une table :
   `ROLLBACK` complet (le tableau de bord reste sur l'état précédent, cohérent) et
-  échec du nœud après publication du rapport de run. **À vérifier dans K-03b** sur
-  catalogue fichier : `SET PARTITIONED BY` dans la même transaction que la création,
-  `CREATE OR REPLACE` dans une transaction multi-tables, élagage effectif par partition
-  (`EXPLAIN ANALYZE` d'une requête filtrée sur `year`). Repli si la transaction unique
-  pose problème : une transaction par table (cohérence inter-tables relâchée,
-  documentée).
+  échec du nœud après publication du rapport de run.
+- **Vérifications (K-03b, 2026-09-21, DuckDB 1.5.3, catalogue DuckLake fichier local)** —
+  toutes concluantes, **aucun repli** (la transaction unique est conservée) :
+  1. dans **une** transaction, `CREATE OR REPLACE TABLE … AS SELECT … LIMIT 0`,
+     `ALTER TABLE … SET PARTITIONED BY (year)` puis `INSERT … BY NAME … ORDER BY …` sur
+     deux tables, puis `COMMIT` : accepté. Un lecteur concurrent (connexion distincte de
+     la même instance, `conn.cursor()`) voit l'**ancien état des deux tables** jusqu'au
+     `COMMIT`, puis le nouveau ; un `ROLLBACK` laisse l'ancien état intact ;
+  2. `DELETE … WHERE year IN (…)` + `INSERT` filtré sur la table partitionnée (mode
+     `by_year`) : seules les années demandées changent ;
+  3. élagage : `EXPLAIN ANALYZE SELECT … WHERE year = 2020` affiche `Total Files Read: 1`
+     (fichiers rangés sous `…/<table>/year=<année>/`) ; le nombre de fichiers d'une table
+     se lit par `ducklake_list_files('<alias>', '<table>', schema => '<schéma>')` ;
+  4. `ATTACH 'ducklake:…' AS serving (READ_ONLY)` depuis une nouvelle connexion, puis la
+     même lecture par SQLAlchemy + `duckdb-engine 0.17` (écouteur `connect` qui exécute
+     `LOAD ducklake; ATTACH … (READ_ONLY); USE serving`, mécanisme (b) de PS-30.1) :
+     lecture filtrée correcte, `INSERT`/`DELETE` refusés (« attached in read-only
+     mode »). `duckdb-engine` présente le schéma sous le nom **`serving.dashboard`**
+     (liste `get_schema_names()`), et `dashboard.<table>` après `USE serving`.
+  Limites du test local : DuckDB refuse un second `ATTACH` du même fichier `.ducklake`
+  dans un processus, d'où le lecteur par `cursor()` ; la concurrence inter-processus
+  (Superset) repose sur le catalogue PostgreSQL, non testable ici. DuckLake refuse aussi
+  de rattacher un catalogue avec un `DATA_PATH` différent de celui enregistré (« does not
+  match existing data path ») : le profil `demo` partage donc le `DATA_PATH` du catalogue
+  `serving` et n'est isolé que par son schéma `demo_dashboard`.
+- Implémentation : `ServingCatalog(location, pg, s3, sources, connector_factory=build_connector)`
+  (`connect()` : `serving` en écriture, base créée si absente, sources attachées
+  `READ_ONLY` sans changer le schéma courant ; `publish(tables, mode, years=…, prelude=…,
+  before_commit=…)` → `dict[str, TableStats]` : lignes, secondes, fichiers, mode
+  effectif) ; échec → `ROLLBACK` et `ServingPublicationError(table=…)`. `build_connector`
+  nomme le secret PostgreSQL `ducklake_pg_<alias>` (sinon plusieurs `ATTACH` sur une même
+  session s'écraseraient le secret) et accepte `read_only=`.
+- Sources facultatives (`serving.OPTIONAL_SOURCES`) : un référentiel ou une table de
+  résultats absente est remplacée par une table vide typée (libellés / scores `NULL`,
+  métrique `serving/missing_sources`) ; une source obligatoire absente (`comext`,
+  `indicators`) fait échouer la publication, qui est annulée.
 - Années périmées (mode `by_year`) : années des lignes de l'amont dont
   `last_computed` est postérieur à la dernière publication (registre de fraîcheur de
   `serving`, PS-10) ; retour automatique en `full` si l'ensemble des colonnes produites
   par la requête diffère de celui de la table (nouvelle colonne de restitution).
+- Phase 0 (K-03b) : les années du mode `by_year` viennent de `serving.YEARS`, sinon de
+  `runtime.FORCE_SCOPE.PERIODS`, sinon repli en `full` ; `MODE: full` dans les deux
+  profils. Les tables non partitionnées sont toujours recréées.
 - Métriques (vers MLflow) : `serving/<table>/rows`, `serving/<table>/seconds`,
-  `serving/<table>/files`, `serving/mode_full` ; contrôle par défaut « `rows > 0` pour
+  `serving/<table>/files`, `serving/mode_full` (1 si toutes les tables ont été
+  recréées), `serving/missing_sources`, `serving/n_failures` ; contrôle par défaut « `rows > 0` pour
   `cell_scores` et `countries` » (PS-31.2).
 - Idempotence : republier des tables déjà à jour est sans effet visible ; la fraîcheur
   (PS-10) évite le travail inutile en régime nominal.
 
-#### PS-29.2 Tables de service (`config/base/parameters_serving.yml`, extrait)
+#### PS-29.2 Tables de service (`config/serving.yaml`, racine `serving`)
+
+Phase 0 : `config/serving.yaml` (lu par `SERVING_CONFIG_PATH`) et sa copie complète
+`config/profiles/demo/serving.yaml` (`SCHEMA: demo_dashboard`, expérience
+`demo-serving`) ; migrera vers `config/base/parameters_serving.yml` (K-10). Paramètres :
 
 ```yaml
 serving:
-  SCHEMA: dashboard                # schéma du catalogue DuckLake `serving` (demo : demo_dashboard)
-  MODE: full                       # full | by_year (tables marquées PARTITIONED)
-  METHODS: ["borda", "auto_sum", "critic_sum"]   # scores synthétiques exposés en colonnes
-  LEVELS: ["by_reporter", "by_product"]          # niveaux exposés
-  PRIMARY_METHOD: "borda"          # « indicateur synthétique le plus pertinent » (tri par défaut)
-  TOP_PARTNERS: 12                 # partenaires conservés par cellule dans flows
-  TABLES:
-    cell_scores:                   # une ligne par cellule (classification, reporter, product, flow, year)
-      PARTITIONED: true            # partition DuckLake par year (PS-29.1)
-      SORT_BY: ["year", "reporter", "product"]   # ordre d'insertion : élagage min/max des fichiers
-      SQL: |
-        SELECT p.classification, p.hs_vintage, p.in_force, p.reporter, rr.label AS reporter_label,
-               p.product, pr.label AS product_label, pr.level AS product_level,
-               p.flow, CAST(substr(p."TIME_PERIOD",1,4) AS INTEGER) AS year,
-               p."HHI", p."CDI2", p."CDI3", p."HHI_ALERT", p."CDI2_ALERT", p."CDI3_ALERT",
-               n."EXPORT_HHI", n."CENTRALITY_RISK", n."CLUSTERING_W", n."SPOF",
-               s_b.score AS borda_score_by_reporter, s_b.rank AS borda_rank_by_reporter,
-               s_p.score AS borda_score_by_product,  s_p.rank AS borda_rank_by_product,
-               … (une paire score/rank par METHODS × LEVELS)
-        FROM vulnerabilities.indicators p
-        LEFT JOIN reference_eurostat.products pr ON …
-        LEFT JOIN reference_eurostat.reporters rr ON …
-        LEFT JOIN vulnerabilities.network_indicators n ON …   # PD-20.7
-        LEFT JOIN vulnerabilities.synthesis s_b ON … AND s_b.method = 'borda' AND s_b.level = 'by_reporter'
-        …
-        WHERE p."indicators" = 'VALUE_IN_EUROS' AND p."freq" = 'A'
-    coherence_metrics:             # cohérence entre métriques : (classification, reporter|NULL, product|NULL, flow, year, metric_a, metric_b, statistic, value)
-      SQL: SELECT … FROM vulnerabilities.synthesis_diagnostics WHERE family = 'metrics'
-    coherence_methods:             # cohérence entre méthodes : (…, method_a, method_b, statistic, value)
-      SQL: SELECT … FROM vulnerabilities.synthesis_diagnostics WHERE family = 'methods'
-    flows:                         # parts des partenaires : (reporter, product, flow, year, partner, partner_label, value, share, rank) — TOP_PARTNERS + WORLD + EXT_EU
-      PARTITIONED: true
-      SORT_BY: ["year", "product", "reporter"]
-      SQL: SELECT … FROM eurostat.DS_045409 QUALIFY rank() OVER (…) <= ${serving.TOP_PARTNERS} …
-    products:   {SQL: SELECT * FROM reference_eurostat.products}
-    countries:  {SQL: SELECT * FROM reference_eurostat.reporters UNION … partners}
-    hs_concordance: {SQL: SELECT * FROM reference_comtrade.hs_concordance}
-    hs_vintages:    {SQL: SELECT * FROM reference_comtrade.hs_vintages}
+  DBNAME: serving              # base de métadonnées PostgreSQL (créée si absente)
+  CATALOG_ALIAS: serving
+  BUCKET: qbollietdgddi
+  DATA_PATH: trade/datasets/serving/   # identique en demo (un catalogue = un DATA_PATH)
+  SCHEMA: dashboard            # demo : demo_dashboard
+  MODE: full                   # full | by_year
+  YEARS: null                  # by_year : années ; null → runtime.FORCE_SCOPE.PERIODS
+  METHODS: [consensus_borda, auto_sum, critic_sum]   # valeurs RÉELLES de synthesis.method
+  LEVELS: [by_reporter, by_product]
+  PRIMARY_METHOD: consensus_borda
+  TOP_PARTNERS: 12
+  CELL_FILTER: indicators = 'VALUE_IN_EUROS' AND freq = 'A'   # sur p (indicators)
+  COMEXT_FILTER: idem sur c (DS_045409)
+  NORM_METRICS: [HHI, CDI2, CDI3, EXPORT_HHI, CENTRALITY_RISK, CLUSTERING_W, SPOF]
+  NORM_PARTITION: [flow, year]
+  PARTNERS: {WORLD: WORLD, EXTRA_EU: EXT_EU, AGGREGATE_CODES: [WORLD, QW], EXCLUDE_UNDERSCORE: true}
+  OPTIONAL_SOURCES: {...}      # référentiels, network, synthesis, diagnostics
+  MLFLOW: {TRACKING_URI: null, EXPERIMENT: serving}
+  TABLES: {<table>: {PARTITIONED, SORT_BY, SQL}}     # gabarits string.Template
 ```
 
-> Les noms de colonnes de `synthesis_diagnostics` (`family`, `statistic`, `method_a`…)
-> sont ceux d'`AGREGATION_ARCHITECTURE.md` et **à vérifier** contre le schéma réel dans
-> K-03b. Les libellés viennent de `reference` (C-22) : sans eux, Superset n'affiche
-> que des codes.
+Les gabarits SQL référencent les tables sources par variables (`$indicators`, `$network`,
+`$synthesis`, `$diagnostics`, `$comext`, `$ref_eurostat_products|reporters|partners`,
+`$ref_comtrade_products|reporters`, `$hs_concordance`, `$hs_vintages`), résolues par
+`kedro_pipeline.steps.serving.source_tables` depuis les fichiers de configuration des
+étapes amont (schémas `demo_*` du profil compris) ; les fragments `$synthesis_pivot`,
+`$norm_columns`, `$individual_partner`, `$top_partners`… sont générés depuis les
+paramètres ; les macros de session `vintage_in_force(y)`, `classification_of(p, y)` et
+`product_code(p)` sont générées depuis `runtime.NOMENCLATURES.HS`
+(`kedro_pipeline.config.nomenclature_macros_sql`).
+
+**Schémas réels des sources** (vérifiés contre le code, K-03b) :
+- `synthesis.fact_table` (S-2.4) : **long par méthode**, large par niveau — clé
+  `(freq, flow, indicators, TIME_PERIOD, reporter, product, method)` ; colonnes
+  `score_<niveau>`, `rank_<niveau>`, `n_<niveau>`, `alert_<niveau>`,
+  `rank_low_<niveau>`, `rank_high_<niveau>` pour `by_product`, `by_reporter`, `global`.
+  Les règles de consensus sont des pseudo-méthodes **`consensus_borda`**,
+  `consensus_copeland` (et non `borda`). `product` y est du texte issu d'un `BIGINT`.
+- `synthesis_diagnostics.fact_table` (S-2.6) : clé `(freq, flow, indicators, TIME_PERIOD,
+  level, reporter, product, family, statistic, item_a, item_b)`, colonnes `value`, `n` ;
+  `reporter`/`product` valent `'ALL'` hors groupe, `item_a`/`item_b` valent `''` quand
+  sans objet ; `family` ∈ `metrics`, `methods`, `fit` (cette dernière non exposée).
+- `indicators` : `product` stocké en **`BIGINT`** (zéro initial perdu pour les chapitres
+  01-09) → macro `product_code` (code de longueur impaire préfixé d'un zéro : exact pour
+  des codes SH/NC de 2, 4, 6 ou 8 chiffres).
+
+**Tables publiées** (référence du tableau de bord, K-03c) :
+
+| Table | Grain | Colonnes |
+|---|---|---|
+| `cell_scores` (partitionnée `year`, tri `year, reporter, product`) | (classification, reporter, product, flow, year) | `classification`, `hs_vintage`, `in_force`, `year`, `time_period`, `freq`, `flow`, `indicators`, `reporter`, `reporter_label`, `product`, `product_label`, `product_level`, `HHI`, `CDI2`, `CDI3`, `EXPORT_HHI`, `CENTRALITY_RISK`, `CLUSTERING_W`, `SPOF`, `<métrique>_ALERT` (×7), `<méthode>_score_<niveau>` et `<méthode>_rank_<niveau>` (METHODS × LEVELS), `primary_score_<niveau>`, `primary_rank_<niveau>`, `primary_n_<niveau>`, `<métrique>_norm` (min-max par `flow, year`, NORM_METRICS) |
+| `coherence_metrics` | contexte × niveau × groupe × statistique × paire | `classification`, `hs_vintage`, `year`, `time_period`, `freq`, `flow`, `indicators`, `level`, `reporter` (NULL si ALL), `product` (NULL si ALL), `statistic`, `metric_a`, `metric_b`, `value`, `n` |
+| `coherence_methods` | idem | mêmes colonnes avec `method_a`, `method_b` (pour `lomo_*` et `score_metric_tau`, `method_b` est une métrique) |
+| `flows` (partitionnée `year`, tri `year, product, reporter`) | (reporter, product, flow, year, partner) | `classification`, `hs_vintage`, `year`, `reporter`, `reporter_label`, `product`, `product_label`, `product_level`, `flow`, `partner`, `partner_label`, `is_aggregate`, `value`, `share` (/ WORLD), `rank` (1 = premier partenaire ; NULL pour WORLD et EXT_EU) — `TOP_PARTNERS` partenaires individuels + WORLD + EXT_EU |
+| `products` | (source, classification, code) | `source`, `classification`, `code`, `label`, `level`, `parent_code` |
+| `countries` | (source, code) | `source`, `code`, `label`, `iso3`, `m49`, `is_aggregate`, `is_reporter`, `is_partner` |
+| `hs_concordance` | clé de PS-28.4 | `source_classification`, `source_code`, `target_classification`, `target_code`, `relationship`, `checksum` |
+| `hs_vintages` | `classification` | `classification`, `entry_year`, `in_force_until` |
+
+`flow` vaut `'1'` (import) / `'2'` (export), en texte. Les libellés de produits sont
+joints **par code** (dernier libellé connu) : les codelists des fournisseurs ne sont pas
+millésimées (PS-28.4).
 
 #### PS-29.3 Phase 0 (avant PD-20)
 
 Tant que `indicators` n'a pas de colonnes `classification`/`hs_vintage`/`in_force`, la
-requête de `cell_scores` les **dérive** : `vintage_in_force(year)` (fonction SQL
-générée depuis `runtime.NOMENCLATURES`), `in_force = true`. La jointure réseau utilise
+requête de `cell_scores` les **dérive** : `hs_vintage = vintage_in_force(year)`,
+`classification = classification_of(product, year)` (`CN<année>` pour un code à 8
+chiffres), macros SQL générées depuis `runtime.NOMENCLATURES` et testées égales aux
+fonctions Python de PS-28.1 sur 1988-2030, `in_force = true`. La jointure réseau utilise
 ce millésime dérivé (ce qui corrige déjà C-11 côté tableau de bord). Le contrat de
 lecture du tableau de bord est donc **stable** de la phase 0 à la production.
 

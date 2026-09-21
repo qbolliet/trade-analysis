@@ -169,8 +169,13 @@ def build_connector(
     s3: Mapping[str, Any],
     *,
     create_db_if_missing: bool = True,
+    read_only: bool = False,
 ) -> Any:
     """Build (never connect) the DuckLake connector of a schema.
+
+    The PostgreSQL credential secret is named after the catalog alias
+    (``ducklake_pg_<alias>``), so several catalogs can be attached to the same
+    DuckDB session without overwriting each other's secret (PS-29.1).
 
     Args:
         location: Catalog identity and data path of the schema.
@@ -179,6 +184,8 @@ def build_connector(
         s3: S3 credentials, as returned by :func:`s3_credentials_from_env`.
         create_db_if_missing: Whether the catalog database is created when
             absent.
+        read_only: Whether the catalog is attached ``READ_ONLY`` (source
+            catalogs of the serving layer).
 
     Returns:
         An unconnected ``dt_ducklake_manager.DuckLakeConnector``.
@@ -207,6 +214,9 @@ def build_connector(
         user=pg["user"],
         password=pg["password"],
         create_db_if_missing=create_db_if_missing,
+        # Secret propre au catalogue : plusieurs ATTACH sur une même session
+        secret_name=f"ducklake_pg_{location.catalog_alias}",
+        read_only=read_only,
         admin_dbname=pg["admin_dbname"],
         admin_user=pg["admin_user"],
         admin_password=pg["admin_password"],

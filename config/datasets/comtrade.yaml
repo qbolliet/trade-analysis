@@ -88,6 +88,16 @@ split_filters:
 DOWNLOADS:
   DBNAME: "comtrade"
   CATALOG_ALIAS: "comtrade"
+  # Tables de référence (libellés, PS-28.4, C-22) publiées dans ce catalogue à chaque
+  # téléchargement, depuis les métadonnées de référence déjà récupérées : un schéma par
+  # table (<SCHEMA_PREFIX>_<table>), recopiées par serving. Catégorie Comtrade -> table
+  # (« cmd:HS » n'est pas millésimée : codes de l'édition SH la plus récente, PS-27 point 6)
+  REFERENCE:
+    SCHEMA_PREFIX: "reference"
+    DIMENSIONS:
+      reporter: "reporters"
+      "cmd:HS": "products"
+    AGGREGATE_CODES: []
   # Données annuelles, commodities, nomenclature HS
   C_A_HS:
     BUCKET: "qbollietdgddi"

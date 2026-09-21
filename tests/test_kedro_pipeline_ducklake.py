@@ -137,6 +137,8 @@ def test_build_connector_forwards_arguments(monkeypatch: pytest.MonkeyPatch) -> 
             "user": "trade",
             "password": "secret",
             "create_db_if_missing": True,
+            "secret_name": "ducklake_pg_comtrade",
+            "read_only": False,
             "admin_dbname": "defaultdb",
             "admin_user": "postgres",
             "admin_password": "secret",
@@ -148,3 +150,14 @@ def test_build_connector_forwards_arguments(monkeypatch: pytest.MonkeyPatch) -> 
             "s3_session_token": None,
         }
     ]
+
+    # Source de la couche de service : lecture seule, base jamais créée (PS-29.1)
+    build_connector(
+        _LOCATION,
+        pg_credentials_from_env(_PG_ENV),
+        s3_credentials_from_env(_S3_ENV),
+        create_db_if_missing=False,
+        read_only=True,
+    )
+    assert calls[-1]["read_only"] is True
+    assert calls[-1]["create_db_if_missing"] is False

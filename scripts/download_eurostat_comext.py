@@ -45,6 +45,7 @@ from macroforecast.tracking import get_tracker
 
 # Fabrique de connecteur DuckLake (seul point de lecture des identifiants)
 from kedro_pipeline.io.download_report import check_download_report
+from kedro_pipeline.steps.reference import publish_reference
 from kedro_pipeline.io.ducklake import (
     DuckLakeLocation,
     build_connector,
@@ -336,6 +337,18 @@ def main() -> None:
         structure = client.get_dataflow_structure(dataflow=DATAFLOW)
         # Extraction des codes associés au reporter et au produit (qui sont les dimensions selon lesquelles on souhaite scinder les requêtes)
         dims_codes = {split_dim: fetch_dimension_codelists(structure=structure, dimension=split_dim, client=client) for split_dim in config["split_filters"][DATAFLOW].keys()}
+        # Codelists publiées en référentiel (PS-28.4) : celles du découpage, plus les
+        # dimensions manquantes (partner : un appel SDMX de plus), non bloquant
+        reference_config = config["DOWNLOADS"]["REFERENCE"]
+        reference_codes = dict(dims_codes)
+        for dimension in reference_config["DIMENSIONS"]:
+            if dimension not in reference_codes:
+                try:
+                    reference_codes[dimension] = fetch_dimension_codelists(
+                        structure=structure, dimension=dimension, client=client
+                    )
+                except Exception as exc:
+                    logger.warning(f"Codelist '{dimension}' indisponible pour les référentiels : {exc}")
 
         # Construction des requêtes produit-majeures, toutes années depuis la
         # première année de l'analyse (PD-08)
@@ -363,6 +376,20 @@ def main() -> None:
             pg=pg_credentials_from_env(),
             s3=s3_credentials_from_env(),
         )
+
+        # Référentiels (libellés des pays, partenaires et produits, PS-28.4), avant le
+        # téléchargement ; non bloquant
+        reference = publish_reference(
+            reference_codes,
+            connector,
+            source="eurostat",
+            params={
+                **reference_config,
+                "NOMENCLATURES": runtime_config["NOMENCLATURES"]["HS"],
+                "YEAR": datetime.now().year,
+            },
+        )
+        logger.info(f"Référentiels Comext : {reference['rows']} ; échecs : {reference['failures']}")
 
         # Construction du suivi d'exécution : sans URI (ou sans MLflow installé,
         # ou serveur injoignable), get_tracker retourne un tracker inerte et

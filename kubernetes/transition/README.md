@@ -22,8 +22,10 @@ download-comtrade ──► baci ──► network ─────┘           
 * Les dépendances aval sont **tolérantes** : `(amont.Succeeded || amont.Failed)`. Les étapes
   ne lisent que des données commitées et décident seules, par leurs registres, de ce qui est
   à recalculer. Le workflow reste `Failed` si une tâche a échoué.
-* `serving*` : `serving-script` (K-03b) n'existe pas encore ; la tâche est ignorée tant que
-  `publish-serving` vaut `false`. Elle est sérialisée par le mutex `trade-serving`.
+* `serving*` : `serving-script` (K-03b) publie les tables du tableau de bord dans le catalogue
+  DuckLake `serving` (schéma `demo_dashboard` en profil `demo`), en une transaction ; Superset
+  lit ce catalogue directement. Sérialisée par le mutex `trade-serving` (écrivain unique) ;
+  désactivable par `publish-serving=false`.
 * Ressources : téléchargements 1 CPU / 2 Gi ; `baci` 4 CPU / 32 Gi ; autres 4 CPU / 16 Gi.
   Le namespace n'a pas de quota CPU/mémoire total (ARCH §8, PQ-16).
 * Reprises : 1 sur erreur d'infrastructure (`OnError`), 0 pour les téléchargements.
@@ -35,13 +37,13 @@ download-comtrade ──► baci ──► network ─────┘           
 |---|---|---|
 | `image-tag` | `sha-543f256` | tag de `ghcr.io/qbolliet/trade-analysis` (`sha-<court>` ou nom de branche) |
 | `profile` | `demo` | `config/profiles/<profil>/` ; `base` = chemins de configuration historiques |
-| `publish-serving` | `false` | active la tâche `serving` |
+| `publish-serving` | `true` | active la tâche `serving` |
 | `max-runtime-hours` | `10` | **réservé, sans effet** : le budget des téléchargements est `MAX_RUNTIME` dans le YAML du profil |
 | `comtrade-mode` | `download` | `download` : API Comtrade ; `synthetic` : monde fictif (cf. plus bas) |
 | `eurostat-mode` | `download` | `download` : API Comext ; `complete` : API puis complément fictif des requêtes manquantes ; `synthetic` : fictif seul |
 | `eurostat-budget-minutes` | *(vide)* | durée max du téléchargement Comext RÉEL avant arrêt propre (vide = `MAX_RUNTIME` du profil) |
 
-Profil : un `sh -c` d'entrée exporte `COMTRADE|EUROSTAT|BACI|VULNERABILITIES|SYNTHESIS|RUNTIME_CONFIG_PATH`
+Profil : un `sh -c` d'entrée exporte `COMTRADE|EUROSTAT|BACI|VULNERABILITIES|SYNTHESIS|RUNTIME|SYNTHETIC|SERVING_CONFIG_PATH`
 vers `config/profiles/<profil>/…` ; pour `base` il n'exporte rien et les scripts retombent sur
 leurs défauts (`config/datasets/*.yaml`, `config/baci.yaml`…).
 

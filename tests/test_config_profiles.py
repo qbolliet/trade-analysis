@@ -28,6 +28,7 @@ PROFILE_FILES = {
     "vulnerabilities.yaml": CONFIG / "vulnerabilities.yaml",
     "synthesis.yaml": CONFIG / "synthesis.yaml",
     "runtime.yaml": CONFIG / "runtime.yaml",
+    "serving.yaml": CONFIG / "serving.yaml",
 }
 
 # Mappings qui sont des collections de données (et non des schémas de clés) :
@@ -115,6 +116,16 @@ def test_demo_profile_declares_provisional_scope(name: str) -> None:
     assert any("PQ-07" in line for line in head)
 
 
+def test_demo_serving_uses_same_catalog_and_its_own_schema() -> None:
+    """Un seul catalogue `serving` (un DATA_PATH, lu par Superset) : seul le schéma change."""
+    prod = _load(CONFIG / "serving.yaml")["serving"]
+    demo = _load(DEMO / "serving.yaml")["serving"]
+    assert (demo["DBNAME"], demo["DATA_PATH"]) == (prod["DBNAME"], prod["DATA_PATH"])
+    assert (prod["SCHEMA"], demo["SCHEMA"]) == ("dashboard", "demo_dashboard")
+    assert demo["MLFLOW"]["EXPERIMENT"].startswith("demo-")
+    assert demo["TABLES"] == prod["TABLES"]
+
+
 def test_demo_outputs_are_isolated() -> None:
     """Schémas résultats préfixés demo_, chemins sous trade/demo/, catalogues bruts demo_."""
     baci = _load(DEMO / "baci.yaml")
@@ -125,6 +136,11 @@ def test_demo_outputs_are_isolated() -> None:
         for path, value in _walk(_load(DEMO / name)):
             if path[-1] == "RESULT_SCHEMA" or path[-2:] == ("SOURCES", "SCHEMA"):
                 assert str(value).startswith("demo_"), (name, path, value)
+            # Exception : le catalogue `serving` (seul attaché par Superset) est partagé et
+            # DuckLake n'admet qu'un DATA_PATH par catalogue ; le demo y est isolé par son
+            # schéma demo_dashboard (test_demo_serving_uses_same_catalog_and_its_own_schema)
+            if path == ("serving", "DATA_PATH"):
+                continue
             if path[-1] in {"LAST_DOWNLOAD_PATH", "LAST_COMPUTATION_PATH", "LAST_PROCESSING_PATH", "DATA_PATH"}:
                 assert str(value).startswith("trade/demo/"), (name, path, value)
             if path[-1] == "DBNAME" and name in {"comtrade.yaml", "eurostat.yaml"}:
