@@ -212,3 +212,18 @@ def test_contexts_to_recompute(
 ) -> None:
     """Règle de fraîcheur : recalcul global de tous les contextes ou aucun."""
     assert contexts_to_recompute(last_upstream, last_synthesis, force) is expected
+
+
+def test_read_source_metrics_casts_identifier_columns_to_text() -> None:
+    """Les colonnes identifiantes entières deviennent du texte (cohabitation avec « ALL »)."""
+    import duckdb
+
+    from scripts.compute_synthetic_scores import read_source_metrics
+
+    conn = duckdb.connect()
+    query = "SELECT 28444190::BIGINT AS product, 'FR' AS reporter, 2022::BIGINT AS year"
+    df = read_source_metrics(conn, query, ("reporter", "product", "absente"))
+    assert df["product"].tolist() == ["28444190"]
+    assert df["reporter"].tolist() == ["FR"]
+    # Les autres colonnes gardent leur type ; les colonnes absentes sont ignorées
+    assert str(df["year"].dtype) == "int64"

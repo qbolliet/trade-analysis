@@ -431,7 +431,9 @@ def run_from_connections(
     ]
 
     # Lecture de la table des métriques combinées (une seule requête)
-    df_metrics = read_source_metrics(read_conn, source_query)
+    df_metrics = read_source_metrics(
+        read_conn, source_query, (synthesis_config.reporter_col, synthesis_config.product_col)
+    )
     contexts = distinct_contexts(df_metrics, context_columns)
     logger.info(
         f"{len(df_metrics)} ligne(s) de métriques lue(s), "
@@ -443,7 +445,9 @@ def run_from_connections(
         catalog_alias, scores_schema, context_columns, contexts
     )
     logger.info(f"Requête des scores :\n{scores_query}")
-    df_scores = read_source_metrics(read_conn, scores_query)
+    df_scores = read_source_metrics(
+        read_conn, scores_query, (synthesis_config.reporter_col, synthesis_config.product_col)
+    )
     logger.info(f"{len(df_scores)} ligne(s) de scores lue(s).")
 
     reports: List[CoherenceRunReport] = []

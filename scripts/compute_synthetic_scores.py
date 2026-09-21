@@ -319,18 +319,36 @@ def build_source_query(
 
 
 # Fonction de lecture de la table source combinée
-def read_source_metrics(conn: Any, query: str) -> pd.DataFrame:
+def read_source_metrics(
+    conn: Any, query: str, string_columns: Sequence[str] = ()
+) -> pd.DataFrame:
     """Run the source query and return its result as a pandas DataFrame.
 
     Args:
         conn: Open DuckLake / DuckDB connection positioned on the catalog.
         query: Query built by :func:`build_source_query`.
+        string_columns: Identifier columns to cast to text. The aggregated
+            levels write the ``"ALL"`` sentinel into ``reporter`` / ``product``,
+            which fails when the source stores them as integers (Comext product
+            codes are read as ``BIGINT``). Absent columns are ignored.
 
     Returns:
         The joined metric table, one row per grid cell.
+
+    Examples:
+        >>> import duckdb
+        >>> conn = duckdb.connect()
+        >>> frame = read_source_metrics(
+        ...     conn, "SELECT 28444190::BIGINT AS product", ["product"]
+        ... )
+        >>> frame["product"].tolist()
+        ['28444190']
     """
     # Exécution de la requête et matérialisation en pandas
-    return conn.execute(query).df()
+    df = conn.execute(query).df()
+    # Colonnes identifiantes en texte, pour cohabiter avec la valeur « ALL »
+    present = [column for column in string_columns if column in df.columns]
+    return df.astype({column: str for column in present}) if present else df
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -642,7 +660,9 @@ def run_from_connections(
     ]
 
     # Lecture de la table source combinée (une seule requête)
-    df_source = read_source_metrics(scores_conn, query)
+    df_source = read_source_metrics(
+        scores_conn, query, (config.reporter_col, config.product_col)
+    )
     logger.info(
         f"{len(df_source)} ligne(s) source lue(s), "
         f"{df_source[context_columns].drop_duplicates().shape[0]} contexte(s)."
