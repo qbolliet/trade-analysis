@@ -39,7 +39,7 @@ CONFIG_PATH = Path(__file__).resolve().parents[1] / "config" / "synthesis.yaml"
 _EXPECTED_QUERY = '''SELECT p.*, n."EXPORT_HHI", n."CENTRALITY_RISK", n."CLUSTERING_W"
 FROM "vulnerabilities"."indicators"."fact_table" AS p
 LEFT JOIN "vulnerabilities"."network_indicators"."fact_table" AS n
-  ON substr(p."product", 1, 6) = n."product"
+  ON substr(lpad(CAST(p."product" AS VARCHAR), 8, \'0\'), 1, 6) = lpad(CAST(n."product" AS VARCHAR), 6, \'0\')
   AND CAST(substr(p."TIME_PERIOD", 1, 4) AS INTEGER) = n."year"
   AND n."classification" = \'HS2022\'
 WHERE p."flow" = 1 AND p."indicators" = \'VALUE_IN_EUROS\' AND p."freq" = \'A\'
