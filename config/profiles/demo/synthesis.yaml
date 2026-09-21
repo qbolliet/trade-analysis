@@ -32,7 +32,7 @@ SYNTHESIS:
   RESULT_SCHEMA: "demo_synthesis"
   PATHS:
     # Emplacement des données de la table de faits « synthesis » (sous BUCKET)
-    DATA_PATH: "trade/demo/datasets/vulnerabilities/synthesis/"
+    DATA_PATH: "trade/demo/datasets/vulnerabilities/"
     # Registre JSON des dates de dernier calcul de synthèse (racine « SYNTHESIS »),
     # confronté aux registres amont (partenaires et réseau) pour décider du recalcul
     LAST_COMPUTATION_PATH: "trade/demo/vulnerabilities/synthesis/last_computation.json"
@@ -171,7 +171,7 @@ COHERENCE:
   RESULT_SCHEMA: "demo_synthesis_diagnostics"
   PATHS:
     # Emplacement des données de la table de faits « synthesis_diagnostics »
-    DATA_PATH: "trade/demo/datasets/vulnerabilities/synthesis_diagnostics/"
+    DATA_PATH: "trade/demo/datasets/vulnerabilities/"
     # Registre JSON des dates de dernier calcul de cohérence (racine « COHERENCE »),
     # confronté au registre de synthèse
     LAST_COMPUTATION_PATH: "trade/demo/vulnerabilities/synthesis/last_coherence.json"

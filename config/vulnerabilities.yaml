@@ -9,6 +9,8 @@
 #                                           -> bloc NETWORK_VULNERABILITIES
 
 VULNERABILITIES:
+  # Un catalogue DuckLake n'a qu'un DATA_PATH : les quatre blocs (partenaires, réseau, synthèse,
+  # cohérence) doivent donc pointer vers le même préfixe ; les schémas les distinguent.
   DBNAME: "vulnerabilities"
   CATALOG_ALIAS: "vulnerabilities"
 
@@ -70,7 +72,7 @@ NETWORK_VULNERABILITIES:
   BUCKET: "qbollietdgddi"
   RESULT_SCHEMA: "network_indicators"
   PATHS:
-    DATA_PATH: "trade/datasets/vulnerabilities/network/"
+    DATA_PATH: "trade/datasets/vulnerabilities/"
     # Registre des dates de dernier calcul, par millésime de nomenclature,
     # confronté au registre de traitement BACI (baci.yaml : LAST_PROCESSING_PATH)
     # pour ne recalculer que les millésimes réécrits depuis.
