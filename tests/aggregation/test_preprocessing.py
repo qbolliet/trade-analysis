@@ -216,3 +216,25 @@ def test_split_frame_propagates_missing_values(df_metrics_toy) -> None:
 
     with pytest.raises(ValueError):
         WeightedAggregator(weighting="equal").fit(X)
+
+
+def test_kmo_and_bartlett_ignore_constant_columns() -> None:
+    """Une colonne constante n'invalide ni le KMO ni le test de Bartlett."""
+    rng = np.random.default_rng(0)
+    base = rng.normal(size=300)
+    X = np.column_stack(
+        [base + rng.normal(scale=0.3, size=300) for _ in range(3)]
+        + [np.ones(300)]
+    )
+    overall, per_variable = kmo_statistic(X)
+    chi2, p_value = bartlett_sphericity(X)
+    # Colonne constante : KMO indéfini ; les autres colonnes restent évaluées
+    assert np.isnan(per_variable[3])
+    assert np.isfinite(per_variable[:3]).all()
+    assert np.isfinite(overall) and overall > 0.5
+    assert np.isfinite(chi2) and p_value < 0.05
+    # Moins de deux colonnes non constantes : diagnostic indéfini, sans exception
+    constant = np.column_stack([np.ones(50), np.ones(50), np.arange(50.0)])
+    overall_c, _ = kmo_statistic(constant)
+    assert np.isnan(overall_c)
+    assert all(np.isnan(v) for v in bartlett_sphericity(constant))

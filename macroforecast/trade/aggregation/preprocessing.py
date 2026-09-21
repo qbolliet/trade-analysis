@@ -482,6 +482,28 @@ def spearman_correlation_matrix(X: np.ndarray) -> np.ndarray:
     return np.asarray(correlation)
 
 
+# Fonction de repérage des colonnes non constantes
+def _varying_columns(X: np.ndarray) -> np.ndarray:
+    """Return the mask of the columns that are not constant.
+
+    A constant column has an undefined correlation with every other column
+    (division by a zero standard deviation), which poisons the whole
+    correlation matrix with ``NaN``.
+
+    Args:
+        X: Metric matrix of shape ``(n, d)``.
+
+    Returns:
+        Boolean mask of shape ``(d,)``, ``True`` for the non-constant columns.
+
+    Examples:
+        >>> import numpy as np
+        >>> _varying_columns(np.array([[1.0, 5.0], [2.0, 5.0]])).tolist()
+        [True, False]
+    """
+    return np.ptp(X, axis=0) > 0
+
+
 # Fonction de calcul de l'indice de Kaiser-Meyer-Olkin
 def kmo_statistic(X: np.ndarray) -> Tuple[float, np.ndarray]:
     """Compute the Kaiser-Meyer-Olkin measure of sampling adequacy.
@@ -509,7 +531,12 @@ def kmo_statistic(X: np.ndarray) -> Tuple[float, np.ndarray]:
         True
     """
     X = check_array(X)
-    correlation = np.corrcoef(X, rowvar=False)
+    # Colonnes constantes : corrélation indéfinie (NaN), exclues du calcul
+    varying = _varying_columns(X)
+    kmo_per_variable = np.full(X.shape[1], np.nan)
+    if varying.sum() < 2:
+        return float("nan"), kmo_per_variable
+    correlation = np.corrcoef(X[:, varying], rowvar=False)
     # Matrice des corrélations partielles, tirée de l'inverse de R
     inverse = np.linalg.pinv(correlation)
     diag = np.sqrt(np.diag(inverse))
@@ -524,7 +551,7 @@ def kmo_statistic(X: np.ndarray) -> Tuple[float, np.ndarray]:
     # Indices par variable (mêmes sommes, restreintes à une ligne)
     corr_row = np.sum(correlation**2, axis=0)
     partial_row = np.sum(partial**2, axis=0)
-    kmo_per_variable = corr_row / (corr_row + partial_row)
+    kmo_per_variable[varying] = corr_row / (corr_row + partial_row)
     return float(kmo_overall), kmo_per_variable
 
 
@@ -551,8 +578,12 @@ def bartlett_sphericity(X: np.ndarray) -> Tuple[float, float]:
         True
     """
     X = check_array(X)
-    n, d = X.shape
-    correlation = np.corrcoef(X, rowvar=False)
+    # Colonnes constantes : corrélation indéfinie, exclues du test
+    varying = _varying_columns(X)
+    n, d = X.shape[0], int(varying.sum())
+    if d < 2:
+        return float("nan"), float("nan")
+    correlation = np.corrcoef(X[:, varying], rowvar=False)
     sign, logdet = np.linalg.slogdet(correlation)
     if sign <= 0:
         # Déterminant non défini (matrice singulière) : sphéricité rejetée d'office
