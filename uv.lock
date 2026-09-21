@@ -2776,7 +2776,7 @@ wheels = [
 [[package]]
 name = "statflows"
 version = "0.1.0"
-source = { git = "https://github.com/qbolliet/statflows?branch=main#eb3e83651409ff073fab3d0b317c8cac3a82fccd" }
+source = { git = "https://github.com/qbolliet/statflows?branch=main#a0f3c2a653eb1f38d567e2e8c7c6c02ff7255978" }
 dependencies = [
     { name = "comtradeapicall" },
     { name = "pandas" },
