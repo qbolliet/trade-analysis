@@ -48,6 +48,7 @@ from __future__ import annotations
 # Modules de base
 from dataclasses import fields, replace
 from datetime import datetime
+from contextlib import nullcontext
 import logging
 import numbers
 from pathlib import Path
@@ -65,7 +66,10 @@ import numpy as np
 import pandas as pd
 
 # Module de suivi d'exécution (MLflow optionnel, objet nul par défaut)
-from macroforecast.tracking import get_tracker
+from macroforecast.tracking import CapturingTracker, get_tracker, rekey_metrics
+from macroforecast.tracking.figures import key_figures_coherence, sections_coherence
+from macroforecast.tracking.report import Units
+from scripts._run_report import RunScope, guarded_run, run_name
 # Méthodologie de cohérence (fonction pure) et configuration de la synthèse
 from macroforecast.trade.aggregation import (
     CoherenceConfig,
@@ -379,6 +383,7 @@ def run_from_connections(
     diagnostics_schema: str,
     tracker: Any = None,
     log_artifacts: bool = True,
+    scope: Optional[RunScope] = None,
 ) -> Tuple[List[CoherenceRunReport], Dict[str, Exception], bool, int]:
     """Read the metrics and scores, run the coherence per context, and write diagnostics.
 
@@ -405,6 +410,10 @@ def run_from_connections(
         diagnostics_schema: Target schema of the coherence diagnostics.
         tracker: Experiment tracker; the null tracker by default.
         log_artifacts: Whether to log the S-2.7 artifacts to the tracker.
+        scope: Run-report scope. When given, the run report (checks, key figures,
+            sections) is built and published inside the tracker's run, after the
+            metrics and before returning, and an uncaught exception publishes the
+            reduced failure description.
 
     Returns:
         Tuple ``(reports, failures, created_any, n_contexts)``: one
@@ -417,6 +426,8 @@ def run_from_connections(
         from macroforecast.tracking import NULL_TRACKER
 
         tracker = NULL_TRACKER
+    # Enregistrement de ce qui est journalisé : source des contrôles et du rapport de run
+    tracker = CapturingTracker(tracker)
 
     context_columns = list(synthesis_config.context_columns)
     diagnostics_keys = [
@@ -430,32 +441,32 @@ def run_from_connections(
         "item_b",
     ]
 
-    # Lecture de la table des métriques combinées (une seule requête)
-    df_metrics = read_source_metrics(
-        read_conn, source_query, (synthesis_config.reporter_col, synthesis_config.product_col)
-    )
-    contexts = distinct_contexts(df_metrics, context_columns)
-    logger.info(
-        f"{len(df_metrics)} ligne(s) de métriques lue(s), "
-        f"{len(contexts)} contexte(s)."
-    )
-
-    # Lecture des scores, restreinte aux contextes lus (S-2.4)
-    scores_query = build_scores_query(
-        catalog_alias, scores_schema, context_columns, contexts
-    )
-    logger.info(f"Requête des scores :\n{scores_query}")
-    df_scores = read_source_metrics(
-        read_conn, scores_query, (synthesis_config.reporter_col, synthesis_config.product_col)
-    )
-    logger.info(f"{len(df_scores)} ligne(s) de scores lue(s).")
-
     reports: List[CoherenceRunReport] = []
     failures: Dict[str, Exception] = {}
     created_any = False
     n_contexts = 0
 
-    with tracker:
+    with tracker, (guarded_run(scope, tracker) if scope is not None else nullcontext()):
+        # Lecture de la table des métriques combinées (une seule requête)
+        df_metrics = read_source_metrics(
+            read_conn, source_query, (synthesis_config.reporter_col, synthesis_config.product_col)
+        )
+        contexts = distinct_contexts(df_metrics, context_columns)
+        logger.info(
+            f"{len(df_metrics)} ligne(s) de métriques lue(s), "
+            f"{len(contexts)} contexte(s)."
+        )
+
+        # Lecture des scores, restreinte aux contextes lus (S-2.4)
+        scores_query = build_scores_query(
+            catalog_alias, scores_schema, context_columns, contexts
+        )
+        logger.info(f"Requête des scores :\n{scores_query}")
+        df_scores = read_source_metrics(
+            read_conn, scores_query, (synthesis_config.reporter_col, synthesis_config.product_col)
+        )
+        logger.info(f"{len(df_scores)} ligne(s) de scores lue(s).")
+
         # Un contexte après l'autre : l'échec de l'un n'emporte pas les autres
         for context_value, df_context in df_metrics.groupby(
             context_columns, sort=False, observed=True
@@ -511,7 +522,7 @@ def run_from_connections(
         # les contextes réussis
         aggregate = _aggregate_reports(reports)
         aggregate.created = created_any
-        tracker.log_metrics(aggregate.to_metrics())
+        tracker.log_metrics(rekey_metrics(aggregate.to_metrics()))
         tracker.set_tags(
             {
                 "result_schema": diagnostics_schema,
@@ -520,12 +531,38 @@ def run_from_connections(
             }
         )
 
+        # Rapport de run : contrôles, chiffres clés, sections, publiés avant toute sortie
+        # en erreur (les contextes en échec sont listés, ils ne l'interrompent pas)
+        if scope is not None:
+            scope.step = "rapport de run"
+            scope.publish(
+                tracker,
+                scope.build(
+                    metrics=tracker.metrics,
+                    units=Units(
+                        planned=n_contexts,
+                        succeeded=len(reports),
+                        failed=len(failures),
+                        planned_label=f"{n_contexts} contextes",
+                    ),
+                    failures={
+                        unit: f"{type(exc).__name__}: {exc}" for unit, exc in failures.items()
+                    },
+                    key_figures=key_figures_coherence,
+                    sections=lambda m: sections_coherence(m, tracker.tables),
+                ),
+            )
+
     return reports, failures, created_any, n_contexts
 
 
 # ──────────────────────────────────────────────────────────────────────
 # Point d'entrée
 # ──────────────────────────────────────────────────────────────────────
+
+# Nœud du rapport de run (clé de config/tracking.yaml)
+NODE = "compute_synthesis_coherence"
+
 
 # Fonction principale de calcul des diagnostics de cohérence
 def main() -> None:
@@ -556,9 +593,10 @@ def main() -> None:
     log_artifacts = bool(mlflow_config.get("LOG_ARTIFACTS", True))
     tracker = get_tracker(
         tracking_uri=mlflow_config.get("TRACKING_URI"),
-        experiment=mlflow_config.get("EXPERIMENT", "vulnerabilities-coherence"),
-        run_name=f"vulnerabilities-coherence-{datetime.now():%Y%m%d-%H%M}",
+        experiment=mlflow_config.get("EXPERIMENT", "trade-03-vulnerabilities"),
+        run_name=run_name(f"vulnerabilities-coherence-{datetime.now():%Y%m%d-%H%M}", NODE),
     )
+    scope = RunScope(NODE)
 
     # Identité du catalogue partagé et schémas résultat
     catalog = vulnerability_config[_PARTNERS_ROOT]
@@ -640,6 +678,7 @@ def main() -> None:
                 diagnostics_schema=diagnostics_schema,
                 tracker=tracker,
                 log_artifacts=log_artifacts,
+                scope=scope,
             )
         finally:
             diagnostics_conn.close()

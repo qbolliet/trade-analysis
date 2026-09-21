@@ -32,7 +32,7 @@ MLFLOW:
   # qui prime sur la valeur ci-dessous.
   TRACKING_URI: null
   # Expérience de destination, créée à la volée si absente
-  EXPERIMENT: "vulnerabilities"
+  EXPERIMENT: "trade-03-vulnerabilities"
   # Publication des artefacts de synthèse (cellules les plus vulnérables,
   # comptes d'alertes, agrégats manquants, déciles)
   LOG_ARTIFACTS: true
@@ -80,7 +80,7 @@ NETWORK_VULNERABILITIES:
   # Suivi d'exécution MLflow, un run par millésime recalculé.
   MLFLOW:
     TRACKING_URI: null
-    EXPERIMENT: "network-vulnerabilities"
+    EXPERIMENT: "trade-03-vulnerabilities"
     # Publication des artefacts de synthèse (produits les plus exposés, comptes
     # d'alertes, cellules non scorées, déciles)
     LOG_ARTIFACTS: true

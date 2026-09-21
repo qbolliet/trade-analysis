@@ -141,7 +141,7 @@ serving:
   # d'environnement MLFLOW_TRACKING_URI, sinon aucun suivi.
   MLFLOW:
     TRACKING_URI: null
-    EXPERIMENT: "demo-serving"
+    EXPERIMENT: "demo-trade-04-serving"
 
   # Tables de service, publiées dans cet ordre. PARTITIONED : partition DuckLake par year
   # (élagage des fichiers lus par les filtres du tableau de bord) ; SORT_BY : ordre

@@ -34,6 +34,7 @@
 | 2026-09-18 (phase 0) | **Jalon démonstration, scripts** : fabrique de connecteur `kedro_pipeline/io/ducklake.py` (sans Kedro) ; `config/runtime.yaml` ; `DATAFLOW` et `max_queries` en configuration ; ordre Comtrade année-majeur (`reporters=None` si non filtrés), Eurostat produit-majeur avec `start_period` ; porte de complétude BACI, lecture SQL bornée, colonne `is_provisional` ; profil `config/profiles/demo/` (copies complètes, sorties préfixées `demo_` / `trade/demo/`) ; suppression de `process_baci.py` et `test_baci.py`. PQ-15 résolue, PQ-17 à vérifier au premier téléchargement. Constats : `get_valid_periods` exclut la borne de fin qu'on lui passe (appel sans fin, borne appliquée par le script) ; une table `baci_hs20xx` déjà créée sans `is_provisional` refusera l'upsert tant que `statflows.write_dataframe` ne transmet pas `allow_new_columns` (C-13) → supprimer les schémas BACI de test avant le premier run de production ; le `Dockerfile` (C-14) doit copier `kedro_pipeline/` et `config/` | C-01 à C-05, C-17, C-18, C-26, PD-06, PD-07, PD-08, PS-04, PS-06, PS-12, PS-14.1, PQ-15, PQ-17 |
 | 2026-09-21 (phase 0, K-03b) | **Couche de service et référentiels** : `kedro_pipeline/config.py` (millésimes, macros SQL), `kedro_pipeline/steps/reference.py` (référentiels, un schéma par table `reference_<table>`), `kedro_pipeline/io/serving.py` (`ServingCatalog`, transaction unique vérifiée sur DuckDB 1.5.3), `kedro_pipeline/steps/serving.py` + `config/serving.yaml` (8 tables), `serving-script` ; `product` des tables Comext/partenaires stocké en `BIGINT` → macro `product_code` | C-22, C-23, PS-27, PS-28.4, PS-29.1, PS-29.2 |
 | 2026-09-21 (phase 0) | **Données fictives de démonstration** (Comtrade indisponible, Comext trop lent) : monde simulé isolé dans les catalogues `demo_*` (garde d'écriture testée), entrées de registre marquées `synthetic`, code non migré dans Kedro ; **retrait en deux prompts** : K-17b 🔌 (données sur le cluster) puis K-18 (code et fichiers) | PD-24, PS-04.4, PR-22, PQ-20, §12, K-17b, K-18 |
+| 2026-09-21 (phase 0, K-03d) | **Rapport de run MLflow des scripts** : `macroforecast/tracking/{report,figures}.py` (contrôles, description, HTML Plotly), `kedro_pipeline/io/tracking.py` (`publish_run_report`), `scripts/_run_report.py`, `config/tracking.yaml` ; métriques des scripts en `/` (rekeyage `rekey_metrics`), une expérience par bloc ; contrôles alignés sur les métriques réellement émises ; constats de rendu vérifiés sur MLflow 3.15 local | C-19, PD-13, PS-31, PR-19, PQ-19 |
 
 ## Sommaire
 
@@ -121,7 +122,7 @@ gravité pour la mise en production (🔴 bloquant, 🟠 à traiter avant le ré
 | C-16 | 🟡 | `config/base/catalog.yaml` et `config/base/parameters.yaml` existent mais sont vides : amorce d'une arborescence Kedro. | `config/base/` |
 | C-17 | ✅ | Incohérence des chemins CEPII : `process_baci.py` préfixe `s3://{bucket}/` **et** passe `bucket=`, alors que `process_baci_hs.py` passe le chemin relatif et `bucket=`. *(Traité en phase 0, 2026-09-18 : `process_baci.py` supprimé (doublon mono-millésime de `process_baci_hs.py`), ainsi que les clés mortes `baci.PATHS.RESULT_*`.)* | `process_baci.py:257-264` vs `process_baci_hs.py:453-454` |
 | C-18 | ✅ | `scripts/test_baci.py` (écriture `df_reconciled.xlsx` en local) est un script de mise au point, hors pipeline. *(Traité en phase 0, 2026-09-18 : `scripts/test_baci.py` et l'entry point `test-baci-script` supprimés.)* | `scripts/test_baci.py` |
-| C-19 | 🟡 | Le suivi MLflow crée une expérience par script, avec des noms de métriques séparés par des points (`gravity.r2`) : l'interface MLflow ne regroupe pas automatiquement les graphiques par étape. | `macroforecast/tracking/` |
+| C-19 | ✅ | Le suivi MLflow crée une expérience par script, avec des noms de métriques séparés par des points (`gravity.r2`) : l'interface MLflow ne regroupe pas automatiquement les graphiques par étape. *(Traité en phase 0, 2026-09-21 : les scripts journalisent leurs métriques avec `/` (`rekey_metrics`, `flatten_metrics(sep="/")`, préfixes des rapports conservés : `baci/gravity/r_squared`, `download/errors`, `synthesis/by_product/n_groups`) et une expérience par bloc (`trade-01-downloads`…). MLflow 3.15 regroupe les graphiques par préfixe complet (sections `baci`, `baci/gravity`, `baci/tonnage`…) : constat PQ-19.)* | `macroforecast/tracking/` |
 | C-20 | 🔴 | **Accès au cluster impossible depuis le poste local** : le jeton de rafraîchissement OIDC de `sspcloud_access_script.txt` est lié à une preuve DPoP (`oauth2: "invalid_grant" "DPoP proof is missing"`), que le fournisseur `oidc` de `kubectl` ne sait pas produire. Voir PQ-09. | `sspcloud_access_script.txt` |
 | C-21 | 🟡 | Aucune documentation mkdocs, aucun workflow GitHub Actions, aucun `.dockerignore` dans le dépôt. `sspcloud_access_script.txt` et `Trade deployment.md` sont bien ignorés par git, mais **seraient copiés dans une image** construite avec `COPY . .`. | racine |
 | C-22 | 🟠 | **Aucune table de référence** (libellés de produits par millésime, libellés de pays, tables de passage HS exposées) n'est produite : un tableau de bord ne peut afficher que des codes. Les codelists sont pourtant téléchargées à chaque exécution (`fetch_dimension_codelists`) et les concordances UNSD sont en cache Parquet. *(Traité en phase 0, K-03b, 2026-09-21 : `publish_reference` / `publish_hs_reference` appelées par `download_*.py` et `process_baci_hs.py`, PS-28.4.)* | `scripts/download_*.py`, `scripts/process_baci_hs.py:_ensure_concordances` |
@@ -773,6 +774,13 @@ Le registre global actuel (C-10) serait « tout ou rien ».
   `partners/…`, `network/…`, `synthesis/<niveau>/…`, `coherence/<niveau>/…`,
   `drift/…`, `freshness/…` pour le bloc 3 ; `ducklake/<catalogue>/<schéma>/…` pour la
   maintenance.
+  *Phase 0 (K-03d) : les scripts conservent les préfixes de leurs rapports, séparés par `/` :
+  `baci/{tonnage,gravity,fobisation,mirror,quality_value,quality_quantity,nes}/…`, `hs/…`,
+  `coverage/…`, `download/…`, `query/…`, `vulnerabilities/…`, `network_vulnerabilities/…`,
+  `synthesis/<niveau>/…`, `coherence/<niveau>/…`, `serving/<table>/…`, `checks/…`, `run/…` ;
+  l'étape « conversion » de BACI s'appelle donc `tonnage`. Les noms de PD-13 ci-dessus
+  restent la cible de K-13.*
+
 - Le protocole `RunTracker` est conservé et gagne deux méthodes, `log_text(text,
   artifact_file)` et `set_tags(tags)` (implémentées par `NullTracker` et
   `MlflowTracker`). Une implémentation s'ajoute dans `macroforecast/tracking/` :
@@ -3090,48 +3098,69 @@ l'interface Argo pour le DAG.
 | **System metrics** | CPU, mémoire, disque, réseau du pod au cours du temps (remplace la seule valeur `memory/peak_mb` pour dimensionner les `machine_types`, PS-20) | variables `MLFLOW_ENABLE_SYSTEM_METRICS_LOGGING` / `MLFLOW_SYSTEM_METRICS_SAMPLING_INTERVAL` (PS-21.1), `psutil` |
 | **Artifacts** | `report/report.html` (rapport autonome : mêmes informations que la description, plus figures et tables, une section par étape pour BACI) ; `report/summary.md` (copie intégrale de la description, jamais tronquée) ; `report/checks.csv` ; `tables/*.csv` (couverture, `σ̂` par pays, coefficients…) ; `failures.csv` (unités en échec et message) | `log_text`, `log_table` (PS-31.4) |
 
-#### PS-31.2 Paramètres et contrôles déclaratifs (`config/base/parameters_tracking.yml`)
+#### PS-31.2 Paramètres et contrôles déclaratifs (`config/tracking.yaml` en phase 0, `config/base/parameters_tracking.yml` sous Kedro)
+
+Phase 0 : le fichier `config/tracking.yaml` (racine `tracking`, copie dans
+`config/profiles/demo/`, variable `TRACKING_CONFIG_PATH`) est lu par `scripts/_run_report.py` ;
+sous Kedro (K-13) le même contenu devient le paramètre `tracking`. Les métriques visées sont
+celles **réellement émises** par les scripts (relevées le 2026-09-21) ; un test
+(`tests/tracking/test_checks_target_emitted_metrics.py`) échoue si un contrôle vise une
+métrique que son script n'émet pas.
 
 ```yaml
 tracking:
-  SYSTEM_METRICS:
-    ENABLED: true                     # injecté dans les pods par le rendu (PS-21.1)
-    SAMPLING_SECONDS: 30
+  SYSTEM_METRICS: {ENABLED: true, SAMPLING_SECONDS: 30}   # injecté dans les pods par le rendu (PS-21.1)
   REPORT:
     HTML: true                        # report/report.html
     PLOTLY_JS: inline                 # inline (autonome, ~3,5 Mo) | cdn (léger, exige internet côté navigateur)
     MAX_DESCRIPTION_CHARS: 7500       # sous la limite de longueur des tags du serveur (PQ-19)
     MAX_TABLE_ROWS: 50                # lignes affichées par table dans le rapport HTML
     MAX_FAILURES_LISTED: 20
-  LINKS:                              # liens insérés dans la description ({workflow_id}, {run_id}…)
-    ARGO_WORKFLOW: "https://<argo-ui>/workflows/user-qbollietdgddi/{workflow_id}"
+  LINKS:
+    ARGO_WORKFLOW: null               # "https://<argo-ui>/workflows/user-qbollietdgddi/{workflow_id}" ; null : pas de lien
   CHECKS:                             # clé = nom de nœud, joker `*` accepté ; valeurs initiales à calibrer (K-17)
     "download_*":
-      - {metric: download/error_share,       op: "<=", threshold: 0.05, severity: warning, label: "Part de requêtes en erreur"}
-      - {metric: download/queries_done,      op: ">",  threshold: 0,    severity: warning, label: "Au moins une requête traitée"}
-      - {metric: rate_limit/wait_share,      op: "<=", threshold: 0.5,  severity: warning, label: "Temps passé en attente du limiteur"}
-    prepare_baci:
-      - {metric: coverage/years_eligible,    op: ">",  threshold: 0,    severity: error,   label: "Au moins une année complète"}
-    "process_baci_*":
-      - {metric: output/rows,                op: ">",  threshold: 0,    severity: error,   label: "Lignes écrites"}
-      - {metric: conversion/share_converted, op: ">=", threshold: 0.95, severity: warning, label: "Quantités converties en tonnes"}
-      - {metric: gravity/r_squared,          op: ">=", threshold: 0.5,  severity: warning, label: "R² de l'équation de gravité"}
-      - {metric: fobisation/share_clipped_to_zero, op: "<=", threshold: 0.01, severity: warning, label: "Valeurs FOB tronquées à zéro"}
+      - {metric: download/error_share,  op: "<=", threshold: 0.05, severity: warning, label: "Part de requêtes en erreur"}
+      - {metric: download/processed,    op: ">",  threshold: 0,    severity: warning, label: "Au moins une requête traitée"}
+      - {metric: download/wait_share,   op: "<=", threshold: 0.5,  severity: warning, label: "Temps passé en attente du limiteur"}
+    "process_baci_*":                 # nœud par millésime : process_baci_<millésime> ; inclut la porte de complétude
+      - {metric: coverage/years_eligible,                  op: ">",  threshold: 0,    severity: error,   label: "Au moins une année complète"}
+      - {metric: baci/flows,                               op: ">",  threshold: 0,    severity: error,   label: "Flux écrits"}
+      - {metric: baci/tonnage/share_tonnage_missing,       op: "<=", threshold: 0.05, severity: warning, label: "Flux sans tonnage (1 − part convertie en tonnes)"}
+      - {metric: baci/gravity/r_squared,                   op: ">=", threshold: 0.5,  severity: warning, label: "R² de l'équation de gravité"}
+      - {metric: baci/fobisation/share_clipped_to_zero,    op: "<=", threshold: 0.01, severity: warning, label: "Valeurs FOB tronquées à zéro"}
     compute_partner_vulnerabilities:
-      - {metric: freshness/units_waiting_sources, op: "<=", threshold: 1000, severity: warning, label: "Unités historiques en attente de sources"}
+      - {metric: vulnerabilities/cells/n_total,            op: ">",  threshold: 0,    severity: warning, label: "Cellules de vulnérabilité calculées"}
+    "compute_network_vulnerabilities*":   # un run par millésime : compute_network_vulnerabilities_<millésime>
+      - {metric: network_vulnerabilities/cells/n_total,    op: ">",  threshold: 0,    severity: warning, label: "Cellules de vulnérabilité de réseau calculées"}
     compute_synthetic_scores:
-      - {metric: synthesis/contexts_computed, op: ">=", threshold: 0,   severity: warning, label: "Contextes calculés"}
+      - {metric: synthesis/n_contexts,                     op: ">",  threshold: 0,    severity: warning, label: "Contextes calculés"}
+    compute_synthesis_coherence:
+      - {metric: coherence/n_contexts,                     op: ">",  threshold: 0,    severity: warning, label: "Contextes de cohérence calculés"}
     publish_serving:
-      - {metric: serving/cell_scores/rows,   op: ">",  threshold: 0,    severity: error,   label: "Table cell_scores non vide"}
-      - {metric: serving/countries/rows,     op: ">",  threshold: 0,    severity: error,   label: "Table countries non vide"}
-    maintain_ducklake:
-      - {metric: ducklake/max_files_per_table, op: "<=", threshold: 2000, severity: warning, label: "Fichiers par table après maintenance"}
+      - {metric: serving/cell_scores/rows,                 op: ">",  threshold: 0,    severity: error,   label: "Table cell_scores non vide"}
+      - {metric: serving/countries/rows,                   op: ">",  threshold: 0,    severity: error,   label: "Table countries non vide"}
 ```
 
-Les noms de métriques ci-dessus sont **indicatifs** : K-03d (scripts) puis K-13 (nœuds)
-les alignent sur les noms réellement émis, et un test vérifie que chaque contrôle
-configuré vise une métrique que l'étape émet (sinon le contrôle serait silencieusement
-`skipped`).
+Écarts entre les noms indicatifs de la première rédaction et les noms réels (K-03d) :
+
+| Nom indicatif | Nom réel / traitement |
+|---|---|
+| `download/queries_done`, `download/error_share`, `rate_limit/wait_share` | `download/processed` ; `download/error_share` et `download/wait_share` sont **dérivées** par `download_run_metrics` (elles ne figurent pas dans `DownloadReport`) |
+| `prepare_baci` : `coverage/years_eligible` | déplacé sur `process_baci_*` : c'est `process_baci_hs.py` qui évalue la porte de complétude (`coverage/years_eligible`, `coverage/share_min`) ; `prepare_baci` n'existe pas avant K-11 |
+| `output/rows` | `baci/flows` |
+| `conversion/share_converted >= 0,95` | `baci/tonnage/share_tonnage_missing <= 0,05` (aucun `share_converted` global n'est émis) |
+| `gravity/r_squared`, `fobisation/share_clipped_to_zero` | préfixe `baci/` conservé |
+| `freshness/units_waiting_sources` | absent avant K-05 : remplacé par `vulnerabilities/cells/n_total > 0` |
+| `synthesis/contexts_computed >= 0` (tautologique) | `synthesis/n_contexts > 0` |
+| `serving/cell_scores/rows`, `serving/countries/rows` | inchangés (déjà en `/`) |
+| `maintain_ducklake` : `ducklake/max_files_per_table` | non repris : aucun script avant K-14 |
+| — | ajouts : `network_vulnerabilities/cells/n_total`, `coherence/n_contexts` (`> 0`, warning) |
+
+Les statistiques de concordance de la cohérence (`kendall_w`, `disputed_share`, `mean_abs_rho`,
+`violation_strict_*`) **ne sont pas émises au niveau du run** (agrégat à `NaN`, écartées par
+`flatten_metrics`) : aucun contrôle ne peut les viser tant que K-13 ne les journalise pas par
+contexte.
 
 Sémantique :
 - deux contrôles **implicites**, hors configuration, sur tout nœud : « aucune unité en
@@ -3217,15 +3246,47 @@ n'est pas disponible dans l'interface (PQ-19), l'information reste accessible.
 
 #### PS-31.6 Points à vérifier (K-03d, K-13)
 
-1. Rendu d'un HTML Plotly dans l'onglet *Artifacts* de MLflow 3 (iframe : scripts
-   exécutés ?). Repli : figures statiques PNG (`matplotlib`, `mlflow.log_figure`), le
-   HTML ne gardant que texte et tables (PR-19).
-2. Longueur maximale d'une valeur de tag sur le serveur (description) ; ajuster
-   `MAX_DESCRIPTION_CHARS`.
-3. Métriques système sur les runs ouverts par kedro-mlflow (activation par variable
-   d'environnement suffisante ?).
-4. Affichage de la description en tête de l'onglet *Overview* sur la version déployée.
-5. Vue multi-expériences et conservation des colonnes dans l'URL.
+Constats du 2026-09-21 sur un MLflow **3.15.1 local** (`mlflow server`, magasin fichier, run
+fictif de `process_baci_hs.main()` piloté dans un Chromium sans tête ; test
+`tests/tracking/test_process_baci_hs_e2e.py`). « À revérifier » = à refaire sur le MLflow d'Onyxia.
+
+1. **HTML Plotly dans *Artifacts*** — **s'affiche et s'exécute** : le fichier est servi dans
+   une iframe `blob:` où les scripts tournent (`window.Plotly` défini, 7 figures et leurs SVG
+   dessinés, aucune erreur JS) avec `PLOTLY_JS: inline` (fichier de 4,7 Mo, aperçu immédiat).
+   Repli PR-19 non nécessaire ; `cdn` non testé (exige un accès internet du navigateur).
+   *À revérifier* : la version et les en-têtes de sécurité (CSP) du serveur d'Onyxia.
+2. **Longueur d'un tag** — la description de 7 500 caractères est acceptée par le magasin
+   (test `test_description_of_maximal_length_is_accepted_by_the_store`) ; la limite de MLflow 3
+   est de 8 000 caractères par valeur de tag, `MAX_DESCRIPTION_CHARS` reste à 7 500.
+   *À revérifier* : le serveur PostgreSQL d'Onyxia.
+3. **Métriques système** — `MLFLOW_ENABLE_SYSTEM_METRICS_LOGGING=true` suffit, sur un run
+   ouvert par `mlflow.start_run` : huit métriques `system/*` (CPU, mémoire, disque, réseau)
+   et l'onglet *System metrics* peuplé. Un échantillon n'est écrit qu'après un intervalle
+   d'échantillonnage : un run plus court n'en a aucun. *À revérifier* sur les runs ouverts par
+   kedro-mlflow (K-13) et `psutil` dans l'image.
+4. **Description dans *Overview*** — elle est affichée **sous** « About this run », les tags
+   et les jeux de données (pas « en tête de page »), **repliée** sur environ quatre lignes
+   avec un lien *Show more* : le titre (verdict) et la ligne d'exécution sont visibles, le
+   tableau des unités est tronqué. Les **tags** `health` et `checks_failed` (libellés des
+   contrôles en défaut) sont, eux, visibles sans clic : c'est là qu'on lit d'un coup d'œil ce
+   qui ne va pas. Le Markdown (titres, tableaux, gras, code) est rendu. Ne pas allonger le
+   préambule de la description : le verdict et la ligne d'exécution doivent rester les deux
+   premières lignes.
+5. **Regroupement des métriques** — MLflow 3.15 groupe les graphiques de l'onglet *Model
+   metrics* par **préfixe complet** (tout ce qui précède le dernier `/`) : sections `baci`,
+   `baci/gravity`, `baci/tonnage`, `checks`, `coverage`, `hs`, `run`… La vue multi-expériences
+   et la conservation des colonnes dans l'URL restent à vérifier sur Onyxia.
+6. **Magasin fichier** — MLflow 3.15 met le magasin `file:` en mode maintenance et le refuse
+   sans `MLFLOW_ALLOW_FILE_STORE=true` (variable posée par les tests et à poser pour un
+   `mlflow server --backend-store-uri file:…` local). Sans objet sur Onyxia (PostgreSQL).
+7. **Statut d'un run en échec** — avant K-03d, `MlflowTracker.__exit__` clôturait tout run en
+   `FINISHED`, même traversé par une exception ; il le clôt désormais en `FAILED`. Les runs
+   laissés `RUNNING` par un pod tué relèvent toujours de la maintenance `onExit` (PR-20).
+
+Écarts laissés à K-13 : aucun run n'est ouvert quand un script sort tôt (« rien à
+recalculer ») ; BACI n'émet aucune durée par passe ni par année (section « Temps et
+ressources » réduite à la durée et au pic mémoire du run) ; les sections de couverture par
+année et par déclarant des téléchargements exigeraient une lecture du registre, non faite.
 
 ---
 
@@ -3387,7 +3448,7 @@ ni le cluster.
 | PR-16 | Tables `indicators` multipliées par ~3,6 au niveau SH6 (PD-20) : durée du calcul partenaires et volume | Certaine / faible | `VINTAGES` configurable, calcul incrémental par unité, partition par `classification` |
 | PR-17 | Recouvrement `daily`/`weekly` : `publish_serving` lu pendant une publication | Faible / faible | Publication en une transaction DuckLake (Superset lit le snapshot précédent jusqu'au `COMMIT`) ; mutex Argo (écrivain unique) |
 | PR-18 | Code reporter `EU27_2020` absent ou différent dans DS-045409 | Moyenne / moyen | PQ-17 : vérification de la codelist au premier téléchargement ; repli : agrégation des membres avec partenaires extra-UE seulement (documentée comme approximation) |
-| PR-19 | L'onglet *Artifacts* de MLflow n'exécute pas le JavaScript d'un HTML Plotly (iframe restreinte) : figures invisibles | Moyenne / faible | Chaque figure a son équivalent CSV (PS-31.4) ; repli PNG statique (`matplotlib`, `log_figure`) ; vérifié en K-03d (PQ-19) |
+| PR-19 | L'onglet *Artifacts* de MLflow n'exécute pas le JavaScript d'un HTML Plotly (iframe restreinte) : figures invisibles | Moyenne / faible | Chaque figure a son équivalent CSV (PS-31.4) ; repli PNG statique (`matplotlib`, `log_figure`) ; vérifié en K-03d (PQ-19) : le HTML Plotly **s'exécute** dans l'aperçu de MLflow 3.15, repli non utilisé ; à revérifier sur Onyxia |
 | PR-20 | Pod tué (OOM, dépassement de délai) : le run MLflow reste `RUNNING` sans rapport, et un échec passe inaperçu dans MLflow | Moyenne / moyen | Clôture des runs orphelins par la maintenance `onExit` (PD-16.6) ; tag `health` absent = run à regarder ; statut du workflow dans Argo |
 | PR-21 | Seuils de contrôle mal calibrés : fausses alertes (bruit) ou alertes manquées | Certaine au début / faible | Valeurs initiales `warning` sauf évidences ; recalibrage en K-17 sur les premières exécutions réelles ; seuils en configuration (§5.8) |
 | PR-22 | Données fictives prises pour des mesures : écrites dans un catalogue de production, restées dans un tableau de bord, ou données `demo_*` mélangeant réel et fictif conservées après le retour au réel | Faible avec la garde / **critique** (décisions sur des chiffres simulés) | Garde `REQUIRED_CATALOG_PREFIX` avant toute connexion (PD-24, testée), marquage `synthetic` des registres, mention « données simulées » sur tout support de démonstration, retrait K-17b (contrôle de non-contamination) puis K-18 |
@@ -3416,7 +3477,7 @@ ni le cluster.
 | PQ-16 | ~~**Quota total** du namespace (somme CPU/mémoire des pods actifs) ?~~ **Résolu (2026-09-20)** : `onyxia-quota` ne borne **ni CPU ni mémoire** au total ; il limite `count/pods` à 100, GPU à 1 (`nvidia.com/gpu`) et `requests.storage` à 2 Ti. **Aucun `LimitRange`** dans le namespace. Seules les limites par pod (PQ-01) contraignent : les ressources de départ du workflow de transition (4 CPU / 32 Gi pour BACI, 4 / 16 Gi ailleurs) sont conservées. | — |
 | PQ-17 | Le reporter agrégé **`EU27_2020`** existe-t-il dans la codelist `reporter` de DS-045409 avec des flux extra-UE ? **Non vérifiable hors ligne (2026-09-18)** : aucune structure DS-045409 en cache dans le dépôt. `EU27_2020` est ajouté à `reporter.include` ; **à vérifier au premier téléchargement** (un code inclus absent de la codelist est signalé par un avertissement de `filter_codes`, sans échec). | Oui ; sinon repli de PR-18 |
 | PQ-18 | Quelle **statistique de cohérence** et quelle **méthode de synthèse** afficher par défaut dans le tableau de bord (« indicateur synthétique le plus pertinent ») ? | `PRIMARY_METHOD: borda` (consensus) et corrélation de Spearman ; changeable en configuration `serving` |
-| PQ-19 | Sur le MLflow 3 déployé : le rapport HTML Plotly s'affiche-t-il dans *Artifacts* ? Quelle longueur maximale pour la description (tag) ? Les métriques système s'activent-elles par variable d'environnement sur les runs de kedro-mlflow ? La vue multi-expériences existe-t-elle ? | Oui pour tout ; limite de tag 8 000 caractères ; replis de PS-31.6 sinon. Vérifié en K-03d (serveur `file:` local puis MLflow Onyxia) |
+| PQ-19 | Sur le MLflow 3 déployé : le rapport HTML Plotly s'affiche-t-il dans *Artifacts* ? Quelle longueur maximale pour la description (tag) ? Les métriques système s'activent-elles par variable d'environnement sur les runs de kedro-mlflow ? La vue multi-expériences existe-t-elle ? | Oui pour tout ; limite de tag 8 000 caractères ; replis de PS-31.6 sinon. Vérifié en K-03d sur MLflow 3.15 local : **oui, oui (7 500 caractères acceptés ; limite de MLflow 3 : 8 000) et oui** (variable d'environnement suffisante sur un run `mlflow.start_run`) ; vue multi-expériences non vérifiée ; constats détaillés en PS-31.6 ; à refaire sur le MLflow d'Onyxia |
 | PQ-20 | À partir de quel seuil les **données réelles sont-elles « complètes »** pour retirer le demo (K-17b) ? | Toutes les requêtes Comext planifiées présentes au registre ; Comtrade : `COMPLETENESS.MIN_SHARE` (1,0) atteint sur toutes les années de `ANALYSIS_START_YEAR.comtrade` à l'année complète la plus récente ; au moins une exécution `daily` et une `weekly` de production réussies (PR-01 : plusieurs jours à semaines). K-17b mesure ces critères et **s'arrête** s'ils ne sont pas remplis |
 
 ---

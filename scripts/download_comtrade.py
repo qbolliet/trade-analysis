@@ -34,8 +34,13 @@ from statflows import ComtradeClient, ComtradeQueryRequest
 from statflows.core.factory import filter_codes
 from statflows.core.download import download_updates, _schema_name
 
+# Module de suivi d'exécution
+from macroforecast.tracking import CapturingTracker, get_tracker, rekey_metrics
+from statflows.core.reports import QueryReport
+
 # Fabrique de connecteur DuckLake (seul point de lecture des identifiants)
 from kedro_pipeline.io.download_report import check_download_report
+from scripts._run_report import RunScope, build_download_report, guarded_run, run_name
 from kedro_pipeline.steps.reference import publish_reference
 from kedro_pipeline.io.ducklake import (
     DuckLakeLocation,
@@ -416,9 +421,18 @@ def plan_queries(
     )
 
 
+# Nœud du rapport de run (clé de config/tracking.yaml)
+NODE = "download_comtrade"
+
+
 # Fonction principale de téléchargement
 def main() -> None:
-    """CLI entry point for the Comtrade download script."""
+    """CLI entry point for the Comtrade download script.
+
+    Raises:
+        DownloadFailureError: If the share of failed queries exceeds ``MAX_ERROR_RATIO``,
+            after the run report was published.
+    """
     # Chargement des configurations
     config = load_config()
     runtime_config = load_runtime_config()
@@ -426,7 +440,46 @@ def main() -> None:
     DATAFLOW = config["DATAFLOW"]
     downloads_config = config["DOWNLOADS"][DATAFLOW]
 
+    # Construction du suivi d'exécution : sans URI (ou sans MLflow installé, ou serveur
+    # injoignable), get_tracker retourne un tracker inerte et l'exécution est strictement
+    # inchangée. Le run est ouvert dès le début pour que tout échec porte son rapport.
+    mlflow_config = config.get("MLFLOW") or {}
+    tracker = CapturingTracker(
+        get_tracker(
+            tracking_uri=mlflow_config.get("TRACKING_URI"),
+            experiment=mlflow_config.get("EXPERIMENT", "comtrade-download"),
+            run_name=run_name(f"{DATAFLOW}-{datetime.now():%Y%m%d-%H%M}", NODE),
+        )
+    )
+    scope = RunScope(NODE)
+    with tracker, guarded_run(scope, tracker):
+        report = _download(config, runtime_config, tracker, scope)
+
+    # Statut de sortie : statflows isole les erreurs par requête, le script doit donc
+    # échouer explicitement au-delà du seuil toléré (sinon l'étape resterait « réussie »),
+    # après la publication du rapport de run
+    check_download_report(report, downloads_config.get("MAX_ERROR_RATIO"))
+
+
+# Planification, téléchargement et rapport de run
+def _download(config: dict, runtime_config: dict, tracker: CapturingTracker, scope: RunScope):
+    """Plan the queries, download them and publish the run report.
+
+    Args:
+        config: Comtrade download configuration.
+        runtime_config: Shared runtime configuration.
+        tracker: Capturing tracker of the open run.
+        scope: Report scope of the run.
+
+    Returns:
+        The ``statflows`` download report.
+    """
+    DATAFLOW = config["DATAFLOW"]
+    downloads_config = config["DOWNLOADS"][DATAFLOW]
+    mlflow_config = config.get("MLFLOW") or {}
+
     # Initialisation du client comtrade
+    scope.step = "planification des requêtes"
     client = ComtradeClient(subscription_key=os.environ.get(_SUBSCRIPTION_KEY_ENV))
     try:
         # Codelists des dimensions scindées (libellés compris, réutilisés par les référentiels)
@@ -466,7 +519,17 @@ def main() -> None:
         )
         logger.info(f"Référentiels Comtrade : {reference['rows']} ; échecs : {reference['failures']}")
 
+        # Suivi requête par requête : statflows ignore tout de MLflow, le rappel est le
+        # seul point de contact
+        streamed_queries: List[QueryReport] = []
+
+        def stream_query_metrics(query_report: QueryReport) -> None:
+            """Send one query's diagnostics to the tracker."""
+            tracker.log_metrics(rekey_metrics(query_report.to_metrics()), step=len(streamed_queries))
+            streamed_queries.append(query_report)
+
         # Téléchargement des données (mise à jour incrémentale via fetch_updates)
+        scope.step = "téléchargement"
         report = download_updates(
             client=client,
             queries=queries,
@@ -485,12 +548,23 @@ def main() -> None:
             categorical_threshold=None,  # A supprimer avec la nouvelle version de la base de données
             bucket=downloads_config["BUCKET"],
             storage_options=None,
+            on_query_complete=stream_query_metrics,
         )
+        # Rapport de run : métriques, table par requête, contrôles, description
+        scope.step = "rapport de run"
+        run_report = build_download_report(
+            scope, tracker, report, downloads_config.get("MAX_ERROR_RATIO"),
+            log_artifacts=bool(mlflow_config.get("LOG_ARTIFACTS", True)),
+            tags={
+                "dataflow": DATAFLOW,
+                "stopped_early": str(report.stopped_early),
+                "n_queries_planned": str(report.n_queries_planned),
+            },
+        )
+        scope.publish(tracker, run_report)
         # Logging
         logger.info("Téléchargement terminé : %s", report.to_metrics())
-        # Statut de sortie : statflows isole les erreurs par requête, le script doit donc
-        # échouer explicitement au-delà du seuil toléré (sinon l'étape resterait « réussie »)
-        check_download_report(report, downloads_config.get("MAX_ERROR_RATIO"))
+        return report
     finally:
         client.close()
 

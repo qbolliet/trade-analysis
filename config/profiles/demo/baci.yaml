@@ -49,7 +49,7 @@ MLFLOW:
   # qui prime sur la valeur ci-dessous.
   TRACKING_URI: null
   # Expérience de destination, créée à la volée si absente
-  EXPERIMENT: "demo-baci"
+  EXPERIMENT: "demo-trade-02-baci"
   # Publication des artefacts d'étape (taux de conversion, coefficients de
   # gravité, régimes de valorisation inférés, sigma par pays)
   LOG_ARTIFACTS: true

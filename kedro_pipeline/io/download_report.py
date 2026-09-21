@@ -9,7 +9,9 @@ decision that belongs to the caller, hence this module rather than ``statflows``
 # Importation des modules
 # Modules de base
 from collections import Counter
-from typing import Any, Optional
+from typing import Any, Dict, Optional
+# Modules du package
+from macroforecast.tracking import rekey_metrics
 
 # Nombre maximal de types d'erreur détaillés dans le message
 _MAX_ERROR_TYPES = 3
@@ -97,3 +99,42 @@ def check_download_report(report: Any, max_error_ratio: Optional[float]) -> None
         f"above the tolerated {ratio_limit:.0%}; errors: {detail}"
         + (f" (e.g. {first_message})" if first_message else "")
     )
+
+
+# Métriques dérivées d'un rapport de téléchargement
+def download_run_metrics(report: Any) -> Dict[str, float]:
+    """Return the run-level metrics of a download report, ``/``-separated.
+
+    ``statflows`` reports emit dotted keys (``download.errors``); this rekeys them for
+    MLflow (ARCH C-19) and adds the two shares the run checks rely on, which the
+    report does not carry:
+
+    * ``download/error_share``: failed queries over attempted queries
+      (``report.queries``), like :func:`check_download_report`;
+    * ``download/wait_share``: time spent waiting for the rate limiter over the
+      duration of the run.
+
+    Args:
+        report: ``statflows.core.reports.DownloadReport`` of the run.
+
+    Returns:
+        Metric name -> finite value. A share whose denominator is zero is omitted.
+
+    Examples:
+        >>> from types import SimpleNamespace
+        >>> report = SimpleNamespace(
+        ...     errors=1, queries=[object()] * 4,
+        ...     to_metrics=lambda: {"download.errors": 1.0, "download.duration_seconds": 10.0,
+        ...                         "download.rate_limit_wait_seconds": 4.0})
+        >>> metrics = download_run_metrics(report)
+        >>> metrics["download/error_share"], metrics["download/wait_share"]
+        (0.25, 0.4)
+    """
+    metrics = rekey_metrics(report.to_metrics())
+    attempted = len(report.queries)
+    if attempted:
+        metrics["download/error_share"] = report.errors / attempted
+    duration = metrics.get("download/duration_seconds", 0.0)
+    if duration > 0 and "download/rate_limit_wait_seconds" in metrics:
+        metrics["download/wait_share"] = metrics["download/rate_limit_wait_seconds"] / duration
+    return metrics

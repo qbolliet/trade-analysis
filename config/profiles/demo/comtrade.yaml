@@ -18,6 +18,17 @@
 # Dataflow téléchargé (C-05) : identifiant logique typeCode_freqCode_clCode
 DATAFLOW: "C_A_HS"
 
+# Suivi d'exécution MLflow du téléchargement. Dépendance optionnelle :
+# installer l'extra « tracking » (uv sync --extra tracking) pour l'activer.
+MLFLOW:
+  # URI du serveur ou du magasin MLflow. null → aucun suivi, exécution
+  # inchangée. Surchargeable par MLFLOW_TRACKING_URI (convention MLflow).
+  TRACKING_URI: null
+  # Expérience de destination, créée à la volée si absente (une par bloc, PD-13)
+  EXPERIMENT: "demo-trade-01-downloads"
+  # Publication de la table de diagnostic par requête
+  LOG_ARTIFACTS: true
+
 # Groupes de codes réutilisables
 code_groups:
   # Exemple de sélection de reporters par code M49 (à compléter selon le besoin).

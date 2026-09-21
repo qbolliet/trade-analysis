@@ -50,7 +50,13 @@ from kedro_pipeline.io.ducklake import (
 from statflows.core.download import _now, _parse_iso, _schema_name
 
 # Module de suivi d'exécution (MLflow optionnel, objet nul par défaut)
-from macroforecast.tracking import get_tracker
+from macroforecast.tracking import CapturingTracker, get_tracker, rekey_metrics
+from macroforecast.tracking.figures import (
+    key_figures_partner_vulnerabilities,
+    sections_partner_vulnerabilities,
+)
+from macroforecast.tracking.report import Units
+from scripts._run_report import RunScope, guarded_run, run_name
 # Module de calcul des indicateurs
 from macroforecast.trade.vulnerabilities import DEFAULT_CONFIG, VulnerabilityConfig
 from macroforecast.trade.vulnerabilities.runner import (
@@ -326,6 +332,10 @@ def pairs_to_recompute(
 # Point d'entrée
 # ──────────────────────────────────────────────────────────────────────
 
+# Nœud du rapport de run (clé de config/tracking.yaml)
+NODE = "compute_partner_vulnerabilities"
+
+
 # Fonction principale de calcul des vulnérabilités
 def main() -> None:
     """CLI entry point for the incremental vulnerability computation script."""
@@ -344,11 +354,14 @@ def main() -> None:
     # ou serveur injoignable), get_tracker retourne un tracker inerte et
     # l'exécution est strictement inchangée
     mlflow_config = vulnerability_config.get("MLFLOW") or {}
-    tracker = get_tracker(
-        tracking_uri=mlflow_config.get("TRACKING_URI"),
-        experiment=mlflow_config.get("EXPERIMENT", "vulnerabilities"),
-        run_name=f"vulnerabilities-{datetime.now():%Y%m%d-%H%M}",
+    tracker = CapturingTracker(
+        get_tracker(
+            tracking_uri=mlflow_config.get("TRACKING_URI"),
+            experiment=mlflow_config.get("EXPERIMENT", "trade-03-vulnerabilities"),
+            run_name=run_name(f"vulnerabilities-{datetime.now():%Y%m%d-%H%M}", NODE),
+        )
     )
+    scope = RunScope(NODE)
     log_artifacts = bool(mlflow_config.get("LOG_ARTIFACTS", True))
     measure_drift = bool(mlflow_config.get("DRIFT", True))
 
@@ -387,53 +400,53 @@ def main() -> None:
         logger.info("Nothing to recompute, stop.")
         return
 
-    # Instant de référence capturé avant le calcul : la date enregistrée
-    # correspond au début du traitement, jamais après, pour ne pas rater une
-    # mise à jour survenue pendant le calcul)
-    computed_at = _now()
+    with tracker, guarded_run(scope, tracker):
+        # Instant de référence capturé avant le calcul : la date enregistrée
+        # correspond au début du traitement, jamais après, pour ne pas rater une
+        # mise à jour survenue pendant le calcul)
+        computed_at = _now()
 
-    # Identifiants du catalogue et du stockage (lus une fois dans l'environnement)
-    pg_credentials = pg_credentials_from_env()
-    s3_credentials = s3_credentials_from_env()
+        # Identifiants du catalogue et du stockage (lus une fois dans l'environnement)
+        pg_credentials = pg_credentials_from_env()
+        s3_credentials = s3_credentials_from_env()
 
-    # Connecteur DuckLake aux données sources
-    source_connector = build_connector(
-        DuckLakeLocation(
-            dbname=eurostat_config["DOWNLOADS"]["DBNAME"],
-            catalog_alias=eurostat_config["DOWNLOADS"]["CATALOG_ALIAS"],
-            schema=_schema_name(DATAFLOW),
-            bucket=eurostat_config["DOWNLOADS"][DATAFLOW]["BUCKET"],
-            data_path=eurostat_config["DOWNLOADS"][DATAFLOW]["PATHS"]["DATA_PATH"],
-        ),
-        pg=pg_credentials,
-        s3=s3_credentials,
-    )
+        # Connecteur DuckLake aux données sources
+        source_connector = build_connector(
+            DuckLakeLocation(
+                dbname=eurostat_config["DOWNLOADS"]["DBNAME"],
+                catalog_alias=eurostat_config["DOWNLOADS"]["CATALOG_ALIAS"],
+                schema=_schema_name(DATAFLOW),
+                bucket=eurostat_config["DOWNLOADS"][DATAFLOW]["BUCKET"],
+                data_path=eurostat_config["DOWNLOADS"][DATAFLOW]["PATHS"]["DATA_PATH"],
+            ),
+            pg=pg_credentials,
+            s3=s3_credentials,
+        )
 
-    # Connecteur DuckLake résultat : catalogue Postgres positionné sur le schéma résultat des vulnérabilités.
-    result_connector = build_connector(
-        DuckLakeLocation(
-            dbname=vulnerability_config["VULNERABILITIES"]["DBNAME"],
-            catalog_alias=vulnerability_config["VULNERABILITIES"]["CATALOG_ALIAS"],
-            schema=_schema_name(vulnerability_config["VULNERABILITIES"][DATAFLOW]["RESULT_SCHEMA"]),
-            bucket=vulnerability_config["VULNERABILITIES"][DATAFLOW]["BUCKET"],
-            data_path=vulnerability_config["VULNERABILITIES"][DATAFLOW]["PATHS"]["DATA_PATH"],
-        ),
-        pg=pg_credentials,
-        s3=s3_credentials,
-    )
+        # Connecteur DuckLake résultat : catalogue Postgres positionné sur le schéma résultat des vulnérabilités.
+        result_connector = build_connector(
+            DuckLakeLocation(
+                dbname=vulnerability_config["VULNERABILITIES"]["DBNAME"],
+                catalog_alias=vulnerability_config["VULNERABILITIES"]["CATALOG_ALIAS"],
+                schema=_schema_name(vulnerability_config["VULNERABILITIES"][DATAFLOW]["RESULT_SCHEMA"]),
+                bucket=vulnerability_config["VULNERABILITIES"][DATAFLOW]["BUCKET"],
+                data_path=vulnerability_config["VULNERABILITIES"][DATAFLOW]["PATHS"]["DATA_PATH"],
+            ),
+            pg=pg_credentials,
+            s3=s3_credentials,
+        )
 
-    # Schéma résultat, commun à la relecture et à l'écriture
-    result_schema = _schema_name(
-        vulnerability_config["VULNERABILITIES"][DATAFLOW]["RESULT_SCHEMA"]
-    )
+        # Schéma résultat, commun à la relecture et à l'écriture
+        result_schema = _schema_name(
+            vulnerability_config["VULNERABILITIES"][DATAFLOW]["RESULT_SCHEMA"]
+        )
 
-    # Ouverture des connexions : leur cycle de vie appartient au script, le
-    # runner ne les ouvre ni ne les ferme (cf. `run_vulnerabilities`)
-    source_conn = source_connector.connect()
-    try:
-        result_conn = result_connector.connect()
+        # Ouverture des connexions : leur cycle de vie appartient au script, le
+        # runner ne les ouvre ni ne les ferme (cf. `run_vulnerabilities`)
+        source_conn = source_connector.connect()
         try:
-            with tracker:
+            result_conn = result_connector.connect()
+            try:
                 # Résultat de l'exécution précédente : la lecture appartient au
                 # script (principe P4), et son absence désactive simplement la
                 # mesure de dérive
@@ -468,7 +481,7 @@ def main() -> None:
                 # Envoi des métriques : le rapport connaît sa mise en forme.
                 # Les paramètres sont journalisés par le runner lui-même ; seuls
                 # les tags propres au script restent ici.
-                tracker.log_metrics(report.to_metrics())
+                tracker.log_metrics(rekey_metrics(report.to_metrics()))
                 tracker.set_tags(
                     {
                         "dataflow": DATAFLOW,
@@ -477,10 +490,26 @@ def main() -> None:
                         "n_pairs": str(len(reporters_products)),
                     }
                 )
+
+                # Rapport de run : contrôles, chiffres clés, sections, publiés avant toute
+                # sortie en erreur
+                scope.step = "rapport de run"
+                run_report = scope.build(
+                    metrics=tracker.metrics,
+                    units=Units(
+                        planned=len(reporters_products),
+                        succeeded=len(reporters_products),
+                        planned_label=f"{len(reporters_products)} couples reporter × produit",
+                    ),
+                    key_figures=key_figures_partner_vulnerabilities,
+                    sections=lambda m: sections_partner_vulnerabilities(m, tracker.tables),
+                )
+                scope.publish(tracker, run_report)
+            finally:
+                result_conn.close()
         finally:
-            result_conn.close()
-    finally:
-        source_conn.close()
+            source_conn.close()
+
 
     # Logging
     logger.info(f"Vulnerability computation complete : {report}")

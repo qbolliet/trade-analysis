@@ -104,8 +104,11 @@ from statflows import UNSDClient
 from macroforecast.trade.processing import required_columns, run_baci
 from macroforecast.trade.processing import BaciConfig, ComtradeSchema, DEFAULT_CONFIG, BaciReport
 from macroforecast.trade.processing import HsHarmonizer, resolve_vintage
-# Module de suivi d'exécution (MLflow optionnel)
-from macroforecast.tracking import get_tracker
+# Module de suivi d'exécution (MLflow optionnel) et rapport de run
+from macroforecast.tracking import CapturingTracker, get_tracker, rekey_metrics
+from macroforecast.tracking.figures import key_figures_baci, sections_baci
+from macroforecast.tracking.report import Units
+from scripts._run_report import RunScope, guarded_run, run_name
 
 
 # Configuration de logging
@@ -430,6 +433,33 @@ def _share_min(shares: Mapping[int, float], start: int, end: Optional[int]) -> f
     values = [s for y, s in shares.items() if y >= start and (end is None or y <= end)]
     return float(min(values)) if values else 0.0
 
+
+# Fonction de construction des métriques de couverture d'un millésime
+def coverage_metrics(
+    years_eligible: Sequence[int],
+    shares: Mapping[int, float],
+    start: int,
+    end: Optional[int],
+) -> Dict[str, float]:
+    """Coverage metrics of one vintage: eligible years and minimum download share.
+
+    Args:
+        years_eligible: Years passing the completeness gate.
+        shares: Download share of the planned batches, by year.
+        start: First year of the vintage.
+        end: Optional last year of the perimeter.
+
+    Returns:
+        ``coverage/years_eligible`` and ``coverage/share_min``.
+
+    Examples:
+        >>> coverage_metrics([2019, 2020, 2021], {2019: 1.0, 2020: 0.9, 2021: 1.0}, 2020, None)
+        {'coverage/years_eligible': 2.0, 'coverage/share_min': 0.9}
+    """
+    return {
+        "coverage/years_eligible": float(sum(y >= start for y in years_eligible)),
+        "coverage/share_min": _share_min(shares, start, end),
+    }
 
 
 # Fonction de construction des conventions de schéma des sources
@@ -854,42 +884,42 @@ def main() -> None:
                     label, start_years[label],
                 )
                 continue
-            try:
-                harmonizer = HsHarmonizer(
-                    concordances,
-                    target_vintage=label,
-                    classification_col=schema.classification_col,
-                    product_col=schema.product_col,
-                    period_col=schema.period_col,
-                    value_cols=(schema.value_col, schema.cif_value_col, schema.fob_value_col),
-                    weight_cols=(schema.netwgt_col,),
-                    qty_col=schema.qty_col,
-                    qty_unit_col=schema.qty_unit_col,
-                )
-                df_harmonised = harmonizer.fit_transform(slices[label])
-
-                # Un run par millésime : l'échec de l'un n'emporte pas les autres
-                tracker = get_tracker(
+            # Un run par millésime : l'échec de l'un n'emporte pas les autres. Ouvert avant
+            # l'harmonisation pour qu'un échec de celle-ci porte lui aussi son rapport
+            node = f"process_baci_{label}"
+            tracker = CapturingTracker(
+                get_tracker(
                     tracking_uri=mlflow_config.get("TRACKING_URI"),
-                    experiment=mlflow_config.get("EXPERIMENT", "baci"),
-                    run_name=f"baci-{label}-{datetime.now():%Y%m%d-%H%M}",
+                    experiment=mlflow_config.get("EXPERIMENT", "trade-02-baci"),
+                    run_name=run_name(f"baci-{label}-{datetime.now():%Y%m%d-%H%M}", node),
                     tags={"vintage": label, "is_provisional": str(is_provisional)},
                 )
-                with tracker:
+            )
+            scope = RunScope(node, step="harmonisation de la nomenclature")
+            try:
+                with tracker, guarded_run(scope, tracker):
+                    harmonizer = HsHarmonizer(
+                        concordances,
+                        target_vintage=label,
+                        classification_col=schema.classification_col,
+                        product_col=schema.product_col,
+                        period_col=schema.period_col,
+                        value_cols=(schema.value_col, schema.cif_value_col, schema.fob_value_col),
+                        weight_cols=(schema.netwgt_col,),
+                        qty_col=schema.qty_col,
+                        qty_unit_col=schema.qty_unit_col,
+                    )
+                    df_harmonised = harmonizer.fit_transform(slices[label])
+
                     # Couverture du millésime : années éligibles et part minimale
                     # de lots téléchargés sur ses années planifiées
+                    n_years_eligible = sum(y >= start_years[label] for y in years_eligible)
                     tracker.log_metrics(
-                        {
-                            "coverage/years_eligible": float(
-                                sum(y >= start_years[label] for y in years_eligible)
-                            ),
-                            "coverage/share_min": _share_min(
-                                shares, start_years[label], period_end
-                            ),
-                        }
+                        coverage_metrics(years_eligible, shares, start_years[label], period_end)
                     )
 
                     # Application de la méthodologie sur la tranche harmonisée
+                    scope.step = "redressement BACI"
                     df_reconciled, report = run_baci(
                         df_comtrade=df_harmonised,
                         df_dist=df_dist,
@@ -903,6 +933,7 @@ def main() -> None:
                     df_reconciled["is_provisional"] = is_provisional
 
                     # Écriture du résultat dans le schéma dédié au millésime
+                    scope.step = "écriture du résultat"
                     report.created = write_dataframe(
                         conn,
                         df_reconciled,
@@ -923,8 +954,9 @@ def main() -> None:
                     }
 
                     # Envoi des métriques du redressement et de l'harmonisation
-                    tracker.log_metrics(report.to_metrics())
-                    tracker.log_metrics(harmonizer.report_.to_metrics())
+                    # (noms séparés par « / » : l'interface MLflow les regroupe par section)
+                    tracker.log_metrics(rekey_metrics(report.to_metrics()))
+                    tracker.log_metrics(rekey_metrics(harmonizer.report_.to_metrics()))
                     tracker.set_tags(
                         {
                             "result_schema": _schema_name(target_cfg["RESULT_SCHEMA"]),
@@ -938,6 +970,42 @@ def main() -> None:
                             harmonizer.report_.relationship_distribution,
                             "classification/relationship_distribution.json",
                         )
+
+                    # Rapport de run : contrôles, chiffres clés, sections par étape BACI.
+                    # Il est construit sur les métriques et tables déjà produites, sans
+                    # relecture de données, et publié avant toute sortie en erreur
+                    scope.step = "rapport de run"
+                    rows_by_year = (
+                        df_reconciled[schema.period_col].value_counts().sort_index()
+                        .rename_axis("year").rename("rows").reset_index()
+                        if schema.period_col in df_reconciled else pd.DataFrame()
+                    )
+                    coefficients = tracker.dicts.get("gravity/coefficients.json", {})
+                    gravity_table = pd.DataFrame(
+                        {
+                            "coefficient": coefficients.get("coefficients", {}),
+                            "std_error": coefficients.get("std_errors", {}),
+                        }
+                    ).rename_axis("variable").reset_index()
+                    artifacts = {**tracker.tables, "output/rows_by_year.csv": rows_by_year}
+                    run_report = scope.build(
+                        metrics=tracker.metrics,
+                        units=Units(
+                            planned=1,
+                            succeeded=1,
+                            failed=0,
+                            planned_label=f"1 millésime ({n_years_eligible} années éligibles)",
+                        ),
+                        key_figures=key_figures_baci,
+                        sections=lambda m: sections_baci(m, artifacts),
+                        tables={
+                            "conversion_rates": tracker.tables.get("tonnage/conversion_rates.csv", pd.DataFrame()),
+                            "gravity_coefficients": gravity_table,
+                            "sigma_by_country": tracker.tables.get("quality/sigma_by_country.csv", pd.DataFrame()),
+                            "rows_by_year": rows_by_year,
+                        },
+                    )
+                    scope.publish(tracker, run_report)
 
                 # Logging
                 logger.info("Redressement BACI terminé pour %s : %s", label, report)

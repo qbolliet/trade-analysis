@@ -25,6 +25,13 @@ dependencies = [
 [project.optional-dependencies]
 tracking = [
     "mlflow>=2.16",
+    # Métriques système (CPU, mémoire, disque, réseau) de l'onglet « System metrics »
+    "psutil>=5.9",
+]
+# Rapport HTML de run (figures Plotly, macroforecast.tracking.figures) : import
+# paresseux, sans plotly le rapport garde ses tables mais perd ses figures.
+reports = [
+    "plotly>=5.24",
 ]
 # Score de Kantorovitch orienté (macroforecast.trade.aggregation.optimal_transport) :
 # dépendance lourde, non requise pour le reste du package (import paresseux,

@@ -95,13 +95,18 @@ class MlflowTracker:
     def __exit__(self, *exc: Any) -> None:
         """Close the MLflow run without swallowing a business exception.
 
+        The run ends ``FAILED`` when an exception crosses the ``with`` block,
+        ``FINISHED`` otherwise.
+
         Args:
             *exc: Exception triple of the ``with`` block, propagated as is.
         """
         if not self._active:
             return
         try:
-            self._mlflow.end_run()
+            # Statut FAILED lorsqu'une exception traverse le bloc
+            failed = bool(exc) and exc[0] is not None
+            self._mlflow.end_run(status="FAILED" if failed else "FINISHED")
         except Exception as end_exc:
             # Logging
             logger.warning("MLflow run could not be closed: %s", end_exc)
@@ -188,6 +193,19 @@ class MlflowTracker:
                 )
 
         self._guard(f"log_table({artifact_file})", _write)
+
+    # Enregistrement d'un texte en artefact
+    def log_text(self, text: str, artifact_file: str) -> None:
+        """Record a text as an artifact.
+
+        Args:
+            text: Text to record (Markdown, HTML, CSV…).
+            artifact_file: Artifact path, e.g. ``"report/summary.md"``.
+        """
+        self._guard(
+            f"log_text({artifact_file})",
+            lambda: self._mlflow.log_text(text, artifact_file),
+        )
 
     # Attachement des tags
     def set_tags(self, tags: Mapping[str, str]) -> None:

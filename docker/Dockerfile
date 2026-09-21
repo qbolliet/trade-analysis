@@ -20,7 +20,7 @@ COPY --from=uv /uv /bin/uv
 
 # Extras installés en plus des dépendances de base.
 #   --build-arg UV_EXTRAS="--extra tracking --extra reports --extra optimal-transport"
-ARG UV_EXTRAS="--extra tracking --extra optimal-transport"
+ARG UV_EXTRAS="--extra tracking --extra reports --extra optimal-transport"
 
 # Interpréteur système uniquement : un Python téléchargé par uv vivrait hors de /app
 # et ne serait pas copié dans l'étage final

@@ -70,7 +70,7 @@ SYNTHESIS:
     # inchangée. Surchargeable par la variable d'environnement MLFLOW_TRACKING_URI
     TRACKING_URI: null
     # Expérience de destination, créée à la volée si absente
-    EXPERIMENT: "vulnerabilities-synthesis"
+    EXPERIMENT: "trade-03-vulnerabilities"
     # Publication des artefacts de synthèse (palmarès par niveau et méthode,
     # poids ajustés, rapports de sélection « auto », rapport de transport optimal)
     LOG_ARTIFACTS: true
@@ -172,7 +172,7 @@ COHERENCE:
   # Suivi d'exécution MLflow : un seul run par exécution du script de cohérence
   MLFLOW:
     TRACKING_URI: null
-    EXPERIMENT: "vulnerabilities-coherence"
+    EXPERIMENT: "trade-03-vulnerabilities"
     LOG_ARTIFACTS: true
   # Paramètres méthodologiques : toute clé portant le nom d'un champ de
   # CoherenceConfig surcharge le défaut correspondant.

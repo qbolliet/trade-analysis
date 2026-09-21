@@ -41,10 +41,11 @@ from statflows.core.download import download_updates, _schema_name
 from statflows.core.reports import QueryReport
 
 # Module de suivi d'exécution
-from macroforecast.tracking import get_tracker
+from macroforecast.tracking import CapturingTracker, get_tracker, rekey_metrics
 
 # Fabrique de connecteur DuckLake (seul point de lecture des identifiants)
 from kedro_pipeline.io.download_report import check_download_report
+from scripts._run_report import RunScope, build_download_report, guarded_run, run_name
 from kedro_pipeline.steps.reference import publish_reference
 from kedro_pipeline.io.ducklake import (
     DuckLakeLocation,
@@ -319,18 +320,67 @@ def build_split_queries(
     return queries
 
 
+# Nœud du rapport de run (clé de config/tracking.yaml)
+NODE = "download_eurostat"
+
+
 # Fonction principale de téléchargement
 def main() -> None:
-    """CLI entry point for the Comext download script."""
+    """CLI entry point for the Comext download script.
+
+    Raises:
+        DownloadFailureError: If the share of failed queries exceeds ``MAX_ERROR_RATIO``,
+            after the run report was published.
+    """
     # Chargement des configurations
     config = load_config()
     runtime_config = load_runtime_config()
     # Dataflow à télécharger (C-05)
     DATAFLOW = config["DATAFLOW"]
-    parameters = config["parameters"][DATAFLOW]
     downloads_config = config["DOWNLOADS"][DATAFLOW]
 
+    # Construction du suivi d'exécution : sans URI (ou sans MLflow installé,
+    # ou serveur injoignable), get_tracker retourne un tracker inerte et
+    # l'exécution est strictement inchangée. Le run est ouvert dès le début pour
+    # que tout échec, y compris de planification, porte son rapport.
+    mlflow_config = config.get("MLFLOW") or {}
+    tracker = CapturingTracker(
+        get_tracker(
+            tracking_uri=mlflow_config.get("TRACKING_URI"),
+            experiment=mlflow_config.get("EXPERIMENT", "eurostat-download"),
+            run_name=run_name(f"{DATAFLOW}-{datetime.now():%Y%m%d-%H%M}", NODE),
+        )
+    )
+    scope = RunScope(NODE)
+    with tracker, guarded_run(scope, tracker):
+        report = _download(config, runtime_config, tracker, scope)
+
+    # Statut de sortie : contrôle après la clôture du tracker, pour que le rapport de run
+    # soit publié avant l'échec de l'étape
+    check_download_report(report, downloads_config.get("MAX_ERROR_RATIO"))
+
+
+# Planification, téléchargement et rapport de run
+def _download(config: dict, runtime_config: dict, tracker: CapturingTracker, scope: RunScope):
+    """Plan the queries, download them and publish the run report.
+
+    Args:
+        config: Eurostat download configuration.
+        runtime_config: Shared runtime configuration.
+        tracker: Capturing tracker of the open run.
+        scope: Report scope of the run.
+
+    Returns:
+        The ``statflows`` download report.
+    """
+    DATAFLOW = config["DATAFLOW"]
+    parameters = config["parameters"][DATAFLOW]
+    downloads_config = config["DOWNLOADS"][DATAFLOW]
+    mlflow_config = config.get("MLFLOW") or {}
+    log_artifacts = bool(mlflow_config.get("LOG_ARTIFACTS", True))
+
     # Initialisation du client eurostat
+    scope.step = "planification des requêtes"
     client = EurostatClient()
     try:
         # Téléchargement de la structure
@@ -391,69 +441,56 @@ def main() -> None:
         )
         logger.info(f"Référentiels Comext : {reference['rows']} ; échecs : {reference['failures']}")
 
-        # Construction du suivi d'exécution : sans URI (ou sans MLflow installé,
-        # ou serveur injoignable), get_tracker retourne un tracker inerte et
-        # l'exécution est strictement inchangée
-        mlflow_config = config.get("MLFLOW") or {}
-        tracker = get_tracker(
-            tracking_uri=mlflow_config.get("TRACKING_URI"),
-            experiment=mlflow_config.get("EXPERIMENT", "eurostat-download"),
-            run_name=f"{DATAFLOW}-{datetime.now():%Y%m%d-%H%M}",
+        # Suivi requête par requête : statflows ignore tout de MLflow,
+        # le rappel est le seul point de contact
+        def stream_query_metrics(query_report: QueryReport) -> None:
+            """Send one query's diagnostics to the tracker."""
+            tracker.log_metrics(
+                rekey_metrics(query_report.to_metrics()), step=len(streamed_queries)
+            )
+            streamed_queries.append(query_report)
+
+        streamed_queries: list[QueryReport] = []
+
+        # Téléchargement des données
+        scope.step = "téléchargement"
+        report = download_updates(
+            client=client,
+            queries=queries,
+            connector=connector,
+            structures_path=downloads_config["PATHS"]["STRUCTURES_PATH"],
+            last_download_path=downloads_config["PATHS"]["LAST_DOWNLOAD_PATH"],
+            n_observations=downloads_config["N_LAST_OBSERVATIONS"],
+            fresh_registry=False,
+            max_runtime=timedelta(
+                weeks=downloads_config["MAX_RUNTIME"]["WEEKS"],
+                days=downloads_config["MAX_RUNTIME"]["DAYS"],
+                hours=downloads_config["MAX_RUNTIME"]["HOURS"],
+                minutes=downloads_config["MAX_RUNTIME"]["MINUTES"],
+                seconds=downloads_config["MAX_RUNTIME"]["SECONDS"]
+            ),
+            categorical_threshold=None,  # A supprimer avec la nouvelle version de la base de données
+            bucket=downloads_config['BUCKET'],
+            storage_options=None,
+            on_query_complete=stream_query_metrics,
         )
-        log_artifacts = bool(mlflow_config.get("LOG_ARTIFACTS", True))
 
-        with tracker:
-            # Suivi requête par requête : statflows ignore tout de MLflow,
-            # le rappel est le seul point de contact
-            def stream_query_metrics(query_report: QueryReport) -> None:
-                """Send one query's diagnostics to the tracker."""
-                tracker.log_metrics(
-                    query_report.to_metrics(), step=len(streamed_queries)
-                )
-                streamed_queries.append(query_report)
-
-            streamed_queries: list[QueryReport] = []
-
-            # Téléchargement des données
-            report = download_updates(
-                client=client,
-                queries=queries,
-                connector=connector,
-                structures_path=downloads_config["PATHS"]["STRUCTURES_PATH"],
-                last_download_path=downloads_config["PATHS"]["LAST_DOWNLOAD_PATH"],
-                n_observations=downloads_config["N_LAST_OBSERVATIONS"],
-                fresh_registry=False,
-                max_runtime=timedelta(
-                    weeks=downloads_config["MAX_RUNTIME"]["WEEKS"],
-                    days=downloads_config["MAX_RUNTIME"]["DAYS"],
-                    hours=downloads_config["MAX_RUNTIME"]["HOURS"],
-                    minutes=downloads_config["MAX_RUNTIME"]["MINUTES"],
-                    seconds=downloads_config["MAX_RUNTIME"]["SECONDS"]
-                ),
-                categorical_threshold=None,  # A supprimer avec la nouvelle version de la base de données
-                bucket=downloads_config['BUCKET'],
-                storage_options=None,
-                on_query_complete=stream_query_metrics,
-            )
-
-            # Métriques de run : le rapport connaît sa mise en forme
-            tracker.log_metrics(report.to_metrics())
-            tracker.set_tags(
-                {
-                    "dataflow": DATAFLOW,
-                    "stopped_early": str(report.stopped_early),
-                    "n_queries_planned": str(report.n_queries_planned),
-                }
-            )
-            # Détail par requête : table auditable de ce que le run a fait
-            if log_artifacts and report.queries:
-                tracker.log_table(report.to_frame(), "download/queries.csv")
+        # Rapport de run : métriques, table par requête, contrôles, description
+        scope.step = "rapport de run"
+        run_report = build_download_report(
+            scope, tracker, report, downloads_config.get("MAX_ERROR_RATIO"),
+            log_artifacts=log_artifacts,
+            tags={
+                "dataflow": DATAFLOW,
+                "stopped_early": str(report.stopped_early),
+                "n_queries_planned": str(report.n_queries_planned),
+            },
+        )
+        scope.publish(tracker, run_report)
 
         # Logging
         logger.info(f"Téléchargement terminé : {report.to_metrics()}")
-        # Statut de sortie : contrôle après la clôture du tracker, pour que les métriques et la
-        # table de diagnostic des requêtes en échec soient publiées avant l'échec de l'étape
-        check_download_report(report, downloads_config.get("MAX_ERROR_RATIO"))
+        return report
     finally:
         client.close()
 

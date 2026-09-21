@@ -41,7 +41,10 @@ from kedro_pipeline.io.ducklake import (
 )
 from kedro_pipeline.io.serving import ServingCatalog
 from kedro_pipeline.steps.serving import publish_serving, source_tables
-from macroforecast.tracking import get_tracker
+from macroforecast.tracking import CapturingTracker, get_tracker
+from macroforecast.tracking.figures import key_figures_serving, sections_serving
+from macroforecast.tracking.report import Units
+from scripts._run_report import RunScope, guarded_run, run_name
 
 # Logger
 logger = logging.getLogger(__name__)
@@ -110,6 +113,10 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 
+# Nœud du rapport de run (clé de config/tracking.yaml)
+NODE = "publish_serving"
+
+
 # Fonction principale
 def main(argv: Optional[Sequence[str]] = None) -> None:
     """CLI entry point of ``serving-script``.
@@ -153,12 +160,15 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
 
     # Suivi d'exécution : objet nul sans URI MLflow
     mlflow_config = params.get("MLFLOW") or {}
-    tracker = get_tracker(
-        tracking_uri=mlflow_config.get("TRACKING_URI"),
-        experiment=mlflow_config.get("EXPERIMENT", "serving"),
-        run_name=f"serving-{params['SCHEMA']}-{datetime.now():%Y%m%d-%H%M}",
+    tracker = CapturingTracker(
+        get_tracker(
+            tracking_uri=mlflow_config.get("TRACKING_URI"),
+            experiment=mlflow_config.get("EXPERIMENT", "trade-04-serving"),
+            run_name=run_name(f"serving-{params['SCHEMA']}-{datetime.now():%Y%m%d-%H%M}", NODE),
+        )
     )
-    with tracker:
+    scope = RunScope(NODE)
+    with tracker, guarded_run(scope, tracker):
         result = publish_serving(
             tables, catalog, params=params, runtime=configs["runtime"], tracker=tracker
         )
@@ -168,6 +178,27 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
                 "mode": result["mode"],
                 "missing_sources": ",".join(result["missing_sources"]),
             }
+        )
+
+        # Rapport de run, publié avant la sortie en erreur : la publication est atomique
+        # (tout ou rien), une panne annule donc toutes les tables
+        scope.step = "rapport de run"
+        planned = len(params["TABLES"])
+        failed = len(result["failures"])
+        scope.publish(
+            tracker,
+            scope.build(
+                metrics=tracker.metrics,
+                units=Units(
+                    planned=planned,
+                    succeeded=0 if failed else len(result["tables"]),
+                    failed=failed,
+                    planned_label=f"{planned} tables (mode {result['mode']})",
+                ),
+                failures=result["failures"],
+                key_figures=key_figures_serving,
+                sections=lambda m: sections_serving(m, tracker.tables),
+            ),
         )
 
     # Compte rendu

@@ -137,6 +137,7 @@ spec:
               export RUNTIME_CONFIG_PATH="$d/runtime.yaml"
               export SYNTHETIC_CONFIG_PATH="$d/synthetic.yaml"
               export SERVING_CONFIG_PATH="$d/serving.yaml"
+              export TRACKING_CONFIG_PATH="$d/tracking.yaml"
             fi
             # Budget de temps optionnel : SIGINT (arrêt propre du script, les écritures commitées sont
             # conservées) puis sortie 0, l'étape suivante prenant le relais sur ce qui manque
@@ -154,6 +155,8 @@ spec:
           - "{{inputs.parameters.command}}"
         env:
           - {name: PROFILE, value: "{{workflow.parameters.profile}}"}
+          # Étiquette d'image affichée dans la description du run MLflow
+          - {name: IMAGE_TAG, value: "{{workflow.parameters.image-tag}}"}
           - {name: PYTHONUNBUFFERED, value: "1"}
           - {name: WORKFLOW_ID, valueFrom: {fieldRef: {fieldPath: "metadata.labels['workflows.argoproj.io/workflow']"}}}
           - {name: NUM_CPU, value: "{{inputs.parameters.cpu}}"}

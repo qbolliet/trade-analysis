@@ -17,7 +17,7 @@ MLFLOW:
   # inchangée. Surchargeable par MLFLOW_TRACKING_URI (convention MLflow).
   TRACKING_URI: null
   # Expérience de destination, créée à la volée si absente
-  EXPERIMENT: "demo-eurostat-download"
+  EXPERIMENT: "demo-trade-01-downloads"
   # Publication de la table de diagnostic par requête
   LOG_ARTIFACTS: true
 

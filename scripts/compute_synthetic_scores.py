@@ -43,6 +43,7 @@ from __future__ import annotations
 # Modules de base
 from dataclasses import fields, replace
 from datetime import datetime
+from contextlib import nullcontext
 import logging
 import os
 from pathlib import Path
@@ -67,7 +68,10 @@ from statflows.core.download import _now, _parse_iso, _schema_name
 import pandas as pd
 
 # Module de suivi d'exécution (MLflow optionnel, objet nul par défaut)
-from macroforecast.tracking import get_tracker
+from macroforecast.tracking import CapturingTracker, get_tracker, rekey_metrics
+from macroforecast.tracking.figures import key_figures_synthesis, sections_synthesis
+from macroforecast.tracking.report import Units
+from scripts._run_report import RunScope, guarded_run, run_name
 # Méthodologie de synthèse multiniveau (fonction pure)
 from macroforecast.trade.aggregation import (
     LevelReport,
@@ -609,6 +613,7 @@ def run_from_connections(
     diagnostics_schema: str,
     tracker: Any = None,
     log_artifacts: bool = True,
+    scope: Optional[RunScope] = None,
 ) -> Tuple[List[SynthesisReport], Dict[str, Exception], bool, int]:
     """Read the source query, run the synthesis per context, and write both schemas.
 
@@ -631,6 +636,10 @@ def run_from_connections(
         diagnostics_schema: Target schema of the fit diagnostics.
         tracker: Experiment tracker; the null tracker by default.
         log_artifacts: Whether to log the S-2.7 artifacts to the tracker.
+        scope: Run-report scope. When given, the run report (checks, key figures,
+            sections) is built and published inside the tracker's run, after the
+            metrics and before returning, and an uncaught exception publishes the
+            reduced failure description.
 
     Returns:
         Tuple ``(reports, failures, created_any, n_contexts)``: one
@@ -643,6 +652,8 @@ def run_from_connections(
         from macroforecast.tracking import NULL_TRACKER
 
         tracker = NULL_TRACKER
+    # Enregistrement de ce qui est journalisé : source des contrôles et du rapport de run
+    tracker = CapturingTracker(tracker)
 
     context_columns = list(config.context_columns)
     scores_keys = [
@@ -659,21 +670,21 @@ def run_from_connections(
         "item_b",
     ]
 
-    # Lecture de la table source combinée (une seule requête)
-    df_source = read_source_metrics(
-        scores_conn, query, (config.reporter_col, config.product_col)
-    )
-    logger.info(
-        f"{len(df_source)} ligne(s) source lue(s), "
-        f"{df_source[context_columns].drop_duplicates().shape[0]} contexte(s)."
-    )
-
     reports: List[SynthesisReport] = []
     failures: Dict[str, Exception] = {}
     created_any = False
     n_contexts = 0
 
-    with tracker:
+    with tracker, (guarded_run(scope, tracker) if scope is not None else nullcontext()):
+        # Lecture de la table source combinée (une seule requête)
+        df_source = read_source_metrics(
+            scores_conn, query, (config.reporter_col, config.product_col)
+        )
+        logger.info(
+            f"{len(df_source)} ligne(s) source lue(s), "
+            f"{df_source[context_columns].drop_duplicates().shape[0]} contexte(s)."
+        )
+
         # Un contexte après l'autre : l'échec de l'un n'emporte pas les autres
         for context_value, df_context in df_source.groupby(
             context_columns, sort=False, observed=True
@@ -729,7 +740,7 @@ def run_from_connections(
         # les contextes réussis
         aggregate = _aggregate_reports(reports)
         aggregate.created = created_any
-        tracker.log_metrics(aggregate.to_metrics())
+        tracker.log_metrics(rekey_metrics(aggregate.to_metrics()))
         tracker.set_tags(
             {
                 "result_schema": result_schema,
@@ -738,12 +749,38 @@ def run_from_connections(
             }
         )
 
+        # Rapport de run : contrôles, chiffres clés, sections, publiés avant toute sortie
+        # en erreur (les contextes en échec sont listés, ils ne l'interrompent pas)
+        if scope is not None:
+            scope.step = "rapport de run"
+            scope.publish(
+                tracker,
+                scope.build(
+                    metrics=tracker.metrics,
+                    units=Units(
+                        planned=n_contexts,
+                        succeeded=len(reports),
+                        failed=len(failures),
+                        planned_label=f"{n_contexts} contextes",
+                    ),
+                    failures={
+                        unit: f"{type(exc).__name__}: {exc}" for unit, exc in failures.items()
+                    },
+                    key_figures=key_figures_synthesis,
+                    sections=lambda m: sections_synthesis(m, tracker.tables),
+                ),
+            )
+
     return reports, failures, created_any, n_contexts
 
 
 # ──────────────────────────────────────────────────────────────────────
 # Point d'entrée
 # ──────────────────────────────────────────────────────────────────────
+
+# Nœud du rapport de run (clé de config/tracking.yaml)
+NODE = "compute_synthetic_scores"
+
 
 # Fonction principale de calcul des scores synthétiques
 def main() -> None:
@@ -769,9 +806,10 @@ def main() -> None:
     log_artifacts = bool(mlflow_config.get("LOG_ARTIFACTS", True))
     tracker = get_tracker(
         tracking_uri=mlflow_config.get("TRACKING_URI"),
-        experiment=mlflow_config.get("EXPERIMENT", "vulnerabilities-synthesis"),
-        run_name=f"vulnerabilities-synthesis-{datetime.now():%Y%m%d-%H%M}",
+        experiment=mlflow_config.get("EXPERIMENT", "trade-03-vulnerabilities"),
+        run_name=run_name(f"vulnerabilities-synthesis-{datetime.now():%Y%m%d-%H%M}", NODE),
     )
+    scope = RunScope(NODE)
 
     # Identité du catalogue partagé et schémas résultat
     catalog = vulnerability_config[_PARTNERS_ROOT]
@@ -846,6 +884,7 @@ def main() -> None:
                 diagnostics_schema=diagnostics_schema,
                 tracker=tracker,
                 log_artifacts=log_artifacts,
+                scope=scope,
             )
         finally:
             diagnostics_conn.close()

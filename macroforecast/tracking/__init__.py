@@ -4,8 +4,10 @@ from .base import (
     RunTracker,
     NullTracker,
     NULL_TRACKER,
+    CapturingTracker,
     flatten_metrics,
     flatten_params,
+    rekey_metrics,
     run_params,
 )
 # Implémentation MLflow (import de mlflow paresseux)
@@ -20,8 +22,10 @@ __all__ = [
     "RunTracker",
     "NullTracker",
     "NULL_TRACKER",
+    "CapturingTracker",
     "flatten_metrics",
     "flatten_params",
+    "rekey_metrics",
     "run_params",
     # Implémentation MLflow
     "MlflowTracker",

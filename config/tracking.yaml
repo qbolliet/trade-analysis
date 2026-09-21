@@ -1,0 +1,59 @@
+# Rapport de run MLflow (PS-31, PD-13) : verdict, contrôles déclaratifs, description et
+# rapport HTML publiés par chaque script à la fin de son exécution.
+# Lu via la variable d'environnement TRACKING_CONFIG_PATH (défaut : config/tracking.yaml).
+# Les scripts sont les seuls à lire ce fichier ; les nœuds Kedro (K-13) le recevront en
+# paramètres (`parameters_tracking.yml`, même contenu).
+tracking:
+  # Métriques système du pod (onglet « System metrics »). Les variables
+  # MLFLOW_ENABLE_SYSTEM_METRICS_LOGGING / MLFLOW_SYSTEM_METRICS_SAMPLING_INTERVAL sont
+  # injectées dans les pods par le rendu (PS-21.1) ; ce bloc en est la référence.
+  SYSTEM_METRICS:
+    ENABLED: true
+    SAMPLING_SECONDS: 30
+  REPORT:
+    # Publier report/report.html (rapport autonome, une section par étape)
+    HTML: true
+    # inline : plotly.js embarqué (autonome, ~3,5 Mo) ; cdn : léger, exige internet côté navigateur
+    PLOTLY_JS: inline
+    # Longueur maximale de la description (tag mlflow.note.content) ; la copie intégrale est
+    # dans report/summary.md. Sous la limite de longueur d'un tag du serveur (PQ-19).
+    MAX_DESCRIPTION_CHARS: 7500
+    # Lignes affichées par table dans le rapport HTML (le CSV complet reste dans tables/)
+    MAX_TABLE_ROWS: 50
+    # Unités en échec détaillées dans la description
+    MAX_FAILURES_LISTED: 20
+  # Liens insérés dans la description ({workflow_id} est remplacé). Renseigner l'URL de
+  # l'interface Argo du namespace, par exemple
+  # "https://<argo-ui>/workflows/user-qbollietdgddi/{workflow_id}" ; null : pas de lien.
+  LINKS:
+    ARGO_WORKFLOW: null
+  # Contrôles par nœud (clé = nom du nœud, joker `*` accepté). Deux contrôles implicites
+  # s'ajoutent à tous les nœuds, hors configuration : « aucune unité en échec » (error) et
+  # « toutes les unités prévues traitées » (warning).
+  #   op : < <= > >= == !=   (le contrôle est RÉUSSI quand `valeur op seuil` est vrai)
+  #   severity : warning | error ; métrique absente → contrôle ignoré (« skipped »)
+  # Les métriques visées sont celles RÉELLEMENT émises par les scripts (un test le vérifie).
+  # Seuils initiaux à calibrer sur les premières exécutions réelles (PR-21, K-17).
+  CHECKS:
+    "download_*":
+      - {metric: download/error_share,  op: "<=", threshold: 0.05, severity: warning, label: "Part de requêtes en erreur"}
+      - {metric: download/processed,    op: ">",  threshold: 0,    severity: warning, label: "Au moins une requête traitée"}
+      - {metric: download/wait_share,   op: "<=", threshold: 0.5,  severity: warning, label: "Temps passé en attente du limiteur"}
+    "process_baci_*":
+      # La porte de complétude (années complètes) est évaluée par le script BACI lui-même
+      - {metric: coverage/years_eligible,                  op: ">",  threshold: 0,    severity: error,   label: "Au moins une année complète"}
+      - {metric: baci/flows,                               op: ">",  threshold: 0,    severity: error,   label: "Flux écrits"}
+      - {metric: baci/tonnage/share_tonnage_missing,       op: "<=", threshold: 0.05, severity: warning, label: "Flux sans tonnage (1 − part convertie en tonnes)"}
+      - {metric: baci/gravity/r_squared,                   op: ">=", threshold: 0.5,  severity: warning, label: "R² de l'équation de gravité"}
+      - {metric: baci/fobisation/share_clipped_to_zero,    op: "<=", threshold: 0.01, severity: warning, label: "Valeurs FOB tronquées à zéro"}
+    compute_partner_vulnerabilities:
+      - {metric: vulnerabilities/cells/n_total,            op: ">",  threshold: 0,    severity: warning, label: "Cellules de vulnérabilité calculées"}
+    "compute_network_vulnerabilities*":   # un run par millésime : compute_network_vulnerabilities_<millésime>
+      - {metric: network_vulnerabilities/cells/n_total,    op: ">",  threshold: 0,    severity: warning, label: "Cellules de vulnérabilité de réseau calculées"}
+    compute_synthetic_scores:
+      - {metric: synthesis/n_contexts,                     op: ">",  threshold: 0,    severity: warning, label: "Contextes calculés"}
+    compute_synthesis_coherence:
+      - {metric: coherence/n_contexts,                     op: ">",  threshold: 0,    severity: warning, label: "Contextes de cohérence calculés"}
+    publish_serving:
+      - {metric: serving/cell_scores/rows,                 op: ">",  threshold: 0,    severity: error,   label: "Table cell_scores non vide"}
+      - {metric: serving/countries/rows,                   op: ">",  threshold: 0,    severity: error,   label: "Table countries non vide"}

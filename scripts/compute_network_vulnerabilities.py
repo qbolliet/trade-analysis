@@ -58,7 +58,13 @@ from kedro_pipeline.io.ducklake import (
 from statflows.core.download import _now, _parse_iso, _schema_name
 
 # Module de suivi d'exécution (MLflow optionnel, objet nul par défaut)
-from macroforecast.tracking import get_tracker
+from macroforecast.tracking import CapturingTracker, get_tracker, rekey_metrics
+from macroforecast.tracking.figures import (
+    key_figures_network_vulnerabilities,
+    sections_network_vulnerabilities,
+)
+from macroforecast.tracking.report import Units
+from scripts._run_report import RunScope, guarded_run, run_name
 # Module de calcul des indicateurs
 from macroforecast.trade.vulnerabilities import (
     DEFAULT_NETWORK_CONFIG,
@@ -404,6 +410,11 @@ def vintages_to_recompute(
 # Point d'entrée
 # ──────────────────────────────────────────────────────────────────────
 
+# Préfixe du nœud du rapport de run : un run par millésime (clé « compute_network_vulnerabilities* »
+# de config/tracking.yaml)
+NODE = "compute_network_vulnerabilities"
+
+
 # Fonction principale de calcul des vulnérabilités de réseau
 def main() -> None:
     """CLI entry point for the incremental network-vulnerability computation.
@@ -518,15 +529,21 @@ def main() -> None:
             for label, source_schema in stale:
                 try:
                     # Un run par millésime, taggé, comme dans process_baci_hs.py
-                    tracker = get_tracker(
-                        tracking_uri=mlflow_config.get("TRACKING_URI"),
-                        experiment=mlflow_config.get(
-                            "EXPERIMENT", "network-vulnerabilities"
-                        ),
-                        run_name=f"network-vulnerabilities-{label}-{datetime.now():%Y%m%d-%H%M}",
-                        tags={"vintage": label},
+                    node = f"{NODE}_{label}"
+                    tracker = CapturingTracker(
+                        get_tracker(
+                            tracking_uri=mlflow_config.get("TRACKING_URI"),
+                            experiment=mlflow_config.get(
+                                "EXPERIMENT", "trade-03-vulnerabilities"
+                            ),
+                            run_name=run_name(
+                                f"network-vulnerabilities-{label}-{datetime.now():%Y%m%d-%H%M}", node
+                            ),
+                            tags={"vintage": label},
+                        )
                     )
-                    with tracker:
+                    scope = RunScope(node)
+                    with tracker, guarded_run(scope, tracker):
                         # Résultat de l'exécution précédente sur ce millésime :
                         # la lecture appartient au script (principe P4), et son
                         # absence désactive simplement la mesure de dérive
@@ -561,7 +578,7 @@ def main() -> None:
                         # Envoi des métriques : le rapport connaît sa mise en
                         # forme. Les paramètres sont journalisés par le runner
                         # lui-même ; seuls les tags propres au script restent ici.
-                        tracker.log_metrics(report.to_metrics())
+                        tracker.log_metrics(rekey_metrics(report.to_metrics()))
                         tracker.set_tags(
                             {
                                 "dataflow": DATAFLOW,
@@ -571,6 +588,17 @@ def main() -> None:
                                 "n_cells": str(report.cells),
                             }
                         )
+
+                        # Rapport de run du millésime : contrôles, chiffres clés, sections,
+                        # publiés avant toute sortie en erreur
+                        scope.step = "rapport de run"
+                        run_report = scope.build(
+                            metrics=tracker.metrics,
+                            units=Units(planned=1, succeeded=1, planned_label=f"1 millésime ({label})"),
+                            key_figures=key_figures_network_vulnerabilities,
+                            sections=lambda m: sections_network_vulnerabilities(m, tracker.tables),
+                        )
+                        scope.publish(tracker, run_report)
 
                     # Entrée de registre du millésime effectivement calculé
                     computed[source_schema] = {
