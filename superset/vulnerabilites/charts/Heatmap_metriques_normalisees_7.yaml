@@ -1,0 +1,31 @@
+slice_name: Heatmap metriques normalisees
+description: null
+certified_by: null
+certification_details: null
+viz_type: heatmap_v2
+params:
+  datasource: 7__table
+  viz_type: heatmap_v2
+  all_columns_x: product_label
+  all_columns_y: metric_name
+  metric:
+    expressionType: SQL
+    sqlExpression: AVG(value)
+    label: Valeur normalisee
+  adhoc_filters: []
+  row_limit: 10000
+  sort_x_axis: alpha_asc
+  sort_y_axis: alpha_asc
+  linear_color_scheme: schemeYlOrRd
+  xscale_interval: 1
+  yscale_interval: 1
+  left_margin: auto
+  bottom_margin: auto
+  y_axis_format: SMART_NUMBER
+  normalize_across: heatmap
+  show_values: false
+query_context: null
+cache_timeout: null
+uuid: 47cbac4f-4c4d-4243-bf9b-1d7de810bc0e
+version: 1.0.0
+dataset_uuid: 40fa5dbd-183f-4d9e-98c2-7eff56114abd

@@ -1,0 +1,22 @@
+slice_name: Produits en alerte CDI2
+description: null
+certified_by: null
+certification_details: null
+viz_type: big_number_total
+params:
+  datasource: 1__table
+  viz_type: big_number_total
+  metric:
+    expressionType: SQL
+    sqlExpression: COUNT(DISTINCT CASE WHEN "CDI2_ALERT" THEN product END)
+    label: Produits en alerte CDI2
+  adhoc_filters: []
+  header_font_size: 0.4
+  subheader_font_size: 0.15
+  y_axis_format: SMART_NUMBER
+  subheader: sur le perimetre filtre
+query_context: null
+cache_timeout: null
+uuid: d83a5c83-080f-41bd-8f9c-81c7ba339cfb
+version: 1.0.0
+dataset_uuid: 36728d1c-82e1-4659-9433-eb37ea4ce456

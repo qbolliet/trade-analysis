@@ -3082,6 +3082,52 @@ demandé à l'import). Passage de `demo` à la production : les datasets pointen
 schéma `demo_dashboard` ; remplacer `demo_dashboard` par `dashboard` dans les YAML de
 l'export (`datasets/*.yaml`, clé `schema` ou SQL des datasets virtuels) puis réimporter.
 
+**Constat K-03c (2026-09-22).** Tableau de bord construit **intégralement par l'API**
+(voie « assets as code ») : connexion, 8 datasets, 18 graphiques, 2 onglets, 7 filtres
+natifs — exporté sous `superset/vulnerabilites/`, guide détaillé (mécanisme, pièges) dans
+`superset/README.md`. Écarts avec la spécification initiale :
+- **Mécanisme de connexion (PS-30.1 point 1)** : **(b) seul est retenu**, (a) écarté —
+  le pod Superset n'a pas de volume persistant pour `~/.duckdb/stored_secrets`, et il y a
+  **deux pods** (web + `worker` Celery, qui exécute SQL Lab en asynchrone) qui devraient
+  partager le même secret, impossible sans volume commun. L'écouteur `connect` (dans
+  `superset_config.py`) discrimine les connexions DuckDB via
+  `type(dbapi_connection).__module__ == "duckdb_engine"` (les connexions PostgreSQL/Redis
+  n'ont pas cet attribut).
+- **Câblage hors Helm** : la version de chart exacte déjà déployée (`superset-0.1.12`)
+  n'est plus dans l'index du dépôt (`insee-datascience`, seules des versions 1.x y
+  restent) — un `helm upgrade --reuse-values` aurait risqué de changer bien plus que
+  prévu. Les deux Secrets Kubernetes rendus par le chart (`superset-899573-env` pour les
+  identifiants, `superset-899573-config` pour `superset_config.py`) ont été patchés
+  **directement**, puis les pods redémarrés. **Conséquence : hors du cycle de vie Helm,
+  perdu si le service est un jour redéployé/relancé depuis l'UI Onyxia** — à rejouer
+  (procédure dans `superset/README.md`) ou, mieux, à porter dans une vraie surcharge de
+  chart si une version compatible redevient trouvable.
+- **Table de service `serving` jamais publiée sur l'instance courante** : la base
+  PostgreSQL du namespace a été recréée après la dernière exécution de `publish_serving`
+  (host `postgresql-cnpg-699488-rw` → `postgresql-cnpg-82431-rw`) ; `serving-script`
+  relancé en K-03c (profil `demo`) pour repeupler le catalogue.
+- **Référentiels jamais publiés sur le profil `demo`** : `products`/`countries` étaient
+  vides (`publish_reference` jamais exécuté sur ce profil), laissant tous les libellés
+  `NULL`. Repeuplés en K-03c par un appel ciblé (codelists Eurostat + Comtrade, sans
+  retélécharger les flux) : 100 % des lignes de `cell_scores` ont désormais un libellé.
+  Limite résiduelle : `countries.iso3` n'existe que pour les codes Comtrade (M49), pas
+  pour les codes Eurostat alpha-2 (dont `FR`) — le graphique *World Map* (PS-30.2 #10)
+  n'a **pas** été construit (pas de crosswalk ISO2→ISO3 disponible).
+- **Pièges de construction par l'API** (détaillés dans `superset/README.md`) : filtre
+  natif `year` sans valeur par défaut **explicite** → toutes les années se mélangent (un
+  produit rang 1 par année, ressemble à un rang constant) ; `heatmap_v2` exige **deux**
+  dimensions catégorielles, donc un dataset virtuel dédié en **format long**
+  (`cell_scores_metrics_long`, `UNION ALL` des colonnes `*_norm`) puisque `cell_scores`
+  est large ; un graphique `viz_type: "markdown"` n'est **pas** interrogeable (le Markdown
+  est un composant de mise en page natif, pas un `Chart`) ; format D3 `PERCENT_1_POINT`
+  invalide (`.1%` correct) ; tables de cohérence à filtrer `metric_a`/`metric_b IS NOT
+  NULL` (sinon dominées par les statistiques globales `kmo`/`bartlett_p`/`axis1_share`…).
+- **Simplifications** : Big Number « part des importations en alerte » → « part des
+  **produits** en alerte » (pondération par valeur importée non implémentée) ; table
+  « Cohérence pays × produit » en table plate plutôt qu'en *Pivot Table v2* ; graphiques
+  PS-30.3 ajoutés (nuage HHI × CDI2, concordance des méthodes via `kendall_tau_b`, table
+  de divergence des méthodes exposées, encadré méthodologique).
+
 ### PS-31 — Rapport de run MLflow (supervision)
 
 Révision 2 : la supervision est **exclusivement** dans MLflow (PD-13). Objectif : pour
@@ -3443,8 +3489,8 @@ ni le cluster.
 | PR-11 | Métriques d'export non validées méthodologiquement | Moyenne / moyen | `FLOWS: [import]` par défaut (PD-09) |
 | PR-12 | Coût mémoire de JAX/Kantorovitch en parallèle `loky` | Moyenne / moyen | `n_jobs` spécifique à la méthode (`kantorovich` exécuté en séquentiel dans le processus parent), préallocation XLA désactivée |
 | PR-13 | Image lourde (JAX + MLflow 3) : démarrage de pod lent | Certaine / faible | Cache de nœud, `imagePullPolicy: IfNotPresent` avec étiquettes immuables (SHA) |
-| PR-14 | Version de DuckDB / de l'extension `ducklake` de l'image Superset **incompatible** avec celle du pipeline (catalogue illisible, ou lisible mais écrit dans un format plus récent) | Moyenne / fort pour la démonstration | Vérification en tête de K-03c (PS-30.1 point 0) ; épingler `duckdb==1.5.3` dans la configuration du chart ; toute montée de version DuckDB du pipeline s'accompagne de celle de Superset (§5.8) |
-| PR-15 | Latence des graphiques Superset (lecture de Parquet sur S3 à chaque requête non mise en cache) sur les volumes de production (`cell_scores` ~30 M, `flows` ~80 M lignes) | Moyenne / moyen | Partitionnement par `year` et tri d'insertion (PS-29.1), cache des graphiques 24 h, `TOP_PARTNERS`, `serving.YEARS_BACK`, `threads`/`memory_limit` de la connexion ; en dernier recours, tables d'agrégats dédiées dans `serving` |
+| PR-14 | Version de DuckDB / de l'extension `ducklake` de l'image Superset **incompatible** avec celle du pipeline (catalogue illisible, ou lisible mais écrit dans un format plus récent) | Moyenne / fort pour la démonstration | Vérification en tête de K-03c (PS-30.1 point 0) ; épingler `duckdb==1.5.3` dans la configuration du chart ; toute montée de version DuckDB du pipeline s'accompagne de celle de Superset (§5.8). *(Vérifié en K-03c, 2026-09-22, conditions réelles : DuckDB 1.5.5 (Superset) lit sans erreur un catalogue `serving` écrit par DuckDB 1.5.3 (pipeline, cette même exécution) — `SHOW ALL TABLES`, `DESCRIBE`, lecture filtrée correctes ; écriture refusée. **Compatible en l'état, aucun épinglage nécessaire.** À revérifier à chaque montée de version de l'un des deux côtés.)* |
+| PR-15 | Latence des graphiques Superset (lecture de Parquet sur S3 à chaque requête non mise en cache) sur les volumes de production (`cell_scores` ~30 M, `flows` ~80 M lignes) | Moyenne / moyen | Partitionnement par `year` et tri d'insertion (PS-29.1), cache des graphiques 24 h, `TOP_PARTNERS`, `serving.YEARS_BACK`, `threads`/`memory_limit` de la connexion ; en dernier recours, tables d'agrégats dédiées dans `serving`. *(Mesuré en K-03c, 2026-09-22, volumes `demo` — `cell_scores` ~0,29 M lignes, `flows` ~2,8 M : requête filtrée `year`+`reporter` — **0,24 s à froid, 0,04 s à chaud** (SQL Lab, `threads=4`, `memory_limit=4GB`). Largement sous l'objectif de 5 s ; à remesurer aux volumes de production (K-17).)* |
 | PR-16 | Tables `indicators` multipliées par ~3,6 au niveau SH6 (PD-20) : durée du calcul partenaires et volume | Certaine / faible | `VINTAGES` configurable, calcul incrémental par unité, partition par `classification` |
 | PR-17 | Recouvrement `daily`/`weekly` : `publish_serving` lu pendant une publication | Faible / faible | Publication en une transaction DuckLake (Superset lit le snapshot précédent jusqu'au `COMMIT`) ; mutex Argo (écrivain unique) |
 | PR-18 | Code reporter `EU27_2020` absent ou différent dans DS-045409 | Moyenne / moyen | PQ-17 : vérification de la codelist au premier téléchargement ; repli : agrégation des membres avec partenaires extra-UE seulement (documentée comme approximation) |
@@ -3471,7 +3517,7 @@ ni le cluster.
 | PQ-10 | ~~Accepte-t-on un traitement BACI par fenêtres glissantes ?~~ **Résolu (2026-09-18)** : **non** ; fidélité à la méthodologie originale par statistiques suffisantes (PD-22, PS-14), aucune approximation. | — |
 | PQ-11 | Faut-il calculer des **métriques partenaires pour les pays non-UE**, à partir de BACI (Eurostat ne couvre que les reporters UE) ? | Hors périmètre de cette architecture ; prévu comme extension (nouvelle source de grille `baci_partners`) |
 | PQ-12 | Faut-il conserver les **flux mensuels** (`C_M_HS`) ? | Non : seul l'annuel est ordonnancé |
-| PQ-13 | ~~**Superset** est-il disponible dans le catalogue Onyxia, avec `duckdb-engine` ?~~ **Résolu (2026-09-18, rév. 2)** : `duckdb-engine` est installé dans le chart Superset d'Onyxia et l'accès du service au bucket S3 est assuré. Restent à relever en K-03c : version de Superset, version de `duckdb` dans l'image (PR-14), mécanisme d'`ATTACH` retenu (PS-30.1). | Lecture directe du catalogue `serving` (PD-21) |
+| PQ-13 | ~~**Superset** est-il disponible dans le catalogue Onyxia, avec `duckdb-engine` ?~~ **Résolu (2026-09-18, rév. 2)** : `duckdb-engine` est installé dans le chart Superset d'Onyxia et l'accès du service au bucket S3 est assuré. Restent à relever en K-03c : version de Superset, version de `duckdb` dans l'image (PR-14), mécanisme d'`ATTACH` retenu (PS-30.1). *(Relevé en K-03c, 2026-09-22 : Superset **4.1.1** ; `duckdb` **1.5.5**, `duckdb-engine` **0.17.0** dans le pod, installés par le `bootstrapScript` du chart à chaque démarrage — non figés dans l'image ; extensions `ducklake`/`httpfs`/`postgres` installables à la volée (accès réseau sortant du pod). Précision sur « l'accès S3 est assuré » : c'est la **joignabilité réseau** à `minio.lab.sspcloud.fr` qui est assurée (confirmé : un essai sans identifiants obtient un `403 Access Denied`, pas une erreur réseau) — **aucune identifiant S3 n'était configuré** dans le pod Superset avant K-03c ; ce n'est pas une régression, c'est justement l'objet de PS-30.1 point 1. Câblé en K-03c en réutilisant `trade-postgres-credentials`/`trade-s3-credentials` (aucun identifiant dédié à Superset créé).)* | Lecture directe du catalogue `serving` (PD-21) |
 | PQ-14 | La base de métadonnées du catalogue `serving` peut-elle vivre sur la **même instance PostgreSQL** que les autres catalogues ? | Oui (métadonnées seulement, les données sont sur S3) ; rôle `superset_reader` en lecture seule sur cette base |
 | PQ-15 | ~~Le client Eurostat de `statflows` accepte-t-il `startPeriod`/`endPeriod` ?~~ **Résolu (2026-09-18, phase 0)** : oui. `EurostatQueryRequestV30` porte les champs `start_period`/`end_period`, transmis en SDMX 3.0 par `c[TIME_PERIOD]=ge:<start>+le:<end>` (`statflows/sources/eurostat/endpoints.py`) et conservés par `fetch_updates` (qui n'ajoute que `lastNObservations`). Ces champs **n'entrent pas** dans `identity_key` (seules les `dimensions` y figurent) : les entrées de registre existantes restent valides. Le script Eurostat envoie `start_period = runtime.ANALYSIS_START_YEAR.eurostat` ; `PERIOD_WINDOWS` reste non implémenté (`NotImplementedError`). | — |
 | PQ-16 | ~~**Quota total** du namespace (somme CPU/mémoire des pods actifs) ?~~ **Résolu (2026-09-20)** : `onyxia-quota` ne borne **ni CPU ni mémoire** au total ; il limite `count/pods` à 100, GPU à 1 (`nvidia.com/gpu`) et `requests.storage` à 2 Ti. **Aucun `LimitRange`** dans le namespace. Seules les limites par pod (PQ-01) contraignent : les ressources de départ du workflow de transition (4 CPU / 32 Gi pour BACI, 4 / 16 Gi ailleurs) sont conservées. | — |

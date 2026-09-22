@@ -1,0 +1,1014 @@
+dashboard_title: Vulnerabilites
+description: null
+css: null
+slug: vulnerabilites-demo
+certified_by: null
+certification_details: null
+published: true
+uuid: d3631d3d-60ae-40ae-8060-82b38d6cab56
+position:
+  DASHBOARD_VERSION_KEY: v2
+  ROOT_ID:
+    type: ROOT
+    id: ROOT_ID
+    children:
+    - GRID_ID
+  GRID_ID:
+    type: GRID
+    id: GRID_ID
+    parents:
+    - ROOT_ID
+    children:
+    - TABS-MAIN
+    - ROW-N-DAKCG94D
+  TABS-MAIN:
+    type: TABS
+    id: TABS-MAIN
+    parents:
+    - ROOT_ID
+    - GRID_ID
+    children:
+    - TAB-PAYS
+    - TAB-PRODUIT
+  TAB-PAYS:
+    type: TAB
+    id: TAB-PAYS
+    meta:
+      text: Pays
+    parents:
+    - ROOT_ID
+    - GRID_ID
+    - TABS-MAIN
+    children:
+    - ROW-METHODO
+    - ROW-BIGNUM
+    - ROW-PRODUITS
+    - ROW-BARHEAT
+    - ROW-COHERENCE
+    - ROW-SCATTER-METHODES
+    - ROW-DIVERGENCE
+    - MARKDOWN-UNION
+    - ROW-UNION-PRODUITS
+    - ROW-UNION-COHERENCE
+    - ROW-COHERENCE-PP
+  TAB-PRODUIT:
+    type: TAB
+    id: TAB-PRODUIT
+    meta:
+      text: Produit
+    parents:
+    - ROOT_ID
+    - GRID_ID
+    - TABS-MAIN
+    children:
+    - ROW-FICHE
+    - ROW-PAYS-CLASSES
+    - ROW-FLUX
+    - ROW-EVOLUTIONS
+  MD-METHODO:
+    type: MARKDOWN
+    id: MD-METHODO
+    children: []
+    meta:
+      width: 12
+      height: 8
+      code: '#### Encadre methodologique
+
+
+        **HHI** : concentration des fournisseurs (Herfindahl-Hirschman, 0-1, 1 = un
+        seul fournisseur). **CDI2/CDI3** : dependance extra-UE (variantes). **EXPORT_HHI**,
+        **CENTRALITY_RISK**, **CLUSTERING_W**, **SPOF** : metriques de reseau (structure
+        des echanges mondiaux du produit). Score et rang synthetiques : consensus
+        multi-methodes (`consensus_borda` par defaut). **Convention : rang 1 = unite
+        la plus vulnerable.**'
+    parents:
+    - ROOT_ID
+    - GRID_ID
+    - TABS-MAIN
+    - TAB-PAYS
+  ROW-METHODO:
+    type: ROW
+    id: ROW-METHODO
+    children:
+    - MD-METHODO
+    meta:
+      background: BACKGROUND_TRANSPARENT
+    parents:
+    - ROOT_ID
+    - GRID_ID
+    - TABS-MAIN
+    - TAB-PAYS
+  CHART-big_hhi:
+    type: CHART
+    id: CHART-big_hhi
+    children: []
+    meta:
+      chartId: 1
+      width: 3
+      height: 50
+      sliceName: big_hhi
+    parents:
+    - ROOT_ID
+    - GRID_ID
+    - TABS-MAIN
+    - TAB-PAYS
+    - ROW-BIGNUM
+  CHART-big_cdi2:
+    type: CHART
+    id: CHART-big_cdi2
+    children: []
+    meta:
+      chartId: 2
+      width: 3
+      height: 50
+      sliceName: big_cdi2
+    parents:
+    - ROOT_ID
+    - GRID_ID
+    - TABS-MAIN
+    - TAB-PAYS
+    - ROW-BIGNUM
+  CHART-big_share:
+    type: CHART
+    id: CHART-big_share
+    children: []
+    meta:
+      chartId: 3
+      width: 3
+      height: 50
+      sliceName: big_share
+    parents:
+    - ROOT_ID
+    - GRID_ID
+    - TABS-MAIN
+    - TAB-PAYS
+    - ROW-BIGNUM
+  CHART-big_median:
+    type: CHART
+    id: CHART-big_median
+    children: []
+    meta:
+      chartId: 4
+      width: 3
+      height: 50
+      sliceName: big_median
+    parents:
+    - ROOT_ID
+    - GRID_ID
+    - TABS-MAIN
+    - TAB-PAYS
+    - ROW-BIGNUM
+  ROW-BIGNUM:
+    type: ROW
+    id: ROW-BIGNUM
+    children:
+    - CHART-big_hhi
+    - CHART-big_cdi2
+    - CHART-big_share
+    - CHART-big_median
+    meta:
+      background: BACKGROUND_TRANSPARENT
+    parents:
+    - ROOT_ID
+    - GRID_ID
+    - TABS-MAIN
+    - TAB-PAYS
+  CHART-table_produits:
+    type: CHART
+    id: CHART-table_produits
+    children: []
+    meta:
+      chartId: 5
+      width: 12
+      height: 50
+      sliceName: table_produits
+    parents:
+    - ROOT_ID
+    - GRID_ID
+    - TABS-MAIN
+    - TAB-PAYS
+    - ROW-PRODUITS
+  ROW-PRODUITS:
+    type: ROW
+    id: ROW-PRODUITS
+    children:
+    - CHART-table_produits
+    meta:
+      background: BACKGROUND_TRANSPARENT
+    parents:
+    - ROOT_ID
+    - GRID_ID
+    - TABS-MAIN
+    - TAB-PAYS
+  CHART-bar_top20:
+    type: CHART
+    id: CHART-bar_top20
+    children: []
+    meta:
+      chartId: 6
+      width: 6
+      height: 50
+      sliceName: bar_top20
+    parents:
+    - ROOT_ID
+    - GRID_ID
+    - TABS-MAIN
+    - TAB-PAYS
+    - ROW-BARHEAT
+  CHART-heatmap:
+    type: CHART
+    id: CHART-heatmap
+    children: []
+    meta:
+      chartId: 7
+      width: 6
+      height: 50
+      sliceName: heatmap
+    parents:
+    - ROOT_ID
+    - GRID_ID
+    - TABS-MAIN
+    - TAB-PAYS
+    - ROW-BARHEAT
+  ROW-BARHEAT:
+    type: ROW
+    id: ROW-BARHEAT
+    children:
+    - CHART-bar_top20
+    - CHART-heatmap
+    meta:
+      background: BACKGROUND_TRANSPARENT
+    parents:
+    - ROOT_ID
+    - GRID_ID
+    - TABS-MAIN
+    - TAB-PAYS
+  CHART-table_coherence:
+    type: CHART
+    id: CHART-table_coherence
+    children: []
+    meta:
+      chartId: 8
+      width: 12
+      height: 50
+      sliceName: table_coherence
+    parents:
+    - ROOT_ID
+    - GRID_ID
+    - TABS-MAIN
+    - TAB-PAYS
+    - ROW-COHERENCE
+  ROW-COHERENCE:
+    type: ROW
+    id: ROW-COHERENCE
+    children:
+    - CHART-table_coherence
+    meta:
+      background: BACKGROUND_TRANSPARENT
+    parents:
+    - ROOT_ID
+    - GRID_ID
+    - TABS-MAIN
+    - TAB-PAYS
+  CHART-scatter_hhi_cdi2:
+    type: CHART
+    id: CHART-scatter_hhi_cdi2
+    children: []
+    meta:
+      chartId: 17
+      width: 6
+      height: 50
+      sliceName: scatter_hhi_cdi2
+    parents:
+    - ROOT_ID
+    - GRID_ID
+    - TABS-MAIN
+    - TAB-PAYS
+    - ROW-SCATTER-METHODES
+  CHART-heatmap_methodes:
+    type: CHART
+    id: CHART-heatmap_methodes
+    children: []
+    meta:
+      chartId: 18
+      width: 6
+      height: 50
+      sliceName: heatmap_methodes
+    parents:
+    - ROOT_ID
+    - GRID_ID
+    - TABS-MAIN
+    - TAB-PAYS
+    - ROW-SCATTER-METHODES
+  ROW-SCATTER-METHODES:
+    type: ROW
+    id: ROW-SCATTER-METHODES
+    children:
+    - CHART-scatter_hhi_cdi2
+    - CHART-heatmap_methodes
+    meta:
+      background: BACKGROUND_TRANSPARENT
+    parents:
+    - ROOT_ID
+    - GRID_ID
+    - TABS-MAIN
+    - TAB-PAYS
+  CHART-table_divergence:
+    type: CHART
+    id: CHART-table_divergence
+    children: []
+    meta:
+      chartId: 19
+      width: 12
+      height: 50
+      sliceName: table_divergence
+    parents:
+    - ROOT_ID
+    - GRID_ID
+    - TABS-MAIN
+    - TAB-PAYS
+    - ROW-DIVERGENCE
+  ROW-DIVERGENCE:
+    type: ROW
+    id: ROW-DIVERGENCE
+    children:
+    - CHART-table_divergence
+    meta:
+      background: BACKGROUND_TRANSPARENT
+    parents:
+    - ROOT_ID
+    - GRID_ID
+    - TABS-MAIN
+    - TAB-PAYS
+  MD-UNION:
+    type: MARKDOWN
+    id: MD-UNION
+    children: []
+    meta:
+      width: 12
+      height: 6
+      code: '## Union europeenne (EU27_2020)'
+    parents:
+    - ROOT_ID
+    - GRID_ID
+    - TABS-MAIN
+    - TAB-PAYS
+  MARKDOWN-UNION:
+    type: ROW
+    id: MARKDOWN-UNION
+    children:
+    - MD-UNION
+    meta:
+      background: BACKGROUND_TRANSPARENT
+    parents:
+    - ROOT_ID
+    - GRID_ID
+    - TABS-MAIN
+    - TAB-PAYS
+  CHART-table_produits_union:
+    type: CHART
+    id: CHART-table_produits_union
+    children: []
+    meta:
+      chartId: 9
+      width: 12
+      height: 50
+      sliceName: table_produits_union
+    parents:
+    - ROOT_ID
+    - GRID_ID
+    - TABS-MAIN
+    - TAB-PAYS
+    - ROW-UNION-PRODUITS
+  ROW-UNION-PRODUITS:
+    type: ROW
+    id: ROW-UNION-PRODUITS
+    children:
+    - CHART-table_produits_union
+    meta:
+      background: BACKGROUND_TRANSPARENT
+    parents:
+    - ROOT_ID
+    - GRID_ID
+    - TABS-MAIN
+    - TAB-PAYS
+  CHART-table_coherence_union:
+    type: CHART
+    id: CHART-table_coherence_union
+    children: []
+    meta:
+      chartId: 10
+      width: 12
+      height: 50
+      sliceName: table_coherence_union
+    parents:
+    - ROOT_ID
+    - GRID_ID
+    - TABS-MAIN
+    - TAB-PAYS
+    - ROW-UNION-COHERENCE
+  ROW-UNION-COHERENCE:
+    type: ROW
+    id: ROW-UNION-COHERENCE
+    children:
+    - CHART-table_coherence_union
+    meta:
+      background: BACKGROUND_TRANSPARENT
+    parents:
+    - ROOT_ID
+    - GRID_ID
+    - TABS-MAIN
+    - TAB-PAYS
+  CHART-table_coherence_pp:
+    type: CHART
+    id: CHART-table_coherence_pp
+    children: []
+    meta:
+      chartId: 11
+      width: 12
+      height: 50
+      sliceName: table_coherence_pp
+    parents:
+    - ROOT_ID
+    - GRID_ID
+    - TABS-MAIN
+    - TAB-PAYS
+    - ROW-COHERENCE-PP
+  ROW-COHERENCE-PP:
+    type: ROW
+    id: ROW-COHERENCE-PP
+    children:
+    - CHART-table_coherence_pp
+    meta:
+      background: BACKGROUND_TRANSPARENT
+    parents:
+    - ROOT_ID
+    - GRID_ID
+    - TABS-MAIN
+    - TAB-PAYS
+  MD-FICHE:
+    type: MARKDOWN
+    id: MD-FICHE
+    children: []
+    meta:
+      width: 12
+      height: 8
+      code: '### Produit selectionne
+
+
+        Utilisez le filtre natif **produit** (recherche par libelle) dans la barre
+        de filtres, ou cliquez sur une ligne du tableau *Produits classes* de l''onglet
+        Pays (cross-filter). **Convention : rang 1 = unite la plus vulnerable.**'
+    parents:
+    - ROOT_ID
+    - GRID_ID
+    - TABS-MAIN
+    - TAB-PRODUIT
+  ROW-FICHE:
+    type: ROW
+    id: ROW-FICHE
+    children:
+    - MD-FICHE
+    meta:
+      background: BACKGROUND_TRANSPARENT
+    parents:
+    - ROOT_ID
+    - GRID_ID
+    - TABS-MAIN
+    - TAB-PRODUIT
+  CHART-table_pays:
+    type: CHART
+    id: CHART-table_pays
+    children: []
+    meta:
+      chartId: 13
+      width: 12
+      height: 50
+      sliceName: table_pays
+    parents:
+    - ROOT_ID
+    - GRID_ID
+    - TABS-MAIN
+    - TAB-PRODUIT
+    - ROW-PAYS-CLASSES
+  ROW-PAYS-CLASSES:
+    type: ROW
+    id: ROW-PAYS-CLASSES
+    children:
+    - CHART-table_pays
+    meta:
+      background: BACKGROUND_TRANSPARENT
+    parents:
+    - ROOT_ID
+    - GRID_ID
+    - TABS-MAIN
+    - TAB-PRODUIT
+  CHART-table_flux:
+    type: CHART
+    id: CHART-table_flux
+    children: []
+    meta:
+      chartId: 14
+      width: 12
+      height: 50
+      sliceName: table_flux
+    parents:
+    - ROOT_ID
+    - GRID_ID
+    - TABS-MAIN
+    - TAB-PRODUIT
+    - ROW-FLUX
+  ROW-FLUX:
+    type: ROW
+    id: ROW-FLUX
+    children:
+    - CHART-table_flux
+    meta:
+      background: BACKGROUND_TRANSPARENT
+    parents:
+    - ROOT_ID
+    - GRID_ID
+    - TABS-MAIN
+    - TAB-PRODUIT
+  CHART-line_metrique:
+    type: CHART
+    id: CHART-line_metrique
+    children: []
+    meta:
+      chartId: 15
+      width: 6
+      height: 50
+      sliceName: line_metrique
+    parents:
+    - ROOT_ID
+    - GRID_ID
+    - TABS-MAIN
+    - TAB-PRODUIT
+    - ROW-EVOLUTIONS
+  CHART-line_flux:
+    type: CHART
+    id: CHART-line_flux
+    children: []
+    meta:
+      chartId: 16
+      width: 6
+      height: 50
+      sliceName: line_flux
+    parents:
+    - ROOT_ID
+    - GRID_ID
+    - TABS-MAIN
+    - TAB-PRODUIT
+    - ROW-EVOLUTIONS
+  ROW-EVOLUTIONS:
+    type: ROW
+    id: ROW-EVOLUTIONS
+    children:
+    - CHART-line_metrique
+    - CHART-line_flux
+    meta:
+      background: BACKGROUND_TRANSPARENT
+    parents:
+    - ROOT_ID
+    - GRID_ID
+    - TABS-MAIN
+    - TAB-PRODUIT
+  ROW-N-DAKCG94D:
+    children:
+    - CHART-P59U4JSY
+    - CHART-1NGP8N4N
+    - CHART-UNSCAH3D
+    - CHART-YCJ68FBT
+    - CHART-1T33O4A4
+    - CHART-Q4TX3250
+    - CHART-WZ2YGM0A
+    - CHART-J5TWGQWE
+    - CHART-Q2O7KFT7
+    - CHART-6BODRIZC
+    - CHART-52VJIBT8
+    - CHART-T7XERITF
+    - CHART-YTSRX0DW
+    - CHART-FC870R2Q
+    - CHART-FIR1DAPV
+    - CHART-YCDNO0ON
+    - CHART-BSAMUVO4
+    - CHART-2HSV56YF
+    id: ROW-N-DAKCG94D
+    meta:
+      '0': ROOT_ID
+      background: BACKGROUND_TRANSPARENT
+    type: ROW
+    parents:
+    - ROOT_ID
+    - GRID_ID
+  CHART-P59U4JSY:
+    children: []
+    id: CHART-P59U4JSY
+    meta:
+      chartId: 4
+      height: 50
+      sliceName: Score synthetique median
+      uuid: b1d5ff29-4bd6-4a99-8efa-a276f2649927
+      width: 4
+    type: CHART
+    parents:
+    - ROOT_ID
+    - GRID_ID
+    - ROW-N-DAKCG94D
+  CHART-1NGP8N4N:
+    children: []
+    id: CHART-1NGP8N4N
+    meta:
+      chartId: 15
+      height: 50
+      sliceName: Evolution d'une metrique (HHI)
+      uuid: a3ef0f05-d76a-4b0b-9aaf-11cfd7bbb60f
+      width: 4
+    type: CHART
+    parents:
+    - ROOT_ID
+    - GRID_ID
+    - ROW-N-DAKCG94D
+  CHART-UNSCAH3D:
+    children: []
+    id: CHART-UNSCAH3D
+    meta:
+      chartId: 7
+      height: 50
+      sliceName: Heatmap metriques normalisees
+      uuid: 47cbac4f-4c4d-4243-bf9b-1d7de810bc0e
+      width: 4
+    type: CHART
+    parents:
+    - ROOT_ID
+    - GRID_ID
+    - ROW-N-DAKCG94D
+  CHART-YCJ68FBT:
+    children: []
+    id: CHART-YCJ68FBT
+    meta:
+      chartId: 16
+      height: 50
+      sliceName: Evolution des flux (import/export)
+      uuid: aa493cce-fefb-44f2-99a8-831d96779488
+      width: 4
+    type: CHART
+    parents:
+    - ROOT_ID
+    - GRID_ID
+    - ROW-N-DAKCG94D
+  CHART-1T33O4A4:
+    children: []
+    id: CHART-1T33O4A4
+    meta:
+      chartId: 18
+      height: 50
+      sliceName: Concordance des methodes
+      uuid: 0969fec3-f269-4c93-b2c8-b4b3fc4d409f
+      width: 4
+    type: CHART
+    parents:
+    - ROOT_ID
+    - GRID_ID
+    - ROW-N-DAKCG94D
+  CHART-Q4TX3250:
+    children: []
+    id: CHART-Q4TX3250
+    meta:
+      chartId: 2
+      height: 50
+      sliceName: Produits en alerte CDI2
+      uuid: d83a5c83-080f-41bd-8f9c-81c7ba339cfb
+      width: 4
+    type: CHART
+    parents:
+    - ROOT_ID
+    - GRID_ID
+    - ROW-N-DAKCG94D
+  CHART-WZ2YGM0A:
+    children: []
+    id: CHART-WZ2YGM0A
+    meta:
+      chartId: 13
+      height: 50
+      sliceName: Pays classes
+      uuid: 8ffc4af1-d7db-4693-8a0e-6b5b69df816f
+      width: 4
+    type: CHART
+    parents:
+    - ROOT_ID
+    - GRID_ID
+    - ROW-N-DAKCG94D
+  CHART-J5TWGQWE:
+    children: []
+    id: CHART-J5TWGQWE
+    meta:
+      chartId: 6
+      height: 50
+      sliceName: Top 20 produits - score synthetique
+      uuid: 29126ba5-3bca-4a84-a497-50c1716fc432
+      width: 4
+    type: CHART
+    parents:
+    - ROOT_ID
+    - GRID_ID
+    - ROW-N-DAKCG94D
+  CHART-Q2O7KFT7:
+    children: []
+    id: CHART-Q2O7KFT7
+    meta:
+      chartId: 19
+      height: 50
+      sliceName: Produits - divergence des methodes
+      uuid: 14b01c9c-cb7b-4939-bde1-f1ece16a07df
+      width: 4
+    type: CHART
+    parents:
+    - ROOT_ID
+    - GRID_ID
+    - ROW-N-DAKCG94D
+  CHART-6BODRIZC:
+    children: []
+    id: CHART-6BODRIZC
+    meta:
+      chartId: 1
+      height: 50
+      sliceName: Produits en alerte HHI
+      uuid: a44f42da-9f06-470e-90cb-809049f0c21b
+      width: 4
+    type: CHART
+    parents:
+    - ROOT_ID
+    - GRID_ID
+    - ROW-N-DAKCG94D
+  CHART-52VJIBT8:
+    children: []
+    id: CHART-52VJIBT8
+    meta:
+      chartId: 8
+      height: 50
+      sliceName: Coherence des metriques
+      uuid: 09282b86-5353-4e75-bc97-78aedc9c04fa
+      width: 4
+    type: CHART
+    parents:
+    - ROOT_ID
+    - GRID_ID
+    - ROW-N-DAKCG94D
+  CHART-T7XERITF:
+    children: []
+    id: CHART-T7XERITF
+    meta:
+      chartId: 9
+      height: 50
+      sliceName: Produits classes - Union
+      uuid: f378fbba-be65-4e91-b5ed-6a1589910bbe
+      width: 4
+    type: CHART
+    parents:
+    - ROOT_ID
+    - GRID_ID
+    - ROW-N-DAKCG94D
+  CHART-YTSRX0DW:
+    children: []
+    id: CHART-YTSRX0DW
+    meta:
+      chartId: 11
+      height: 50
+      sliceName: Coherence pays x produit
+      uuid: e960ea4e-7b64-4a30-95f2-5d5d4751ab3f
+      width: 4
+    type: CHART
+    parents:
+    - ROOT_ID
+    - GRID_ID
+    - ROW-N-DAKCG94D
+  CHART-FC870R2Q:
+    children: []
+    id: CHART-FC870R2Q
+    meta:
+      chartId: 17
+      height: 50
+      sliceName: Nuage HHI x CDI2
+      uuid: 2c44f8f0-81e2-4d18-81ae-39b5ea6e8c2f
+      width: 4
+    type: CHART
+    parents:
+    - ROOT_ID
+    - GRID_ID
+    - ROW-N-DAKCG94D
+  CHART-FIR1DAPV:
+    children: []
+    id: CHART-FIR1DAPV
+    meta:
+      chartId: 14
+      height: 50
+      sliceName: Flux (partenaires)
+      uuid: 9cc87b20-65e5-4c5c-8cf2-658b573d27e3
+      width: 4
+    type: CHART
+    parents:
+    - ROOT_ID
+    - GRID_ID
+    - ROW-N-DAKCG94D
+  CHART-YCDNO0ON:
+    children: []
+    id: CHART-YCDNO0ON
+    meta:
+      chartId: 5
+      height: 50
+      sliceName: Produits classes
+      uuid: 29015234-0ada-4c56-9528-3ed0e65b46e9
+      width: 4
+    type: CHART
+    parents:
+    - ROOT_ID
+    - GRID_ID
+    - ROW-N-DAKCG94D
+  CHART-BSAMUVO4:
+    children: []
+    id: CHART-BSAMUVO4
+    meta:
+      chartId: 10
+      height: 50
+      sliceName: Coherence des metriques - Union
+      uuid: 421130e6-0ffd-48da-bb99-051c64aa6902
+      width: 4
+    type: CHART
+    parents:
+    - ROOT_ID
+    - GRID_ID
+    - ROW-N-DAKCG94D
+  CHART-2HSV56YF:
+    children: []
+    id: CHART-2HSV56YF
+    meta:
+      chartId: 3
+      height: 50
+      sliceName: Part des produits en alerte
+      uuid: d5dc183e-c96e-485c-89c2-770d862447c0
+      width: 4
+    type: CHART
+    parents:
+    - ROOT_ID
+    - GRID_ID
+    - ROW-N-DAKCG94D
+metadata:
+  native_filter_configuration:
+  - id: NATIVE_FILTER-reporter
+    name: reporter
+    filterType: filter_select
+    targets:
+    - column:
+        name: reporter
+      datasetUuid: 36728d1c-82e1-4659-9433-eb37ea4ce456
+    defaultDataMask:
+      filterState:
+        value:
+        - FR
+    controlValues:
+      enableEmptyFilter: false
+      multiSelect: false
+      defaultToFirstItem: false
+    scope:
+      rootPath:
+      - ROOT_ID
+      excluded:
+      - 9
+      - 10
+  - id: NATIVE_FILTER-year
+    name: year
+    filterType: filter_select
+    targets:
+    - column:
+        name: year
+      datasetUuid: 36728d1c-82e1-4659-9433-eb37ea4ce456
+    defaultDataMask:
+      filterState:
+        value:
+        - 2025
+    controlValues:
+      enableEmptyFilter: false
+      multiSelect: false
+      sortAscending: false
+    scope:
+      rootPath:
+      - ROOT_ID
+      excluded: []
+  - id: NATIVE_FILTER-flow
+    name: flow
+    filterType: filter_select
+    targets:
+    - column:
+        name: flow
+      datasetUuid: 36728d1c-82e1-4659-9433-eb37ea4ce456
+    defaultDataMask:
+      filterState:
+        value:
+        - '1'
+    controlValues:
+      enableEmptyFilter: false
+      multiSelect: false
+    scope:
+      rootPath:
+      - ROOT_ID
+      excluded: []
+  - id: NATIVE_FILTER-classification
+    name: classification
+    filterType: filter_select
+    targets:
+    - column:
+        name: classification
+      datasetUuid: 36728d1c-82e1-4659-9433-eb37ea4ce456
+    defaultDataMask: {}
+    controlValues:
+      enableEmptyFilter: false
+      multiSelect: false
+    scope:
+      rootPath:
+      - ROOT_ID
+      excluded: []
+  - id: NATIVE_FILTER-in_force
+    name: in_force
+    filterType: filter_select
+    targets:
+    - column:
+        name: in_force
+      datasetUuid: 36728d1c-82e1-4659-9433-eb37ea4ce456
+    defaultDataMask:
+      filterState:
+        value:
+        - true
+    controlValues:
+      enableEmptyFilter: false
+      multiSelect: false
+    scope:
+      rootPath:
+      - ROOT_ID
+      excluded: []
+    isVisible: false
+  - id: NATIVE_FILTER-product
+    name: produit
+    filterType: filter_select
+    targets:
+    - column:
+        name: product_label
+      datasetUuid: 36728d1c-82e1-4659-9433-eb37ea4ce456
+    defaultDataMask: {}
+    controlValues:
+      enableEmptyFilter: false
+      multiSelect: false
+      searchAllOptions: true
+    scope:
+      rootPath:
+      - ROOT_ID
+      excluded: []
+  - id: NATIVE_FILTER-reporters_compare
+    name: reporters_compare
+    filterType: filter_select
+    targets:
+    - column:
+        name: reporter_label
+      datasetUuid: 36728d1c-82e1-4659-9433-eb37ea4ce456
+    defaultDataMask: {}
+    controlValues:
+      enableEmptyFilter: false
+      multiSelect: true
+    scope:
+      rootPath:
+      - TAB-PRODUIT
+      excluded: []
+  chart_configuration: {}
+  global_chart_configuration:
+    scope:
+      rootPath:
+      - ROOT_ID
+      excluded: []
+    chartsInScope:
+    - 1
+    - 2
+    - 3
+    - 4
+    - 5
+    - 6
+    - 7
+    - 8
+    - 9
+    - 10
+    - 11
+    - 13
+    - 14
+    - 15
+    - 16
+    - 17
+    - 18
+    - 19
+  cross_filters_enabled: true
+  timed_refresh_immune_slices: []
+  expanded_slices: {}
+  refresh_frequency: 0
+  color_scheme: ''
+  label_colors: {}
+  shared_label_colors: {}
+  color_scheme_domain: []
+version: 1.0.0

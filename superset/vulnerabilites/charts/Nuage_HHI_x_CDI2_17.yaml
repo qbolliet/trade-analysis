@@ -1,0 +1,32 @@
+slice_name: Nuage HHI x CDI2
+description: null
+certified_by: null
+certification_details: null
+viz_type: bubble_v2
+params:
+  datasource: 1__table
+  viz_type: bubble_v2
+  entity: product_label
+  series: HHI_ALERT
+  x:
+    expressionType: SQL
+    sqlExpression: AVG("HHI")
+    label: HHI
+  y:
+    expressionType: SQL
+    sqlExpression: AVG("CDI2")
+    label: CDI2
+  size:
+    expressionType: SQL
+    sqlExpression: AVG("EXPORT_HHI")
+    label: Taille (proxy)
+  adhoc_filters: []
+  row_limit: 200
+  x_axis_label: HHI (concentration des fournisseurs)
+  y_axis_label: CDI2 (dependance extra-UE)
+  max_bubble_size: '25'
+query_context: null
+cache_timeout: null
+uuid: 2c44f8f0-81e2-4d18-81ae-39b5ea6e8c2f
+version: 1.0.0
+dataset_uuid: 36728d1c-82e1-4659-9433-eb37ea4ce456

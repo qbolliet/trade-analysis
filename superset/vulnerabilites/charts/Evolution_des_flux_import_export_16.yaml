@@ -1,0 +1,30 @@
+slice_name: Evolution des flux (import/export)
+description: null
+certified_by: null
+certification_details: null
+viz_type: echarts_timeseries_line
+params:
+  datasource: 2__table
+  viz_type: echarts_timeseries_line
+  x_axis: period
+  time_grain_sqla: P1Y
+  metrics:
+  - expressionType: SQL
+    sqlExpression: SUM("value")
+    label: Valeur
+  groupby:
+  - reporter_label
+  - flow
+  adhoc_filters:
+  - clause: WHERE
+    subject: partner
+    operator: IN
+    comparator:
+    - WORLD
+    expressionType: SIMPLE
+  row_limit: 5000
+query_context: null
+cache_timeout: null
+uuid: aa493cce-fefb-44f2-99a8-831d96779488
+version: 1.0.0
+dataset_uuid: e99225ef-434b-4475-9290-5ef6b14e52d5

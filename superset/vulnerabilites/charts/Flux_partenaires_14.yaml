@@ -1,0 +1,29 @@
+slice_name: Flux (partenaires)
+description: null
+certified_by: null
+certification_details: null
+viz_type: table
+params:
+  datasource: 2__table
+  viz_type: table
+  query_mode: raw
+  groupby: []
+  metrics: []
+  all_columns:
+  - reporter_label
+  - partner_label
+  - flow
+  - value
+  - share
+  - rank
+  percent_metrics: []
+  adhoc_filters: []
+  order_by_cols:
+  - '["rank", true]'
+  row_limit: 20
+  table_timestamp_format: smart_date
+query_context: null
+cache_timeout: null
+uuid: 9cc87b20-65e5-4c5c-8cf2-658b573d27e3
+version: 1.0.0
+dataset_uuid: e99225ef-434b-4475-9290-5ef6b14e52d5

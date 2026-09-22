@@ -1,0 +1,56 @@
+slice_name: Pays classes
+description: null
+certified_by: null
+certification_details: null
+viz_type: table
+params:
+  datasource: 1__table
+  viz_type: table
+  query_mode: raw
+  groupby: []
+  metrics: []
+  all_columns:
+  - reporter
+  - reporter_label
+  - primary_rank_by_product
+  - primary_score_by_product
+  - HHI
+  - CDI2
+  - CDI3
+  - EXPORT_HHI
+  - CENTRALITY_RISK
+  - CLUSTERING_W
+  percent_metrics: []
+  adhoc_filters: []
+  order_by_cols:
+  - '["primary_rank_by_product", true]'
+  row_limit: 200
+  table_timestamp_format: smart_date
+  show_cell_bars: false
+  column_config:
+    primary_rank_by_reporter:
+      d3NumberFormat: .0f
+    primary_score_by_reporter:
+      d3NumberFormat: .2f
+    primary_rank_by_product:
+      d3NumberFormat: .0f
+    primary_score_by_product:
+      d3NumberFormat: .2f
+    HHI:
+      d3NumberFormat: .2f
+    CDI2:
+      d3NumberFormat: .2f
+    CDI3:
+      d3NumberFormat: .2f
+    EXPORT_HHI:
+      d3NumberFormat: .2f
+    CENTRALITY_RISK:
+      d3NumberFormat: .2f
+    CLUSTERING_W:
+      d3NumberFormat: .2f
+  emit_filter: true
+query_context: null
+cache_timeout: null
+uuid: 8ffc4af1-d7db-4693-8a0e-6b5b69df816f
+version: 1.0.0
+dataset_uuid: 36728d1c-82e1-4659-9433-eb37ea4ce456

@@ -1,0 +1,22 @@
+slice_name: Score synthetique median
+description: null
+certified_by: null
+certification_details: null
+viz_type: big_number_total
+params:
+  datasource: 1__table
+  viz_type: big_number_total
+  metric:
+    expressionType: SQL
+    sqlExpression: MEDIAN(primary_score_by_reporter)
+    label: Score synthetique median
+  adhoc_filters: []
+  header_font_size: 0.4
+  subheader_font_size: 0.15
+  y_axis_format: SMART_NUMBER
+  subheader: methode principale (consensus_borda)
+query_context: null
+cache_timeout: null
+uuid: b1d5ff29-4bd6-4a99-8efa-a276f2649927
+version: 1.0.0
+dataset_uuid: 36728d1c-82e1-4659-9433-eb37ea4ce456

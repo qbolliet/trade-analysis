@@ -1,0 +1,62 @@
+slice_name: Produits classes - Union
+description: null
+certified_by: null
+certification_details: null
+viz_type: table
+params:
+  datasource: 1__table
+  viz_type: table
+  query_mode: raw
+  groupby: []
+  metrics: []
+  all_columns:
+  - product
+  - product_label
+  - primary_rank_by_reporter
+  - primary_score_by_reporter
+  - HHI
+  - CDI2
+  - CDI3
+  - EXPORT_HHI
+  - CENTRALITY_RISK
+  - CLUSTERING_W
+  - HHI_ALERT
+  - CDI2_ALERT
+  percent_metrics: []
+  adhoc_filters:
+  - clause: WHERE
+    subject: reporter
+    operator: ==
+    comparator: EU27_2020
+    expressionType: SIMPLE
+  order_by_cols:
+  - '["primary_rank_by_reporter", true]'
+  row_limit: 200
+  table_timestamp_format: smart_date
+  show_cell_bars: false
+  column_config:
+    primary_rank_by_reporter:
+      d3NumberFormat: .0f
+    primary_score_by_reporter:
+      d3NumberFormat: .2f
+    primary_rank_by_product:
+      d3NumberFormat: .0f
+    primary_score_by_product:
+      d3NumberFormat: .2f
+    HHI:
+      d3NumberFormat: .2f
+    CDI2:
+      d3NumberFormat: .2f
+    CDI3:
+      d3NumberFormat: .2f
+    EXPORT_HHI:
+      d3NumberFormat: .2f
+    CENTRALITY_RISK:
+      d3NumberFormat: .2f
+    CLUSTERING_W:
+      d3NumberFormat: .2f
+query_context: null
+cache_timeout: null
+uuid: f378fbba-be65-4e91-b5ed-6a1589910bbe
+version: 1.0.0
+dataset_uuid: 36728d1c-82e1-4659-9433-eb37ea4ce456

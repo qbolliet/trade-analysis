@@ -1,0 +1,22 @@
+slice_name: Part des produits en alerte
+description: null
+certified_by: null
+certification_details: null
+viz_type: big_number_total
+params:
+  datasource: 1__table
+  viz_type: big_number_total
+  metric:
+    expressionType: SQL
+    sqlExpression: AVG(CASE WHEN "HHI_ALERT" OR "CDI2_ALERT" THEN 1.0 ELSE 0.0 END)
+    label: Part des produits en alerte
+  adhoc_filters: []
+  header_font_size: 0.4
+  subheader_font_size: 0.15
+  y_axis_format: .1%
+  subheader: 'HHI ou CDI2 (approx. : part des produits, pas des importations)'
+query_context: null
+cache_timeout: null
+uuid: d5dc183e-c96e-485c-89c2-770d862447c0
+version: 1.0.0
+dataset_uuid: 36728d1c-82e1-4659-9433-eb37ea4ce456

@@ -1,0 +1,39 @@
+slice_name: Coherence des metriques - Union
+description: null
+certified_by: null
+certification_details: null
+viz_type: table
+params:
+  datasource: 3__table
+  viz_type: table
+  query_mode: raw
+  groupby: []
+  metrics: []
+  all_columns:
+  - metric_a
+  - metric_b
+  - statistic
+  - value
+  - n
+  percent_metrics: []
+  adhoc_filters:
+  - clause: WHERE
+    subject: metric_a
+    operator: IS NOT NULL
+    comparator: null
+    expressionType: SQL
+    sqlExpression: product IS NULL AND reporter = 'EU27_2020' AND metric_a IS NOT
+      NULL AND metric_b IS NOT NULL
+  order_by_cols:
+  - '["statistic", true]'
+  row_limit: 100
+  table_timestamp_format: smart_date
+  show_cell_bars: false
+  column_config:
+    value:
+      d3NumberFormat: .3f
+query_context: null
+cache_timeout: null
+uuid: 421130e6-0ffd-48da-bb99-051c64aa6902
+version: 1.0.0
+dataset_uuid: 26270fcb-6da2-4955-91c2-244bbede6f62

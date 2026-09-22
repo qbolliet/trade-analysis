@@ -1,0 +1,42 @@
+slice_name: Produits - divergence des methodes
+description: null
+certified_by: null
+certification_details: null
+viz_type: table
+params:
+  datasource: 1__table
+  viz_type: table
+  query_mode: aggregate
+  groupby:
+  - product
+  - product_label
+  metrics:
+  - expressionType: SQL
+    sqlExpression: MAX(GREATEST(consensus_borda_rank_by_reporter, auto_sum_rank_by_reporter,
+      critic_sum_rank_by_reporter) - LEAST(consensus_borda_rank_by_reporter, auto_sum_rank_by_reporter,
+      critic_sum_rank_by_reporter))
+    label: Ecart de rang (max-min)
+  - expressionType: SQL
+    sqlExpression: MAX(consensus_borda_rank_by_reporter)
+    label: Rang Borda
+  - expressionType: SQL
+    sqlExpression: MAX(auto_sum_rank_by_reporter)
+    label: Rang somme auto
+  - expressionType: SQL
+    sqlExpression: MAX(critic_sum_rank_by_reporter)
+    label: Rang CRITIC
+  adhoc_filters: []
+  row_limit: 20
+  order_desc: true
+  timeseries_limit_metric:
+    expressionType: SQL
+    sqlExpression: MAX(GREATEST(consensus_borda_rank_by_reporter, auto_sum_rank_by_reporter,
+      critic_sum_rank_by_reporter) - LEAST(consensus_borda_rank_by_reporter, auto_sum_rank_by_reporter,
+      critic_sum_rank_by_reporter))
+    label: Ecart de rang (max-min)
+  show_cell_bars: false
+query_context: null
+cache_timeout: null
+uuid: 14b01c9c-cb7b-4939-bde1-f1ece16a07df
+version: 1.0.0
+dataset_uuid: 36728d1c-82e1-4659-9433-eb37ea4ce456

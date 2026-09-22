@@ -1,0 +1,27 @@
+slice_name: Top 20 produits - score synthetique
+description: null
+certified_by: null
+certification_details: null
+viz_type: echarts_timeseries_bar
+params:
+  datasource: 1__table
+  viz_type: echarts_timeseries_bar
+  x_axis: product_label
+  metrics:
+  - expressionType: SQL
+    sqlExpression: MAX(primary_score_by_reporter)
+    label: Score
+  adhoc_filters: []
+  row_limit: 20
+  order_desc: true
+  orientation: horizontal
+  groupby: []
+  timeseries_limit_metric:
+    expressionType: SQL
+    sqlExpression: MAX(primary_score_by_reporter)
+    label: Score
+query_context: null
+cache_timeout: null
+uuid: 29126ba5-3bca-4a84-a497-50c1716fc432
+version: 1.0.0
+dataset_uuid: 36728d1c-82e1-4659-9433-eb37ea4ce456

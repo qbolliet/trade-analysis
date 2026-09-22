@@ -1,0 +1,35 @@
+slice_name: Concordance des methodes
+description: null
+certified_by: null
+certification_details: null
+viz_type: heatmap_v2
+params:
+  datasource: 4__table
+  viz_type: heatmap_v2
+  all_columns_x: method_a
+  all_columns_y: method_b
+  metric:
+    expressionType: SQL
+    sqlExpression: AVG(value)
+    label: Kendall tau-b
+  adhoc_filters:
+  - clause: WHERE
+    subject: statistic
+    operator: ==
+    comparator: kendall_tau_b
+    expressionType: SIMPLE
+  row_limit: 500
+  sort_x_axis: alpha_asc
+  sort_y_axis: alpha_asc
+  linear_color_scheme: schemeRdBu
+  xscale_interval: 1
+  yscale_interval: 1
+  left_margin: auto
+  bottom_margin: auto
+  y_axis_format: SMART_NUMBER
+  normalize_across: heatmap
+query_context: null
+cache_timeout: null
+uuid: 0969fec3-f269-4c93-b2c8-b4b3fc4d409f
+version: 1.0.0
+dataset_uuid: f398bfb3-b324-4b3d-ad3c-a7a31cc6840a

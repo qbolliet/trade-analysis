@@ -1,0 +1,23 @@
+slice_name: Evolution d'une metrique (HHI)
+description: null
+certified_by: null
+certification_details: null
+viz_type: echarts_timeseries_line
+params:
+  datasource: 1__table
+  viz_type: echarts_timeseries_line
+  x_axis: period
+  time_grain_sqla: P1Y
+  metrics:
+  - expressionType: SQL
+    sqlExpression: AVG("HHI")
+    label: HHI
+  groupby:
+  - reporter_label
+  adhoc_filters: []
+  row_limit: 5000
+query_context: null
+cache_timeout: null
+uuid: a3ef0f05-d76a-4b0b-9aaf-11cfd7bbb60f
+version: 1.0.0
+dataset_uuid: 36728d1c-82e1-4659-9433-eb37ea4ce456
