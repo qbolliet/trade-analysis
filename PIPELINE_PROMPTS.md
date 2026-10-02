@@ -792,7 +792,7 @@ OBJECTIF (spécification PS-27, recopiée)
    avant écriture, par sécurité.
 4. `write_dataframe(..., compact_after_update: bool = True, allow_new_columns: bool =
    False, run_id: str | None = None, commit_message: str | None = None)` transmis à
-   `DatabaseUpdater.update_database` (API de `dt-ducklake-manager` **0.3.1** : lis
+   `DatabaseUpdater.update_database` (API de `dt-ducklake-manager` **0.4.0** : lis
    `operations/updater.py` — `update_database` accepte ces quatre arguments, et
    `add_columns` existe pour diffuser une colonne par clé primaire) ; `SDMXDownloader(...,
    compact_after_update: bool = True)` le relaie. Vérifie ce que fait réellement
@@ -857,6 +857,7 @@ qui ajoute à `download_updates` : `registry_flush_every`, `registry_flush_secon
 `run_id`, `commit_message` (ARCH PD-11), une API de lecture `iter_registry_entries` et
 une fonction de codelists avec libellés. Commence par lire le code réellement installé
 après mise à jour pour connaître les signatures exactes (elles font foi sur ce prompt).
+La version de statflows à installer est la v0.1.1
 
 TRAVAIL
 1. `uv lock --upgrade-package statflows && uv sync` ; vérifie la version installée.
