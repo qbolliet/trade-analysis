@@ -15,7 +15,7 @@ the dependency).
 # Modules de base
 import os
 from dataclasses import dataclass
-from typing import Any, Dict, Mapping, Optional
+from typing import Any, Callable, Dict, Mapping, Optional
 
 
 # Variables PostgreSQL obligatoires (catalogue DuckLake)
@@ -227,3 +227,102 @@ def build_connector(
         s3_secret_access_key=s3["secret_access_key"],
         s3_session_token=s3["session_token"],
     )
+
+
+# Fonction de construction des options d'écriture des étapes de calcul
+def compute_write_options(
+    commit_message: str,
+    environ: Optional[Mapping[str, str]] = None,
+) -> Dict[str, Any]:
+    """Build the ``write_dataframe`` options shared by the computation steps (PD-11).
+
+    The computation steps (partner and network vulnerabilities, BACI, synthesis,
+    coherence) add the columns of a new metric on the fly and leave the
+    compaction to a planned maintenance pass. Every write carries the Argo
+    workflow id and an explicit message: they appear on the DuckLake snapshot,
+    which ties a write back to its execution.
+
+    Args:
+        commit_message: Message recorded on the snapshot, ``"<script> <unit>"``.
+        environ: Environment mapping; ``os.environ`` when ``None``.
+
+    Returns:
+        Keyword arguments for ``statflows.write_dataframe``: ``update_options``
+        (``allow_new_columns=True``, ``compact_after_update=False``), ``run_id``
+        (``WORKFLOW_ID`` when defined, else ``None``) and ``commit_message``.
+
+    Examples:
+        >>> options = compute_write_options("compute_x C_A_HS", {"WORKFLOW_ID": "wf-1"})
+        >>> options["run_id"], options["update_options"]["allow_new_columns"]
+        ('wf-1', True)
+        >>> compute_write_options("compute_x", {})["run_id"] is None
+        True
+    """
+    # Environnement par défaut : celui du processus
+    env = os.environ if environ is None else environ
+    return {
+        "update_options": {"allow_new_columns": True, "compact_after_update": False},
+        # Hors Argo, la variable est absente : l'écriture reste valide, sans run_id
+        "run_id": env.get("WORKFLOW_ID") or None,
+        "commit_message": commit_message,
+    }
+
+
+# Fonction de construction des options de tamponnage du téléchargement
+def download_buffering_options(
+    buffering: Optional[Mapping[str, Any]],
+    shard_key: Optional[Callable[[Any], str]] = None,
+    environ: Optional[Mapping[str, str]] = None,
+) -> Dict[str, Any]:
+    """Translate ``DOWNLOADS.<DATAFLOW>.BUFFERING`` into ``download_updates`` arguments (PS-27).
+
+    Without a ``BUFFERING`` block, the result reproduces the unbuffered historical
+    behaviour of ``statflows`` (registry rewritten and DuckLake written after every
+    query), except for the compaction, which stays disabled unless the configuration
+    asks for it.
+
+    Args:
+        buffering: ``BUFFERING`` mapping of the dataflow configuration (``None`` or
+            empty for the historical behaviour).
+        shard_key: Callable ``query -> fragment name`` used when ``SHARD_REGISTRY``
+            is true (reporter for Eurostat, year for Comtrade).
+        environ: Environment mapping; ``os.environ`` when ``None``.
+
+    Returns:
+        Keyword arguments for ``statflows.download_updates``:
+        ``registry_flush_every``, ``registry_flush_seconds``,
+        ``registry_shard_key``, ``write_batch_rows``, ``write_batch_queries``,
+        ``update_options`` (``compact_after_update``), ``ducklake_options`` and
+        ``run_id`` (``WORKFLOW_ID`` when defined).
+
+    Raises:
+        ValueError: If ``SHARD_REGISTRY`` is true and no ``shard_key`` is given.
+
+    Examples:
+        >>> options = download_buffering_options(
+        ...     {"REGISTRY_FLUSH_EVERY": 500, "SHARD_REGISTRY": True},
+        ...     shard_key=lambda query: "FR",
+        ...     environ={},
+        ... )
+        >>> options["registry_flush_every"], options["registry_shard_key"] is not None
+        (500, True)
+        >>> download_buffering_options(None, environ={})["registry_flush_every"]
+        1
+    """
+    # Environnement par défaut : celui du processus
+    env = os.environ if environ is None else environ
+    config = buffering or {}
+    # Fragmentation du registre : la clé de fragment est propre à la source
+    if config.get("SHARD_REGISTRY") and shard_key is None:
+        raise ValueError("SHARD_REGISTRY est activé mais aucune clé de fragment n'est fournie")
+    return {
+        "registry_flush_every": int(config.get("REGISTRY_FLUSH_EVERY") or 1),
+        "registry_flush_seconds": config.get("REGISTRY_FLUSH_SECONDS"),
+        "registry_shard_key": shard_key if config.get("SHARD_REGISTRY") else None,
+        "write_batch_rows": config.get("WRITE_BATCH_ROWS"),
+        "write_batch_queries": config.get("WRITE_BATCH_QUERIES"),
+        # Les téléchargements n'ajoutent jamais de colonne (allow_new_columns absent)
+        "update_options": {"compact_after_update": bool(config.get("COMPACT_AFTER_UPDATE", False))},
+        "ducklake_options": config.get("DUCKLAKE_OPTIONS"),
+        "run_id": env.get("WORKFLOW_ID") or None,
+    }

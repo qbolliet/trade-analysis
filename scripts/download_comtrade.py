@@ -1,8 +1,8 @@
 """Script de téléchargement des données tariffline UN Comtrade.
 
 Télécharge les données de commerce international depuis l'API UN Comtrade en
-scindant les requêtes par année x lot de produits HS6 (PD-07), dans un ordre
-**année-majeur** (PD-06, PS-12.1) : toutes les requêtes d'une année précèdent
+scindant les requêtes par année x lot de produits HS6, dans un ordre
+**année-majeur**: toutes les requêtes d'une année précèdent
 celles de l'année suivante, pour qu'une année soit complète — et donc
 utilisable par la porte de complétude BACI — le plus tôt possible. La mise à
 jour incrémentale est déléguée à ``download_updates`` : le client Comtrade
@@ -31,20 +31,23 @@ import pandas as pd
 
 # Importation des modules du package
 from statflows import ComtradeClient, ComtradeQueryRequest
-from statflows.core.factory import filter_codes
+from statflows.core.factory import codelist_frame, filter_codes
 from statflows.core.download import download_updates, _schema_name
 
 # Module de suivi d'exécution
 from macroforecast.tracking import CapturingTracker, get_tracker, rekey_metrics
 from statflows.core.reports import QueryReport
+from statflows.core.registry import DEFAULT_SHARD
 
 # Fabrique de connecteur DuckLake (seul point de lecture des identifiants)
 from kedro_pipeline.io.download_report import check_download_report
 from scripts._run_report import RunScope, build_download_report, guarded_run, run_name
+from kedro_pipeline.io.registry_views import period_year
 from kedro_pipeline.steps.reference import publish_reference
 from kedro_pipeline.io.ducklake import (
     DuckLakeLocation,
     build_connector,
+    download_buffering_options,
     pg_credentials_from_env,
     s3_credentials_from_env,
 )
@@ -110,10 +113,6 @@ def load_runtime_config(config_path: Optional[os.PathLike] = None) -> dict:
         return yaml.safe_load(file)["runtime"]
 
 
-# Colonne portant le code dans les métadonnées de référence Comtrade, par catégorie
-_REFERENCE_CODE_COLUMNS = {"reporter": "reporterCode", "partner": "PartnerCode"}
-
-
 # Fonction de récupération de la liste des codes d'une catégorie de référence
 def fetch_dimension_codelists(
     dimension: str,
@@ -124,39 +123,35 @@ def fetch_dimension_codelists(
     Generic counterpart of the Comext ``fetch_dimension_codelists`` helper:
     UN Comtrade exposes no Data Structure Definition, so valid codes are read
     directly from the reference metadata of ``dimension`` rather than deduced
-    from a dataflow structure. The metadata rows of the valid codes are kept
-    (labels, ISO codes, ``isGroup``, ``parent``…) so the reference tables can
-    be published without a second network call (PS-28.4).
+    from a dataflow structure. Delegates to ``statflows.codelist_frame``, which
+    drops expired entries and keeps the remaining metadata columns (ISO codes,
+    ``isGroup``…) so the reference tables can be published without a second
+    network call.
 
     Args:
         dimension: Reference dimension (e.g. ``"reporter"`` or ``"cmd:HS"``).
         client: ComtradeClient instance; a new one is created if ``None``.
 
     Returns:
-        DataFrame with a leading ``code`` column (valid codes, as text, in the
-        order of the metadata) followed by the metadata columns.
+        DataFrame with the ``code`` (text) and ``label`` columns, ``parent`` for
+        hierarchical categories, then the metadata columns, in the order of the
+        metadata.
 
     Examples:
         >>> reporter_codes = fetch_dimension_codelists("reporter")  # doctest: +SKIP
-        >>> reporter_codes[["code", "reporterDesc"]].head(1)  # doctest: +SKIP
+        >>> reporter_codes[["code", "label"]].head(1)  # doctest: +SKIP
     """
-    from statflows.sources.comtrade.parsing import extract_codes
-
     # Initialisation du client s'il n'est pas spécifié
     if client is None:
         client = ComtradeClient()
 
-    # Métadonnées de la catégorie (un seul appel) puis codes valides
-    metadata = client.get_metadata(category=dimension)
-    codes = {str(code) for code in extract_codes(metadata, dimension)}
-    code_column = _REFERENCE_CODE_COLUMNS.get(dimension, "id")
-    codelist = metadata[metadata[code_column].astype(str).isin(codes)].copy()
-    codelist.insert(0, "code", codelist[code_column].astype(str))
+    # Codelist avec libellés (métadonnées en cache : un seul appel par catégorie)
+    codelist = codelist_frame(client, dimension, keep_metadata=True)
 
     # Logging
     logger.info("%d codes for dimension '%s'", len(codelist), dimension)
 
-    return codelist.reset_index(drop=True)
+    return codelist
 
 
 # Fonction de plafonnement du nombre de requêtes
@@ -425,6 +420,31 @@ def plan_queries(
 NODE = "download_comtrade"
 
 
+# Fonction de clé de fragment du registre de téléchargement
+def registry_shard_key(query: ComtradeQueryRequest) -> str:
+    """Name the registry fragment of a Comtrade query: its year.
+
+    The year-major order completes a year before the next one starts, so a flush
+    only rewrites the fragment of the year being downloaded.
+
+    Args:
+        query: Comtrade query, whose ``periods`` is one period (``YYYY`` or
+            ``YYYYMM``) or a list of periods.
+
+    Returns:
+        The year(s) of the query joined by ``_``, or the default fragment when
+        the query carries no explicit period (``period_start`` / ``period_end``).
+
+    Examples:
+        >>> registry_shard_key(ComtradeQueryRequest(dataflow="C_A_HS", periods="2023"))
+        '2023'
+    """
+    if query.periods is None:
+        return DEFAULT_SHARD
+    periods = query.periods if isinstance(query.periods, (list, tuple)) else [query.periods]
+    return "_".join(sorted({str(period_year(period)) for period in periods})) or DEFAULT_SHARD
+
+
 # Fonction principale de téléchargement
 def main() -> None:
     """CLI entry point for the Comtrade download script.
@@ -549,6 +569,10 @@ def _download(config: dict, runtime_config: dict, tracker: CapturingTracker, sco
             bucket=downloads_config["BUCKET"],
             storage_options=None,
             on_query_complete=stream_query_metrics,
+            # Partition du registre et des écritures
+            **download_buffering_options(
+                downloads_config.get("BUFFERING"), shard_key=registry_shard_key
+            ),
         )
         # Rapport de run : métriques, table par requête, contrôles, description
         scope.step = "rapport de run"

@@ -43,9 +43,12 @@ from statflows.storage.json import Loader, Saver
 from kedro_pipeline.io.ducklake import (
     DuckLakeLocation,
     build_connector,
+    compute_write_options,
     pg_credentials_from_env,
     s3_credentials_from_env,
 )
+# Vue du registre de téléchargement (lecture indépendante de son format physique)
+from kedro_pipeline.io.registry_views import DownloadRegistryView
 # Module d'utilitaires de téléchargement
 from statflows.core.download import _now, _parse_iso, _schema_name
 
@@ -73,8 +76,7 @@ logging.basicConfig(
 # Initialisation du logger
 logger = logging.getLogger(__name__)
 
-# Clé racine du registre JSON des dates de dernier calcul (miroir de la
-# racine "DOWNLOADS" du registre de téléchargement)
+# Clé racine du registre JSON des dates de dernier calcul
 _REGISTRY_ROOT = "VULNERABILITIES"
 # Clé YAML portant le backend de calcul narwhals (hors VulnerabilityConfig)
 _BACKEND_KEY = "BACKEND"
@@ -185,36 +187,21 @@ def load_last_download_dates(
 ) -> Dict[Tuple[str, str], datetime]:
     """Read the download registry and index last-download dates by (reporter, product).
 
+    The registry is read through ``DownloadRegistryView`` (``statflows``
+    ``iter_registry_entries``), which hides its physical layout (single file or
+    fragments) and explodes multi-product queries into pairs.
+
     Args:
         last_download_path: Path to the ``LAST_DOWNLOAD_PATH`` registry
             (cf. ``eurostat.yaml`` / ``SDMXDownloader``).
-        loader: ``Loader`` instance.
+        loader: ``Loader`` instance. Kept for compatibility: the view reads the
+            registry with its own loader.
         bucket: S3 bucket holding the registry, or ``None`` for a local path.
 
     Returns:
         Mapping ``(reporter, product) -> last_download`` (UTC-aware datetime).
     """
-    # Lecture du registre (racine "DOWNLOADS", cf. _REGISTRY_ROOT de download.py)
-    data = loader.load(last_download_path, bucket=bucket, missing_ok=True) or {}
-    registry = data.get("DOWNLOADS", {})
-
-    # Extraction du couple et de la date par entrée
-    dates: Dict[Tuple[str, str], datetime] = {}
-    # Parcours des entrées du registre
-    for entry in registry.values():
-        # Extraction des paramètres de requêtes
-        params = entry.get("params", {})
-        # Extraction des dimensions
-        dims = params.get("dimensions", params)
-        # Extraction du reporter et du produit
-        reporter = dims.get("reporter")
-        product = dims.get("product")
-        # Extraction de la date de dernier téléchargement
-        last_download = _parse_iso(entry.get("last_download"))
-        # Association de la date de dernier téléchargement au couple
-        if reporter and product and last_download is not None:
-            dates[(reporter, product)] = last_download
-    return dates
+    return DownloadRegistryView(last_download_path, bucket).pairs_last_download()
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -476,6 +463,9 @@ def main() -> None:
                     tracker=tracker,
                     log_artifacts=log_artifacts,
                     df_previous=df_previous,
+                    write_options=compute_write_options(
+                        f"{NODE} {len(reporters_products)} couples reporter x produit"
+                    ),
                 )
 
                 # Envoi des métriques : le rapport connaît sa mise en forme.

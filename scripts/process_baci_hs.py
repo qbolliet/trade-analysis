@@ -77,9 +77,11 @@ import pandas as pd
 from kedro_pipeline.io.ducklake import (
     DuckLakeLocation,
     build_connector,
+    compute_write_options,
     pg_credentials_from_env,
     s3_credentials_from_env,
 )
+from kedro_pipeline.io.registry_views import DownloadRegistryView, ProductsKey, period_year, products_key
 from kedro_pipeline.steps.reference import publish_hs_reference
 # Planification des requêtes Comtrade : même liste que le téléchargement
 from scripts.download_comtrade import (
@@ -239,87 +241,39 @@ def _read_comtrade_fact_table(
 # registre fictif ; seul main() lit le registre et appelle l'API
 # ──────────────────────────────────────────────────────────────────────
 
-# Racine du registre de téléchargement statflows
-_DOWNLOAD_REGISTRY_ROOT = "DOWNLOADS"
-
-
-# Fonction de chargement du registre de téléchargement Comtrade
-def load_download_registry(
-    last_download_path: os.PathLike, bucket: Optional[str]
-) -> Dict[str, Dict[str, Any]]:
-    """Load the ``statflows`` download registry (empty when absent).
-
-    Args:
-        last_download_path: Registry path (``DOWNLOADS.<dataflow>.PATHS.LAST_DOWNLOAD_PATH``).
-        bucket: S3 bucket, or ``None`` for a local file.
-
-    Returns:
-        Mapping ``identity_key -> {agency, dataflow, params, last_download}``.
-    """
-    data = JsonLoader().load(Path(last_download_path), bucket=bucket, missing_ok=True) or {}
-    return data.get(_DOWNLOAD_REGISTRY_ROOT, {})
-
-
-# Fonction de normalisation d'une sélection de produits
-def _products_key(products: Any) -> Optional[Tuple[str, ...]]:
-    """Normalise a product selection (list, scalar or ``None``) into a tuple key."""
-    if products is None:
-        return None
-    if isinstance(products, (list, tuple)):
-        return tuple(str(p) for p in products)
-    return tuple(str(products).split(","))
-
-
-# Fonction d'extraction de l'année d'une période
-def _period_year(period: Any) -> int:
-    """Return the year of a Comtrade period (``YYYY`` or ``YYYYMM``)."""
-    return int(str(period)[:4])
-
-
 # Fonction de calcul de la part des lots téléchargés par année
 def completeness_by_year(
     planned: Iterable[Any],
-    registry: Mapping[str, Mapping[str, Any]],
-    dataflow: str,
+    batches: Mapping[int, Mapping[ProductsKey, Any]],
 ) -> Dict[int, float]:
     """Share, per year, of the planned product batches downloaded at least once.
 
     A planned query (one period x one product batch) counts as downloaded when
-    the registry holds an entry of the same dataflow with the same
-    ``params.periods`` and ``params.products`` and a ``last_download`` date.
-    Matching on these parameters, rather than on the registry key, keeps the
-    gate independent of the physical registry layout (PS-12.3).
+    the registry view holds, for its year, a batch with the same products and a
+    ``last_download`` date. Matching on the query parameters, rather than on the
+    registry key, keeps the gate independent of the physical registry layout.
 
     Args:
         planned: Planned ``ComtradeQueryRequest`` objects (``periods``,
             ``products``), as built by ``plan_queries``.
-        registry: Download registry (``identity_key -> entry``).
-        dataflow: Dataflow of the planned queries.
+        batches: Downloaded batches by year, as returned by
+            :meth:`DownloadRegistryView.batches_by_year` (``year -> {products
+            key -> last_download}``).
 
     Returns:
         Mapping ``year -> share`` in ``[0, 1]``, for every planned year.
 
     Examples:
-        >>> completeness_by_year(planned, registry, "C_A_HS")  # doctest: +SKIP
+        >>> completeness_by_year(planned, view.batches_by_year())  # doctest: +SKIP
         {2024: 1.0, 2023: 0.5}
     """
-    # Lots téléchargés au moins une fois : (période, produits)
-    downloaded: Set[Tuple[str, Optional[Tuple[str, ...]]]] = set()
-    for entry in registry.values():
-        params = entry.get("params") or {}
-        if entry.get("dataflow") != dataflow or not entry.get("last_download"):
-            continue
-        if params.get("periods") is None:
-            continue
-        downloaded.add((str(params["periods"]), _products_key(params.get("products"))))
-
     # Décompte des lots planifiés et téléchargés, par année
     totals: Dict[int, int] = {}
     done: Dict[int, int] = {}
     for query in planned:
-        year = _period_year(query.periods)
+        year = period_year(query.periods)
         totals[year] = totals.get(year, 0) + 1
-        if (str(query.periods), _products_key(query.products)) in downloaded:
+        if products_key(query.products) in batches.get(year, {}):
             done[year] = done.get(year, 0) + 1
 
     return {year: done.get(year, 0) / total for year, total in totals.items()}
@@ -755,10 +709,12 @@ def main() -> None:
         planned = plan_queries(comtrade_config, runtime_config, comtrade_client, dims_codes)
     finally:
         comtrade_client.close()
-    registry = load_download_registry(
-        downloads_config["PATHS"]["LAST_DOWNLOAD_PATH"], bucket=downloads_config["BUCKET"]
+    registry_view = DownloadRegistryView(
+        downloads_config["PATHS"]["LAST_DOWNLOAD_PATH"],
+        bucket=downloads_config["BUCKET"],
+        dataflow=DATAFLOW,
     )
-    shares = completeness_by_year(planned, registry, DATAFLOW)
+    shares = completeness_by_year(planned, registry_view.batches_by_year())
     years_eligible = eligible_years(
         shares, float(completeness_config.get("MIN_SHARE", 1.0)), period_end=period_end
     )
@@ -941,6 +897,7 @@ def main() -> None:
                         catalog_alias=connector.catalog_alias,
                         schema=_schema_name(target_cfg["RESULT_SCHEMA"]),
                         label=label,
+                        **compute_write_options(f"process_baci_hs {label}"),
                     )
                     reports[label] = report
                     # Traçage du millésime réécrit, indexé par son schéma

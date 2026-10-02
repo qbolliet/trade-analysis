@@ -29,16 +29,16 @@ import pandas as pd
 # Importation des modules du package
 from statflows import (
     EurostatClient,
-    StructureResourceType,
     DataflowStructure,
     EurostatQueryRequestV30
 )
-from statflows.sources.eurostat.parsing import parse_codelist_response
 from statflows.core.factory import (
+    codelist_frame,
     filter_codes,
 )
 from statflows.core.download import download_updates, _schema_name
 from statflows.core.reports import QueryReport
+from statflows.core.registry import DEFAULT_SHARD
 
 # Module de suivi d'exécution
 from macroforecast.tracking import CapturingTracker, get_tracker, rekey_metrics
@@ -46,10 +46,12 @@ from macroforecast.tracking import CapturingTracker, get_tracker, rekey_metrics
 # Fabrique de connecteur DuckLake (seul point de lecture des identifiants)
 from kedro_pipeline.io.download_report import check_download_report
 from scripts._run_report import RunScope, build_download_report, guarded_run, run_name
+from kedro_pipeline.io.registry_views import split_codes
 from kedro_pipeline.steps.reference import publish_reference
 from kedro_pipeline.io.ducklake import (
     DuckLakeLocation,
     build_connector,
+    download_buffering_options,
     pg_credentials_from_env,
     s3_credentials_from_env,
 )
@@ -64,7 +66,7 @@ logging.basicConfig(
 # Initialisation du logger
 logger = logging.getLogger(__name__)
 
-# Dimension découpée en boucle externe (ordre produit-majeur, PS-12.2)
+# Dimension découpée en boucle externe (ordre produit-majeur)
 _PRODUCT_DIM = "product"
 
 T = TypeVar("T")
@@ -120,7 +122,8 @@ def fetch_dimension_codelists(
     """Fetch the codelist of one dimension of a Comext dataflow.
 
     Deduces the codelist identifier of the requested dimension from the
-    dataflow's Data Structure Definition (DSD), then downloads and parses it.
+    dataflow's Data Structure Definition (DSD), then downloads and parses it
+    through ``statflows.codelist_frame``.
 
     Args:
         structure: Resolved dataflow structure (carries the dimension →
@@ -130,7 +133,7 @@ def fetch_dimension_codelists(
         client: ``EurostatClient`` instance; a new one is created if ``None``.
 
     Returns:
-        DataFrame with columns ``(code, name)`` for the requested dimension.
+        DataFrame with columns ``(code, label, parent)`` for the requested dimension.
 
     Examples:
         >>> structure = client.get_dataflow_structure(
@@ -146,18 +149,9 @@ def fetch_dimension_codelists(
     if client is None:
         client = EurostatClient()
 
-    # Déduction des codelists des informations de la structure
-    codelists = {d.name: d.codelist for d in structure.dimensions}
-
-    # Extraction de la liste des codes liée à la dimension
-    dimension_codelist = codelists[dimension]
-    # Logging
-    logger.info("Codes related to '%s' : %s", dimension, dimension_codelist)
-
-    # Requête des codes associés à la dimension
-    dimension_xml = client.get_structure(StructureResourceType.CODELIST, dimension_codelist)
-    # Parsing du XML de réponse
-    dimension_codes = parse_codelist_response(dimension_xml)
+    # Codelist de la dimension (identifiant déduit de la DSD) avec libellés et parents,
+    # mise en cache par le client : un seul appel réseau par codelist
+    dimension_codes = codelist_frame(client, dimension, structure)
     # Logging
     logger.info("%d codes %s", len(dimension_codes), dimension)
 
@@ -324,6 +318,31 @@ def build_split_queries(
 NODE = "download_eurostat"
 
 
+# Fonction de clé de fragment du registre de téléchargement
+def registry_shard_key(query: EurostatQueryRequestV30) -> str:
+    """Name the registry fragment of a Comext query: its reporter.
+
+    A fragment per reporter keeps each registry flush small: the product-major
+    order touches every reporter, but a flush only rewrites the fragments
+    modified since the previous one.
+
+    Args:
+        query: Eurostat query, whose ``dimensions["reporter"]`` is a code, a
+            list of codes or a ``+`` / ``,`` separated string.
+
+    Returns:
+        Reporter code(s) joined by ``_`` (``statflows`` sanitises the file name),
+        or the default fragment when the query has no reporter.
+
+    Examples:
+        >>> registry_shard_key(
+        ...     EurostatQueryRequestV30(dataflow="DS-045409", dimensions={"reporter": "FR"})
+        ... )
+        'FR'
+    """
+    return "_".join(split_codes(query.dimensions.get("reporter"))) or DEFAULT_SHARD
+
+
 # Fonction principale de téléchargement
 def main() -> None:
     """CLI entry point for the Comext download script.
@@ -473,6 +492,10 @@ def _download(config: dict, runtime_config: dict, tracker: CapturingTracker, sco
             bucket=downloads_config['BUCKET'],
             storage_options=None,
             on_query_complete=stream_query_metrics,
+            # Partition du registre et des écritures
+            **download_buffering_options(
+                downloads_config.get("BUFFERING"), shard_key=registry_shard_key
+            ),
         )
 
         # Rapport de run : métriques, table par requête, contrôles, description

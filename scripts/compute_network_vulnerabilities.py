@@ -51,6 +51,7 @@ from statflows.storage.json import Loader, Saver
 from kedro_pipeline.io.ducklake import (
     DuckLakeLocation,
     build_connector,
+    compute_write_options,
     pg_credentials_from_env,
     s3_credentials_from_env,
 )
@@ -573,6 +574,7 @@ def main() -> None:
                             tracker=tracker,
                             log_artifacts=log_artifacts,
                             df_previous=df_previous,
+                            write_options=compute_write_options(f"{NODE} {label}"),
                         )
 
                         # Envoi des métriques : le rapport connaît sa mise en

@@ -58,6 +58,8 @@ from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
 from statflows.storage.json import Loader, Saver
 # Module d'écriture des tables de faits DuckLake (upsert par clé primaire)
 from statflows.storage.ducklake.tables import FACT_TABLE, write_dataframe
+# Options d'écriture des étapes de calcul (évolution de schéma, traçabilité)
+from kedro_pipeline.io.ducklake import compute_write_options
 # Module d'utilitaires de téléchargement (instants, parsing ISO, noms de schéma)
 from statflows.core.download import _now, _parse_iso, _schema_name
 
@@ -502,6 +504,9 @@ def run_from_connections(
                     diagnostics_keys,
                     catalog_alias=catalog_alias,
                     schema=diagnostics_schema,
+                    **compute_write_options(
+                        f"compute_synthesis_coherence {'/'.join(str(value) for value in context)}"
+                    ),
                 )
                 created_any = created_any or created
                 reports.append(report)

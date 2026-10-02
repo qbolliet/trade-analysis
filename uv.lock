@@ -2801,8 +2801,8 @@ wheels = [
 
 [[package]]
 name = "statflows"
-version = "0.1.0"
-source = { git = "https://github.com/qbolliet/statflows?branch=main#9d98979a09d646302087dce86e4fb7c7b7958f3d" }
+version = "0.1.1"
+source = { git = "https://github.com/qbolliet/statflows?branch=main#ca0d316423477c151205b2642ced24ea24fec597" }
 dependencies = [
     { name = "pandas" },
     { name = "pyarrow" },

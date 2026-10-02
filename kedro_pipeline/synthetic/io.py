@@ -20,6 +20,7 @@ import pandas as pd
 
 # Modules de chargement/sauvegarde JSON (local ou S3), même brique que le téléchargement
 from statflows.core.download import _parse_iso
+from statflows.core.registry import REGISTRY_ROOT, load_registry_records
 from statflows.storage.ducklake.tables import FACT_TABLE, fact_table_exists
 from statflows.storage.json import Loader, Saver
 
@@ -29,8 +30,6 @@ logger = logging.getLogger(__name__)
 # Variable d'environnement et valeur par défaut du fichier de configuration
 SYNTHETIC_CONFIG_ENV = "SYNTHETIC_CONFIG_PATH"
 DEFAULT_SYNTHETIC_CONFIG = "config/profiles/demo/synthetic.yaml"
-# Racine du registre de téléchargement statflows
-_REGISTRY_ROOT = "DOWNLOADS"
 # Clé ajoutée aux entrées de registre écrites par ces scripts
 SYNTHETIC_FLAG = "synthetic"
 
@@ -188,8 +187,10 @@ def load_registry(last_download_path: os.PathLike, bucket: Optional[str]) -> Dic
     Returns:
         Mapping ``identity_key -> entry``.
     """
-    data = Loader().load(Path(last_download_path), bucket=bucket, missing_ok=True) or {}
-    return data.get(_REGISTRY_ROOT, {})
+    # Lecture indépendante du format physique du registre (fichier unique ou fragments),
+    # entrées brutes conservées : le drapeau « synthetic » doit pouvoir y être ajouté
+    records = load_registry_records(Path(last_download_path), Loader(), bucket=bucket)
+    return {key: raw for key, (raw, _shard) in records.items()}
 
 
 # Fonction de marquage des entrées de registre écrites par ces scripts
@@ -219,7 +220,7 @@ def mark_synthetic_entries(
             flagged += 1
     if flagged:
         Saver().save(
-            Path(last_download_path), {_REGISTRY_ROOT: registry},
+            Path(last_download_path), {REGISTRY_ROOT: registry},
             bucket=bucket, indent=2, ensure_ascii=False,
         )
     logger.info("%d entrée(s) de registre marquée(s) comme fictives", flagged)

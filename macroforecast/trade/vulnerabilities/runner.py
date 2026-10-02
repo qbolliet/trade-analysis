@@ -25,7 +25,7 @@ plumbing, nothing else.
 from __future__ import annotations
 # Modules de base
 import logging
-from typing import TYPE_CHECKING, Any, Collection, Iterable, Optional, Sequence, Tuple
+from typing import TYPE_CHECKING, Any, Collection, Iterable, Mapping, Optional, Sequence, Tuple
 # Modules de manipulation de données
 import narwhals as nw
 import pandas as pd
@@ -387,6 +387,7 @@ def run_vulnerabilities(
     tracker: RunTracker = NULL_TRACKER,
     log_artifacts: bool = True,
     df_previous: Optional[nw.DataFrame] = None,
+    write_options: Optional[Mapping[str, Any]] = None,
 ) -> VulnerabilityReport:
     """Compute trade-vulnerability metrics and write them to a result schema.
 
@@ -430,6 +431,10 @@ def run_vulnerabilities(
             vulnerable cells, alert counts, missing aggregates, deciles).
         df_previous: Result of the previous run over the same perimeter,
             enabling the drift diagnostics (see :func:`read_previous_result`).
+        write_options: Extra keyword arguments forwarded to
+            :func:`~statflows.storage.ducklake.tables.write_dataframe`
+            (``update_options``, ``run_id``, ``commit_message``). ``None``
+            keeps the library defaults.
 
     Returns:
         A :class:`VulnerabilityReport` summarising the run.
@@ -520,6 +525,7 @@ def run_vulnerabilities(
         config.key_columns,
         catalog_alias=result_catalog_alias,
         schema=result_schema,
+        **(write_options or {}),
     )
 
     return report
@@ -766,6 +772,7 @@ def run_network_vulnerabilities(
     tracker: RunTracker = NULL_TRACKER,
     log_artifacts: bool = True,
     df_previous: Optional[nw.DataFrame] = None,
+    write_options: Optional[Mapping[str, Any]] = None,
 ) -> NetworkVulnerabilityReport:
     """Compute the network vulnerability metrics of one HS vintage and persist them.
 
@@ -812,6 +819,10 @@ def run_network_vulnerabilities(
             exposed products, alert counts, unscored cells, deciles).
         df_previous: Result of the previous run over the same vintage, enabling
             the drift diagnostics (see :func:`read_previous_network_result`).
+        write_options: Extra keyword arguments forwarded to
+            :func:`~statflows.storage.ducklake.tables.write_dataframe`
+            (``update_options``, ``run_id``, ``commit_message``). ``None``
+            keeps the library defaults.
 
     Returns:
         A :class:`NetworkVulnerabilityReport` summarising the run.
@@ -894,6 +905,7 @@ def run_network_vulnerabilities(
         catalog_alias=result_catalog_alias,
         schema=result_schema,
         label=classification,
+        **(write_options or {}),
     )
 
     return report

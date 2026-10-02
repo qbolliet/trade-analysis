@@ -213,7 +213,9 @@ def normalize_products(
         return code[: 6 if len(code) == 8 else len(code) - 2]
 
     parent = codes.map(_derived_parent)
-    if "parent" in codelist.columns:
+    # Colonne « parent » intégralement vide (codelist sans hiérarchie, ex. Comext) :
+    # on conserve le parent déduit plutôt que d'effacer toute la hiérarchie
+    if "parent" in codelist.columns and codelist["parent"].notna().any():
         given = codelist["parent"].astype("string").str.strip()
         # Parents non numériques (« TOTAL », « # ») : pas de code parent
         parent = given.where(given.str.fullmatch(r"\d+").fillna(False), None)

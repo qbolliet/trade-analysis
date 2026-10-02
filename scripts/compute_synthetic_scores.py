@@ -16,11 +16,11 @@ Place dans le pipeline (ordre Argo) : après
 `compute_trade_vulnerabilities.py` et `compute_network_vulnerabilities.py`
 (dépendances directes, couplage faible : seuls leurs registres JSON de fraîcheur
 sont lus), avant `compute_synthesis_coherence.py`. Deux schémas résultat dans le
-catalogue `vulnerabilities` (D-01, D-02) : `synthesis` pour les scores,
+catalogue `vulnerabilities` : `synthesis` pour les scores,
 `synthesis_diagnostics` pour les diagnostics d'ajustement de la famille `fit`
-(même table longue que le script de cohérence, clé primaire de S-2.6).
+(même table longue que le script de cohérence).
 
-Fraîcheur (S-2.1, v1). Les registres amont des vulnérabilités partenaires et de
+Fraîcheur. Les registres amont des vulnérabilités partenaires et de
 réseau sont indexés par unité de travail sans période : on ne peut pas savoir
 quelles périodes ont bougé. Règle retenue : si `max(last_computed)` d'un
 registre amont est postérieur au `last_computed` du registre de synthèse — ou si
@@ -36,7 +36,7 @@ parcours.
 Le suivi d'exécution MLflow est piloté par le bloc `SYNTHESIS.MLFLOW` de
 `config/synthesis.yaml` : sans `TRACKING_URI` (ou sans serveur joignable),
 `get_tracker` retourne un objet nul et l'exécution est strictement inchangée. Un
-seul run par exécution (D-14).
+seul run par exécution.
 """
 # Importation des modules
 from __future__ import annotations
@@ -56,6 +56,7 @@ from statflows.storage.json import Loader, Saver
 from kedro_pipeline.io.ducklake import (
     DuckLakeLocation,
     build_connector,
+    compute_write_options,
     pg_credentials_from_env,
     s3_credentials_from_env,
 )
@@ -704,6 +705,11 @@ def run_from_connections(
                     log_artifacts=log_artifacts,
                 )
 
+                # Options d'écriture communes aux deux schémas : unité = contexte
+                write_options = compute_write_options(
+                    f"compute_synthetic_scores {'/'.join(str(value) for value in context)}"
+                )
+
                 # Écriture des scores (schéma « synthesis »)
                 created_scores = write_dataframe(
                     scores_conn,
@@ -711,15 +717,17 @@ def run_from_connections(
                     scores_keys,
                     catalog_alias=catalog_alias,
                     schema=result_schema,
+                    **write_options,
                 )
                 # Écriture des diagnostics « fit » (schéma « synthesis_diagnostics »,
-                # même table longue que le script de cohérence, clé S-2.6)
+                # même table longue que le script de cohérence)
                 created_diag = write_dataframe(
                     diagnostics_conn,
                     df_fit,
                     diagnostics_keys,
                     catalog_alias=catalog_alias,
                     schema=diagnostics_schema,
+                    **write_options,
                 )
                 created_any = created_any or created_scores or created_diag
                 reports.append(report)

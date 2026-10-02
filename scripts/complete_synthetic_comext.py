@@ -35,6 +35,7 @@ import pandas as pd
 # Importation des modules du package
 from statflows import EurostatClient
 from statflows.core.download import _primary_keys, _schema_name
+from statflows.core.registry import REGISTRY_ROOT
 from statflows.storage.ducklake.tables import write_dataframe
 from statflows.storage.json import Saver
 
@@ -52,7 +53,6 @@ from kedro_pipeline.synthetic.comext import (
 )
 from kedro_pipeline.synthetic.io import (
     SYNTHETIC_FLAG,
-    _REGISTRY_ROOT,
     ensure_isolated_catalog,
     load_registry,
     load_synthetic_config,
@@ -223,7 +223,7 @@ def main() -> None:
                     SYNTHETIC_FLAG: True,
                 }
             Saver().save(
-                Path(last_download_path), {_REGISTRY_ROOT: registry},
+                Path(last_download_path), {REGISTRY_ROOT: registry},
                 bucket=bucket, indent=2, ensure_ascii=False,
             )
             written_queries += len(batch)

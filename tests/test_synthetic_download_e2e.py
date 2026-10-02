@@ -18,6 +18,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
+from kedro_pipeline.io.registry_views import DownloadRegistryView
 from kedro_pipeline.synthetic.comtrade import ReportingConfig, SyntheticComtradeClient
 from kedro_pipeline.synthetic.io import SYNTHETIC_FLAG, load_registry, mark_synthetic_entries
 from scripts.download_comtrade import build_split_queries
@@ -25,7 +26,6 @@ from scripts.process_baci_hs import (
     _read_comtrade_fact_table,
     completeness_by_year,
     eligible_years,
-    load_download_registry,
 )
 from statflows.core.download import download_updates
 
@@ -90,8 +90,8 @@ def test_seed_then_baci_gate_and_reconciliation(
     assert all(e[SYNTHETIC_FLAG] for e in load_registry(registry_path, None).values())
 
     # Porte de complétude de BACI : toutes les années sont complètes
-    registry = load_download_registry(registry_path, bucket=None)
-    shares = completeness_by_year(queries, registry, "C_A_HS")
+    view = DownloadRegistryView(registry_path, bucket=None, dataflow="C_A_HS")
+    shares = completeness_by_year(queries, view.batches_by_year())
     assert eligible_years(shares, 1.0) == [2019, 2020, 2021]
 
     # Lecture SQL de BACI puis redressement
@@ -115,3 +115,51 @@ def test_seed_then_baci_gate_and_reconciliation(
         bucket=None, max_runtime=None,
     )
     assert conn.execute('SELECT count(*) FROM "C_A_HS".fact_table').fetchone()[0] == before
+
+
+def test_buffered_sharded_download_is_read_by_the_view(
+    ducklake_conn, synthetic_world, synthetic_reference, synthetic_section, tmp_path
+) -> None:
+    """Téléchargement tamponné + registre fragmenté par année (PS-27) relu par la vue (PS-12.3).
+
+    Les options sont celles que ``scripts/download_comtrade.py`` déduit de la configuration ;
+    le résultat (lots par année, part de complétude) doit être celui du mode non tamponné.
+    """
+    from kedro_pipeline.io.ducklake import download_buffering_options
+    from scripts.download_comtrade import registry_shard_key
+
+    conn, alias = ducklake_conn
+    client = SyntheticComtradeClient(
+        synthetic_world, synthetic_reference, ReportingConfig.from_mapping(synthetic_section["REPORTING"]),
+        product_universe=PRODUCTS,
+    )
+    queries = build_split_queries(
+        "C_A_HS",
+        {"reporters": pd.DataFrame({"code": ["251"]}), "products": pd.DataFrame({"code": PRODUCTS})},
+        {"frequency": "annual", "flows": ["M", "X"], "type_code": "C", "classification": "HS"},
+        {"reporters": {"include": None}, "products": {"include": PRODUCTS}},
+        periods=["2019", "2020", "2021"], products_step=2,
+    )
+    registry_path = tmp_path / "last_downloads" / "comtrade.json"
+    buffering = {
+        "REGISTRY_FLUSH_EVERY": 4, "REGISTRY_FLUSH_SECONDS": 300,
+        "WRITE_BATCH_QUERIES": 3, "WRITE_BATCH_ROWS": 500000,
+        "COMPACT_AFTER_UPDATE": False, "SHARD_REGISTRY": True,
+    }
+
+    report = download_updates(
+        client=client, queries=queries, connector=_FakeConnector(conn, alias),
+        structures_path=tmp_path / "structures.json", last_download_path=registry_path,
+        bucket=None, max_runtime=None,
+        **download_buffering_options(buffering, shard_key=registry_shard_key, environ={}),
+    )
+    assert report.processed == len(queries) == 6 and report.rows_written > 0
+
+    # Registre fragmenté : un fichier par année, pas de fichier unique
+    assert not registry_path.exists()
+    assert sorted(path.stem for path in registry_path.with_suffix("").glob("*.json")) == ["2019", "2020", "2021"]
+
+    # La vue lit les fragments ; la porte de complétude voit toutes les années complètes
+    batches = DownloadRegistryView(registry_path, bucket=None, dataflow="C_A_HS").batches_by_year()
+    assert sorted(batches) == [2019, 2020, 2021] and all(len(year_batches) == 2 for year_batches in batches.values())
+    assert eligible_years(completeness_by_year(queries, batches), 1.0) == [2019, 2020, 2021]

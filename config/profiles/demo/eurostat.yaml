@@ -164,6 +164,27 @@ DOWNLOADS :
       STRUCTURES_PATH: "trade/demo/datasets/structures/comext.json"
       LAST_DOWNLOAD_PATH: "trade/demo/datasets/last_downloads/comext.json"
     N_LAST_OBSERVATIONS: 10
+    # Tamponnage du téléchargement (PS-27, C-08) : sans lui, le registre est réécrit en
+    # entier et une écriture DuckLake (un snapshot) est lancée à chaque requête, soit un coût
+    # quadratique sur 10^4 à 10^5 requêtes. Le registre n'avance qu'après l'écriture du lot qui
+    # contient la requête : un arrêt (SIGTERM, MAX_RUNTIME) ne perd aucune donnée.
+    BUFFERING:
+      # Persistance du registre toutes les N requêtes validées (1 = comportement historique)
+      REGISTRY_FLUSH_EVERY: 500
+      # ... ou dès que T secondes se sont écoulées depuis la dernière persistance (null = aucun seuil)
+      REGISTRY_FLUSH_SECONDS: 300
+      # Écriture DuckLake groupée : un lot est écrit dès N requêtes non vides (null = aucun seuil)
+      WRITE_BATCH_QUERIES: 200
+      # ... ou dès N lignes cumulées dans le lot (null = aucun seuil)
+      WRITE_BATCH_ROWS: 500000
+      # Compaction DuckLake après chaque écriture ; false = laissée à une passe de maintenance
+      COMPACT_AFTER_UPDATE: false
+      # Registre fragmenté, un fichier par reporter : seuls les fragments modifiés sont réécrits
+      # (le registre existant, en fichier unique, est migré à la première persistance)
+      SHARD_REGISTRY: true
+      # Options DuckLake appliquées à l'ATTACH le temps du run (ex. {data_inlining_row_limit: 1000}) ;
+      # null = aucune
+      DUCKLAKE_OPTIONS: null
     # Durée maximale d'un run (arrêt propre, ARCH §2.3)
     MAX_RUNTIME:
       WEEKS: 0
