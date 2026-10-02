@@ -105,6 +105,17 @@ câblage MLflow). Le **mode plan** est activé partout où un mauvais départ co
 - **Dépôt** : `trade-analysis`
 
 ````text
+CONVENTIONS DE RÉDACTION DU CODE (à appliquer à tout le code écrit ou modifié)
+- Commentaires internes en FRANÇAIS, à formulation nominale (ex. `# Vérification des
+  arguments`, pas `# Vérifier les arguments`) ; expliquer le « pourquoi » plutôt que le
+  « quoi » quand le code est clair.
+- Docstrings en ANGLAIS, selon la convention Google Style : description concise, puis
+  `Args:` (noms, types et descriptions), `Returns:` (type et description), `Raises:`
+  (exceptions possibles) et `Examples:` (cas d'usage concrets, doctest quand possible).
+- Ne cite dans le code, les commentaires et les docstrings aucun identifiant ni paragraphe
+  d'un document d'architecture ou de spécification : décris explicitement toute
+  l'information utile (règle, motivation, valeurs attendues) à l'endroit où elle sert.
+
 Tu travailles dans le dépôt `trade-analysis` (pipeline de calcul de vulnérabilités du
 commerce international). Lis d'abord `CLAUDE.md` (conventions : commentaires en français à
 formulation nominale, docstrings Google Style en anglais, type hints, aucune valeur
@@ -243,6 +254,17 @@ CRITÈRES D'ACCEPTATION
 - **Dépôt** : `trade-analysis`
 
 ````text
+CONVENTIONS DE RÉDACTION DU CODE (à appliquer à tout le code écrit ou modifié)
+- Commentaires internes en FRANÇAIS, à formulation nominale (ex. `# Vérification des
+  arguments`, pas `# Vérifier les arguments`) ; expliquer le « pourquoi » plutôt que le
+  « quoi » quand le code est clair.
+- Docstrings en ANGLAIS, selon la convention Google Style : description concise, puis
+  `Args:` (noms, types et descriptions), `Returns:` (type et description), `Raises:`
+  (exceptions possibles) et `Examples:` (cas d'usage concrets, doctest quand possible).
+- Ne cite dans le code, les commentaires et les docstrings aucun identifiant ni paragraphe
+  d'un document d'architecture ou de spécification : décris explicitement toute
+  l'information utile (règle, motivation, valeurs attendues) à l'endroit où elle sert.
+
 Dépôt `trade-analysis`. Lis `CLAUDE.md`, puis dans `PIPELINE_ARCHITECTURE.md` : C-14,
 C-21, PD-15, PS-22, PS-23 (ligne `image.yml` et `ci.yml` uniquement).
 
@@ -315,6 +337,17 @@ CRITÈRES D'ACCEPTATION
 - **Dépôt** : `trade-analysis` — **session lancée depuis un terminal avec accès `kubectl`**
 
 ````text
+CONVENTIONS DE RÉDACTION DU CODE (à appliquer à tout le code écrit ou modifié)
+- Commentaires internes en FRANÇAIS, à formulation nominale (ex. `# Vérification des
+  arguments`, pas `# Vérifier les arguments`) ; expliquer le « pourquoi » plutôt que le
+  « quoi » quand le code est clair.
+- Docstrings en ANGLAIS, selon la convention Google Style : description concise, puis
+  `Args:` (noms, types et descriptions), `Returns:` (type et description), `Raises:`
+  (exceptions possibles) et `Examples:` (cas d'usage concrets, doctest quand possible).
+- Ne cite dans le code, les commentaires et les docstrings aucun identifiant ni paragraphe
+  d'un document d'architecture ou de spécification : décris explicitement toute
+  l'information utile (règle, motivation, valeurs attendues) à l'endroit où elle sert.
+
 Dépôt `trade-analysis`. Lis `CLAUDE.md`, puis dans `PIPELINE_ARCHITECTURE.md` : §2.2,
 §2.3, C-15, PD-05, PD-14 (sémantique des dépendances tolérantes), PD-18, PD-19, PS-21
 (comme modèle de forme), §9. Regarde `kubernetes/workflow.yaml` (ancien exemple, contient
@@ -415,6 +448,17 @@ CRITÈRES D'ACCEPTATION
 - **Dépôt** : `trade-analysis` — développement et tests en local ; la première exécution réelle se fait sur Onyxia (ARCH §12)
 
 ````text
+CONVENTIONS DE RÉDACTION DU CODE (à appliquer à tout le code écrit ou modifié)
+- Commentaires internes en FRANÇAIS, à formulation nominale (ex. `# Vérification des
+  arguments`, pas `# Vérifier les arguments`) ; expliquer le « pourquoi » plutôt que le
+  « quoi » quand le code est clair.
+- Docstrings en ANGLAIS, selon la convention Google Style : description concise, puis
+  `Args:` (noms, types et descriptions), `Returns:` (type et description), `Raises:`
+  (exceptions possibles) et `Examples:` (cas d'usage concrets, doctest quand possible).
+- Ne cite dans le code, les commentaires et les docstrings aucun identifiant ni paragraphe
+  d'un document d'architecture ou de spécification : décris explicitement toute
+  l'information utile (règle, motivation, valeurs attendues) à l'endroit où elle sert.
+
 Dépôt `trade-analysis`. Lis `CLAUDE.md`, puis dans `PIPELINE_ARCHITECTURE.md` : C-22,
 C-23, PD-16 (points 2 et 3), PD-18, PD-19 (jalon tableau de bord), PD-20 (points 1, 3,
 4 et 7 : tu n'implémentes PAS les millésimes ici, mais la couche de service doit en
@@ -543,6 +587,17 @@ CRITÈRES D'ACCEPTATION
 - **Dépôt** : `trade-analysis` — développement en local (MLflow `file:`) ; vérification finale de rendu sur le MLflow d'Onyxia (ARCH §12)
 
 ````text
+CONVENTIONS DE RÉDACTION DU CODE (à appliquer à tout le code écrit ou modifié)
+- Commentaires internes en FRANÇAIS, à formulation nominale (ex. `# Vérification des
+  arguments`, pas `# Vérifier les arguments`) ; expliquer le « pourquoi » plutôt que le
+  « quoi » quand le code est clair.
+- Docstrings en ANGLAIS, selon la convention Google Style : description concise, puis
+  `Args:` (noms, types et descriptions), `Returns:` (type et description), `Raises:`
+  (exceptions possibles) et `Examples:` (cas d'usage concrets, doctest quand possible).
+- Ne cite dans le code, les commentaires et les docstrings aucun identifiant ni paragraphe
+  d'un document d'architecture ou de spécification : décris explicitement toute
+  l'information utile (règle, motivation, valeurs attendues) à l'endroit où elle sert.
+
 Dépôt `trade-analysis`. Lis `CLAUDE.md`, puis dans `PIPELINE_ARCHITECTURE.md` : C-19,
 PD-13 (en entier, révision 2), PS-08 (`StepResult`, invariant 3), PS-19, PS-26, PS-31
 (en entier), PR-19 à PR-21, PQ-19. Lis `macroforecast/tracking/` (protocole
@@ -640,6 +695,17 @@ CRITÈRES D'ACCEPTATION
 - **Dépôt** : `trade-analysis` — **session lancée depuis un service VSCode Onyxia** (accès réseau à l'URL Superset du namespace, à PostgreSQL et à S3)
 
 ````text
+CONVENTIONS DE RÉDACTION DU CODE (à appliquer à tout le code écrit ou modifié)
+- Commentaires internes en FRANÇAIS, à formulation nominale (ex. `# Vérification des
+  arguments`, pas `# Vérifier les arguments`) ; expliquer le « pourquoi » plutôt que le
+  « quoi » quand le code est clair.
+- Docstrings en ANGLAIS, selon la convention Google Style : description concise, puis
+  `Args:` (noms, types et descriptions), `Returns:` (type et description), `Raises:`
+  (exceptions possibles) et `Examples:` (cas d'usage concrets, doctest quand possible).
+- Ne cite dans le code, les commentaires et les docstrings aucun identifiant ni paragraphe
+  d'un document d'architecture ou de spécification : décris explicitement toute
+  l'information utile (règle, motivation, valeurs attendues) à l'endroit où elle sert.
+
 Dépôt `trade-analysis`. Lis `CLAUDE.md`, puis dans `PIPELINE_ARCHITECTURE.md` : PD-21
 (révision 2), PS-29 (tables de service et colonnes, telles que mises à jour par K-03b),
 PS-30 (en entier), §5.8, PQ-13, PQ-18, PR-14, PR-15. Lis le résumé de K-03b (liste des
@@ -739,6 +805,17 @@ CRITÈRES D'ACCEPTATION
 - **Dépôt** : **`statflows`** (`https://github.com/qbolliet/statflows`, branche `main`) — cloner le dépôt et ouvrir la session à sa racine
 
 ````text
+CONVENTIONS DE RÉDACTION DU CODE (à appliquer à tout le code écrit ou modifié)
+- Commentaires internes en FRANÇAIS, à formulation nominale (ex. `# Vérification des
+  arguments`, pas `# Vérifier les arguments`) ; expliquer le « pourquoi » plutôt que le
+  « quoi » quand le code est clair.
+- Docstrings en ANGLAIS, selon la convention Google Style : description concise, puis
+  `Args:` (noms, types et descriptions), `Returns:` (type et description), `Raises:`
+  (exceptions possibles) et `Examples:` (cas d'usage concrets, doctest quand possible).
+- Ne cite dans le code, les commentaires et les docstrings aucun identifiant ni paragraphe
+  d'un document d'architecture ou de spécification : décris explicitement toute
+  l'information utile (règle, motivation, valeurs attendues) à l'endroit où elle sert.
+
 Tu travailles dans le dépôt `statflows` (bibliothèque d'acquisition de données
 statistiques : clients SDMX Eurostat/OECD, Comtrade, UNSD ; orchestration des
 téléchargements incrémentaux vers DuckLake ; stockage JSON local/S3). Il est consommé par
@@ -847,6 +924,17 @@ LIVRABLES
 - **Dépôt** : `trade-analysis`
 
 ````text
+CONVENTIONS DE RÉDACTION DU CODE (à appliquer à tout le code écrit ou modifié)
+- Commentaires internes en FRANÇAIS, à formulation nominale (ex. `# Vérification des
+  arguments`, pas `# Vérifier les arguments`) ; expliquer le « pourquoi » plutôt que le
+  « quoi » quand le code est clair.
+- Docstrings en ANGLAIS, selon la convention Google Style : description concise, puis
+  `Args:` (noms, types et descriptions), `Returns:` (type et description), `Raises:`
+  (exceptions possibles) et `Examples:` (cas d'usage concrets, doctest quand possible).
+- Ne cite dans le code, les commentaires et les docstrings aucun identifiant ni paragraphe
+  d'un document d'architecture ou de spécification : décris explicitement toute
+  l'information utile (règle, motivation, valeurs attendues) à l'endroit où elle sert.
+
 Dépôt `trade-analysis`. Lis `CLAUDE.md`, puis dans `PIPELINE_ARCHITECTURE.md` : C-08,
 PD-07, PS-12.3, PS-27.
 
@@ -905,6 +993,17 @@ CRITÈRES D'ACCEPTATION
 - **Dépôt** : `trade-analysis`
 
 ````text
+CONVENTIONS DE RÉDACTION DU CODE (à appliquer à tout le code écrit ou modifié)
+- Commentaires internes en FRANÇAIS, à formulation nominale (ex. `# Vérification des
+  arguments`, pas `# Vérifier les arguments`) ; expliquer le « pourquoi » plutôt que le
+  « quoi » quand le code est clair.
+- Docstrings en ANGLAIS, selon la convention Google Style : description concise, puis
+  `Args:` (noms, types et descriptions), `Returns:` (type et description), `Raises:`
+  (exceptions possibles) et `Examples:` (cas d'usage concrets, doctest quand possible).
+- Ne cite dans le code, les commentaires et les docstrings aucun identifiant ni paragraphe
+  d'un document d'architecture ou de spécification : décris explicitement toute
+  l'information utile (règle, motivation, valeurs attendues) à l'endroit où elle sert.
+
 Dépôt `trade-analysis`. Lis `CLAUDE.md`, puis dans `PIPELINE_ARCHITECTURE.md` : C-07,
 C-10, C-24, PD-10 (dont le cas BACI), PD-12 (règles de recalcul, pour préparer K-08),
 PD-22, PS-04.1, PS-10 (en entier), PS-11, PS-14.6. Lis les scripts
@@ -1020,6 +1119,17 @@ CRITÈRES D'ACCEPTATION
 - **Dépôt** : `trade-analysis`
 
 ````text
+CONVENTIONS DE RÉDACTION DU CODE (à appliquer à tout le code écrit ou modifié)
+- Commentaires internes en FRANÇAIS, à formulation nominale (ex. `# Vérification des
+  arguments`, pas `# Vérifier les arguments`) ; expliquer le « pourquoi » plutôt que le
+  « quoi » quand le code est clair.
+- Docstrings en ANGLAIS, selon la convention Google Style : description concise, puis
+  `Args:` (noms, types et descriptions), `Returns:` (type et description), `Raises:`
+  (exceptions possibles) et `Examples:` (cas d'usage concrets, doctest quand possible).
+- Ne cite dans le code, les commentaires et les docstrings aucun identifiant ni paragraphe
+  d'un document d'architecture ou de spécification : décris explicitement toute
+  l'information utile (règle, motivation, valeurs attendues) à l'endroit où elle sert.
+
 Dépôt `trade-analysis`. Lis `CLAUDE.md`, puis dans `PIPELINE_ARCHITECTURE.md` : C-11,
 C-12, PD-09, PD-21 (reporter `EU27_2020`), PQ-06 (résolue), PS-15. Lis
 `macroforecast/trade/vulnerabilities/{base,metrics,runner,diagnostics}.py`,
@@ -1095,6 +1205,17 @@ CRITÈRES D'ACCEPTATION
 - **Dépôt** : `trade-analysis`
 
 ````text
+CONVENTIONS DE RÉDACTION DU CODE (à appliquer à tout le code écrit ou modifié)
+- Commentaires internes en FRANÇAIS, à formulation nominale (ex. `# Vérification des
+  arguments`, pas `# Vérifier les arguments`) ; expliquer le « pourquoi » plutôt que le
+  « quoi » quand le code est clair.
+- Docstrings en ANGLAIS, selon la convention Google Style : description concise, puis
+  `Args:` (noms, types et descriptions), `Returns:` (type et description), `Raises:`
+  (exceptions possibles) et `Examples:` (cas d'usage concrets, doctest quand possible).
+- Ne cite dans le code, les commentaires et les docstrings aucun identifiant ni paragraphe
+  d'un document d'architecture ou de spécification : décris explicitement toute
+  l'information utile (règle, motivation, valeurs attendues) à l'endroit où elle sert.
+
 Dépôt `trade-analysis`. Lis `CLAUDE.md`, puis dans `PIPELINE_ARCHITECTURE.md` : C-11,
 C-22, C-25, PD-16 (partitions), PD-20 (en entier), PS-04.1 (`NOMENCLATURES`), PS-04.3,
 PS-10.1, PS-28 (en entier), PS-29.3, §5.3 (migration de table). Lis
@@ -1188,6 +1309,17 @@ CRITÈRES D'ACCEPTATION
 - **Dépôt** : `trade-analysis`
 
 ````text
+CONVENTIONS DE RÉDACTION DU CODE (à appliquer à tout le code écrit ou modifié)
+- Commentaires internes en FRANÇAIS, à formulation nominale (ex. `# Vérification des
+  arguments`, pas `# Vérifier les arguments`) ; expliquer le « pourquoi » plutôt que le
+  « quoi » quand le code est clair.
+- Docstrings en ANGLAIS, selon la convention Google Style : description concise, puis
+  `Args:` (noms, types et descriptions), `Returns:` (type et description), `Raises:`
+  (exceptions possibles) et `Examples:` (cas d'usage concrets, doctest quand possible).
+- Ne cite dans le code, les commentaires et les docstrings aucun identifiant ni paragraphe
+  d'un document d'architecture ou de spécification : décris explicitement toute
+  l'information utile (règle, motivation, valeurs attendues) à l'endroit où elle sert.
+
 Dépôt `trade-analysis`. Lis `CLAUDE.md`, puis dans `PIPELINE_ARCHITECTURE.md` : C-06,
 C-24, PD-05 (ligne BACI), PD-06 (point 3), PD-08, PD-10 (cas BACI), PD-22, PD-23, PS-14
 (EN ENTIER : c'est la spécification de ce prompt), PS-20, PR-05, PR-05b, PR-05c, PQ-10
@@ -1322,6 +1454,17 @@ CRITÈRES D'ACCEPTATION
 - **Dépôt** : `trade-analysis`
 
 ````text
+CONVENTIONS DE RÉDACTION DU CODE (à appliquer à tout le code écrit ou modifié)
+- Commentaires internes en FRANÇAIS, à formulation nominale (ex. `# Vérification des
+  arguments`, pas `# Vérifier les arguments`) ; expliquer le « pourquoi » plutôt que le
+  « quoi » quand le code est clair.
+- Docstrings en ANGLAIS, selon la convention Google Style : description concise, puis
+  `Args:` (noms, types et descriptions), `Returns:` (type et description), `Raises:`
+  (exceptions possibles) et `Examples:` (cas d'usage concrets, doctest quand possible).
+- Ne cite dans le code, les commentaires et les docstrings aucun identifiant ni paragraphe
+  d'un document d'architecture ou de spécification : décris explicitement toute
+  l'information utile (règle, motivation, valeurs attendues) à l'endroit où elle sert.
+
 Dépôt `trade-analysis`. Lis `CLAUDE.md`, puis dans `PIPELINE_ARCHITECTURE.md` : C-13
 (résolu par `dt-ducklake-manager 0.3.1`), PD-10, PD-11, PD-12, PD-20 (point 7), PD-23,
 PS-10, PS-16, PS-17. Lis `AGREGATION_ARCHITECTURE.md` (sections sur le schéma
@@ -1421,6 +1564,17 @@ CRITÈRES D'ACCEPTATION
 - **Dépôt** : `trade-analysis`
 
 ````text
+CONVENTIONS DE RÉDACTION DU CODE (à appliquer à tout le code écrit ou modifié)
+- Commentaires internes en FRANÇAIS, à formulation nominale (ex. `# Vérification des
+  arguments`, pas `# Vérifier les arguments`) ; expliquer le « pourquoi » plutôt que le
+  « quoi » quand le code est clair.
+- Docstrings en ANGLAIS, selon la convention Google Style : description concise, puis
+  `Args:` (noms, types et descriptions), `Returns:` (type et description), `Raises:`
+  (exceptions possibles) et `Examples:` (cas d'usage concrets, doctest quand possible).
+- Ne cite dans le code, les commentaires et les docstrings aucun identifiant ni paragraphe
+  d'un document d'architecture ou de spécification : décris explicitement toute
+  l'information utile (règle, motivation, valeurs attendues) à l'endroit où elle sert.
+
 Dépôt `trade-analysis`. Lis `CLAUDE.md`, puis dans `PIPELINE_ARCHITECTURE.md` : PD-05
 (tableau), PS-17 (étapes 5 et 6), PS-18, PR-12. Lis `scripts/compute_synthetic_scores.py`,
 `scripts/compute_synthesis_coherence.py`, `scripts/compute_network_vulnerabilities.py`,
@@ -1477,6 +1631,17 @@ CRITÈRES D'ACCEPTATION
 - **Dépôt** : `trade-analysis`
 
 ````text
+CONVENTIONS DE RÉDACTION DU CODE (à appliquer à tout le code écrit ou modifié)
+- Commentaires internes en FRANÇAIS, à formulation nominale (ex. `# Vérification des
+  arguments`, pas `# Vérifier les arguments`) ; expliquer le « pourquoi » plutôt que le
+  « quoi » quand le code est clair.
+- Docstrings en ANGLAIS, selon la convention Google Style : description concise, puis
+  `Args:` (noms, types et descriptions), `Returns:` (type et description), `Raises:`
+  (exceptions possibles) et `Examples:` (cas d'usage concrets, doctest quand possible).
+- Ne cite dans le code, les commentaires et les docstrings aucun identifiant ni paragraphe
+  d'un document d'architecture ou de spécification : décris explicitement toute
+  l'information utile (règle, motivation, valeurs attendues) à l'endroit où elle sert.
+
 Dépôt `trade-analysis`. Lis `CLAUDE.md`, puis `PIPELINE_ARCHITECTURE.md` : §2, PD-01
 (nom `kedro_pipeline` et sa justification), PD-03, PD-04, PD-18, PD-21, PS-01, PS-02,
 PS-03, PS-04 (en entier), PS-05, PS-06, PS-07, PS-26, PS-29.1, PS-31.2. Lis tous les
@@ -1581,6 +1746,17 @@ CRITÈRES D'ACCEPTATION
 - **Dépôt** : `trade-analysis`
 
 ````text
+CONVENTIONS DE RÉDACTION DU CODE (à appliquer à tout le code écrit ou modifié)
+- Commentaires internes en FRANÇAIS, à formulation nominale (ex. `# Vérification des
+  arguments`, pas `# Vérifier les arguments`) ; expliquer le « pourquoi » plutôt que le
+  « quoi » quand le code est clair.
+- Docstrings en ANGLAIS, selon la convention Google Style : description concise, puis
+  `Args:` (noms, types et descriptions), `Returns:` (type et description), `Raises:`
+  (exceptions possibles) et `Examples:` (cas d'usage concrets, doctest quand possible).
+- Ne cite dans le code, les commentaires et les docstrings aucun identifiant ni paragraphe
+  d'un document d'architecture ou de spécification : décris explicitement toute
+  l'information utile (règle, motivation, valeurs attendues) à l'endroit où elle sert.
+
 Dépôt `trade-analysis`. Lis `CLAUDE.md`, la mémoire de contrat de tests (les tests de
 `tests/` figent le comportement : ils doivent passer à l'identique), puis
 `PIPELINE_ARCHITECTURE.md` : PD-02 (les scripts sont transitoires : enveloppes minces
@@ -1646,6 +1822,17 @@ CRITÈRES D'ACCEPTATION
 - **Dépôt** : `trade-analysis`
 
 ````text
+CONVENTIONS DE RÉDACTION DU CODE (à appliquer à tout le code écrit ou modifié)
+- Commentaires internes en FRANÇAIS, à formulation nominale (ex. `# Vérification des
+  arguments`, pas `# Vérifier les arguments`) ; expliquer le « pourquoi » plutôt que le
+  « quoi » quand le code est clair.
+- Docstrings en ANGLAIS, selon la convention Google Style : description concise, puis
+  `Args:` (noms, types et descriptions), `Returns:` (type et description), `Raises:`
+  (exceptions possibles) et `Examples:` (cas d'usage concrets, doctest quand possible).
+- Ne cite dans le code, les commentaires et les docstrings aucun identifiant ni paragraphe
+  d'un document d'architecture ou de spécification : décris explicitement toute
+  l'information utile (règle, motivation, valeurs attendues) à l'endroit où elle sert.
+
 Dépôt `trade-analysis`. Lis `CLAUDE.md`, puis `PIPELINE_ARCHITECTURE.md` : §2.2 (dont le
 tableau des points d'entrée), PD-04, PD-05, PD-14 (limites argo-kedro : pas de
 MemoryDataset hors FusedPipeline, `__default__` par somme ; tags `cadence:*`,
@@ -1718,6 +1905,17 @@ CRITÈRES D'ACCEPTATION
 - **Dépôt** : `trade-analysis`
 
 ````text
+CONVENTIONS DE RÉDACTION DU CODE (à appliquer à tout le code écrit ou modifié)
+- Commentaires internes en FRANÇAIS, à formulation nominale (ex. `# Vérification des
+  arguments`, pas `# Vérifier les arguments`) ; expliquer le « pourquoi » plutôt que le
+  « quoi » quand le code est clair.
+- Docstrings en ANGLAIS, selon la convention Google Style : description concise, puis
+  `Args:` (noms, types et descriptions), `Returns:` (type et description), `Raises:`
+  (exceptions possibles) et `Examples:` (cas d'usage concrets, doctest quand possible).
+- Ne cite dans le code, les commentaires et les docstrings aucun identifiant ni paragraphe
+  d'un document d'architecture ou de spécification : décris explicitement toute
+  l'information utile (règle, motivation, valeurs attendues) à l'endroit où elle sert.
+
 Dépôt `trade-analysis`. Lis `CLAUDE.md`, puis `PIPELINE_ARCHITECTURE.md` : C-19, PD-13
 (révision 2 : supervision exclusivement dans MLflow), PD-16 (point 6), PS-08
 (invariant 3), PS-19, PS-21.1 (variables des métriques système), PS-31 (en entier),
@@ -1802,6 +2000,17 @@ CRITÈRES D'ACCEPTATION
 - **Dépôt** : `trade-analysis`
 
 ````text
+CONVENTIONS DE RÉDACTION DU CODE (à appliquer à tout le code écrit ou modifié)
+- Commentaires internes en FRANÇAIS, à formulation nominale (ex. `# Vérification des
+  arguments`, pas `# Vérifier les arguments`) ; expliquer le « pourquoi » plutôt que le
+  « quoi » quand le code est clair.
+- Docstrings en ANGLAIS, selon la convention Google Style : description concise, puis
+  `Args:` (noms, types et descriptions), `Returns:` (type et description), `Raises:`
+  (exceptions possibles) et `Examples:` (cas d'usage concrets, doctest quand possible).
+- Ne cite dans le code, les commentaires et les docstrings aucun identifiant ni paragraphe
+  d'un document d'architecture ou de spécification : décris explicitement toute
+  l'information utile (règle, motivation, valeurs attendues) à l'endroit où elle sert.
+
 Dépôt `trade-analysis`. Lis `CLAUDE.md`, puis `PIPELINE_ARCHITECTURE.md` : C-08, PD-16
 (dont les points 2 et 6 : catalogue `serving` et runs orphelins), PD-21, PS-24, PS-31.5,
 PR-07, PR-20, §5.1. Lis `.venv/Lib/site-packages/dt_ducklake_manager/maintenance/`
@@ -1881,6 +2090,17 @@ CRITÈRES D'ACCEPTATION
 - **Dépôt** : `trade-analysis`
 
 ````text
+CONVENTIONS DE RÉDACTION DU CODE (à appliquer à tout le code écrit ou modifié)
+- Commentaires internes en FRANÇAIS, à formulation nominale (ex. `# Vérification des
+  arguments`, pas `# Vérifier les arguments`) ; expliquer le « pourquoi » plutôt que le
+  « quoi » quand le code est clair.
+- Docstrings en ANGLAIS, selon la convention Google Style : description concise, puis
+  `Args:` (noms, types et descriptions), `Returns:` (type et description), `Raises:`
+  (exceptions possibles) et `Examples:` (cas d'usage concrets, doctest quand possible).
+- Ne cite dans le code, les commentaires et les docstrings aucun identifiant ni paragraphe
+  d'un document d'architecture ou de spécification : décris explicitement toute
+  l'information utile (règle, motivation, valeurs attendues) à l'endroit où elle sert.
+
 Dépôt `trade-analysis`. Lis `CLAUDE.md`, puis `PIPELINE_ARCHITECTURE.md` : §2.2 (points
 d'entrée), §2.3, PD-05, PD-13 (expériences par tâche), PD-14, PD-18, PD-23, PS-09
 (tags `cadence:*`, `mutex:*`), PS-11, PS-20, PS-21 (en entier), PR-06, PR-08, PR-17.
@@ -1959,6 +2179,17 @@ CRITÈRES D'ACCEPTATION
 - **Dépôt** : `trade-analysis`
 
 ````text
+CONVENTIONS DE RÉDACTION DU CODE (à appliquer à tout le code écrit ou modifié)
+- Commentaires internes en FRANÇAIS, à formulation nominale (ex. `# Vérification des
+  arguments`, pas `# Vérifier les arguments`) ; expliquer le « pourquoi » plutôt que le
+  « quoi » quand le code est clair.
+- Docstrings en ANGLAIS, selon la convention Google Style : description concise, puis
+  `Args:` (noms, types et descriptions), `Returns:` (type et description), `Raises:`
+  (exceptions possibles) et `Examples:` (cas d'usage concrets, doctest quand possible).
+- Ne cite dans le code, les commentaires et les docstrings aucun identifiant ni paragraphe
+  d'un document d'architecture ou de spécification : décris explicitement toute
+  l'information utile (règle, motivation, valeurs attendues) à l'endroit où elle sert.
+
 Dépôt `trade-analysis`. Lis `CLAUDE.md`, `README.md`, puis `PIPELINE_ARCHITECTURE.md` :
 PD-15 (coût), PD-17, PS-23 (ligne `docs.yml`), PS-25, PQ-08, §5.
 
@@ -2007,6 +2238,17 @@ CRITÈRES D'ACCEPTATION
 - **Dépôt** : `trade-analysis` — **session lancée depuis un terminal avec accès `kubectl`**
 
 ````text
+CONVENTIONS DE RÉDACTION DU CODE (à appliquer à tout le code écrit ou modifié)
+- Commentaires internes en FRANÇAIS, à formulation nominale (ex. `# Vérification des
+  arguments`, pas `# Vérifier les arguments`) ; expliquer le « pourquoi » plutôt que le
+  « quoi » quand le code est clair.
+- Docstrings en ANGLAIS, selon la convention Google Style : description concise, puis
+  `Args:` (noms, types et descriptions), `Returns:` (type et description), `Raises:`
+  (exceptions possibles) et `Examples:` (cas d'usage concrets, doctest quand possible).
+- Ne cite dans le code, les commentaires et les docstrings aucun identifiant ni paragraphe
+  d'un document d'architecture ou de spécification : décris explicitement toute
+  l'information utile (règle, motivation, valeurs attendues) à l'endroit où elle sert.
+
 Dépôt `trade-analysis`. Lis `CLAUDE.md`, puis `PIPELINE_ARCHITECTURE.md` : §2.3, PD-13,
 PD-14, PD-16, PD-18, PS-21, §5 (runbooks), §7, §8, §9 ; `kubernetes/generated/README.md`,
 `kubernetes/transition/README.md`.
@@ -2081,6 +2323,17 @@ CRITÈRES D'ACCEPTATION
 - **Dépôt** : `trade-analysis` — **session lancée depuis un service VSCode Onyxia** (accès `kubectl`, PostgreSQL, S3, MLflow, Superset). **Toutes les suppressions sont irréversibles.**
 
 ````text
+CONVENTIONS DE RÉDACTION DU CODE (à appliquer à tout le code écrit ou modifié)
+- Commentaires internes en FRANÇAIS, à formulation nominale (ex. `# Vérification des
+  arguments`, pas `# Vérifier les arguments`) ; expliquer le « pourquoi » plutôt que le
+  « quoi » quand le code est clair.
+- Docstrings en ANGLAIS, selon la convention Google Style : description concise, puis
+  `Args:` (noms, types et descriptions), `Returns:` (type et description), `Raises:`
+  (exceptions possibles) et `Examples:` (cas d'usage concrets, doctest quand possible).
+- Ne cite dans le code, les commentaires et les docstrings aucun identifiant ni paragraphe
+  d'un document d'architecture ou de spécification : décris explicitement toute
+  l'information utile (règle, motivation, valeurs attendues) à l'endroit où elle sert.
+
 Dépôt `trade-analysis`. Lis `CLAUDE.md`, puis dans `PIPELINE_ARCHITECTURE.md` : PD-24 (en
 entier), PQ-20, PR-22, PR-01, PD-16, PD-19, PS-04.4, PS-30.5, §5, §12. Lis
 `config/demo/` (ou `config/profiles/demo/` si K-10 n'est pas passé), `config/demo/catalog.yml`,
@@ -2193,6 +2446,17 @@ CRITÈRES D'ACCEPTATION
 - **Dépôt** : `trade-analysis`
 
 ````text
+CONVENTIONS DE RÉDACTION DU CODE (à appliquer à tout le code écrit ou modifié)
+- Commentaires internes en FRANÇAIS, à formulation nominale (ex. `# Vérification des
+  arguments`, pas `# Vérifier les arguments`) ; expliquer le « pourquoi » plutôt que le
+  « quoi » quand le code est clair.
+- Docstrings en ANGLAIS, selon la convention Google Style : description concise, puis
+  `Args:` (noms, types et descriptions), `Returns:` (type et description), `Raises:`
+  (exceptions possibles) et `Examples:` (cas d'usage concrets, doctest quand possible).
+- Ne cite dans le code, les commentaires et les docstrings aucun identifiant ni paragraphe
+  d'un document d'architecture ou de spécification : décris explicitement toute
+  l'information utile (règle, motivation, valeurs attendues) à l'endroit où elle sert.
+
 Dépôt `trade-analysis`. Lis `CLAUDE.md`, `README.md`, `PIPELINE_ARCHITECTURE.md` (en
 entier, survol ; PD-02 pour le sort des scripts) et `PIPELINE_PROMPTS.md` (tableau de
 synthèse).
