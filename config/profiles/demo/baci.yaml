@@ -22,11 +22,33 @@ PATHS:
   # Variables de gravité CEPII
   DIST_CEPII: "trade/datasets/cepii/dist_cepii.xls"
   GEO_CEPII: "trade/datasets/cepii/geo_cepii.xls"
-  # Registre des dates de dernier traitement, par millésime de nomenclature.
-  # Écrit après succès de l'écriture, il est la source de fraîcheur de
-  # scripts/compute_network_vulnerabilities.py, qui ne recalcule que les
-  # millésimes réécrits depuis son dernier passage.
+  # Registre v1 des dates de dernier traitement (fichier unique, sans
+  # empreintes) : n'est plus écrit, seulement lu pour la migration vers les
+  # fragments de STATE
   LAST_PROCESSING_PATH: "trade/demo/datasets/last_processing/baci.json"
+
+# Registre de fraîcheur fragmenté : un fichier par millésime (pas de course entre
+# les pods qui redressent des millésimes différents). L'entrée porte l'identifiant
+# de la passe (fit_id), les années du périmètre (years_scope) et les années écrites
+# sous ce fit_id (years_written, point de reprise d'une passe interrompue). Son
+# last_computed est la source de fraîcheur des indicateurs de réseau
+STATE:
+  PATH_TEMPLATE: "trade/demo/state/baci/{vintage}.json"
+  # Migration : à true pour UN run au déploiement (cf. vulnerabilities.yaml)
+  ADOPT_LEGACY_FINGERPRINTS: false
+
+# Cadence de réestimation d'un millésime. Une passe réestime et réécrit TOUT le
+# millésime (gravité et qualité des déclarants sont estimées sur toutes ses
+# années) : elle n'est lancée que si le millésime n'a jamais été calculé, si une
+# passe précédente est interrompue, si une nouvelle année complète entre dans son
+# périmètre, si l'empreinte méthodologique change, en cas de forçage, ou si
+# l'amont Comtrade a été révisé ET que le dernier calcul date d'au moins
+# MIN_INTERVAL_DAYS jours
+REFRESH:
+  # Révisions amont : au plus une passe par intervalle
+  MIN_INTERVAL_DAYS: 7
+  # Nouvelle année complète : passe immédiate (sinon soumise à l'intervalle)
+  ON_NEW_COMPLETE_YEAR: true
 
 # Porte de complétude (PD-06, PS-14.1) : une année n'est redressée que si la part
 # de ses lots Comtrade PLANIFIÉS téléchargés au moins une fois (registre

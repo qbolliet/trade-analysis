@@ -141,7 +141,10 @@ def test_demo_outputs_are_isolated() -> None:
             # schéma demo_dashboard (test_demo_serving_uses_same_catalog_and_its_own_schema)
             if path == ("serving", "DATA_PATH"):
                 continue
-            if path[-1] in {"LAST_DOWNLOAD_PATH", "LAST_COMPUTATION_PATH", "LAST_PROCESSING_PATH", "DATA_PATH"}:
+            if path[-1] in {
+                "LAST_DOWNLOAD_PATH", "LAST_COMPUTATION_PATH", "LAST_PROCESSING_PATH",
+                "DATA_PATH", "PATH_TEMPLATE",
+            }:
                 assert str(value).startswith("trade/demo/"), (name, path, value)
             if path[-1] == "DBNAME" and name in {"comtrade.yaml", "eurostat.yaml"}:
                 assert str(value).startswith("demo_"), (name, path, value)

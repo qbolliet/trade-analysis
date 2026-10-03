@@ -28,7 +28,12 @@ SYNTHESIS:
     # confronté aux registres amont (partenaires et réseau) pour décider du recalcul
     LAST_COMPUTATION_PATH: "trade/vulnerabilities/synthesis/last_computation.json"
   # Recalcul forcé de tous les contextes, quelle que soit la fraîcheur des amonts
+  # (équivaut à runtime.FORCE_STEPS=synthesis, également pris en compte)
   FORCE: false
+  # LAST_COMPUTATION_PATH est un registre à fragment unique (format v2 ; un
+  # fichier v1 y est relu pour la migration). Migration : à true pour UN run au
+  # déploiement (cf. vulnerabilities.yaml), surchargeable par ADOPT_LEGACY_FINGERPRINTS
+  ADOPT_LEGACY_FINGERPRINTS: false
 
   # Sources DuckLake combinées en une seule requête (S-2.3).
   # La première source est la GRILLE : elle fixe les cellules à scorer et toutes
@@ -168,7 +173,10 @@ COHERENCE:
     # confronté au registre de synthèse
     LAST_COMPUTATION_PATH: "trade/vulnerabilities/synthesis/last_coherence.json"
   # Recalcul forcé, quelle que soit la fraîcheur du registre de synthèse
+  # (équivaut à runtime.FORCE_STEPS=coherence, également pris en compte)
   FORCE: false
+  # Migration du registre v1 (cf. bloc SYNTHESIS)
+  ADOPT_LEGACY_FINGERPRINTS: false
   # Suivi d'exécution MLflow : un seul run par exécution du script de cohérence
   MLFLOW:
     TRACKING_URI: null

@@ -22,11 +22,16 @@ catalogue `vulnerabilities` : `synthesis` pour les scores,
 
 Fraîcheur. Les registres amont des vulnérabilités partenaires et de
 réseau sont indexés par unité de travail sans période : on ne peut pas savoir
-quelles périodes ont bougé. Règle retenue : si `max(last_computed)` d'un
-registre amont est postérieur au `last_computed` du registre de synthèse — ou si
-`FORCE` est vrai — tous les contextes sélectionnés par `FILTERS` sont recalculés,
-sinon rien. La date écrite dans le registre de synthèse est capturée avant le
-calcul, jamais après, pour ne pas rater une mise à jour concurrente.
+quelles périodes ont bougé. L'unité de fraîcheur de la synthèse est donc unique
+(`global`) : tous les contextes sélectionnés par `FILTERS` sont recalculés, ou
+aucun. Ils le sont quand la synthèse n'a jamais tourné, quand un calcul amont est
+postérieur au watermark enregistré, quand l'empreinte globale (liste complète des
+méthodes, configuration, sources et filtres) change, ou en cas de forçage
+(`FORCE` historique du YAML ou `runtime.FORCE_STEPS=synthesis`). Le registre
+(fragment unique au chemin `PATHS.LAST_COMPUTATION_PATH`) consigne aussi les
+raisons des unités amont recalculées depuis (cascade). La date écrite est
+capturée avant le calcul, jamais après, pour ne pas rater une mise à jour
+concurrente.
 
 Erreurs. Comme `compute_network_vulnerabilities.py` : l'échec d'un contexte
 n'interrompt pas les autres, chaque échec est capturé et journalisé, seuls les
@@ -47,7 +52,7 @@ from contextlib import nullcontext
 import logging
 import os
 from pathlib import Path
-from typing import Any, Dict, Iterator, List, Mapping, Optional, Sequence, Tuple
+from typing import Any, Dict, Iterable, Iterator, List, Mapping, Optional, Sequence, Tuple
 import yaml
 
 # Modules de chargement/sauvegarde JSON (local ou S3), même brique que le téléchargement
@@ -64,6 +69,27 @@ from kedro_pipeline.io.ducklake import (
 from statflows.storage.ducklake.tables import FACT_TABLE, write_dataframe
 # Module d'utilitaires de téléchargement (instants, parsing ISO, noms de schéma)
 from statflows.core.download import _now, _parse_iso, _schema_name
+# Registres de fraîcheur v2 (unité globale, empreinte, forçage, cascade)
+from kedro_pipeline.io.freshness import (
+    ForceSpec,
+    FreshnessRegistry,
+    LegacySource,
+    RegistryEntry,
+    Unit,
+    UnitPlan,
+    UpstreamSummary,
+    adopt_legacy_flag,
+    fingerprint,
+    legacy_entry,
+    plan_metrics,
+    summarize_upstream,
+    units_to_compute,
+)
+# Registres amont (partenaires et réseau), lus seulement
+from scripts.compute_trade_vulnerabilities import partner_classification, partner_registry
+from scripts.compute_network_vulnerabilities import network_registry
+# Paramètres d'exécution partagés (nomenclatures, forçage ponctuel)
+from scripts.download_comtrade import load_runtime_config
 
 # Module de manipulation de données
 import pandas as pd
@@ -74,6 +100,7 @@ from macroforecast.tracking.figures import key_figures_synthesis, sections_synth
 from macroforecast.tracking.report import Units
 from scripts._run_report import RunScope, guarded_run, run_name
 # Méthodologie de synthèse multiniveau (fonction pure)
+from macroforecast.trade.methodology import methodology_params
 from macroforecast.trade.aggregation import (
     LevelReport,
     SynthesisConfig,
@@ -530,6 +557,263 @@ def contexts_to_recompute(
 
 
 # ──────────────────────────────────────────────────────────────────────
+# Registre de fraîcheur v2 : unité globale, empreinte globale
+# ──────────────────────────────────────────────────────────────────────
+
+# Nom de l'étape (forçage FORCE_STEPS, champ « step » du registre)
+STEP = "synthesis"
+# Unité unique : toute la sélection de contextes est recalculée d'un bloc
+GLOBAL_UNIT = Unit.of(scope="global")
+# Champs de SynthesisConfig exclus de l'empreinte : options d'artefacts seulement
+_SYNTHESIS_FINGERPRINT_EXCLUDED = frozenset({"artifact_top_n"})
+
+
+# Fonction de calcul de l'empreinte globale de la synthèse
+def synthesis_requested(
+    config: SynthesisConfig,
+    sources: Optional[Sequence[Mapping[str, Any]]] = None,
+    filters: Optional[Mapping[str, Any]] = None,
+) -> Dict[str, str]:
+    """Current methodological fingerprint of the synthesis (a single, global one).
+
+    Digests the complete list of methods (name, kind, parameters, metrics,
+    levels…), the result-shaping fields of the configuration and the source
+    selection (``SOURCES`` / ``FILTERS``): adding or changing a method, or
+    changing the selected contexts, makes the whole synthesis stale. A fix in
+    the implementation of a method is signalled by invalidating the recorded
+    fingerprint (``scripts/invalidate_freshness.py --step synthesis``).
+
+    Args:
+        config: Synthesis configuration.
+        sources: ``SYNTHESIS.SOURCES`` block.
+        filters: ``SYNTHESIS.FILTERS`` block.
+
+    Returns:
+        ``{"synthesis": fingerprint}``.
+
+    Examples:
+        >>> list(synthesis_requested(SynthesisConfig()))
+        ['synthesis']
+    """
+    params = methodology_params(config, _SYNTHESIS_FINGERPRINT_EXCLUDED)
+    params["sources"] = list(sources or [])
+    params["filters"] = dict(filters or {})
+    return {STEP: fingerprint(STEP, params)}
+
+
+# Fabrique du lecteur d'un registre global v1 (fichier unique, une entrée)
+def global_legacy_parser(root: str):
+    """Build the parser of a version-1 global registry (``{root: {...}}``).
+
+    Args:
+        root: Root key of the version-1 document (``SYNTHESIS``, ``COHERENCE``).
+
+    Returns:
+        Function turning the document into at most one legacy entry of the
+        global unit.
+    """
+    def parse(data: Mapping[str, Any]) -> Iterator[RegistryEntry]:
+        entry = data.get(root)
+        if isinstance(entry, Mapping) and entry.get("last_computed"):
+            extra = {k: v for k, v in entry.items() if k != "last_computed"}
+            yield legacy_entry(GLOBAL_UNIT, entry["last_computed"], **extra)
+
+    return parse
+
+
+# Fonction de construction d'un registre global à fragment unique
+def global_registry(
+    path: Any,
+    bucket: Optional[str],
+    step: str,
+    root: str,
+    *,
+    loader: Optional[Loader] = None,
+    saver: Optional[Saver] = None,
+) -> FreshnessRegistry:
+    """Build a single-fragment registry, reading a version-1 file at the same path.
+
+    Args:
+        path: Registry path (``PATHS.LAST_COMPUTATION_PATH``).
+        bucket: S3 bucket, or ``None`` for a local file.
+        step: Step name.
+        root: Root key of the version-1 document.
+        loader: JSON loader (a fresh one by default).
+        saver: JSON saver (a fresh one by default).
+
+    Returns:
+        The registry.
+    """
+    return FreshnessRegistry(
+        path,
+        bucket,
+        step,
+        shard_of=lambda unit: unit.key,
+        legacy=LegacySource(path, bucket, global_legacy_parser(root)),
+        loader=loader,
+        saver=saver,
+    )
+
+
+# Fonction de construction des registres amont (partenaires et réseau)
+def upstream_registries(
+    vulnerability_config: Mapping[str, Any],
+    classification: str,
+) -> List[FreshnessRegistry]:
+    """Freshness registries of the partner and network steps, read only.
+
+    Args:
+        vulnerability_config: Parsed ``config/vulnerabilities.yaml``.
+        classification: Classification label of the partner units.
+
+    Returns:
+        One registry per partner dataflow block carrying a ``STATE``, plus the
+        network registry when configured.
+    """
+    registries: List[FreshnessRegistry] = []
+    for block in (vulnerability_config.get(_PARTNERS_ROOT) or {}).values():
+        if isinstance(block, Mapping) and (block.get("STATE") or {}).get("PATH_TEMPLATE"):
+            registries.append(partner_registry(block, classification))
+    network = vulnerability_config.get(_NETWORK_ROOT) or {}
+    if (network.get("STATE") or {}).get("PATH_TEMPLATE"):
+        registries.append(network_registry(network))
+    return registries
+
+
+# Fonction de résumé des registres amont
+def summarize_registries(
+    registries: Iterable[FreshnessRegistry],
+    since: Optional[datetime],
+) -> UpstreamSummary:
+    """Summarise every upstream registry since the last downstream computation.
+
+    Args:
+        registries: Upstream registries.
+        since: ``upstream_watermark`` of the downstream entry (``None`` when
+            it was never computed).
+
+    Returns:
+        The upstream summary: watermark (most recent upstream computation) and
+        reasons of the units computed since, for the cascade.
+    """
+    return summarize_upstream(
+        (entry for registry in registries for entry in registry.iter_entries()), since
+    )
+
+
+# Fonction de décision de l'unité globale (synthèse ou cohérence)
+def plan_global_unit(
+    registry: FreshnessRegistry,
+    watermark: Optional[datetime],
+    requested: Mapping[str, str],
+    force: ForceSpec,
+    *,
+    step: str,
+    yaml_force: bool = False,
+    adopt_legacy_fingerprints: bool = False,
+) -> Dict[Unit, UnitPlan]:
+    """Decide whether the whole selection of contexts must be recomputed.
+
+    Same priorities as every step (first > forced > new_data > fingerprint)
+    on the single global unit. The historical ``FORCE`` flag of the YAML is
+    kept and is equivalent to listing the step in ``FORCE_STEPS``. Nothing is
+    computed while no upstream exists, unless forced.
+
+    Args:
+        registry: Single-fragment registry of the step.
+        watermark: Most recent upstream computation (``None``: no upstream).
+        requested: Current fingerprint.
+        force: One-off forcing.
+        step: Step name (``synthesis`` or ``coherence``).
+        yaml_force: The historical ``FORCE`` flag of the step block.
+        adopt_legacy_fingerprints: Deployment migration flag.
+
+    Returns:
+        ``{GLOBAL_UNIT: plan}`` or an empty mapping.
+
+    Examples:
+        >>> from kedro_pipeline.io.freshness import _EmptyLoader
+        >>> registry = FreshnessRegistry("s.json", None, "synthesis", lambda u: "global",
+        ...                              loader=_EmptyLoader())
+        >>> plan_global_unit(registry, None, {"synthesis": "x"}, ForceSpec(), step="synthesis")
+        {}
+        >>> plan_global_unit(registry, None, {"synthesis": "x"}, ForceSpec(), step="synthesis",
+        ...                  yaml_force=True)[GLOBAL_UNIT].reason
+        'first'
+    """
+    if yaml_force:
+        force = replace(force, steps=force.steps | {step})
+    # Rien en amont : rien à calculer, sauf forçage
+    if watermark is None and not force.covers(step, GLOBAL_UNIT, requested):
+        return {}
+    return units_to_compute(
+        [GLOBAL_UNIT], registry, {GLOBAL_UNIT: watermark}, requested, force,
+        step=step, adopt_legacy_fingerprints=adopt_legacy_fingerprints,
+    )
+
+
+# Fonction de construction des tags de fraîcheur d'une exécution
+def freshness_tags(
+    plan: UnitPlan,
+    force: ForceSpec,
+    requested: Mapping[str, str],
+    step: str,
+) -> Dict[str, str]:
+    """Run tags of a freshness decision.
+
+    Args:
+        plan: Plan of the global unit.
+        force: One-off forcing.
+        requested: Current fingerprint.
+        step: Step name.
+
+    Returns:
+        ``freshness_reason``, plus ``forced`` (description of the forcing)
+        when the step is forced.
+
+    Examples:
+        >>> freshness_tags(UnitPlan("forced", frozenset()), ForceSpec(steps=frozenset({"synthesis"})),
+        ...                {"synthesis": "x"}, "synthesis")
+        {'freshness_reason': 'forced', 'forced': 'steps=synthesis'}
+    """
+    tags = {"freshness_reason": plan.reason}
+    if plan.reason == "forced" or force.forces_step(step, requested):
+        tags["forced"] = force.describe() or f"steps={step}"
+    return tags
+
+
+# Fonction de construction de l'entrée de l'unité globale calculée
+def global_entry(
+    plan: UnitPlan,
+    computed_at: datetime,
+    summary: UpstreamSummary,
+    requested: Mapping[str, str],
+    **counters: Any,
+) -> RegistryEntry:
+    """Entry recorded once the selection of contexts was recomputed.
+
+    Args:
+        plan: Plan of the computation (its reason cascades downstream).
+        computed_at: Instant captured before the computation started.
+        summary: Upstream summary taken into account (its watermark and the
+            upstream reasons are recorded for the downstream steps).
+        requested: Current fingerprint.
+        **counters: Extra fields (``n_cells``, ``n_contexts``…).
+
+    Returns:
+        The registry entry.
+    """
+    return RegistryEntry(
+        unit=GLOBAL_UNIT,
+        last_computed=computed_at,
+        upstream_watermark=summary.watermark,
+        fingerprints=dict(requested),
+        reason=plan.reason,
+        extra={**counters, "upstream_reasons": summary.to_json()},
+    )
+
+
+# ──────────────────────────────────────────────────────────────────────
 # Agrégation des rapports (un rapport par contexte -> un rapport d'exécution)
 # ──────────────────────────────────────────────────────────────────────
 
@@ -615,6 +899,8 @@ def run_from_connections(
     tracker: Any = None,
     log_artifacts: bool = True,
     scope: Optional[RunScope] = None,
+    freshness_metrics: Optional[Mapping[str, float]] = None,
+    freshness_tags: Optional[Mapping[str, str]] = None,
 ) -> Tuple[List[SynthesisReport], Dict[str, Exception], bool, int]:
     """Read the source query, run the synthesis per context, and write both schemas.
 
@@ -641,6 +927,10 @@ def run_from_connections(
             sections) is built and published inside the tracker's run, after the
             metrics and before returning, and an uncaught exception publishes the
             reduced failure description.
+        freshness_metrics: Metrics of the freshness decision
+            (``freshness/*``), logged in the run.
+        freshness_tags: Tags of the freshness decision (``forced``…), set on
+            the run.
 
     Returns:
         Tuple ``(reports, failures, created_any, n_contexts)``: one
@@ -677,6 +967,11 @@ def run_from_connections(
     n_contexts = 0
 
     with tracker, (guarded_run(scope, tracker) if scope is not None else nullcontext()):
+        # Décision de fraîcheur de l'exécution (métriques et tag de forçage)
+        if freshness_metrics:
+            tracker.log_metrics(dict(freshness_metrics))
+        if freshness_tags:
+            tracker.set_tags(dict(freshness_tags))
         # Lecture de la table source combinée (une seule requête)
         df_source = read_source_metrics(
             scores_conn, query, (config.reporter_col, config.product_col)
@@ -825,26 +1120,47 @@ def main() -> None:
     result_schema = _schema_name(synthesis_config["RESULT_SCHEMA"])
     diagnostics_schema = _schema_name(coherence_config["RESULT_SCHEMA"])
 
-    # Initialisation des loaders et savers
-    loader = Loader()
-    saver = Saver()
-
-    # Fraîcheur : instant de calcul amont le plus récent contre instant de synthèse
-    last_upstream = load_max_upstream_computation(vulnerability_config, loader)
-    last_synthesis = load_synthesis_computation_date(
-        Path(synthesis_config["PATHS"]["LAST_COMPUTATION_PATH"]),
-        loader=loader,
-        bucket=synthesis_config["BUCKET"],
+    # Fraîcheur : registre à fragment unique (le registre v1 au même chemin est
+    # relu pour la migration), empreinte globale des méthodes et des sources
+    runtime_config = load_runtime_config()
+    registry = global_registry(
+        synthesis_config["PATHS"]["LAST_COMPUTATION_PATH"],
+        synthesis_config["BUCKET"],
+        STEP,
+        _REGISTRY_ROOT,
     )
-    force = bool(synthesis_config.get("FORCE", False))
+    requested = synthesis_requested(
+        config, synthesis_config["SOURCES"], synthesis_config.get("FILTERS") or {}
+    )
+    force = ForceSpec.from_runtime(runtime_config)
+    # Amont : registres partenaires et réseau, résumés depuis le dernier calcul
+    # (watermark et raisons des unités recalculées depuis, pour la cascade)
+    previous = registry.get(GLOBAL_UNIT)
+    summary = summarize_registries(
+        upstream_registries(
+            vulnerability_config,
+            partner_classification(runtime_config["NOMENCLATURES"]["HS"]),
+        ),
+        previous.upstream_watermark if previous is not None else None,
+    )
+    plans = plan_global_unit(
+        registry, summary.watermark, requested, force,
+        step=STEP,
+        yaml_force=bool(synthesis_config.get("FORCE", False)),
+        adopt_legacy_fingerprints=adopt_legacy_flag(synthesis_config),
+    )
 
-    # Sortie anticipée : registres amont inchangés depuis la dernière synthèse
-    if not contexts_to_recompute(last_upstream, last_synthesis, force):
+    # Sortie anticipée : amont inchangé, empreinte inchangée, aucun forçage
+    if not plans:
+        registry.save()
         logger.info(
-            "Registres amont inchangés depuis la dernière synthèse "
-            f"(amont={last_upstream}, synthèse={last_synthesis}), rien à recalculer."
+            "Synthèse à jour (amont : "
+            f"{summary.to_json()}), rien à recalculer."
         )
         return
+    plan = plans[GLOBAL_UNIT]
+    # Logging
+    logger.info(f"Synthèse à recalculer ({plan.reason}) ; amont : {summary.to_json()}")
 
     # Instant de référence capturé avant le calcul : la date enregistrée
     # correspond au début du traitement, jamais après, pour ne pas rater une
@@ -893,6 +1209,8 @@ def main() -> None:
                 tracker=tracker,
                 log_artifacts=log_artifacts,
                 scope=scope,
+                freshness_metrics=plan_metrics(plans, n_candidates=1),
+                freshness_tags=freshness_tags(plan, force, requested, STEP),
             )
         finally:
             diagnostics_conn.close()
@@ -902,17 +1220,15 @@ def main() -> None:
     # Mise à jour du registre de synthèse, uniquement si au moins un contexte a
     # réussi (cohérence : jamais de date avancée à tort)
     if reports:
-        save_synthesis_computation_date(
-            Path(synthesis_config["PATHS"]["LAST_COMPUTATION_PATH"]),
-            {
-                "last_computed": computed_at.isoformat(),
-                "n_cells": int(sum(report.n_cells for report in reports)),
-                "n_contexts": int(len(reports)),
-                "methods": [spec.name for spec in config.methods],
-            },
-            saver,
-            synthesis_config["BUCKET"],
+        registry.upsert(
+            global_entry(
+                plan, computed_at, summary, requested,
+                n_cells=int(sum(report.n_cells for report in reports)),
+                n_contexts=int(len(reports)),
+                methods=[spec.name for spec in config.methods],
+            )
         )
+        registry.save()
 
     # Échec global si au moins un contexte a échoué, une fois tous tentés
     if failures:

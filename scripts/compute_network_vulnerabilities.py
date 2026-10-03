@@ -15,13 +15,16 @@ sortie, ni la même dépendance amont (`process_baci_hs.py` contre
 `download_eurostat_comext.py`), ni le même registre de fraîcheur. Deux nœuds
 Argo ordonnançables indépendamment, deux domaines d'échec, deux runs MLflow.
 
-Le périmètre recalculé est déterminé par confrontation de deux registres JSON :
-la date de dernier traitement de chaque millésime, tenue par `process_baci_hs.py`
-(`LAST_PROCESSING_PATH` de `baci.yaml`), et la date de dernier calcul, tenue ici.
-Un millésime n'est recalculé que si son BACI a été réécrit depuis. La maille est
-le millésime entier, et non l'année : une passe BACI réestime la gravité et la
-qualité des déclarants sur toute sa tranche temporelle, donc toutes ses années
-bougent ensemble — prétendre à une granularité annuelle serait faux.
+Le périmètre recalculé est décidé par le registre de fraîcheur fragmenté de cette
+étape (`STATE.PATH_TEMPLATE`, un fichier par millésime), confronté au registre
+BACI (lecture seule, `STATE` de `baci.yaml`) : un millésime est recalculé s'il ne
+l'a jamais été, si sa dernière passe BACI terminée est postérieure à son dernier
+calcul, si l'empreinte d'une métrique a changé ou en cas de forçage. Un millésime
+dont la passe BACI est interrompue n'est pas scoré (sa table mélange deux
+ajustements). La maille est le millésime entier, et non l'année : une passe BACI
+réestime la gravité et la qualité des déclarants sur toute sa tranche
+temporelle, donc toutes ses années bougent ensemble — prétendre à une
+granularité annuelle serait faux.
 
 Comme `process_baci_hs.py`, l'échec d'un millésime n'interrompt pas les autres :
 chaque échec est capturé et journalisé, et le script ne sort en erreur qu'en fin
@@ -42,7 +45,7 @@ from datetime import datetime
 import logging
 import os
 from pathlib import Path
-from typing import Any, Dict, List, Mapping, Optional, Tuple
+from typing import Any, Dict, Iterator, List, Mapping, Optional, Sequence, Tuple
 import yaml
 
 # Modules de chargement/sauvegarde JSON (local ou S3), même brique que le téléchargement
@@ -57,6 +60,24 @@ from kedro_pipeline.io.ducklake import (
 )
 # Module d'utilitaires de téléchargement
 from statflows.core.download import _now, _parse_iso, _schema_name
+# Registres de fraîcheur v2 (fragments, empreintes, forçage)
+from kedro_pipeline.io.freshness import (
+    ForceSpec,
+    FreshnessRegistry,
+    LegacySource,
+    RegistryEntry,
+    Unit,
+    UnitPlan,
+    adopt_legacy_flag,
+    fingerprint,
+    legacy_entry,
+    plan_metrics,
+    units_to_compute,
+)
+# Registre BACI (amont, lecture seule) et complétude d'une passe
+from scripts.process_baci_hs import baci_registry, pass_is_complete
+# Paramètres d'exécution partagés (forçage ponctuel)
+from scripts.download_comtrade import load_runtime_config
 
 # Module de suivi d'exécution (MLflow optionnel, objet nul par défaut)
 from macroforecast.tracking import CapturingTracker, get_tracker, rekey_metrics
@@ -67,8 +88,11 @@ from macroforecast.tracking.figures import (
 from macroforecast.tracking.report import Units
 from scripts._run_report import RunScope, guarded_run, run_name
 # Module de calcul des indicateurs
+from macroforecast.trade.methodology import methodology_params
 from macroforecast.trade.vulnerabilities import (
     DEFAULT_NETWORK_CONFIG,
+    DEFAULT_NETWORK_METRIC_CLASSES,
+    NETWORK_FINGERPRINT_EXCLUDED,
     NetworkVulnerabilityConfig,
 )
 from macroforecast.trade.vulnerabilities.runner import (
@@ -408,6 +432,156 @@ def vintages_to_recompute(
 
 
 # ──────────────────────────────────────────────────────────────────────
+# Registre de fraîcheur v2 : un fragment par millésime
+# ──────────────────────────────────────────────────────────────────────
+
+# Nom de l'étape (forçage FORCE_STEPS, champ « step » des fragments)
+STEP = "network"
+
+
+# Fonction de calcul des empreintes demandées des métriques de réseau
+def network_requested(
+    config: NetworkVulnerabilityConfig,
+    metric_classes: Sequence[type] = DEFAULT_NETWORK_METRIC_CLASSES,
+) -> Dict[str, str]:
+    """Current methodological fingerprint of every network metric.
+
+    Args:
+        config: Methodological configuration of the network metrics.
+        metric_classes: Metric classes computed by the step.
+
+    Returns:
+        Mapping ``metric name -> fingerprint`` (name and result-shaping
+        configuration fields).
+
+    Examples:
+        >>> "SPOF" in network_requested(NetworkVulnerabilityConfig())
+        True
+    """
+    params = methodology_params(config, NETWORK_FINGERPRINT_EXCLUDED)
+    return {cls.name: fingerprint(cls.name, params) for cls in metric_classes}
+
+
+# Fonction de lecture du registre v1 du réseau en entrées héritées
+def _parse_legacy_network(data: Mapping[str, Any]) -> Iterator[RegistryEntry]:
+    """Turn the version-1 network registry (keyed by source schema) into legacy entries.
+
+    Args:
+        data: Version-1 document (``{"NETWORK_VULNERABILITIES": {schema: {...}}}``).
+
+    Yields:
+        One legacy entry per vintage recorded.
+    """
+    for item in (data.get(_REGISTRY_ROOT) or {}).values():
+        if not isinstance(item, Mapping) or not item.get("vintage"):
+            continue
+        yield legacy_entry(
+            Unit.of(vintage=item["vintage"]),
+            item.get("last_computed"),
+            n_cells=item.get("n_cells"),
+        )
+
+
+# Fonction de construction du registre de fraîcheur du réseau
+def network_registry(
+    network_config: Mapping[str, Any],
+    *,
+    loader: Optional[Loader] = None,
+    saver: Optional[Saver] = None,
+) -> FreshnessRegistry:
+    """Build the network freshness registry (one fragment per vintage).
+
+    Args:
+        network_config: ``NETWORK_VULNERABILITIES`` block of
+            ``config/vulnerabilities.yaml`` (``BUCKET``, ``STATE``,
+            ``PATHS.LAST_COMPUTATION_PATH`` read as the version-1 fallback).
+        loader: JSON loader (a fresh one by default).
+        saver: JSON saver (a fresh one by default).
+
+    Returns:
+        The registry.
+
+    Raises:
+        KeyError: If the block has no ``STATE.PATH_TEMPLATE``.
+    """
+    bucket = network_config.get("BUCKET")
+    legacy_path = (network_config.get("PATHS") or {}).get("LAST_COMPUTATION_PATH")
+    return FreshnessRegistry(
+        network_config["STATE"]["PATH_TEMPLATE"],
+        bucket,
+        STEP,
+        shard_of=lambda unit: unit.get("vintage"),
+        legacy=LegacySource(legacy_path, bucket, _parse_legacy_network) if legacy_path else None,
+        loader=loader,
+        saver=saver,
+    )
+
+
+# Fonction de construction des unités réseau et de leur watermark amont
+def network_upstream(
+    baci: FreshnessRegistry,
+    targets: Mapping[str, str],
+) -> Dict[Unit, datetime]:
+    """Vintages that can be scored, with the last BACI computation as watermark.
+
+    A vintage is left out (with a warning) when BACI never produced it, or
+    when its last BACI pass is incomplete (``years_written`` differs from
+    ``years_scope``): its table then mixes two estimation passes and must not
+    be scored before the pass is resumed.
+
+    Args:
+        baci: BACI freshness registry (read only).
+        targets: Configured vintages, label -> BACI result schema.
+
+    Returns:
+        Mapping ``Unit(vintage) -> last BACI computation``.
+    """
+    units: Dict[Unit, datetime] = {}
+    skipped: List[str] = []
+    for label in targets:
+        entry = baci.get(Unit.of(vintage=label))
+        if entry is None or entry.last_computed is None or not pass_is_complete(entry):
+            skipped.append(label)
+            continue
+        units[Unit.of(vintage=label)] = entry.last_computed
+    if skipped:
+        # Logging
+        logger.warning(
+            f"Millésime(s) sans passe BACI terminée, ignoré(s) : {sorted(skipped)}"
+        )
+    return units
+
+
+# Fonction de décision des millésimes à (re)calculer
+def plan_network_units(
+    registry: FreshnessRegistry,
+    units: Mapping[Unit, datetime],
+    requested: Mapping[str, str],
+    force: ForceSpec,
+    *,
+    adopt_legacy_fingerprints: bool = False,
+) -> Dict[Unit, UnitPlan]:
+    """Decide which vintages to (re)score.
+
+    Args:
+        registry: Network freshness registry.
+        units: Scorable vintages and their last BACI computation
+            (:func:`network_upstream`).
+        requested: Current metric fingerprints (:func:`network_requested`).
+        force: One-off forcing.
+        adopt_legacy_fingerprints: Deployment migration flag.
+
+    Returns:
+        Mapping ``unit -> plan``; every metric of a planned vintage is
+        recomputed.
+    """
+    return units_to_compute(
+        units, registry, units, requested, force,
+        step=STEP, adopt_legacy_fingerprints=adopt_legacy_fingerprints,
+    )
+
+
+# ──────────────────────────────────────────────────────────────────────
 # Point d'entrée
 # ──────────────────────────────────────────────────────────────────────
 
@@ -430,6 +604,7 @@ def main() -> None:
     baci_config = load_baci_config()
     vulnerability_config = load_vulnerability_config()
     network_config = vulnerability_config[_CONFIG_ROOT]
+    runtime_config = load_runtime_config()
 
     # Construction des paramètres méthodologiques (seuils, conventions de colonnes)
     parameters = network_config.get("PARAMETERS") or {}
@@ -450,31 +625,29 @@ def main() -> None:
         for label, target_cfg in baci_config["CLASSIFICATIONS"]["TARGETS"].items()
     }
 
-    # Initialisation des loaders et savers
-    loader = Loader()
-    saver = Saver()
+    # Unités candidates : millésimes dont la dernière passe BACI est terminée,
+    # avec son dernier calcul comme watermark amont (lecture seule)
+    units = network_upstream(baci_registry(baci_config), targets)
 
-    # Dates de dernier traitement BACI (lecture seule du registre du redressement)
-    last_processed = load_last_processing_dates(
-        last_processing_path=Path(baci_config["PATHS"]["LAST_PROCESSING_PATH"]),
-        loader=loader,
-        bucket=baci_config["BUCKET"],
+    # Registre de fraîcheur fragmenté, empreintes courantes et forçage ponctuel
+    registry = network_registry(network_config)
+    requested = network_requested(network_parameters)
+    force = ForceSpec.from_runtime(runtime_config)
+    plans = plan_network_units(
+        registry, units, requested, force,
+        adopt_legacy_fingerprints=adopt_legacy_flag(network_config.get("STATE")),
     )
-    # Dates de dernier calcul des indicateurs de réseau, par millésime
-    last_computed = load_last_computation_dates(
-        last_computation_path=Path(network_config["PATHS"]["LAST_COMPUTATION_PATH"]),
-        loader=loader,
-        bucket=network_config["BUCKET"],
-    )
-
-    # Sélection des millésimes jamais calculés ou périmés
-    stale = vintages_to_recompute(targets, last_processed, last_computed)
+    stale = sorted((unit.get("vintage"), targets[unit.get("vintage")]) for unit in plans)
 
     # Logging
-    logger.info(f"{len(stale)} millésime(s) à recalculer : {[l for l, _ in stale]}")
+    logger.info(
+        f"{len(stale)} millésime(s) à recalculer : "
+        f"{ {unit.get('vintage'): plan.reason for unit, plan in plans.items()} }"
+    )
 
-    # Sortie anticipée : rien à recalculer
+    # Sortie anticipée : rien à recalculer (entrées v1 adoptées écrites malgré tout)
     if not stale:
+        registry.save()
         logger.info("Nothing to recompute, stop.")
         return
 
@@ -521,7 +694,6 @@ def main() -> None:
     # Ouverture des connexions : leur cycle de vie appartient au script, le
     # runner ne les ouvre ni ne les ferme (cf. `run_network_vulnerabilities`)
     source_conn = source_connector.connect()
-    computed: Dict[str, Dict[str, Any]] = {}
     failures: Dict[str, Exception] = {}
     try:
         result_conn = result_connector.connect()
@@ -544,7 +716,15 @@ def main() -> None:
                         )
                     )
                     scope = RunScope(node)
+                    unit = Unit.of(vintage=label)
+                    plan = plans[unit]
                     with tracker, guarded_run(scope, tracker):
+                        # Fraîcheur : décision du millésime et tag de forçage
+                        tracker.log_metrics(plan_metrics({unit: plan}, n_candidates=len(units)))
+                        tracker.set_tags({"freshness_reason": plan.reason})
+                        if force.forces_step(STEP, requested):
+                            tracker.set_tags({"forced": force.describe()})
+
                         # Résultat de l'exécution précédente sur ce millésime :
                         # la lecture appartient au script (principe P4), et son
                         # absence désactive simplement la mesure de dérive
@@ -602,14 +782,25 @@ def main() -> None:
                         )
                         scope.publish(tracker, run_report)
 
-                    # Entrée de registre du millésime effectivement calculé
-                    computed[source_schema] = {
-                        "vintage": label,
-                        "source_schema": source_schema,
-                        "result_schema": result_schema,
-                        "last_computed": computed_at.isoformat(),
-                        "n_cells": int(report.cells),
-                    }
+                    # Entrée de registre du millésime calculé, écrite après succès
+                    # du calcul et de l'écriture seulement (jamais de date avancée
+                    # à tort) ; un fragment par millésime. La raison est conservée
+                    # pour la cascade vers la synthèse
+                    registry.upsert(
+                        RegistryEntry(
+                            unit=unit,
+                            last_computed=computed_at,
+                            upstream_watermark=units[unit],
+                            fingerprints=dict(requested),
+                            reason=plan.reason,
+                            extra={
+                                "source_schema": source_schema,
+                                "result_schema": result_schema,
+                                "n_cells": int(report.cells),
+                            },
+                        )
+                    )
+                    registry.save()
 
                     # Logging
                     logger.info(
@@ -626,18 +817,6 @@ def main() -> None:
             result_conn.close()
     finally:
         source_conn.close()
-
-    # Mise à jour du registre des dates de calcul, uniquement pour les millésimes
-    # dont le calcul et l'écriture ont réussi (cohérence : jamais de date
-    # avancée à tort, qui ferait sauter un recalcul nécessaire)
-    if computed:
-        save_last_computation_dates(
-            Path(network_config["PATHS"]["LAST_COMPUTATION_PATH"]),
-            computed,
-            loader,
-            saver,
-            network_config["BUCKET"],
-        )
 
     # Échec global si au moins un millésime a échoué, une fois tous tentés
     if failures:

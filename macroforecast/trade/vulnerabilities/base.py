@@ -139,6 +139,24 @@ class VulnerabilityConfig:
 # Configuration par défaut (schéma Eurostat Comext DS-045409)
 DEFAULT_CONFIG = VulnerabilityConfig()
 
+# Champs de VulnerabilityConfig exclus de l'empreinte méthodologique : ils ne
+# pilotent que les diagnostics, la comparaison inter-exécutions et les artefacts,
+# jamais une valeur écrite en table. Les seuils d'alerte (metric_alert_thresholds)
+# et high_score_threshold, qui sert de repli à une alerte non déclarée, restent
+# dans l'empreinte : ils changent les colonnes booléennes « {métrique}_ALERT »
+VULNERABILITY_FINGERPRINT_EXCLUDED: frozenset = frozenset(
+    {
+        "unit_score_threshold",
+        "shares_lower_bound",
+        "shares_tolerance",
+        "drift_relative_change",
+        "psi_n_bins",
+        "ranking_metric",
+        "artifact_top_n",
+        "artifact_max_rows",
+    }
+)
+
 
 # ──────────────────────────────────────────────────────────────────────
 # Expressions partagées
@@ -478,6 +496,22 @@ class NetworkVulnerabilityConfig:
 
 # Configuration par défaut (schéma des flux réconciliés BACI)
 DEFAULT_NETWORK_CONFIG = NetworkVulnerabilityConfig()
+
+# Champs de NetworkVulnerabilityConfig exclus de l'empreinte méthodologique
+# (diagnostics, dérive et artefacts seulement). centrality_risk_threshold,
+# high_score_threshold et metric_alert_thresholds restent dans l'empreinte :
+# ils changent des valeurs ou des colonnes « {métrique}_ALERT » écrites
+NETWORK_FINGERPRINT_EXCLUDED: frozenset = frozenset(
+    {
+        "unit_score_threshold",
+        "shares_tolerance",
+        "drift_relative_change",
+        "psi_n_bins",
+        "ranking_metric",
+        "artifact_top_n",
+        "artifact_max_rows",
+    }
+)
 
 
 # ──────────────────────────────────────────────────────────────────────

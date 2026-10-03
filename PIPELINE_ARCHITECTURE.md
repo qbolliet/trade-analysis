@@ -35,6 +35,8 @@
 | 2026-09-21 (phase 0, K-03b) | **Couche de service et référentiels** : `kedro_pipeline/config.py` (millésimes, macros SQL), `kedro_pipeline/steps/reference.py` (référentiels, un schéma par table `reference_<table>`), `kedro_pipeline/io/serving.py` (`ServingCatalog`, transaction unique vérifiée sur DuckDB 1.5.3), `kedro_pipeline/steps/serving.py` + `config/serving.yaml` (8 tables), `serving-script` ; `product` des tables Comext/partenaires stocké en `BIGINT` → macro `product_code` | C-22, C-23, PS-27, PS-28.4, PS-29.1, PS-29.2 |
 | 2026-09-21 (phase 0) | **Données fictives de démonstration** (Comtrade indisponible, Comext trop lent) : monde simulé isolé dans les catalogues `demo_*` (garde d'écriture testée), entrées de registre marquées `synthetic`, code non migré dans Kedro ; **retrait en deux prompts** : K-17b 🔌 (données sur le cluster) puis K-18 (code et fichiers) | PD-24, PS-04.4, PR-22, PQ-20, §12, K-17b, K-18 |
 | 2026-09-21 (phase 0, K-03d) | **Rapport de run MLflow des scripts** : `macroforecast/tracking/{report,figures}.py` (contrôles, description, HTML Plotly), `kedro_pipeline/io/tracking.py` (`publish_run_report`), `scripts/_run_report.py`, `config/tracking.yaml` ; métriques des scripts en `/` (rekeyage `rekey_metrics`), une expérience par bloc ; contrôles alignés sur les métriques réellement émises ; constats de rendu vérifiés sur MLflow 3.15 local | C-19, PD-13, PS-31, PR-19, PQ-19 |
+| 2026-10-02 (K-05) | **Registres de fraîcheur v2** : `kedro_pipeline/io/freshness.py` (`fingerprint`, `Unit`, `FreshnessRegistry` fragmenté et paresseux, `ForceSpec`, `units_to_compute`, `summarize_upstream`) branché sur BACI, partenaires et réseau ; synthèse et cohérence sur une unité `global` en attendant K-08 ; `version` des métriques et `BACI_METHODOLOGY_VERSION`, listes d'exclusion de l'empreinte dans `macroforecast/` ; **séparateur `;`** sous `kedro run --params` (constat sur les sources Kedro) ; `FORCE_METRICS` / `FORCE_METHODS` seuls forcent les étapes concernées ; unité partenaires = millésime SH le plus récent jusqu'à K-06b ; migration par drapeau `ADOPT_LEGACY_FINGERPRINTS` (pas d'outil dédié) | PD-10, PS-04.1, PS-10, PS-11, PS-12.3, PS-14.6, §12 |
+| 2026-10-03 (K-05, suite) | **Plus de version déclarée** (métriques, BACI, synthèse, cohérence) : l'empreinte ne porte que le nom et les paramètres ; une correction d'implémentation se signale par **invalidation** des empreintes enregistrées (`FreshnessRegistry.invalidate`, commande `invalidate-freshness-script`), persistée et reprise à l'exécution planifiée suivante (raison `fingerprint`, cascade vers l'aval) ; le forçage par paramètres d'exécution reste pour les recalculs immédiats | PD-10, PS-10.2, PS-10.3, PS-11, §5.2, §5.3, §5.9, PR-05b |
 
 ## Sommaire
 
@@ -76,8 +78,9 @@ Vocabulaire :
 - **nœud** : un nœud Kedro ; **tâche** : une tâche du DAG Argo (= un pod) ;
 - **unité de fraîcheur** : la maille à laquelle une étape décide de (re)calculer
   (couple reporter × produit, millésime HS, contexte de synthèse…) ;
-- **empreinte méthodologique** (*fingerprint*) : hachage de la version de code déclarée
-  et des paramètres méthodologiques d'une métrique, d'une méthode ou d'une étape (PS-10) ;
+- **empreinte méthodologique** (*fingerprint*) : hachage du nom et des paramètres
+  méthodologiques d'une métrique, d'une méthode ou d'une étape (PS-10) ; une correction
+  d'implémentation se signale par **invalidation** de l'empreinte enregistrée (§5.3) ;
 - **millésime** (*vintage*) : une édition du Système harmonisé (`HS1992` … `HS2022`) ;
   **nomenclature en vigueur** : le millésime dans lequel les codes d'une année donnée
   sont déclarés (PD-20) ;
@@ -613,8 +616,9 @@ entrées sont indexées par **unité de fraîcheur** et portent :
 Une unité est recalculée si **au moins une** des conditions suivantes est vraie :
 1. elle n'a jamais été calculée ;
 2. son amont est plus récent que `upstream_watermark` ;
-3. l'empreinte d'une métrique/méthode **demandée** diffère de celle enregistrée : la
-   métrique a été ajoutée ou sa formule/version a changé ;
+3. l'empreinte d'une métrique/méthode **demandée** diffère de celle enregistrée ou
+   manque : la métrique a été ajoutée, ses paramètres ont changé, ou son empreinte a été
+   **invalidée** après la correction de son implémentation ;
 4. elle entre dans le périmètre d'un **forçage** (PS-11).
 
 Les registres sont **fragmentés** (un fichier JSON par fragment : reporter, millésime,
@@ -634,13 +638,22 @@ de réestimer sept millésimes chaque jour pendant le rattrapage (PS-14.6).
 **Justification.** C'est la réponse aux deux besoins exprimés :
 - *ajouter une métrique ou une méthode* : nouvelle empreinte, donc recalcul **de cette
   métrique/méthode** sur **toutes** les unités existantes, sans rien d'autre ;
-- *corriger une formule* : on incrémente la `version` déclarée de la métrique (PS-10.2),
-  ce qui provoque le recalcul automatique partout. On peut aussi, ponctuellement, forcer
-  une étape entière via les paramètres d'exécution (PS-11).
+- *corriger une formule* : on **invalide** l'empreinte enregistrée de la métrique sur les
+  unités concernées (`invalidate-freshness-script`, runbook §5.3) ; la prochaine
+  exécution planifiée la trouve manquante et recalcule partout, avec la raison
+  `fingerprint` (cascade vers l'aval). On peut aussi, ponctuellement, forcer une étape
+  entière via les paramètres d'exécution (PS-11).
 
-**Alternative écartée.** Hacher le *code source* des classes : trop sensible (un
-commentaire modifié recalculerait tout), et invisible pour l'utilisateur. On retient une
-**version déclarée explicitement** (`version: ClassVar[str]`) plus les paramètres.
+**Alternatives écartées.**
+- Hacher le *code source* des classes : trop sensible (un commentaire modifié
+  recalculerait tout), et invisible pour l'utilisateur.
+- Une **version déclarée** dans le code (`version: ClassVar[str]`, retenue en K-05 puis
+  retirée) : la notion est trompeuse ici, une modification de la formule d'une métrique
+  n'ayant jamais d'autre objet que la correction d'une erreur d'implémentation.
+- Le forçage seul (PS-11) pour propager une correction : il est éphémère (une exécution
+  forcée qui échoue est perdue et doit être resoumise) et le `CronWorkflow` n'expose pas
+  de forçage, alors que l'invalidation est persistée dans le registre et reprise par
+  l'exécution planifiée suivante jusqu'à succès.
 
 ### PD-11 — Évolution de schéma pour les nouvelles métriques (via `dt-ducklake-manager 0.3.1`)
 
@@ -1447,7 +1460,11 @@ runtime:
   WEEKLY_DAY: 5
   # Parallélisme intra-pod : null → NUM_CPU (injecté par Argo) ou os.cpu_count()
   N_JOBS: null
-  # Forçage ponctuel (PS-11) : chaînes séparées par des virgules, vides par défaut
+  # Forçage ponctuel (PS-11) : valeurs séparées par « , » ou « ; », vides par défaut ;
+  # « ; » obligatoire sous `kedro run --params` (K-05). FORCE_METRICS / FORCE_METHODS
+  # seuls forcent les étapes qui calculent ces noms. Surcharges par variables
+  # d'environnement FORCE_STEPS, FORCE_METRICS, FORCE_METHODS, FORCE_REPORTERS,
+  # FORCE_PRODUCTS, FORCE_PERIODS, FORCE_VINTAGES (scripts de transition)
   FORCE_STEPS: ""        # ex. "partners,synthesis" ou "all"
   FORCE_METRICS: ""      # ex. "HHI,CDI2"
   FORCE_METHODS: ""      # ex. "critic_sum"
@@ -1938,25 +1955,44 @@ Maille et fragment par étape :
 | Cohérence | contexte | période | `last_computed` synthèse du contexte |
 | Publication de service | table de service (× année en mode `by_year`) | table | max `last_computed` des étapes sources de la table |
 
+> **État après K-05.** Partenaires : jusqu'à K-06b, une paire (reporter, produit)
+> couvrant toutes les périodes, `classification` vaut **le millésime SH le plus
+> récent** de `runtime.NOMENCLATURES.HS` pour tous les codes, NC8 compris (choix
+> utilisateur : stable d'une année à l'autre, pas de recalcul complet chaque
+> 1er janvier qu'aurait provoqué `CN<année>`). Synthèse et cohérence : unité unique
+> `{"scope": "global"}`, fragment unique au chemin `PATHS.LAST_COMPUTATION_PATH`,
+> empreinte globale (méthodes, configuration, `SOURCES`, `FILTERS` ; resp.
+> configuration de cohérence) ; l'entrée consigne `upstream_reasons` (raisons des
+> unités amont recalculées depuis) pour K-08. BACI : l'entrée porte `fit_id`,
+> `years_scope`, `years_written` ; une entrée « démarrée » (`years_written: []`,
+> `last_computed` précédent conservé) précède toute écriture ; le réseau ignore un
+> millésime dont la passe est incomplète. Les registres v1 sont lus comme entrées
+> héritées (`fingerprints={}`, `reason="first"`, `upstream_watermark =
+> last_computed`, ce qui reproduit la règle v1) : une empreinte manquante signifie
+> « jamais calculé avec cette méthodologie », sauf adoption
+> (`STATE.ADOPT_LEGACY_FINGERPRINTS` / variable `ADOPT_LEGACY_FINGERPRINTS`).
+
 #### PS-10.2 Empreinte méthodologique
 
 ```python
-def fingerprint(name: str, version: str, params: Mapping[str, Any]) -> str:
+def fingerprint(name: str, params: Mapping[str, Any]) -> str:
     """Stable 16-hex digest of a metric/method/step methodology.
 
     Examples:
-        >>> fingerprint("HHI", "1", {"world_code": "WORLD"})
+        >>> fingerprint("HHI", {"world_code": "WORLD"})
         '…'  # stable across runs and platforms
     """
-    payload = json.dumps({"name": name, "version": version, "params": params},
+    payload = json.dumps({"name": name, "params": params},
                          sort_keys=True, default=str, separators=(",", ":"))
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:16]
 ```
 
-- **`version`** : attribut de classe `version: ClassVar[str] = "1"` ajouté à
-  `VulnerabilityMetric`, `NetworkVulnerabilityMetric` et à chaque étape BACI. Pour les
-  méthodes de synthèse, champ `version` (défaut `"1"`) dans l'entrée YAML de la méthode.
-  **Une correction de formule = incrément de `version`** (runbook §5.3).
+- **Pas de version** (révision K-05) : le code d'une métrique, d'une étape BACI ou d'une
+  méthode n'entre pas dans l'empreinte. **Une correction de formule = invalidation de
+  l'empreinte enregistrée** (`FreshnessRegistry.invalidate(names, scope)`, commande
+  `invalidate-freshness-script`, runbook §5.3) : seule la clé de l'empreinte est
+  supprimée (l'historique de l'unité est conservé), la passe suivante recalcule avec la
+  raison `fingerprint`.
 - **`params`** : paramètres qui influent sur le résultat de la métrique ou de la méthode
   (champs du dataclass de configuration **hors** options de journalisation : `artifact_*`,
   `drift_*`, `psi_n_bins`…, dont la liste d'exclusion est déclarée à côté du dataclass).
@@ -1987,6 +2023,15 @@ def units_to_compute(planned: Iterable[Unit], registry: FreshnessRegistry,
   sur des lignes entières). Le registre enregistre les nouvelles empreintes de toutes.
 - **Synthèse** (table longue par méthode) : on ne recalcule **que** les méthodes de
   `names`, plus le consensus dès que `names` n'est pas vide.
+- **Implémentation (K-05)** : `units_to_compute(..., step, is_new_data=None,
+  adopt_legacy_fingerprints=False)`. La règle `new_data` est un prédicat
+  surchargeable (par défaut : amont plus récent que `upstream_watermark`) ; BACI y
+  branche sa cadence (PS-14.6). Une unité dont `last_computed` est nul (passe
+  démarrée jamais terminée) est `first`. Forçage d'une métrique : `FORCE_METRICS=HHI`
+  seul suffit (les empreintes enregistrées restant les courantes, la passe suivante
+  ne recalcule rien). Invalidation : `FreshnessRegistry.invalidate(names, scope)`
+  supprime l'empreinte des noms donnés (toutes si `None`) sur les unités du périmètre
+  (filtres de `ForceSpec`) ; écrite par `save()`.
 
 ### PS-11 — Forçage ponctuel (paramètres d'exécution)
 
@@ -2007,9 +2052,20 @@ Règles :
 - le `CronWorkflow` quotidien n'expose **jamais** de forçage (valeurs vides) ;
 - toute exécution forcée pose le tag MLflow `forced=<steps>`.
 
-> La syntaxe `--params` avec des virgules à l'intérieur d'une valeur doit être validée
-> sur Kedro 1.6 (séparateur de paires). À défaut, utiliser `;` comme séparateur interne
-> (`FORCE_SCOPE.PERIODS=2020;2021`). K-05 tranche et documente.
+> **Tranché en K-05** (lecture de `kedro/framework/cli/utils.py`, branche principale) :
+> `split_string` découpe l'argument de `--params` sur `,` **avant** de séparer clés et
+> valeurs, donc `runtime.FORCE_SCOPE.PERIODS=2020,2021` échoue (« must contain a key and
+> a value separated by `=` »). Sous `kedro run --params`, le séparateur interne est
+> **`;`** (`FORCE_SCOPE.PERIODS=2020;2021`, `FORCE_STEPS=partners;synthesis`) ; les
+> paires restent séparées par `,`. `ForceSpec.from_runtime` accepte `,` et `;` partout
+> (YAML, Argo, variables d'environnement), ainsi que les listes YAML et les entiers
+> (`OmegaConf.from_dotlist` convertit `2020` en entier). Les exemples du tableau
+> ci-dessus s'écrivent donc, en local, avec `;` à l'intérieur des valeurs.
+>
+> Autres règles (K-05) : `FORCE_METRICS` / `FORCE_METHODS` sans `FORCE_STEPS` forcent
+> les étapes qui calculent ces noms ; un filtre de périmètre sur une dimension absente
+> de l'unité est ignoré (`PERIODS` sur BACI, dont l'unité est le millésime entier) ;
+> `VINTAGES` est comparé à `vintage` ou `classification`, `PRODUCTS` par préfixe.
 
 ### PS-12 — Construction et ordonnancement des requêtes
 
@@ -2050,7 +2106,8 @@ actuel).
 
 #### PS-12.3 Lecture du registre de téléchargement par les étapes aval
 
-`DownloadRegistryView` (dans `kedro_pipeline/io/freshness.py`) **éclate** chaque entrée
+`DownloadRegistryView` (dans `kedro_pipeline/io/registry_views.py`, conservé à part du
+module de fraîcheur en K-05) **éclate** chaque entrée
 du registre `statflows` en unités :
 - Eurostat : `dims.reporter` × chaque code de `dims.product` (chaîne ou liste, séparateurs
   `+` ou `,`) → `{(reporter, product): last_download}` ;
@@ -3357,8 +3414,7 @@ colonnes retenues) : `<mlflow>/#/experiments/<id>?searchFilter=tags.workflow_id%
 
 ### 5.2 Ajouter une métrique de vulnérabilité ou une méthode de synthèse
 
-1. Implémenter la classe (métrique) ou déclarer l'entrée `methods` (méthode), avec
-   `version = "1"`.
+1. Implémenter la classe (métrique) ou déclarer l'entrée `methods` (méthode).
 2. L'ajouter à la configuration : `metric_columns`, `SOURCES.COLUMNS` pour la synthèse,
    entrée `methods`.
 3. Pousser sur `main` : l'image est publiée, puis mettre à jour le template
@@ -3371,20 +3427,35 @@ colonnes retenues) : `<mlflow>/#/experiments/<id>?searchFilter=tags.workflow_id%
 
 ### 5.3 Corriger une formule (métrique, méthode, cohérence, étape BACI)
 
-1. Corriger le code **et incrémenter `version`** (`"1"` → `"2"`) de la classe ou de la
-   méthode concernée.
+1. Corriger le code (aucune version à incrémenter : le code n'entre pas dans les
+   empreintes).
 2. Publier l'image et appliquer le template.
-3. Le recalcul est automatique au prochain run, sur toutes les unités, avec cascade vers
-   l'aval (`reason=fingerprint`).
-4. Pour une correction **qui ne change pas le code**, par exemple une donnée amont
-   corrigée à la main : forcer
-   `argo submit … -p force-steps=partners,synthesis,coherence`.
-5. Renommer ou supprimer une colonne de métrique : **opération manuelle**, jamais
+3. **Invalider** l'empreinte des noms corrigés, **entre deux exécutions de l'étape**
+   (un pod en cours réécrirait les fragments qu'il a chargés, et l'invalidation serait
+   perdue sans erreur) :
+   ```bash
+   invalidate-freshness-script --step partners --metrics HHI --dry-run   # aperçu
+   invalidate-freshness-script --step partners --metrics HHI             # écriture
+   ```
+   Étapes et noms : `partners` (métriques partenaires : `HHI`, `CDI2`, `CDI3`…),
+   `network` (`SPOF`, `DIAMETER`…), `baci` (une seule empreinte par millésime :
+   `--vintages HS2017` pour en restreindre la portée), `synthesis`, `coherence`
+   (empreinte globale). Sans `--metrics`, toutes les empreintes des unités choisies
+   sont supprimées. Filtres : `--reporters`, `--products` (préfixes), `--periods`,
+   `--vintages` (séparateur `,` ou `;`) ; un filtre qui ne s'applique pas aux unités de
+   l'étape est refusé. Un nom inconnu est refusé (faute de frappe).
+4. La prochaine exécution planifiée de l'étape recalcule les unités invalidées (raison
+   `fingerprint`), puis l'aval en cascade. Si elle échoue, les unités restent invalides
+   et sont reprises à l'exécution suivante : rien à resoumettre.
+5. Pour un recalcul **immédiat**, ou pour une correction **qui ne change pas le code**
+   (donnée amont corrigée à la main) : forcer
+   `argo submit … -p force-steps=partners,synthesis,coherence` (PS-11).
+6. Renommer ou supprimer une colonne de métrique : **opération manuelle**, jamais
    automatique. Faire `ALTER TABLE … RENAME COLUMN` dans une session DuckDB, puis mettre
    à jour la configuration, puis forcer l'étape.
-6. Diffuser une colonne calculée à part sur des lignes existantes (migration
+7. Diffuser une colonne calculée à part sur des lignes existantes (migration
    ponctuelle) : `DuckLakeTable.add_columns(df)` (PD-11), depuis un service Onyxia.
-7. Changer la **clé primaire** d'une table (ex. ajout de `classification` à
+8. Changer la **clé primaire** d'une table (ex. ajout de `classification` à
    `indicators`, PD-20) : script de migration dans `tools/` qui recrée la table à partir
    de l'ancienne (testé sur catalogue fichier), exécuté depuis Onyxia (§12), puis
    forçage de l'étape pour les colonnes nouvelles.
@@ -3443,7 +3514,10 @@ nécessaire.
 
 `argo submit --from workflowtemplate/trade-pipeline --entrypoint weekly -p
 force-steps=baci -p force-vintages=HS2017` : réestime le millésime complet (PD-22), puis
-le réseau, la synthèse et la cohérence en cascade. Durée indicative à consigner après la
+le réseau, la synthèse et la cohérence en cascade. Après la **correction d'une étape
+BACI**, préférer l'invalidation (§5.3) : `invalidate-freshness-script --step baci
+[--vintages HS2017]`, reprise par l'exécution `weekly` suivante sans attendre
+`REFRESH.MIN_INTERVAL_DAYS`. Durée indicative à consigner après la
 première passe complète (K-17).
 
 ---
@@ -3479,7 +3553,7 @@ ni le cluster.
 | PR-03 | Limites de l'API Eurostat (longueur d'URL, taille de réponse, bascule asynchrone SDMX 3.0) avec des lots de produits | Moyenne / moyen | Mesure dans K-01 : lots de 1, 10, 50 codes sur un reporter ; valeur retenue documentée |
 | PR-04 | Quotas de la clé Comtrade premium (appels/jour, enregistrements par appel) | Moyenne / fort | Rate limiter `statflows`, métriques `rate_limit/*`, budget `MAX_RUNTIME` ; découper plus finement si `max_records` est atteint |
 | PR-05 | BACI : une tranche annuelle récente dépasse la mémoire du pod | Faible / moyen | Découpage par chapitres SH2 (PS-14.5), `MAX_ROWS_PER_CHUNK`, `memory/peak_mb` suivi ; `baci-large` relevable jusqu'à 200 Gi |
-| PR-05b | BACI : écart numérique entre l'implémentation par passes et l'ancienne (covariance robuste de `linearmodels`, distance de Cook) | Moyenne / moyen | Tests d'équivalence à `1e-8` (PS-14.4) ; reproduction de la formule exacte de `linearmodels` lue dans son code ; en cas d'écart irréductible documenté, incrément de `version` BACI |
+| PR-05b | BACI : écart numérique entre l'implémentation par passes et l'ancienne (covariance robuste de `linearmodels`, distance de Cook) | Moyenne / moyen | Tests d'équivalence à `1e-8` (PS-14.4) ; reproduction de la formule exacte de `linearmodels` lue dans son code ; en cas d'écart irréductible documenté, invalidation des empreintes BACI (§5.3) |
 | PR-05c | BACI : six passes sur les Parquet de travail → durée d'une passe hebdomadaire de plusieurs heures par millésime | Élevée / faible | Cadence hebdomadaire (PD-23), fan-out par millésime, projection de colonnes, `KEEP_WORK_FILES` pour la reprise ; durée mesurée en K-17 |
 | PR-06 | Quota **total** du namespace insuffisant pour 7 pods BACI simultanés (7 × 32 Gi) | Moyenne / moyen | `parallelism` du template ; machine types de PS-20 ; PQ-16 |
 | PR-07 | Service PostgreSQL Onyxia non persistant ou supprimé → perte des catalogues DuckLake | Faible / critique | Sauvegarde hebdomadaire `pg_dump` vers S3 (PD-16) ; données Parquet conservées sur S3 ; procédure de restauration à documenter (K-17) |
@@ -3663,7 +3737,7 @@ les autres depuis le poste local.
 | Première publication de la couche de service et vérification des volumes | K-03b (exécution), K-03c | `argo submit`, session DuckDB | données réelles, catalogue `serving` |
 | Connexion DuckDB de Superset, construction du tableau de bord, export versionné | K-03c | K-03c 🔌 | interface et pod Superset du namespace |
 | Mesure des limites de l'API Eurostat pour `products_step` (PR-03) | K-01 ou K-04b | local possible (réseau public), **mais** l'adresse IP et le limiteur diffèrent en production → mesurer aussi depuis un pod | débit réel |
-| Migration des registres v1 → v2 sur S3 (`adopt_legacy_fingerprints`) | après K-05 | `tools/migrate_registries.py` depuis un pod ou VSCode Onyxia | S3 réel, irréversible : sauvegarder le préfixe avant |
+| Migration des registres v1 → v2 sur S3 (`adopt_legacy_fingerprints`) | après K-05 | un run de chaque étape avec `ADOPT_LEGACY_FINGERPRINTS=true` (variable d'environnement ou `STATE.ADOPT_LEGACY_FINGERPRINTS` / bloc `SYNTHESIS` / `COHERENCE`), puis retour à `false` ; pas d'outil dédié (choix K-05) | S3 réel : sauvegarder les registres v1 avant ; synthèse et cohérence réécrivent leur fichier en place |
 | Recréation de la table `indicators` avec la nouvelle clé (`classification`) | après K-06b | runbook §5.3, depuis un service Onyxia | catalogue et Parquet réels |
 | Première passe BACI par millésime sur données réelles ; relevé de `memory/peak_mb` et de la durée | après K-07 | `argo submit --entrypoint weekly` | seul moyen d'avoir les vraies volumétries |
 | Déploiement des manifestes générés, bascule, recette, runbooks | K-17 | K-17 🔌 | `kubectl apply`, `argo` |

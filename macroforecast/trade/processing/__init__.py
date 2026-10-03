@@ -4,6 +4,7 @@ from .baci import (
     ComtradeSchema,
     BaciConfig,
     DEFAULT_CONFIG,
+    BACI_FINGERPRINT_EXCLUDED,
 )
 # Préparation des données
 from .baci import (
@@ -55,6 +56,7 @@ __all__ = [
     "ComtradeSchema",
     "BaciConfig",
     "DEFAULT_CONFIG",
+    "BACI_FINGERPRINT_EXCLUDED",
     # Préparation des données
     "build_gravity_data",
     "build_mirror_flows",

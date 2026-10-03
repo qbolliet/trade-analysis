@@ -250,6 +250,12 @@ class BaciConfig:
 # Configuration par défaut (schéma COMTRADE tariffline + CEPII dist/geo)
 DEFAULT_CONFIG = BaciConfig()
 
+# Champs de BaciConfig exclus de l'empreinte méthodologique : aucun. Tous
+# changent les flux réconciliés écrits, y compris les conventions de schéma
+# (schema.distance_column choisit la distance de la gravité) et le périmètre
+# temporel (period_start / period_end bornent l'échantillon d'estimation)
+BACI_FINGERPRINT_EXCLUDED: frozenset = frozenset()
+
 # Noms de colonnes canoniques de la table de flux miroirs
 _EXP, _IMP, _PROD, _YEAR = "exporter", "importer", "product", "year"
 

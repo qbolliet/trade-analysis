@@ -1513,8 +1513,11 @@ PARTIE B — SYNTHÈSE INCRÉMENTALE (PD-12, PS-17)
    pour les méthodes non recalculées) utilisé uniquement par le consensus. Test
    d'équivalence : calcul complet == calcul en deux temps (méthodes A, puis méthode B avec
    les scores de A fournis), consensus compris.
-2. Empreintes par méthode (PS-10.2) : champ optionnel `version` dans les entrées YAML
-   `methods` (`MethodSpec`), paramètres pris en compte listés dans la docstring.
+2. Empreintes par méthode (PS-10.2) : nom et paramètres de l'entrée YAML `methods`
+   (`MethodSpec`), paramètres pris en compte listés dans la docstring ; **pas de champ
+   `version`** (révision K-05) : une méthode corrigée se signale par invalidation de son
+   empreinte (`invalidate-freshness-script --step synthesis --metrics <méthode>`, à
+   étendre aux noms de méthodes).
 3. Script de synthèse :
    - unité = contexte `(classification, freq, flow, indicators, TIME_PERIOD)`, fragment =
      période, `STATE.PATH_TEMPLATE` configurable ;
@@ -1549,8 +1552,8 @@ CRITÈRES D'ACCEPTATION
 - Nouveaux tests : évolution de schéma, équivalence consensus, planification PS-17
   (tous les cas), e2e `slow` : 1) première passe complète ; 2) seconde passe = 0 contexte ;
   3) ajout d'une méthode dans la config → seuls cette méthode + consensus sont écrits,
-  sur tous les contextes ; 4) incrément de `version` d'une métrique partenaire (cascade
-  depuis K-05) → tous les contextes ; 5) budget = 2 → 2 contextes, puis les suivants à la
+  sur tous les contextes ; 4) invalidation de l'empreinte d'une métrique partenaire (cascade
+  depuis K-05, raison `fingerprint`) → tous les contextes ; 5) budget = 2 → 2 contextes, puis les suivants à la
   passe d'après.
 - ARCH PD-11/PD-12/PS-17 mis à jour si besoin.
 - Ne crée pas de commit.
@@ -2501,7 +2504,8 @@ TRAVAIL
    Kedro devenue réalité et toute mention de `uv run <script>`.
 4. `CLAUDE.md` : mets à jour la description du projet (Kedro réalisé ; rôles de
    `kedro_pipeline/` vs `macroforecast/` ; plus de dossier `scripts/` ; emplacement de la
-   configuration ; règle « toute nouvelle métrique/méthode déclare `version` » ; règle
+   configuration ; règle « une correction d'implémentation se signale par `invalidate-freshness-script`
+   (aucune version dans le code) » ; règle
    « un changement de pipeline implique `kedro trade render-argo` » ; règle « toute
    nouvelle colonne de restitution passe par `parameters_serving.yml` » ; règle « toute
    nouvelle métrique d'étape qui qualifie un run a son contrôle dans

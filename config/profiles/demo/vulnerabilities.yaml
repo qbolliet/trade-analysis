@@ -28,9 +28,19 @@ VULNERABILITIES:
     RESULT_SCHEMA: "demo_indicators"
     PATHS:
       DATA_PATH: "trade/demo/datasets/vulnerabilities/"
-      # Registre des dates de dernier calcul, tenu par ce script (même
-      # principe que LAST_DOWNLOAD_PATH côté téléchargement)
+      # Registre v1 (fichier unique, sans empreintes) : n'est plus écrit, seulement
+      # lu pour la migration vers les fragments de STATE
       LAST_COMPUTATION_PATH: "trade/demo/vulnerabilities/comext/last_computation.json"
+    # Registre de fraîcheur fragmenté : un fichier par classification x reporter,
+    # une entrée par produit (dernier calcul, watermark amont, empreinte de chaque
+    # métrique, raison du calcul)
+    STATE:
+      PATH_TEMPLATE: "trade/demo/state/vulnerabilities/partners/{classification}/{reporter}.json"
+      # Migration : à true pour UN run au déploiement, les entrées du registre v1
+      # adoptent les empreintes courantes sans recalcul et sont réécrites en
+      # fragments ; à false sinon (empreinte manquante = jamais calculé avec la
+      # méthodologie courante). Surchargeable par ADOPT_LEGACY_FINGERPRINTS
+      ADOPT_LEGACY_FINGERPRINTS: false
 
 # Suivi d'exécution MLflow. Dépendance optionnelle : installer l'extra
 # « tracking » (uv sync --extra tracking) pour l'activer.
@@ -82,10 +92,15 @@ NETWORK_VULNERABILITIES:
   RESULT_SCHEMA: "demo_network_indicators"
   PATHS:
     DATA_PATH: "trade/demo/datasets/vulnerabilities/"
-    # Registre des dates de dernier calcul, par millésime de nomenclature,
-    # confronté au registre de traitement BACI (baci.yaml : LAST_PROCESSING_PATH)
-    # pour ne recalculer que les millésimes réécrits depuis.
+    # Registre v1 (fichier unique, sans empreintes) : n'est plus écrit, seulement
+    # lu pour la migration vers les fragments de STATE
     LAST_COMPUTATION_PATH: "trade/demo/vulnerabilities/baci/last_computation.json"
+  # Registre de fraîcheur fragmenté : un fichier par millésime, confronté au
+  # dernier calcul BACI du millésime (baci.yaml : STATE)
+  STATE:
+    PATH_TEMPLATE: "trade/demo/state/vulnerabilities/network/{vintage}.json"
+    # Migration des entrées v1 (cf. bloc partenaires)
+    ADOPT_LEGACY_FINGERPRINTS: false
   # Suivi d'exécution MLflow, un run par millésime recalculé.
   MLFLOW:
     TRACKING_URI: null

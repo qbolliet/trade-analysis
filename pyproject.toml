@@ -49,6 +49,8 @@ vulnerabilities-eurostat-script = "scripts.compute_trade_vulnerabilities:main"
 vulnerabilities-network-script = "scripts.compute_network_vulnerabilities:main"
 vulnerabilities-synthesis-script = "scripts.compute_synthetic_scores:main"
 vulnerabilities-coherence-script = "scripts.compute_synthesis_coherence:main"
+# Invalidation des empreintes de fraîcheur après correction d'une implémentation
+invalidate-freshness-script = "scripts.invalidate_freshness:main"
 # Couche de service : catalogue DuckLake `serving` lu par Superset (K-03b, PS-29)
 serving-script = "scripts.publish_serving:main"
 # Données fictives (démonstration) : remplace Comtrade / complète Comext

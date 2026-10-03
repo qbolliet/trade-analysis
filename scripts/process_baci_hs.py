@@ -33,11 +33,20 @@ L'échec d'un millésime n'interrompt pas les autres : chaque échec est captur�
 et journalisé individuellement, et le script ne sort en erreur qu'en fin de
 parcours si au moins un millésime a échoué.
 
-Chaque millésime effectivement réécrit voit sa date de traitement consignée dans
-le registre JSON ``PATHS.LAST_PROCESSING_PATH`` (même principe que le
-``LAST_DOWNLOAD_PATH`` du téléchargement). C'est la seule chose que
+Fraîcheur : un registre fragmenté (``STATE.PATH_TEMPLATE``, un fichier par
+millésime), l'unité étant le millésime entier puisque ses paramètres sont
+estimés sur toutes ses années. Une passe sur un millésime est lancée s'il n'a
+jamais été calculé, si la passe précédente est interrompue (années écrites
+différentes du périmètre), si une nouvelle année complète entre dans son
+périmètre (``REFRESH.ON_NEW_COMPLETE_YEAR``), si l'empreinte méthodologique
+change, en cas de forçage, ou si l'amont Comtrade a été révisé et que le dernier
+calcul date d'au moins ``REFRESH.MIN_INTERVAL_DAYS`` jours. Une entrée
+« démarrée » (identifiant de passe, années du périmètre, aucune année écrite)
+précède toute écriture et sert de point de reprise ; l'entrée terminée n'est
+écrite qu'après succès. Son ``last_computed`` est la seule chose que
 ``scripts/compute_network_vulnerabilities.py`` lit de ce script : le couplage
-reste faible, aucun état en mémoire n'étant partagé.
+reste faible, aucun état en mémoire n'étant partagé. L'ancien registre
+``PATHS.LAST_PROCESSING_PATH`` n'est plus qu'une source de migration.
 
 Périmètre borné avant tout calcul (PS-14.1, en attendant le traitement par
 passes de K-07) :
@@ -62,10 +71,9 @@ et ``RUNTIME_CONFIG_PATH``.
 import hashlib
 import logging
 import os
-from pathlib import Path
 from dataclasses import fields, replace
-from datetime import datetime, timezone
-from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Set, Tuple
+from datetime import datetime, timedelta, timezone
+from typing import Any, Dict, Iterable, Iterator, List, Mapping, Optional, Sequence, Set, Tuple
 import yaml
 
 # Modules de manipulation de données
@@ -82,6 +90,23 @@ from kedro_pipeline.io.ducklake import (
     s3_credentials_from_env,
 )
 from kedro_pipeline.io.registry_views import DownloadRegistryView, ProductsKey, period_year, products_key
+# Registres de fraîcheur v2 (fragments, empreintes, forçage, cadence)
+from kedro_pipeline.io.freshness import (
+    ForceSpec,
+    FreshnessRegistry,
+    LegacySource,
+    NewDataPredicate,
+    RegistryEntry,
+    Unit,
+    UnitPlan,
+    adopt_legacy_flag,
+    fingerprint,
+    format_instant,
+    legacy_entry,
+    plan_metrics,
+    units_to_compute,
+    upstream_is_newer,
+)
 from kedro_pipeline.steps.reference import publish_hs_reference
 # Planification des requêtes Comtrade : même liste que le téléchargement
 from scripts.download_comtrade import (
@@ -105,6 +130,8 @@ from statflows import UNSDClient
 # Module d'implémentation du traitement BACI
 from macroforecast.trade.processing import required_columns, run_baci
 from macroforecast.trade.processing import BaciConfig, ComtradeSchema, DEFAULT_CONFIG, BaciReport
+from macroforecast.trade.processing import BACI_FINGERPRINT_EXCLUDED
+from macroforecast.trade.methodology import methodology_params
 from macroforecast.trade.processing import HsHarmonizer, resolve_vintage
 # Module de suivi d'exécution (MLflow optionnel) et rapport de run
 from macroforecast.tracking import CapturingTracker, get_tracker, rekey_metrics
@@ -491,6 +518,406 @@ def baci_config_from_params(params: Optional[Dict]) -> BaciConfig:
 
 
 # ──────────────────────────────────────────────────────────────────────
+# Registre de fraîcheur v2 : un fragment par millésime, cadence de réestimation
+# ──────────────────────────────────────────────────────────────────────
+
+# Nom de l'étape (forçage FORCE_STEPS, champ « step » des fragments) et nom de
+# l'empreinte unique du millésime (toutes les étapes BACI sont couplées)
+STEP = "baci"
+
+
+# Fonction de construction de l'unité de fraîcheur d'un millésime
+def baci_unit(vintage: str) -> Unit:
+    """Freshness unit of a BACI vintage (the whole vintage, all its years).
+
+    Args:
+        vintage: HS vintage label (``"HS2017"``).
+
+    Returns:
+        ``Unit(vintage=...)``.
+
+    Examples:
+        >>> baci_unit("HS2017").key
+        'HS2017'
+    """
+    return Unit.of(vintage=vintage)
+
+
+# Fonction de calcul de l'empreinte méthodologique du redressement
+def baci_requested(config: BaciConfig) -> Dict[str, str]:
+    """Current methodological fingerprint of the BACI reconstruction.
+
+    A single fingerprint per vintage: the BACI steps are coupled (the gravity
+    fit uses the converted tonnes, the reconciliation the reporting-quality
+    sigmas…), so a vintage is always re-estimated as a whole. A fix in the
+    implementation of any step is signalled by invalidating the recorded
+    fingerprints (``scripts/invalidate_freshness.py --step baci``).
+
+    Args:
+        config: Methodological configuration of the reconstruction.
+
+    Returns:
+        ``{"baci": fingerprint}``.
+
+    Examples:
+        >>> list(baci_requested(DEFAULT_CONFIG))
+        ['baci']
+    """
+    params = methodology_params(config, BACI_FINGERPRINT_EXCLUDED)
+    return {STEP: fingerprint(STEP, params)}
+
+
+# Fonction de lecture du registre v1 des traitements BACI en entrées héritées
+def _parse_legacy_baci(data: Mapping[str, Any]) -> Iterator[RegistryEntry]:
+    """Turn the version-1 processing registry (``{"BACI": {schema: {...}}}``) into legacy entries.
+
+    Args:
+        data: Version-1 document.
+
+    Yields:
+        One legacy entry per vintage recorded.
+    """
+    for schema, item in (data.get(_PROCESSING_ROOT) or {}).items():
+        if not isinstance(item, Mapping) or not item.get("vintage"):
+            continue
+        yield legacy_entry(
+            baci_unit(item["vintage"]),
+            item.get("last_processed"),
+            result_schema=item.get("result_schema", schema),
+            n_rows=item.get("n_rows"),
+        )
+
+
+# Fonction de construction du registre de fraîcheur BACI
+def baci_registry(
+    baci_config: Mapping[str, Any],
+    *,
+    loader: Optional[JsonLoader] = None,
+    saver: Optional[JsonSaver] = None,
+) -> FreshnessRegistry:
+    """Build the BACI freshness registry (one fragment per vintage).
+
+    Also read by the network step: the ``last_computed`` of a vintage is the
+    upstream watermark of its network metrics.
+
+    Args:
+        baci_config: Parsed ``config/baci.yaml`` (``BUCKET``, ``STATE``,
+            ``PATHS.LAST_PROCESSING_PATH`` read as the version-1 fallback).
+        loader: JSON loader (a fresh one by default).
+        saver: JSON saver (a fresh one by default).
+
+    Returns:
+        The registry.
+
+    Raises:
+        KeyError: If the configuration has no ``STATE.PATH_TEMPLATE``.
+    """
+    bucket = baci_config.get("BUCKET")
+    legacy_path = (baci_config.get("PATHS") or {}).get("LAST_PROCESSING_PATH")
+    return FreshnessRegistry(
+        baci_config["STATE"]["PATH_TEMPLATE"],
+        bucket,
+        STEP,
+        shard_of=lambda unit: unit.get("vintage"),
+        legacy=LegacySource(legacy_path, bucket, _parse_legacy_baci) if legacy_path else None,
+        loader=loader,
+        saver=saver,
+    )
+
+
+# Fonction de calcul des périmètres temporels des millésimes
+def vintage_scopes(
+    years_eligible: Sequence[int],
+    start_years: Mapping[str, int],
+) -> Dict[str, List[int]]:
+    """Years of each vintage passing the completeness gate.
+
+    Args:
+        years_eligible: Complete years (:func:`eligible_years`).
+        start_years: First year of each vintage
+            (:func:`resolve_target_start_years`).
+
+    Returns:
+        Mapping ``vintage -> sorted years``, vintages without any eligible
+        year left out.
+
+    Examples:
+        >>> vintage_scopes([2016, 2017, 2022], {"HS2022": 2022, "HS2017": 2017})
+        {'HS2022': [2022], 'HS2017': [2017, 2022]}
+    """
+    scopes = {
+        label: sorted(int(y) for y in years_eligible if int(y) >= int(start))
+        for label, start in start_years.items()
+    }
+    return {label: years for label, years in scopes.items() if years}
+
+
+# Fonction de calcul du watermark amont d'un millésime
+def vintage_watermark(
+    batches: Mapping[int, Mapping[ProductsKey, datetime]],
+    years: Iterable[int],
+) -> Optional[datetime]:
+    """Most recent download of the Comtrade batches of the years of a vintage.
+
+    Args:
+        batches: Downloaded batches by year
+            (:meth:`DownloadRegistryView.batches_by_year`).
+        years: Years of the vintage scope.
+
+    Returns:
+        The latest ``last_download``, or ``None`` when no batch is known.
+
+    Examples:
+        >>> from datetime import timezone
+        >>> t1, t2 = datetime(2026, 1, 1, tzinfo=timezone.utc), datetime(2026, 2, 1, tzinfo=timezone.utc)
+        >>> vintage_watermark({2022: {("a",): t1}, 2023: {("a",): t2}}, [2022]) == t1
+        True
+    """
+    dates = [when for year in years for when in (batches.get(int(year)) or {}).values()]
+    return max(dates) if dates else None
+
+
+# Fonction de calcul de l'identifiant d'une passe d'estimation
+def compute_fit_id(
+    vintage: str,
+    scope: Sequence[int],
+    watermark: Optional[datetime],
+    requested: Mapping[str, str],
+) -> str:
+    """Identifier of a BACI estimation pass.
+
+    Two passes on the same vintage, scope, upstream watermark and methodology
+    share their identifier, which makes the rewrite of an interrupted pass
+    idempotent.
+
+    Args:
+        vintage: Vintage label.
+        scope: Years of the pass.
+        watermark: Upstream watermark of the pass.
+        requested: Methodological fingerprint (:func:`baci_requested`).
+
+    Returns:
+        A 16-hex identifier.
+
+    Examples:
+        >>> compute_fit_id("HS2017", [2017], None, {"baci": "x"}) == compute_fit_id("HS2017", [2017], None, {"baci": "x"})
+        True
+    """
+    return fingerprint(
+        "fit",
+        {
+            "vintage": vintage,
+            "scope": sorted(int(y) for y in scope),
+            "watermark": format_instant(watermark),
+            "fingerprints": dict(requested),
+        },
+    )
+
+
+# Fonction de test de complétude de l'écriture d'une passe
+def pass_is_complete(entry: RegistryEntry) -> bool:
+    """Whether every year of the recorded pass was written.
+
+    A version-1 entry (no ``years_scope``) is deemed complete: version 1 only
+    recorded fully written vintages.
+
+    Args:
+        entry: Registry entry of a vintage.
+
+    Returns:
+        ``True`` when ``years_written`` covers ``years_scope``.
+
+    Examples:
+        >>> unit = baci_unit("HS2017")
+        >>> pass_is_complete(RegistryEntry(unit, extra={"years_scope": [2017], "years_written": []}))
+        False
+    """
+    scope = entry.extra.get("years_scope")
+    if scope is None:
+        return True
+    return sorted(entry.extra.get("years_written") or []) == sorted(scope)
+
+
+# Fabrique du prédicat de fraîcheur des millésimes BACI
+def baci_is_new_data(
+    scopes: Mapping[Unit, Sequence[int]],
+    refresh: Optional[Mapping[str, Any]],
+    now: datetime,
+) -> NewDataPredicate:
+    """Build the ``new_data`` rule of the BACI vintages (re-estimation cadence).
+
+    A pass on a computed vintage is due when:
+
+    - the previous pass was interrupted (``years_written`` differs from
+      ``years_scope``): it is resumed from the start of the vintage;
+    - a new complete year enters its scope, when ``ON_NEW_COMPLETE_YEAR`` is
+      true (immediate pass);
+    - its scope changed otherwise, or the Comtrade upstream was revised (more
+      recent watermark), **and** the last computation is at least
+      ``MIN_INTERVAL_DAYS`` old: revisions trigger at most one pass per
+      interval, so that seven vintages are not re-estimated every day during
+      the catch-up.
+
+    Never-computed, forced and fingerprint-changed vintages are handled by
+    :func:`kedro_pipeline.io.freshness.units_to_compute` itself.
+
+    Args:
+        scopes: Current scope of each vintage unit.
+        refresh: ``REFRESH`` block of ``config/baci.yaml``
+            (``MIN_INTERVAL_DAYS``, default 7; ``ON_NEW_COMPLETE_YEAR``,
+            default true).
+        now: Decision instant.
+
+    Returns:
+        The predicate ``(unit, entry, watermark) -> bool``.
+    """
+    refresh = refresh or {}
+    min_interval = timedelta(days=float(refresh.get("MIN_INTERVAL_DAYS", 7)))
+    on_new_year = bool(refresh.get("ON_NEW_COMPLETE_YEAR", True))
+
+    def rule(unit: Unit, entry: RegistryEntry, watermark: Optional[datetime]) -> bool:
+        # Reprise d'une passe interrompue (table mixte entre deux ajustements)
+        if not pass_is_complete(entry):
+            return True
+        scope = {int(y) for y in scopes.get(unit, ())}
+        recorded = entry.extra.get("years_scope")
+        recorded_scope = {int(y) for y in recorded} if recorded is not None else None
+        # Nouvelle année complète : passe immédiate si la configuration le demande
+        if recorded_scope is not None and on_new_year and scope - recorded_scope:
+            return True
+        # Autres changements soumis à l'intervalle minimal entre deux passes
+        elapsed = entry.last_computed is not None and now - entry.last_computed >= min_interval
+        if not elapsed:
+            return False
+        if recorded_scope is not None and scope != recorded_scope:
+            return True
+        return upstream_is_newer(unit, entry, watermark)
+
+    return rule
+
+
+# Fonction de décision des millésimes à redresser
+def plan_baci_vintages(
+    registry: FreshnessRegistry,
+    scopes: Mapping[str, Sequence[int]],
+    watermarks: Mapping[str, Optional[datetime]],
+    requested: Mapping[str, str],
+    force: ForceSpec,
+    refresh: Optional[Mapping[str, Any]],
+    now: datetime,
+    *,
+    adopt_legacy_fingerprints: bool = False,
+) -> Dict[Unit, UnitPlan]:
+    """Decide which BACI vintages to re-estimate.
+
+    Args:
+        registry: BACI freshness registry.
+        scopes: Eligible years of each vintage (:func:`vintage_scopes`).
+        watermarks: Upstream watermark of each vintage
+            (:func:`vintage_watermark`).
+        requested: Current methodological fingerprint (:func:`baci_requested`).
+        force: One-off forcing (step ``baci``; the ``VINTAGES`` filter
+            applies, ``PERIODS`` does not since a vintage is always
+            re-estimated as a whole).
+        refresh: ``REFRESH`` block of ``config/baci.yaml``.
+        now: Decision instant.
+        adopt_legacy_fingerprints: Deployment migration flag.
+
+    Returns:
+        Mapping ``unit -> plan`` for the vintages to re-estimate.
+    """
+    units = {baci_unit(label): years for label, years in scopes.items()}
+    upstream = {baci_unit(label): watermarks.get(label) for label in scopes}
+    return units_to_compute(
+        units,
+        registry,
+        upstream,
+        requested,
+        force,
+        step=STEP,
+        is_new_data=baci_is_new_data(units, refresh, now),
+        adopt_legacy_fingerprints=adopt_legacy_fingerprints,
+    )
+
+
+# Fonction de construction de l'entrée d'une passe démarrée (point de reprise)
+def started_entry(
+    previous: Optional[RegistryEntry],
+    unit: Unit,
+    plan: UnitPlan,
+    fit_id: str,
+    scope: Sequence[int],
+) -> RegistryEntry:
+    """Entry recorded before writing a vintage: the resume point of the pass.
+
+    The previous ``last_computed`` is kept, so the network step does not
+    recompute on a vintage whose rewrite has not completed, while
+    ``years_written=[]`` makes an interrupted pass detectable.
+
+    Args:
+        previous: Current entry of the vintage, if any.
+        unit: Vintage unit.
+        plan: Plan of the pass.
+        fit_id: Identifier of the pass (:func:`compute_fit_id`).
+        scope: Years of the pass.
+
+    Returns:
+        The entry to upsert before writing.
+    """
+    return RegistryEntry(
+        unit=unit,
+        last_computed=previous.last_computed if previous else None,
+        upstream_watermark=previous.upstream_watermark if previous else None,
+        fingerprints=dict(previous.fingerprints) if previous else {},
+        reason=plan.reason,
+        extra={
+            **(previous.extra if previous else {}),
+            "fit_id": fit_id,
+            "years_scope": sorted(int(y) for y in scope),
+            "years_written": [],
+        },
+    )
+
+
+# Fonction de construction de l'entrée d'une passe terminée
+def completed_entry(
+    unit: Unit,
+    plan: UnitPlan,
+    fit_id: str,
+    scope: Sequence[int],
+    processed_at: datetime,
+    watermark: Optional[datetime],
+    requested: Mapping[str, str],
+    **counters: Any,
+) -> RegistryEntry:
+    """Entry recorded once every year of the vintage was written.
+
+    Args:
+        unit: Vintage unit.
+        plan: Plan of the pass (its reason cascades downstream).
+        fit_id: Identifier of the pass.
+        scope: Years of the pass (all written).
+        processed_at: Instant captured before the pass started.
+        watermark: Upstream watermark taken into account.
+        requested: Current methodological fingerprint.
+        **counters: Extra fields (``n_rows``, ``result_schema``,
+            ``is_provisional``…).
+
+    Returns:
+        The entry to upsert after the write.
+    """
+    years = sorted(int(y) for y in scope)
+    return RegistryEntry(
+        unit=unit,
+        last_computed=processed_at,
+        upstream_watermark=watermark,
+        fingerprints=dict(requested),
+        reason=plan.reason,
+        extra={"fit_id": fit_id, "years_scope": years, "years_written": years, **counters},
+    )
+
+
+# ──────────────────────────────────────────────────────────────────────
 # Cache des tables de correspondance HS (Parquet + registre JSON), logique
 # propre à ce script : le package ne fait que convertir (HsHarmonizer), ni le
 # téléchargement ni le cache n'y vivent.
@@ -714,7 +1141,8 @@ def main() -> None:
         bucket=downloads_config["BUCKET"],
         dataflow=DATAFLOW,
     )
-    shares = completeness_by_year(planned, registry_view.batches_by_year())
+    batches = registry_view.batches_by_year()
+    shares = completeness_by_year(planned, batches)
     years_eligible = eligible_years(
         shares, float(completeness_config.get("MIN_SHARE", 1.0)), period_end=period_end
     )
@@ -739,6 +1167,38 @@ def main() -> None:
     if not years_eligible:
         logger.info("Aucune année complète : aucun millésime n'est redressé.")
         return
+
+    # Fraîcheur : un fragment de registre par millésime, l'unité étant le
+    # millésime entier (ses paramètres sont estimés sur toutes ses années).
+    # Périmètre et watermark amont (dernier téléchargement des lots de ses années)
+    registry = baci_registry(baci_config)
+    requested = baci_requested(baci_parameters_config)
+    force = ForceSpec.from_runtime(runtime_config)
+    scopes = vintage_scopes(years_eligible, start_years)
+    watermarks = {label: vintage_watermark(batches, years) for label, years in scopes.items()}
+    plans = plan_baci_vintages(
+        registry, scopes, watermarks, requested, force,
+        baci_config.get("REFRESH"), processed_at,
+        adopt_legacy_fingerprints=adopt_legacy_flag(baci_config.get("STATE")),
+    )
+    plans_by_label = {unit.get("vintage"): plan for unit, plan in plans.items()}
+    # Logging
+    logger.info(
+        "Millésimes à redresser : %s",
+        {label: plan.reason for label, plan in plans_by_label.items()} or "aucun",
+    )
+
+    # Sortie anticipée : aucun millésime périmé (entrées v1 adoptées écrites malgré tout)
+    if not plans:
+        registry.save()
+        logger.info("Aucun millésime à redresser.")
+        return
+    # Millésimes redressés par cette exécution, dans l'ordre de la configuration
+    targets_planned = {
+        label: target_cfg
+        for label, target_cfg in targets_config.items()
+        if label in plans_by_label
+    }
 
     # Lecture des fichiers Excel CEPII
     table_loader = TableLoader()
@@ -778,7 +1238,7 @@ def main() -> None:
             columns=columns,
             period_col=schema.period_col,
             years=years_eligible,
-            period_start=min(start_years.values()),
+            period_start=min(start_years[label] for label in targets_planned),
             period_end=period_end,
         )
         years = df_comtrade[schema.period_col].astype(str).str[:4].astype(int)
@@ -788,7 +1248,7 @@ def main() -> None:
         # hors le millésime cible lui-même)
         slices: Dict[str, pd.DataFrame] = {}
         pairs: Set[Tuple[str, str]] = set()
-        for label, target_cfg in targets_config.items():
+        for label, target_cfg in targets_planned.items():
             df_slice = df_comtrade[years >= start_years[label]]
             slices[label] = df_slice
             codes_present = df_slice[schema.classification_col].dropna().unique()
@@ -829,9 +1289,7 @@ def main() -> None:
         # L'échec d'un millésime n'interrompt pas les autres.
         reports: Dict[str, BaciReport] = {}
         failures: Dict[str, Exception] = {}
-        # Entrées de registre des millésimes effectivement réécrits
-        processed: Dict[str, Dict[str, object]] = {}
-        for label, target_cfg in targets_config.items():
+        for label, target_cfg in targets_planned.items():
             # Millésime sans année complète (rattrapage année-majeur en cours) :
             # rien à redresser, ce n'est pas un échec
             if slices[label].empty:
@@ -852,8 +1310,22 @@ def main() -> None:
                 )
             )
             scope = RunScope(node, step="harmonisation de la nomenclature")
+            # Plan du millésime et identifiant de la passe d'estimation
+            unit, plan = baci_unit(label), plans_by_label[label]
+            fit_id = compute_fit_id(label, scopes[label], watermarks[label], requested)
             try:
                 with tracker, guarded_run(scope, tracker):
+                    # Point de reprise : entrée « démarrée » (years_written vide)
+                    # écrite avant toute écriture de table, le dernier calcul
+                    # réussi restant celui que lit l'étape réseau
+                    registry.upsert(started_entry(registry.get(unit), unit, plan, fit_id, scopes[label]))
+                    registry.save()
+                    # Fraîcheur : décision du millésime et tag de forçage
+                    tracker.log_metrics(plan_metrics({unit: plan}, n_candidates=len(scopes)))
+                    tracker.set_tags({"fit_id": fit_id, "freshness_reason": plan.reason})
+                    if force.forces_step(STEP, requested):
+                        tracker.set_tags({"forced": force.describe()})
+
                     harmonizer = HsHarmonizer(
                         concordances,
                         target_vintage=label,
@@ -900,15 +1372,21 @@ def main() -> None:
                         **compute_write_options(f"process_baci_hs {label}"),
                     )
                     reports[label] = report
-                    # Traçage du millésime réécrit, indexé par son schéma
-                    # résultat — identité non ambiguë de ce qui a été produit
-                    result_schema = _schema_name(target_cfg["RESULT_SCHEMA"])
-                    processed[result_schema] = {
-                        "vintage": label,
-                        "result_schema": result_schema,
-                        "last_processed": processed_at.isoformat(),
-                        "n_rows": int(len(df_reconciled)),
-                    }
+                    # Registre du millésime : toutes les années du périmètre sont
+                    # écrites (écriture monobloc), entrée terminée écrite après
+                    # succès seulement — une date avancée à tort ferait sauter le
+                    # recalcul des vulnérabilités de réseau. Un fragment par
+                    # millésime : aucune course entre pods de millésimes différents
+                    registry.upsert(
+                        completed_entry(
+                            unit, plan, fit_id, scopes[label], processed_at,
+                            watermarks[label], requested,
+                            result_schema=_schema_name(target_cfg["RESULT_SCHEMA"]),
+                            n_rows=int(len(df_reconciled)),
+                            is_provisional=bool(is_provisional),
+                        )
+                    )
+                    registry.save()
 
                     # Envoi des métriques du redressement et de l'harmonisation
                     # (noms séparés par « / » : l'interface MLflow les regroupe par section)
@@ -973,38 +1451,10 @@ def main() -> None:
     finally:
         conn.close()
 
-    # Registre des dates de traitement : écrit après succès de l'écriture des
-    # millésimes concernés, jamais avant — une date avancée à tort ferait
-    # silencieusement sauter le recalcul des vulnérabilités de réseau.
-    # Écriture fusionnée unique en fin de script : sans course entre millésimes
-    # tant qu'ils sont traités séquentiellement dans ce pod. Le fan-out d'un pod
-    # par millésime (PD-05) imposera un fragment de registre par millésime (PD-10)
-    if processed:
-        last_processing_path = Path(baci_config["PATHS"]["LAST_PROCESSING_PATH"])
-        # Fusion avec le registre existant : seuls les millésimes traités bougent
-        registry = (
-            JsonLoader().load(last_processing_path, bucket=bucket, missing_ok=True) or {}
-        ).get(_PROCESSING_ROOT, {})
-        registry.update(processed)
-        # Écriture du registre mis à jour
-        JsonSaver().save(
-            last_processing_path,
-            {_PROCESSING_ROOT: registry},
-            bucket=bucket,
-            indent=2,
-            ensure_ascii=False,
-        )
-        # Logging
-        logger.info(
-            "%d millésime(s) consigné(s) dans le registre de traitement '%s'",
-            len(processed),
-            baci_config["PATHS"]["LAST_PROCESSING_PATH"],
-        )
-
     # Échec global si au moins un millésime a échoué, une fois tous tentés
     if failures:
         raise RuntimeError(
-            f"{len(failures)} millésime(s) en échec sur {len(targets_config)} : "
+            f"{len(failures)} millésime(s) en échec sur {len(targets_planned)} : "
             f"{sorted(failures)}"
         ) from next(iter(failures.values()))
 

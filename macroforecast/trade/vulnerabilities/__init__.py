@@ -9,6 +9,8 @@ from .base import (
     NetworkVulnerabilityMetric,
     ScoreConfig,
     individual_partner_expr,
+    VULNERABILITY_FINGERPRINT_EXCLUDED,
+    NETWORK_FINGERPRINT_EXCLUDED,
 )
 # Diagnostics et rapports structurés
 from .diagnostics import (
@@ -78,6 +80,8 @@ __all__ = [
     "VulnerabilityMetric",
     "NetworkVulnerabilityConfig",
     "DEFAULT_NETWORK_CONFIG",
+    "VULNERABILITY_FINGERPRINT_EXCLUDED",
+    "NETWORK_FINGERPRINT_EXCLUDED",
     "NetworkVulnerabilityMetric",
     "ScoreConfig",
     "individual_partner_expr",

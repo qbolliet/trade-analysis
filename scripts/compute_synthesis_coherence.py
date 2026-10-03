@@ -16,8 +16,9 @@ Place dans le pipeline (ordre Argo) : après ``compute_synthetic_scores.py``
 lu).
 
 Réutilisation du script de synthèse. ``build_source_query``,
-``synthesis_config_from_params``, ``read_source_metrics``, ``_result_connector``,
-``load_synthesis_computation_date`` et ``contexts_to_recompute`` sont importés
+``synthesis_config_from_params``, ``read_source_metrics``, ``_result_connector``
+et les helpers du registre de fraîcheur à unité globale (``global_registry``,
+``plan_global_unit``, ``global_entry``, ``freshness_tags``) sont importés
 tels quels depuis ``scripts.compute_synthetic_scores``. Ces helpers sont déjà
 figés par ``tests/test_scripts_synthesis.py`` (contrat de non-régression) et le
 script de synthèse est le propriétaire naturel du contrat de lecture
@@ -26,12 +27,13 @@ module ``scripts/_synthesis_common.py`` forcerait au contraire des retouches sur
 cette suite figée et sur ``pyproject`` pour aucun gain de comportement : il n'est
 pas créé.
 
-Fraîcheur (S-2.1, v1). Même règle que la synthèse, appliquée cette fois contre le
-registre de synthèse (racine ``SYNTHESIS``) : si son ``last_computed`` est
-postérieur au ``last_computed`` du registre de cohérence (racine ``COHERENCE``)
-— ou si ``FORCE`` est vrai — tous les contextes sélectionnés sont recalculés,
-sinon rien. La date écrite dans le registre de cohérence est capturée avant le
-calcul, jamais après.
+Fraîcheur. Même règle que la synthèse (unité unique ``global``), appliquée
+cette fois contre le registre de synthèse : tous les contextes sélectionnés sont
+recalculés si la synthèse a tourné depuis le dernier calcul de cohérence, si
+l'empreinte de la configuration de cohérence change, ou en cas de forçage
+(``FORCE`` historique ou ``runtime.FORCE_STEPS=coherence``) ; sinon rien. La
+raison du dernier calcul de synthèse est consignée (cascade). La date écrite
+dans le registre de cohérence est capturée avant le calcul, jamais après.
 
 Erreurs. Comme le script de synthèse : un appel ``run_coherence`` par contexte,
 l'échec de l'un n'emporte pas les autres, chaque échec est capturé et journalisé,
@@ -82,15 +84,31 @@ from macroforecast.trade.aggregation import (
 # Helpers d'I/O partagés avec le premier script de la synthèse (cf. docstring)
 from scripts.compute_synthetic_scores import (
     _PARTNERS_ROOT,
+    _REGISTRY_ROOT as _SYNTHESIS_ROOT,
+    GLOBAL_UNIT,
+    STEP as SYNTHESIS_STEP,
     _result_connector,
     build_source_query,
-    contexts_to_recompute,
-    load_synthesis_computation_date,
+    freshness_tags,
+    global_entry,
+    global_registry,
     load_synthesis_config,
     load_vulnerability_config,
+    plan_global_unit,
     read_source_metrics,
     synthesis_config_from_params,
 )
+# Registres de fraîcheur v2 (empreinte, forçage, cascade)
+from kedro_pipeline.io.freshness import (
+    ForceSpec,
+    adopt_legacy_flag,
+    fingerprint,
+    plan_metrics,
+    summarize_upstream,
+)
+from macroforecast.trade.methodology import methodology_params
+# Paramètres d'exécution partagés (forçage ponctuel)
+from scripts.download_comtrade import load_runtime_config
 
 # Configuration de logging
 logging.basicConfig(
@@ -103,6 +121,30 @@ logger = logging.getLogger(__name__)
 
 # Clé racine du registre JSON des dates de dernier calcul de cohérence, tenu ici
 _REGISTRY_ROOT = "COHERENCE"
+# Nom de l'étape (forçage FORCE_STEPS, champ « step » du registre)
+STEP = "coherence"
+
+
+# Fonction de calcul de l'empreinte globale de la cohérence
+def coherence_requested(config: CoherenceConfig) -> Dict[str, str]:
+    """Current methodological fingerprint of the coherence diagnostics (global).
+
+    There is no per-statistic granularity: any change of the coherence
+    configuration recomputes every context. A fix in the implementation of a
+    statistic is signalled by invalidating the recorded fingerprint
+    (``scripts/invalidate_freshness.py --step coherence``).
+
+    Args:
+        config: Coherence configuration.
+
+    Returns:
+        ``{"coherence": fingerprint}``.
+
+    Examples:
+        >>> list(coherence_requested(CoherenceConfig()))
+        ['coherence']
+    """
+    return {STEP: fingerprint(STEP, methodology_params(config))}
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -386,6 +428,8 @@ def run_from_connections(
     tracker: Any = None,
     log_artifacts: bool = True,
     scope: Optional[RunScope] = None,
+    freshness_metrics: Optional[Mapping[str, float]] = None,
+    freshness_tags: Optional[Mapping[str, str]] = None,
 ) -> Tuple[List[CoherenceRunReport], Dict[str, Exception], bool, int]:
     """Read the metrics and scores, run the coherence per context, and write diagnostics.
 
@@ -416,6 +460,10 @@ def run_from_connections(
             sections) is built and published inside the tracker's run, after the
             metrics and before returning, and an uncaught exception publishes the
             reduced failure description.
+        freshness_metrics: Metrics of the freshness decision
+            (``freshness/*``), logged in the run.
+        freshness_tags: Tags of the freshness decision (``forced``…), set on
+            the run.
 
     Returns:
         Tuple ``(reports, failures, created_any, n_contexts)``: one
@@ -449,6 +497,11 @@ def run_from_connections(
     n_contexts = 0
 
     with tracker, (guarded_run(scope, tracker) if scope is not None else nullcontext()):
+        # Décision de fraîcheur de l'exécution (métriques et tag de forçage)
+        if freshness_metrics:
+            tracker.log_metrics(dict(freshness_metrics))
+        if freshness_tags:
+            tracker.set_tags(dict(freshness_tags))
         # Lecture de la table des métriques combinées (une seule requête)
         df_metrics = read_source_metrics(
             read_conn, source_query, (synthesis_config.reporter_col, synthesis_config.product_col)
@@ -609,31 +662,48 @@ def main() -> None:
     scores_schema = _schema_name(synthesis_config_block["RESULT_SCHEMA"])
     diagnostics_schema = _schema_name(coherence_config_block["RESULT_SCHEMA"])
 
-    # Initialisation des loaders et savers
-    loader = Loader()
-    saver = Saver()
-
-    # Fraîcheur : instant de calcul de synthèse (amont) contre instant de cohérence
-    last_upstream = load_synthesis_computation_date(
-        Path(synthesis_config_block["PATHS"]["LAST_COMPUTATION_PATH"]),
-        loader=loader,
-        bucket=synthesis_config_block["BUCKET"],
+    # Fraîcheur : registre à fragment unique (le registre v1 au même chemin est
+    # relu pour la migration), empreinte globale de la configuration de cohérence
+    runtime_config = load_runtime_config()
+    registry = global_registry(
+        coherence_config_block["PATHS"]["LAST_COMPUTATION_PATH"],
+        synthesis_config_block["BUCKET"],
+        STEP,
+        _REGISTRY_ROOT,
     )
-    last_coherence = load_coherence_computation_date(
-        Path(coherence_config_block["PATHS"]["LAST_COMPUTATION_PATH"]),
-        loader=loader,
-        bucket=synthesis_config_block["BUCKET"],
+    requested = coherence_requested(coherence_config)
+    force = ForceSpec.from_runtime(runtime_config)
+    # Amont : entrée du registre de synthèse (dernier calcul et sa raison, pour
+    # la cascade d'un recalcul méthodologique ou forcé)
+    synthesis_registry = global_registry(
+        synthesis_config_block["PATHS"]["LAST_COMPUTATION_PATH"],
+        synthesis_config_block["BUCKET"],
+        SYNTHESIS_STEP,
+        _SYNTHESIS_ROOT,
     )
-    force = bool(coherence_config_block.get("FORCE", False))
+    upstream_entry = synthesis_registry.get(GLOBAL_UNIT)
+    previous = registry.get(GLOBAL_UNIT)
+    summary = summarize_upstream(
+        [upstream_entry] if upstream_entry is not None else [],
+        previous.upstream_watermark if previous is not None else None,
+    )
+    plans = plan_global_unit(
+        registry, summary.watermark, requested, force,
+        step=STEP,
+        yaml_force=bool(coherence_config_block.get("FORCE", False)),
+        adopt_legacy_fingerprints=adopt_legacy_flag(coherence_config_block),
+    )
 
-    # Sortie anticipée : registre de synthèse inchangé depuis la dernière cohérence
-    if not contexts_to_recompute(last_upstream, last_coherence, force):
+    # Sortie anticipée : synthèse inchangée, empreinte inchangée, aucun forçage
+    if not plans:
+        registry.save()
         logger.info(
-            "Registre de synthèse inchangé depuis la dernière cohérence "
-            f"(synthèse={last_upstream}, cohérence={last_coherence}), "
-            "rien à recalculer."
+            f"Cohérence à jour (amont : {summary.to_json()}), rien à recalculer."
         )
         return
+    plan = plans[GLOBAL_UNIT]
+    # Logging
+    logger.info(f"Cohérence à recalculer ({plan.reason}) ; amont : {summary.to_json()}")
 
     # Instant de référence capturé avant le calcul : la date enregistrée
     # correspond au début du traitement, jamais après, pour ne pas rater une
@@ -684,6 +754,8 @@ def main() -> None:
                 tracker=tracker,
                 log_artifacts=log_artifacts,
                 scope=scope,
+                freshness_metrics=plan_metrics(plans, n_candidates=1),
+                freshness_tags=freshness_tags(plan, force, requested, STEP),
             )
         finally:
             diagnostics_conn.close()
@@ -693,16 +765,14 @@ def main() -> None:
     # Mise à jour du registre de cohérence, uniquement si au moins un contexte a
     # réussi (cohérence : jamais de date avancée à tort)
     if reports:
-        save_coherence_computation_date(
-            Path(coherence_config_block["PATHS"]["LAST_COMPUTATION_PATH"]),
-            {
-                "last_computed": computed_at.isoformat(),
-                "n_groups": int(sum(report.n_groups for report in reports)),
-                "n_contexts": int(len(reports)),
-            },
-            saver,
-            synthesis_config_block["BUCKET"],
+        registry.upsert(
+            global_entry(
+                plan, computed_at, summary, requested,
+                n_groups=int(sum(report.n_groups for report in reports)),
+                n_contexts=int(len(reports)),
+            )
         )
+        registry.save()
 
     # Échec global si au moins un contexte a échoué, une fois tous tentés
     if failures:

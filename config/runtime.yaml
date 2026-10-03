@@ -26,7 +26,13 @@ runtime:
   WEEKLY_DAY: 5
   # Parallélisme intra-pod : null → NUM_CPU (injecté par Argo) ou os.cpu_count()
   N_JOBS: null
-  # Forçage ponctuel (PS-11) : chaînes séparées par des virgules, vides par défaut
+  # Forçage ponctuel, vide par défaut. Valeurs séparées par « , » ou « ; » :
+  # sous `kedro run --params`, utiliser « ; » (Kedro découpe l'argument sur les
+  # virgules avant de séparer clés et valeurs). FORCE_METRICS / FORCE_METHODS seuls
+  # suffisent à forcer les étapes qui calculent ces noms, sans incrément de version.
+  # Surcharges par variables d'environnement (non vides) : FORCE_STEPS,
+  # FORCE_METRICS, FORCE_METHODS, FORCE_REPORTERS, FORCE_PRODUCTS, FORCE_PERIODS,
+  # FORCE_VINTAGES
   FORCE_STEPS: ""        # ex. "partners,synthesis" ou "all"
   FORCE_METRICS: ""      # ex. "HHI,CDI2"
   FORCE_METHODS: ""      # ex. "critic_sum"
