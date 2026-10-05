@@ -58,7 +58,7 @@
 | K-04 | Registre et écritures tamponnés dans `statflows`, options d'écriture 0.3.1, codelists | 1 | **Opus** | **Oui** | — | **statflows** |
 | K-04b | Adoption de la nouvelle version de `statflows` | 1 | Sonnet | Non | K-01, K-04 | trade-analysis |
 | K-05 | Registres de fraîcheur v2 (fragments, empreintes, forçage) | 2 | **Opus** | **Oui** | K-04b | trade-analysis |
-| K-06 | Paramétrage import / export (`FLOWS`) et métriques d'export | 2 | **Opus** | **Oui** | K-05 | trade-analysis |
+| K-06 | Paramétrage import / export (`FLOWS`) et métriques d'export (partenaires, miroirs réseau) | 2 | **Opus** | **Oui** | K-05 | trade-analysis |
 | K-06b | Millésimes de nomenclature : métriques partenaires par millésime, `in_force`, référentiels | 2 | **Opus** | **Oui** | K-05, K-06 | trade-analysis |
 | K-07 | BACI exact par passes et statistiques suffisantes (mémoire bornée, millésimes 1994+) | 2 | **Opus** | **Oui** | K-05 | trade-analysis |
 | K-08 | Évolution de schéma (0.3.1) et synthèse/cohérence incrémentales à cadence hebdomadaire | 2 | **Opus** | **Oui** | K-05, K-06, K-06b | trade-analysis |
@@ -1131,68 +1131,166 @@ CONVENTIONS DE RÉDACTION DU CODE (à appliquer à tout le code écrit ou modifi
   l'information utile (règle, motivation, valeurs attendues) à l'endroit où elle sert.
 
 Dépôt `trade-analysis`. Lis `CLAUDE.md`, puis dans `PIPELINE_ARCHITECTURE.md` : C-11,
-C-12, PD-09, PD-21 (reporter `EU27_2020`), PQ-06 (résolue), PS-15. Lis
-`macroforecast/trade/vulnerabilities/{base,metrics,runner,diagnostics}.py`,
-`scripts/compute_trade_vulnerabilities.py`, `scripts/compute_synthetic_scores.py`
-(`build_source_query`), `config/vulnerabilities.yaml`, `config/synthesis.yaml`, et
-`AGREGATION_ARCHITECTURE.md` pour la convention « rang 1 = plus vulnérable » et les
-polarités.
+C-12, PD-09 (y compris « Métriques réseau », révision du 2026-10-05), PD-20 point 7,
+PD-21 (reporter `EU27_2020`), PQ-06 (résolue), PS-04.3, PS-10.2, PS-15, PS-29.2. Lis
+`macroforecast/trade/vulnerabilities/{base,metrics,network_metrics,graph,runner,diagnostics}.py`,
+`scripts/compute_trade_vulnerabilities.py`, `scripts/compute_network_vulnerabilities.py`,
+`scripts/compute_synthetic_scores.py` (`build_source_query`), `config/vulnerabilities.yaml`,
+`config/synthesis.yaml`, `config/serving.yaml`, et `AGREGATION_ARCHITECTURE.md` pour la
+convention « rang 1 = plus vulnérable » et les polarités.
 
-OBJECTIF : calculer les vulnérabilités partenaires et la synthèse à l'import, à l'export
-ou dans les deux cas, par configuration, avec les métriques d'export RETENUES par
-l'utilisateur (PD-09) : `CDI2` export = exports extra-UE / exports totaux ; `CDI3`
-export = exports extra-UE / imports totaux (miroirs formels des définitions import,
-obtenus en permutant les rôles de M et X). Le téléchargement, BACI et les métriques de
-réseau NE sont PAS paramétrés (justification PD-09 : réconciliation miroir, graphe
-mondial indépendant du sens).
+OBJECTIF : calculer les vulnérabilités partenaires, les vulnérabilités réseau et la
+synthèse à l'import, à l'export ou dans les deux cas, par configuration.
+- Partenaires : métriques d'export RETENUES par l'utilisateur (PD-09) : `CDI2` export =
+  exports extra-UE / exports totaux ; `CDI3` export = exports extra-UE / imports totaux
+  (miroirs formels des définitions import, obtenus en permutant les rôles de M et X).
+- Réseau : les métriques ORIENTÉES (`CENTRALITY_RISK`, `EXPORT_HHI` renommée
+  `WORLD_HHI`, `SPOF`, `SPOF_DECILE`) décrivent la concentration de l'OFFRE mondiale,
+  lecture propre à l'import ; à l'export, elles valent ce que donnerait le graphe BACI
+  TRANSPOSÉ, soit la concentration de la DEMANDE mondiale (acheteurs centraux,
+  concentration des importations mondiales, point de défaillance unique côté demande).
+  `CLUSTERING_W` et `DIAMETER` sont invariants (graphe symétrisé `w_ij + w_ji`) :
+  calculés une fois, recopiés sur les deux flux. `network_indicators` gagne la colonne
+  `flow` (clé primaire).
+- Cadre commun (PD-09, « Cadre commun du sens ») : deux axes indépendants. L'ÉCHELLE
+  (un pays : métriques partenaires ; le monde : métriques réseau) est portée par la
+  CLASSE — `HHI` et `WORLD_HHI` restent deux classes. Le SENS (côté où le pays est
+  exposé à ses contreparties : fournisseurs à l'import, débouchés à l'export) est porté
+  par un HYPERPARAMÈTRE D'INSTANCE `flow`, commun aux deux familles. Aucune nouvelle
+  classe de métrique ; la configuration n'est jamais modifiée selon le sens (pas de
+  permutation de colonnes).
+Le téléchargement et BACI ne sont PAS paramétrés (la réconciliation miroir a besoin des
+deux déclarations ; BACI produit une seule matrice exportateur → importateur).
 
 TRAVAIL
-1. `macroforecast/trade/vulnerabilities/base.py` : attribut de classe
-   `supported_flows: ClassVar[frozenset[str]]` sur `VulnerabilityMetric` (défaut
-   `frozenset({"import"})` : sûr), `VulnerabilityConfig.flow_codes` si nécessaire (mapping
-   nom → code ; défaut `{"import": 1, "export": 2}` cohérent avec `import_flow` /
-   `export_flow` existants, sans les casser).
-2. `metrics.py` : `HHI`, `CDI2`, `CDI3` → `{"import", "export"}`. Généralise `CDI2` et
-   `CDI3` dans leur classe actuelle avec la notion « flux propre / flux opposé »
-   (PS-15) : pour le flux `f` demandé, `own = f`, `other = l'autre` ;
-   `CDI2 = extra_UE(own) / monde(own)`, `CDI3 = extra_UE(own) / monde(other)`. À l'import,
-   les valeurs sont STRICTEMENT identiques à aujourd'hui (test d'égalité sur les
-   fixtures existantes ; `version` reste "1"). Docstrings : définitions des deux sens,
-   lecture (PD-09), réserve « `CDI3` export proposé par analogie, sans ancrage dans la
-   littérature », et note sur `EU27_2020` (`CDI2` vaut 1 par construction).
-3. Runner : paramètre `flows: Sequence[str]` (défaut `("import",)` pour la
-   rétrocompatibilité des appels directs) ; la grille est restreinte aux codes de flux
-   demandés ; toute métrique non supportée pour un flux est `null` ; les diagnostics
-   (`diagnostics.py`, notamment `import_only`) restent cohérents. L'empreinte (K-05)
-   inclut `flows`.
-4. Configuration : `FLOWS: ["import", "export"]` dans `config/vulnerabilities.yaml` (bloc
-   `PARAMETERS` ou racine : choisis et documente) ; `config/synthesis.yaml` :
-   `SYNTHESIS.FLOWS` (même valeur) et suppression de `p."flow" = 1` de `FILTERS.WHERE`,
-   ajout de `p."reporter" <> 'EU27_2020'` (le reporter agrégé est exclu de la synthèse,
-   pas des métriques). Même chose dans `config/profiles/demo/`.
-5. `build_source_query(sources, filters, catalog_alias, flow_codes=None)` : si
+1. `macroforecast/trade/vulnerabilities/base.py` — cadre commun du sens, identique sur
+   `VulnerabilityMetric` et `NetworkVulnerabilityMetric` :
+   - type `Flow = Literal["import", "export"]` ;
+   - `__init__(self, config=…, *, flow: Flow = "import")` : hyperparamètre stocké tel
+     quel (convention sklearn), validé contre `supported_flows:
+     ClassVar[frozenset[str]]` (défaut `frozenset({"import"})` : sûr ; `ValueError`
+     explicite sinon) ; `flow` entre dans les paramètres de l'empreinte (K-05) ;
+   - `orientation_invariant: ClassVar[bool] = False` ;
+   - partenaires : propriétés `own_flow_code` / `other_flow_code`, déduites de
+     `config.import_flow` / `config.export_flow` (`VulnerabilityConfig.flow_codes`
+     seulement si nécessaire : mapping nom → code, défaut `{"import": 1, "export": 2}`
+     cohérent avec les champs existants, sans les casser) ;
+   - réseau : propriétés de RÔLE `counterpart_col` (contreparties : `exporter_col` à
+     l'import, `importer_col` à l'export) et `exposed_col` (côté exposé : l'autre
+     colonne). La correspondance sens → rôle est écrite à un seul endroit, dans la
+     classe de base.
+2. `metrics.py` : `HHI`, `CDI2`, `CDI3` → `{"import", "export"}`. Chaque instance ne
+   produit que les lignes de son flux propre (`flow = own_flow_code`). Généralise `CDI2`
+   et `CDI3` dans leur classe actuelle : `CDI2 = extra_UE(own) / monde(own)`,
+   `CDI3 = extra_UE(own) / monde(other)`. `HHI` filtre son flux propre (il n'est plus
+   calculé pour tous les flux en un appel). À l'import, les valeurs sont STRICTEMENT
+   identiques à aujourd'hui (test d'égalité sur les fixtures existantes). Docstrings :
+   définitions des deux sens (`HHI` : concentration des fournisseurs / des débouchés du
+   pays), lecture (PD-09), réserve « `CDI3` export proposé par analogie, sans ancrage
+   dans la littérature », et note sur `EU27_2020` (`CDI2` vaut 1 par construction).
+3. `network_metrics.py` : toutes les métriques → `{"import", "export"}` ;
+   `WeightedClusteringCoefficient` et `NetworkDiameter` → `orientation_invariant = True`.
+   Les formules orientées s'écrivent avec `counterpart_col` / `exposed_col`, plus
+   jamais avec `exporter_col` / `importer_col` directement (une colonne utilisée pour
+   une autre raison que son rôle dans le flux reste désignée explicitement). Aucune
+   nouvelle classe ; à l'import, les formules sont mot pour mot celles d'aujourd'hui.
+   Renomme la colonne `EXPORT_HHI` en `WORLD_HHI` (le nom de
+   classe peut rester ; s'il est changé, garder un alias n'est PAS nécessaire, le
+   recalcul est complet). Docstrings : lecture dans les deux orientations (import :
+   centralité sortante des exportateurs, `C_i^out = Σ_j w_ij / <w_j>` ; export :
+   centralité entrante des importateurs, `C_j^in = Σ_i w_ij / <w_i>` ; `WORLD_HHI` :
+   concentration des exportations / des importations mondiales ; `SPOF` côté offre /
+   côté demande), seuil 2,5 de `CENTRALITY_RISK` lu par symétrie à l'export (« le premier
+   importateur absorbe environ deux tiers des importations mondiales »), réserve « miroir
+   proposé par analogie, sans ancrage dans la littérature », et pourquoi la lecture côté
+   offre n'est pas réutilisée à l'export (pour l'exportateur dominant, une offre
+   concentrée est un pouvoir de marché). Les rangs du `SPOF` restent pris par
+   `spof_rank_keys` DANS chaque orientation (passe séparée par flux) : un produit à
+   l'import n'est jamais classé contre un produit à l'export.
+4. Runners : paramètre `flows: Sequence[str]` (défaut `("import",)` pour la
+   rétrocompatibilité des appels directs) et `flow_codes`.
+   - Partenaires : la grille est restreinte aux codes de flux demandés ; toute métrique
+     non supportée pour un flux est `null` ; les diagnostics (`diagnostics.py`,
+     notamment `import_only`) restent cohérents.
+   - Instanciation commune : `[cls(config, flow=f) for f in flows if f in
+     cls.supported_flows]`.
+   - Réseau : pour chaque flux, métriques orientées calculées par leur instance
+     `flow=f` ; métriques invariantes calculées une seule fois et recopiées ; colonne
+     `flow = flow_codes[f]` ajoutée en sortie (même type que la colonne `flow` des
+     partenaires). Résultat import STRICTEMENT identique à aujourd'hui (hors colonne
+     `flow` et renommage `WORLD_HHI`). Les alertes (`<métrique>_ALERT`) et les seuils
+     (`metric_alert_thresholds` : `EXPORT_HHI` → `WORLD_HHI`) suivent.
+   - Empreintes (K-05), pour les deux familles : tenues PAR FLUX (clé
+     `"<métrique>/<flux>"`, puisque deux instances partagent un nom de colonne ;
+     paramètres = configuration + `flow`), de sorte qu'ajouter un flux à `FLOWS` ne
+     recalcule que ce flux.
+5. Configuration : `FLOWS: ["import", "export"]` dans `config/vulnerabilities.yaml` (bloc
+   `PARAMETERS` ou racine : choisis et documente) et
+   `NETWORK_VULNERABILITIES.FLOWS` (même valeur, par référence si le chargeur le permet) ;
+   `config/synthesis.yaml` : `SYNTHESIS.FLOWS` (même valeur), suppression de
+   `p."flow" = 1` de `FILTERS.WHERE`, ajout de `p."reporter" <> 'EU27_2020'` (le reporter
+   agrégé est exclu de la synthèse, pas des métriques), condition de jointure réseau
+   `n."flow" = p."flow"`, `EXPORT_HHI` → `WORLD_HHI` partout (`COLUMNS`,
+   `metric_columns`, sous-ensembles de méthodes, polarités). `config/serving.yaml` :
+   colonne `flow` de la table de service `network`, jointure `net` de `cell_scores` sur
+   le flux (`flow` est en texte côté service), `EXPORT_HHI` → `WORLD_HHI` (y compris
+   `_ALERT` et `NORM_METRICS`). Même chose dans `config/profiles/demo/`.
+6. `build_source_query(sources, filters, catalog_alias, flow_codes=None)` : si
    `flow_codes` est fourni, ajoute `<alias grille>."flow" IN (…)` en conjonction. Le test
    existant (sans `flow_codes`) doit produire EXACTEMENT la même requête qu'avant.
    `compute_synthesis_coherence.py` réutilise ce paramètre.
-6. Synthèse : vérifie que `flow` est bien dans `context_columns` (sinon, ÉCHEC explicite
+7. Synthèse : vérifie que `flow` est bien dans `context_columns` (sinon, ÉCHEC explicite
    au chargement de la configuration quand `FLOWS` contient plus d'un flux : on ne doit
    jamais comparer import et export entre eux). Polarités : aucune différence entre import
-   et export pour HHI/CDI2 (plus concentré = plus vulnérable) — documente-le.
-7. MLflow : métriques partenaires préfixées par flux (`partners/import/...`,
-   `partners/export/...`) côté script (le préfixe est appliqué par l'appelant, pas dans
-   `macroforecast`).
+   et export (plus concentré = plus vulnérable, côté fournisseurs à l'import, côté
+   débouchés à l'export, pour les métriques partenaires comme réseau) — documente-le.
+8. MLflow : métriques partenaires et réseau préfixées par flux (`partners/import/...`,
+   `partners/export/...`, `network/import/...`, `network/export/...`) côté script (le
+   préfixe est appliqué par l'appelant, pas dans `macroforecast`) ; les contrôles du
+   rapport de run (`config/tracking.yaml`) visent les métriques réellement émises.
+9. Renommage `EXPORT_HHI` → `WORLD_HHI` hors code Python : `superset/vulnerabilites/`
+   (datasets, graphiques, tableau de bord), `AGREGATION_ARCHITECTURE.md`,
+   `Methodologie synthese multicritere.tex` (définition, et paragraphe sur la lecture à
+   l'export des métriques réseau), tests. Ne touche pas aux mentions historiques (journaux
+   de révision, « ex-`EXPORT_HHI` »).
+10. Migration : la clé primaire de `network_indicators` et le nom d'une colonne
+    changent. Documente dans `PIPELINE_ARCHITECTURE.md` §12 l'opération à exécuter sur
+    le cluster : suppression de `network_indicators` (et de son équivalent `demo_*`),
+    réinitialisation des registres de fraîcheur réseau, recalcul réseau forcé, puis
+    synthèse, cohérence et publication de service. Aucune suppression n'est faite par
+    ce prompt.
 
 TESTS
 - Données fictives à deux flux : `FLOWS=["import"]` → aucune ligne export, valeurs
   import identiques à la version précédente ; `FLOWS=["import","export"]` → HHI, CDI2,
   CDI3 sur les deux flux, valeurs export égales à un calcul à la main (exports extra-UE
   / exports totaux ; exports extra-UE / imports totaux).
+- Réseau, graphe fictif à deux produits (P1 : un exportateur dominant ; P2 : un
+  importateur dominant) : à l'import, valeurs identiques à la version précédente ; à
+  l'export, `CENTRALITY_RISK`, `WORLD_HHI`, `SPOF` égaux aux valeurs import calculées
+  sur le graphe transposé à la main (P2 devient le plus exposé) ; `CLUSTERING_W` et
+  `DIAMETER` identiques entre flux et calculés une seule fois (compteur ou espion) ;
+  colonne `flow` aux codes attendus ; rangs `SPOF` pris dans chaque flux.
+- Cadre commun : `HHI(flow="export")` sur une classe sans `"export"` dans
+  `supported_flows` → `ValueError` ; `flow` présent dans les paramètres de l'empreinte ;
+  la configuration d'une instance export est égale (`==`) à celle d'une instance import.
+- Empreintes (partenaires et réseau) : passer de `["import"]` à `["import","export"]`
+  ne planifie que le flux export.
 - `build_source_query` avec et sans `flow_codes` (égalité stricte de l'ancien cas).
-- Synthèse e2e `slow` avec deux flux : scores séparés par contexte de flux.
+- Synthèse e2e `slow` avec deux flux : scores séparés par contexte de flux, une ligne
+  export jointe aux métriques réseau du flux export.
+- Requête de service `cell_scores` : jointure réseau sur le flux.
 - Suite existante verte.
 
 CRITÈRES D'ACCEPTATION
 - Aucune constante de flux en dur hors des défauts de dataclass et du YAML.
+- Aucune nouvelle classe de métrique ; aucune formule modifiée à l'import (seules les
+  colonnes réseau sont désignées par leur rôle).
+- Aucune permutation de colonnes dans une configuration : le sens n'existe que par
+  l'hyperparamètre `flow`.
+- Plus aucune occurrence de `EXPORT_HHI` dans le code, la configuration, les tests et les
+  assets Superset (les documents d'architecture et de prompts peuvent la citer comme
+  ancien nom).
 - ARCH PD-09 / PS-15 mis à jour si l'implémentation a dû s'en écarter.
 - Ne crée pas de commit.
 ````
@@ -1274,7 +1372,8 @@ TRAVAIL
    `network_indicators` : colonne `in_force` (= `classification = vintage_in_force(year)`).
 7. Synthèse et cohérence : `classification` dans `context_columns` ;
    `SYNTHESIS.VINTAGES: "in_force" | "all"` génère `p."in_force" = true` dans le filtre ;
-   jointure réseau `n."classification" = p."hs_vintage"` (PS-04.3) ; `build_source_query`
+   jointure réseau `n."classification" = p."hs_vintage"` (PS-04.3), en conservant la
+   condition `n."flow" = p."flow"` ajoutée en K-06 ; `build_source_query`
    reçoit la condition de jointure depuis la configuration (déjà le cas : vérifie) et le
    test existant reste inchangé. `distinct_contexts` inclut `classification`.
 8. Couche de service (K-03b) : `cell_scores` lit désormais les colonnes réelles au lieu
