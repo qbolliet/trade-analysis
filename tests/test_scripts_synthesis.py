@@ -21,7 +21,10 @@ pytest.importorskip("dt_ducklake_manager")
 from scripts.compute_synthetic_scores import (  # noqa: E402
     build_source_query,
     contexts_to_recompute,
+    load_synthesis_flows,
     synthesis_config_from_params,
+    synthesis_requested,
+    validate_flow_context,
 )
 from macroforecast.trade.aggregation import SynthesisConfig  # noqa: E402
 
@@ -35,8 +38,31 @@ CONFIG_PATH = Path(__file__).resolve().parents[1] / "config" / "synthesis.yaml"
 # build_source_query (S-2.3)
 # ──────────────────────────────────────────────────────────────────────
 
+# Sources et filtres de l'exemple S-2.2, figés dans leur forme d'avant le
+# paramètre FLOWS (filtre de flux écrit à la main) : sans ``flow_codes``, la
+# requête construite doit rester caractère pour caractère la même
+_LEGACY_SOURCES = [
+    {"SCHEMA": "indicators", "ALIAS": "p", "COLUMNS": ["HHI", "CDI2", "CDI3"]},
+    {
+        "SCHEMA": "network_indicators",
+        "ALIAS": "n",
+        "COLUMNS": ["WORLD_HHI", "CENTRALITY_RISK", "CLUSTERING_W"],
+        "JOIN": {
+            "ON": [
+                "substr(lpad(CAST(p.\"product\" AS VARCHAR), 8, '0'), 1, 6) = lpad(CAST(n.\"product\" AS VARCHAR), 6, '0')",
+                'CAST(substr(CAST(p."TIME_PERIOD" AS VARCHAR), 1, 4) AS INTEGER) = n."year"',
+            ],
+            "WHERE": "n.\"classification\" = 'HS2022'",
+        },
+    },
+]
+_LEGACY_FILTERS = {
+    "WHERE": "p.\"flow\" = 1 AND p.\"indicators\" = 'VALUE_IN_EUROS' AND p.\"freq\" = 'A'",
+    "LAST_N_PERIODS": 5,
+}
+
 # Requête attendue sur l'exemple S-2.2 complet
-_EXPECTED_QUERY = '''SELECT p.*, n."EXPORT_HHI", n."CENTRALITY_RISK", n."CLUSTERING_W"
+_EXPECTED_QUERY = '''SELECT p.*, n."WORLD_HHI", n."CENTRALITY_RISK", n."CLUSTERING_W"
 FROM "vulnerabilities"."indicators"."fact_table" AS p
 LEFT JOIN "vulnerabilities"."network_indicators"."fact_table" AS n
   ON substr(lpad(CAST(p."product" AS VARCHAR), 8, \'0\'), 1, 6) = lpad(CAST(n."product" AS VARCHAR), 6, \'0\')
@@ -58,20 +84,48 @@ def synthesis_block() -> dict:
         return yaml.safe_load(file)["SYNTHESIS"]
 
 
-def test_build_source_query_matches_s2_2(synthesis_block: dict) -> None:
-    """La requête construite sur l'exemple S-2.2 est celle attendue."""
-    query = build_source_query(
-        synthesis_block["SOURCES"], synthesis_block["FILTERS"], "vulnerabilities"
-    )
+def test_build_source_query_matches_s2_2() -> None:
+    """Sans ``flow_codes``, la requête construite sur l'exemple S-2.2 est inchangée."""
+    query = build_source_query(_LEGACY_SOURCES, _LEGACY_FILTERS, "vulnerabilities")
     assert query == _EXPECTED_QUERY
 
 
-def test_build_source_query_without_last_n_periods(synthesis_block: dict) -> None:
-    """``LAST_N_PERIODS`` nul => aucune sous-requête sur les périodes."""
-    filters = {**synthesis_block["FILTERS"], "LAST_N_PERIODS": None}
+def test_build_source_query_with_flow_codes(synthesis_block: dict) -> None:
+    """Configuration de référence : prédicat de flux généré et jointure réseau par flux."""
     query = build_source_query(
-        synthesis_block["SOURCES"], filters, "vulnerabilities"
+        synthesis_block["SOURCES"], synthesis_block["FILTERS"], "vulnerabilities", [1, 2]
     )
+    lines = query.splitlines()
+    where = lines.index(
+        "WHERE p.\"indicators\" = 'VALUE_IN_EUROS' AND p.\"freq\" = 'A' AND p.\"reporter\" <> 'EU27_2020'"
+    )
+    assert lines[where + 1] == '  AND p."flow" IN (1, 2)'
+    assert '  AND n."flow" = p."flow"' in lines
+    assert 'p."flow" = 1' not in query
+    # Avec flow_codes, seule la ligne du prédicat de flux s'ajoute à la requête
+    without = build_source_query(synthesis_block["SOURCES"], synthesis_block["FILTERS"], "vulnerabilities")
+    assert [line for line in lines if line != '  AND p."flow" IN (1, 2)'] == without.splitlines()
+
+
+def test_synthesis_flows_require_flow_in_context(synthesis_block: dict) -> None:
+    """Plusieurs sens : le flux doit être une clé de contexte, sinon échec explicite."""
+    config = synthesis_config_from_params(synthesis_block["PARAMETERS"])
+    assert load_synthesis_flows(synthesis_block, {}, config) == (("import", "export"), [1, 2])
+    without_flow = SynthesisConfig(context_columns=("freq", "indicators", "TIME_PERIOD"))
+    with pytest.raises(ValueError, match="context_columns"):
+        validate_flow_context(without_flow, ("import", "export"))
+    validate_flow_context(without_flow, ("import",))
+    # Codes lus dans les paramètres partenaires, jamais en dur
+    codes = load_synthesis_flows(synthesis_block, {"PARAMETERS": {"import_flow": 7, "export_flow": 8}}, config)[1]
+    assert codes == [7, 8]
+    # Les sens entrent dans l'empreinte de la synthèse
+    assert synthesis_requested(config, flows=["import"]) != synthesis_requested(config, flows=["import", "export"])
+
+
+def test_build_source_query_without_last_n_periods() -> None:
+    """``LAST_N_PERIODS`` nul => aucune sous-requête sur les périodes."""
+    filters = {**_LEGACY_FILTERS, "LAST_N_PERIODS": None}
+    query = build_source_query(_LEGACY_SOURCES, filters, "vulnerabilities")
     assert "TIME_PERIOD\" IN (" not in query
     assert "SELECT DISTINCT" not in query
     assert query.splitlines()[-1] == (
@@ -179,11 +233,12 @@ def test_synthesis_config_from_params_on_reference_config() -> None:
         "cone_quantile",
     ]
     assert config.metric_columns == (
-        "HHI", "CDI2", "CDI3", "EXPORT_HHI", "CENTRALITY_RISK", "CLUSTERING_W"
+        "HHI", "CDI2", "CDI3", "WORLD_HHI", "CENTRALITY_RISK", "CLUSTERING_W"
     )
+    assert "flow" in config.context_columns
     assert config.winsorize_quantile is None
     assert config.methods[1].levels == ("global",)
-    assert config.methods[12].metrics == ("HHI", "CDI2", "CDI3", "EXPORT_HHI")
+    assert config.methods[12].metrics == ("HHI", "CDI2", "CDI3", "WORLD_HHI")
 
 
 # ──────────────────────────────────────────────────────────────────────

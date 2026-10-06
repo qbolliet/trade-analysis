@@ -21,6 +21,7 @@ from kedro_pipeline.steps.serving import (
 )
 
 from conftest import (
+    SERVING_NETWORK_EXPORT_SHIFT,
     SERVING_NETWORK_HHI,
     SERVING_PRODUCTS,
     SERVING_REPORTERS,
@@ -80,7 +81,7 @@ def test_cell_scores_columns_and_one_row_per_cell(published) -> None:
     expected = {
         "classification", "hs_vintage", "in_force", "year", "flow", "reporter",
         "reporter_label", "product", "product_label", "product_level",
-        "HHI", "CDI2", "CDI3", "HHI_ALERT", "EXPORT_HHI", "CENTRALITY_RISK",
+        "HHI", "CDI2", "CDI3", "HHI_ALERT", "WORLD_HHI", "CENTRALITY_RISK",
         "CLUSTERING_W", "SPOF", "SPOF_ALERT",
     }
     for method in params["METHODS"]:
@@ -118,11 +119,16 @@ def test_cell_scores_network_join_on_vintage_in_force(published) -> None:
     world, _, _ = published
     df = _read(world, "cell_scores")
     # Chaque année est jointe au réseau de SON millésime, jamais à l'autre (C-11)
+    # Chaque flux est joint au réseau de SON sens (export : graphe transposé)
     for year, vintage in ((2019, "HS2017"), (2023, "HS2022")):
-        values = set(df.loc[df["year"] == year, "EXPORT_HHI"].dropna().round(6))
-        assert values == {SERVING_NETWORK_HHI[vintage]}
+        for flow, shift in (("1", 0.0), ("2", SERVING_NETWORK_EXPORT_SHIFT)):
+            rows = df[(df["year"] == year) & (df["flow"] == flow)]
+            assert set(rows["WORLD_HHI"].dropna().round(6)) == {round(SERVING_NETWORK_HHI[vintage] + shift, 6)}
     # Tous les codes SH6 / NC8 de la grille ont leur SH6 dans le réseau (010121 compris)
-    assert df["EXPORT_HHI"].notna().all()
+    assert df["WORLD_HHI"].notna().all()
+    # Alerte du flux export (concentration de la demande au-dessus du seuil), pas de l'import
+    assert df.loc[df["flow"] == "2", "WORLD_HHI_ALERT"].all()
+    assert not df.loc[df["flow"] == "1", "WORLD_HHI_ALERT"].any()
 
 
 def test_cell_scores_ranks_consistent(published) -> None:
@@ -212,7 +218,7 @@ def test_missing_optional_sources_are_stubbed(tmp_path: Path) -> None:
     assert "network" in result["missing_sources"]
     df = _read(world, "cell_scores")
     assert df["product_label"].isna().all()
-    assert df["EXPORT_HHI"].isna().all()
+    assert df["WORLD_HHI"].isna().all()
     assert result["rows"]["products"] == 0
     assert result["metrics"]["serving/missing_sources"] == len(result["missing_sources"])
 

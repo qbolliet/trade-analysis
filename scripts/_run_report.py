@@ -32,7 +32,7 @@ from kedro_pipeline.io.download_report import (
     download_run_metrics,
 )
 from kedro_pipeline.io.tracking import peak_memory_mb, publish_failure, publish_run_report, run_metrics
-from macroforecast.tracking import RunTracker
+from macroforecast.tracking import RunTracker, rekey_metrics
 from macroforecast.tracking.figures import key_figures_downloads, sections_downloads
 from macroforecast.tracking.report import (
     Check,
@@ -73,6 +73,35 @@ def load_tracking_config(config_path: Optional[str] = None) -> Dict[str, Any]:
         # Logging
         logger.warning("Run report configuration %s unreadable (%s): default report.", path, exc)
         return {}
+
+
+# Métriques MLflow d'un calcul de vulnérabilités, préfixées par famille et par sens
+def flow_run_metrics(report: Any, family: str) -> Dict[str, float]:
+    """MLflow metrics of a vulnerability run, prefixed by family and direction.
+
+    The vulnerability runners diagnose each flow direction on its own
+    (``report.flows``); the prefix is applied here, by the caller, so that the
+    import and export distributions are never mixed:
+    ``partners/import/HHI/mean``, ``network/export/SPOF/mean``.
+
+    Args:
+        report: ``VulnerabilityReport`` or ``NetworkVulnerabilityReport`` whose
+            ``flows`` holds one sub-report per direction.
+        family: Family prefix (``"partners"`` or ``"network"``).
+
+    Returns:
+        Slash-separated metric names mapped to their values.
+
+    Examples:
+        >>> from macroforecast.trade.vulnerabilities import VulnerabilityReport
+        >>> report = VulnerabilityReport(flows={"export": VulnerabilityReport(cells=3)})
+        >>> flow_run_metrics(report, "partners")["partners/export/cells/n_total"]
+        3.0
+    """
+    metrics: Dict[str, float] = {}
+    for flow, sub in report.flows.items():
+        metrics.update(rekey_metrics(sub.to_metrics(prefix=f"{family}.{flow}")))
+    return metrics
 
 
 # Nom du run MLflow

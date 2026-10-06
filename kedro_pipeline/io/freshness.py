@@ -234,6 +234,73 @@ def fingerprint(name: str, params: Mapping[str, Any]) -> str:
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:16]
 
 
+# Séparateur entre un nom de métrique et son qualificatif (le sens du flux)
+QUALIFIER_SEPARATOR = "/"
+
+
+# Fonction de construction d'une clé d'empreinte qualifiée
+def qualified_name(name: str, qualifier: str) -> str:
+    """Qualify a metric name, e.g. by a flow direction.
+
+    Two instances of a metric computed in two directions share a name: their
+    fingerprints are kept under qualified keys, so that adding a direction only
+    makes that direction stale.
+
+    Args:
+        name: Metric name.
+        qualifier: Qualifier (a flow direction).
+
+    Returns:
+        ``"<name>/<qualifier>"``.
+
+    Examples:
+        >>> qualified_name("HHI", "export")
+        'HHI/export'
+    """
+    return f"{name}{QUALIFIER_SEPARATOR}{qualifier}"
+
+
+# Fonction de décomposition d'une clé d'empreinte qualifiée
+def split_qualified(key: str) -> Tuple[str, Optional[str]]:
+    """Split a fingerprint key into its name and qualifier.
+
+    Args:
+        key: A plain (``"HHI"``) or qualified (``"HHI/export"``) key.
+
+    Returns:
+        ``(name, qualifier)``, the qualifier being ``None`` for a plain key.
+
+    Examples:
+        >>> split_qualified("HHI/export"), split_qualified("synthesis")
+        (('HHI', 'export'), ('synthesis', None))
+    """
+    name, separator, qualifier = key.partition(QUALIFIER_SEPARATOR)
+    return (name, qualifier) if separator else (key, None)
+
+
+# Fonction de correspondance entre une clé d'empreinte et des noms demandés
+def name_matches(key: str, names: Collection[str]) -> bool:
+    """Tell whether a fingerprint key is designated by a set of names.
+
+    A plain name designates every qualified key of that name (``HHI`` matches
+    ``HHI/import`` and ``HHI/export``), a qualified name only itself — so that
+    forcing or invalidating a metric covers every direction unless one is
+    named.
+
+    Args:
+        key: Fingerprint key.
+        names: Requested names, plain or qualified.
+
+    Returns:
+        ``True`` when ``key`` or its unqualified name is in ``names``.
+
+    Examples:
+        >>> name_matches("HHI/export", {"HHI"}), name_matches("HHI/export", {"HHI/import"})
+        (True, False)
+    """
+    return key in names or split_qualified(key)[0] in names
+
+
 # ──────────────────────────────────────────────────────────────────────
 # Unités, plans et entrées
 # ──────────────────────────────────────────────────────────────────────
@@ -726,7 +793,9 @@ class FreshnessRegistry:
         loaded a fragment would write it back with the old fingerprints.
 
         Args:
-            names: Metric or method names whose fingerprint is deleted;
+            names: Metric or method names whose fingerprint is deleted; a plain
+                name also deletes its qualified keys (``HHI`` deletes
+                ``HHI/import`` and ``HHI/export``, see :func:`name_matches`).
                 ``None`` deletes every fingerprint of the selected units.
             scope: Unit filter (``reporters``, ``products`` by prefix,
                 ``periods``, ``vintages``; a filter on a dimension the unit
@@ -756,7 +825,9 @@ class FreshnessRegistry:
             if names is None:
                 kept: Dict[str, str] = {}
             else:
-                kept = {k: v for k, v in entry.fingerprints.items() if k not in set(names)}
+                kept = {
+                    k: v for k, v in entry.fingerprints.items() if not name_matches(k, set(names))
+                }
             if kept == entry.fingerprints:
                 continue
             self.upsert(replace(entry, fingerprints=kept))
@@ -1055,7 +1126,7 @@ class ForceSpec:
         """
         if FORCE_ALL in self.steps or step.lower() in self.steps:
             return True
-        return bool(self.names & set(requested))
+        return any(name_matches(key, self.names) for key in requested)
 
     # Appartenance d'une unité au périmètre de forçage
     def in_scope(self, unit: Unit) -> bool:
@@ -1105,10 +1176,15 @@ class ForceSpec:
             requested: Metrics or methods the step computes.
 
         Returns:
-            The forced names among ``requested``, or all of ``requested`` when
-            none is named.
+            The forced names among ``requested`` (a plain name selecting every
+            qualified key of that name, see :func:`name_matches`), or all of
+            ``requested`` when none is named.
+
+        Examples:
+            >>> sorted(ForceSpec(metrics=("HHI",)).names_for({"HHI/import", "HHI/export", "CDI2/import"}))
+            ['HHI/export', 'HHI/import']
         """
-        chosen = self.names & set(requested)
+        chosen = {key for key in requested if name_matches(key, self.names)}
         return frozenset(chosen) if chosen else frozenset(requested)
 
     # Description du forçage (tag MLflow « forced »)
@@ -1253,6 +1329,42 @@ def units_to_compute(
             if changed:
                 plans[unit] = UnitPlan("fingerprint", changed)
     return plans
+
+
+# Fonction de détermination des qualificatifs (sens) à recalculer
+def qualifiers_to_compute(
+    plans: Mapping[Unit, UnitPlan], order: Sequence[str]
+) -> Tuple[str, ...]:
+    """Return the qualifiers (flow directions) named by a set of plans.
+
+    A wide-table step keyed by qualified fingerprints (``HHI/export``)
+    recomputes, for its planned units, only the directions whose fingerprint
+    is stale: adding a direction to the configuration then computes that
+    direction alone. A plain name in a plan designates every qualifier.
+
+    Args:
+        plans: Plans of the units to compute.
+        order: Every configured qualifier, in output order.
+
+    Returns:
+        The qualifiers of ``order`` named by at least one plan, in that order.
+
+    Examples:
+        >>> unit = Unit.of(vintage="HS2017")
+        >>> qualifiers_to_compute({unit: UnitPlan("fingerprint", frozenset({"SPOF/export"}))},
+        ...                       ("import", "export"))
+        ('export',)
+        >>> qualifiers_to_compute({unit: UnitPlan("first", frozenset({"synthesis"}))}, ("import",))
+        ('import',)
+    """
+    named = set()
+    for plan in plans.values():
+        for key in plan.names:
+            qualifier = split_qualified(key)[1]
+            if qualifier is None:
+                return tuple(order)
+            named.add(qualifier)
+    return tuple(item for item in order if item in named)
 
 
 # Chargeur JSON inerte (doctests et tests : registre vide sans I/O)

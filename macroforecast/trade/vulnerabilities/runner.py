@@ -6,6 +6,12 @@ scores to a result schema: one column per metric, plus one boolean
 ``{metric}_ALERT`` column, keyed by
 ``date x nomenclature x indicator x flow x reporter`` (plus frequency).
 
+Both families are computed for the requested **directions** (``flows``:
+``"import"``, ``"export"``), each metric class being instantiated once per
+direction it supports (``cls(config, flow=f)``). The run diagnostics are
+produced per direction (:attr:`VulnerabilityReport.flows`), import and export
+cells never being pooled.
+
 Source and result are reached through DuckDB connections opened by the caller.
 The result schema is built on
 first encounter and upserted afterwards, through the shared
@@ -25,7 +31,19 @@ plumbing, nothing else.
 from __future__ import annotations
 # Modules de base
 import logging
-from typing import TYPE_CHECKING, Any, Collection, Iterable, Mapping, Optional, Sequence, Tuple
+from typing import (
+    TYPE_CHECKING,
+    Any,
+    Collection,
+    Dict,
+    Iterable,
+    List,
+    Mapping,
+    Optional,
+    Sequence,
+    Tuple,
+    TypeVar,
+)
 # Modules de manipulation de données
 import narwhals as nw
 import pandas as pd
@@ -49,6 +67,8 @@ from .base import (
     NetworkVulnerabilityMetric,
     VulnerabilityConfig,
     VulnerabilityMetric,
+    flow_code_map,
+    parse_flows,
 )
 from .diagnostics import (
     GraphQualityReport,
@@ -70,6 +90,99 @@ from .network_metrics import default_network_metrics
 # Initialisation du logger
 logger = logging.getLogger(__name__)
 
+# Métrique de l'une ou l'autre famille (helpers communs aux deux runners)
+_Metric = TypeVar("_Metric", VulnerabilityMetric, NetworkVulnerabilityMetric)
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Sens des flux : sélection des instances et vérifications communes
+# ──────────────────────────────────────────────────────────────────────
+
+# Fonction de sélection des instances des sens demandés
+def _metrics_for_flows(metrics: Sequence[_Metric], flows: Sequence[str]) -> List[_Metric]:
+    """Keep the metric instances whose direction is requested.
+
+    Args:
+        metrics: Metric instances, possibly of several directions.
+        flows: Requested directions.
+
+    Returns:
+        The instances whose ``flow`` is in ``flows``, in their original order.
+
+    Raises:
+        ValueError: If ``flows`` is empty or names an unknown direction.
+
+    Examples:
+        >>> from macroforecast.trade.vulnerabilities import HerfindahlHirschmanIndex
+        >>> both = [HerfindahlHirschmanIndex(flow="import"), HerfindahlHirschmanIndex(flow="export")]
+        >>> [m.flow for m in _metrics_for_flows(both, ["export"])]
+        ['export']
+    """
+    # Vérification des arguments
+    requested = parse_flows(flows)
+    return [metric for metric in metrics if metric.flow in requested]
+
+
+# Fonction de dédoublonnage des instances par nom de colonne
+def _unique_by_name(metrics: Sequence[_Metric]) -> List[_Metric]:
+    """Keep one representative instance per output column.
+
+    Two instances of a class in two directions share a column name: the
+    column-wise steps (alert flags, top-level report) need it once.
+
+    Args:
+        metrics: Metric instances.
+
+    Returns:
+        The first instance of each name, in registry order.
+
+    Examples:
+        >>> from macroforecast.trade.vulnerabilities import HerfindahlHirschmanIndex
+        >>> both = [HerfindahlHirschmanIndex(flow="import"), HerfindahlHirschmanIndex(flow="export")]
+        >>> [m.flow for m in _unique_by_name(both)]
+        ['import']
+    """
+    representatives: Dict[str, _Metric] = {}
+    for metric in metrics:
+        representatives.setdefault(metric.name, metric)
+    return list(representatives.values())
+
+
+# Fonction de validation du schéma d'entrée au regard des métriques
+def _check_required_columns(data: nw.DataFrame, metrics: Sequence[Any]) -> None:
+    """Fail fast when the input lacks a column required by a metric.
+
+    Args:
+        data: Input frame.
+        metrics: Metric instances to apply.
+
+    Raises:
+        ValueError: If a required column is missing, naming the metrics
+            concerned.
+
+    Examples:
+        >>> import pandas as pd
+        >>> from macroforecast.trade.vulnerabilities import HerfindahlHirschmanIndex
+        >>> frame = nw.from_native(pd.DataFrame({"partner": ["CN"]}), eager_only=True)
+        >>> _check_required_columns(frame, [HerfindahlHirschmanIndex()])  # doctest: +ELLIPSIS
+        Traceback (most recent call last):
+        ...
+        ValueError: Missing required column(s) ...
+    """
+    # Union des colonnes exigées par les métriques, confrontée aux colonnes disponibles
+    available = set(data.columns)
+    required = set().union(*(metric.required_columns() for metric in metrics))
+    missing = required - available
+    if missing:
+        # Métriques concernées par au moins une colonne manquante
+        culprits = sorted(
+            {metric.name for metric in metrics if metric.required_columns() & missing}
+        )
+        raise ValueError(
+            f"Missing required column(s) {sorted(missing)} for metric(s) "
+            f"{culprits}. Available columns: {sorted(available)}."
+        )
+
 
 # ──────────────────────────────────────────────────────────────────────
 # Calcul (backend-agnostique, narwhals)
@@ -81,21 +194,34 @@ def compute_vulnerabilities(
     metrics: Sequence[VulnerabilityMetric],
     config: VulnerabilityConfig = DEFAULT_CONFIG,
     *,
+    flows: Sequence[str] = ("import",),
+    flow_codes: Optional[Mapping[str, int]] = None,
     df_previous: Optional[nw.DataFrame] = None,
 ) -> Tuple[nw.DataFrame, VulnerabilityReport]:
     """Compute every metric and assemble a one-column-per-metric frame.
 
-    Builds the canonical grid of distinct cells and left-joins each metric's
-    output onto it, so cells a metric does not score (e.g. CDI2/CDI3 on non-import
-    flows) carry a null value. Alongside the scores, the run is diagnosed
+    Builds the canonical grid of distinct cells, **restricted to the flow codes
+    of the requested directions**, and left-joins each metric's output onto
+    it, so cells a metric does not score carry a null value. The instances of
+    a class in several directions return disjoint rows (each scores its own
+    flow only): they are stacked, then joined once, under their shared column.
+    A metric not supported for a direction is therefore null on its rows. The
+    metrics read the whole input, both flows included, since a cross-flow
+    metric (CDI3) divides by the opposite flow.
+
+    Alongside the scores, each direction is diagnosed on its own slice
     (volumetry, coverage, aggregate coherence, distributions and — when a
-    previous result is supplied — drift), the diagnostics being data rather than
-    logs.
+    previous result is supplied — drift), the diagnostics being data rather
+    than logs.
 
     Args:
         data: Narwhals frame of partner-level observations.
-        metrics: Metric instances to apply.
+        metrics: Metric instances to apply; those whose direction is not in
+            ``flows`` are ignored.
         config: Column conventions (its ``key_columns`` define the grid).
+        flows: Directions to compute (``"import"``, ``"export"``).
+        flow_codes: Flow code of each direction. Defaults to the
+            configuration's ``import_flow`` / ``export_flow``.
         df_previous: Result of the previous run, same schema, enabling the
             run-to-run stability diagnostics. Reading it belongs to the caller
             (see :func:`read_previous_result`).
@@ -105,20 +231,22 @@ def compute_vulnerabilities(
         column per metric, and one boolean ``{metric}_ALERT`` column flagging the
         cells above the metric's alert threshold (see
         :func:`~macroforecast.trade.vulnerabilities.diagnostics.append_alert_flags`)
-        — and the :class:`VulnerabilityReport` of the run (``created`` is left
-        ``False``; the caller sets it once the result is persisted).
+        — and the :class:`VulnerabilityReport` of the run, one sub-report per
+        direction in ``report.flows`` (``created`` is left ``False``; the
+        caller sets it once the result is persisted).
 
     Raises:
-        ValueError: If the input frame is missing any column required by one of
-            the metrics (see :meth:`VulnerabilityMetric.required_columns`).
+        ValueError: If ``flows`` is empty or unknown, or if the input frame is
+            missing any column required by one of the metrics (see
+            :meth:`VulnerabilityMetric.required_columns`).
 
     Examples:
         >>> import pandas as pd
         >>> from macroforecast.trade.vulnerabilities import (
         ...     HerfindahlHirschmanIndex, VulnerabilityConfig)
         >>> df = pd.DataFrame({
-        ...     "flow": [1, 1, 1], "partner": ["CN", "US", "WORLD"],
-        ...     "OBS_VALUE": [60.0, 40.0, 100.0],
+        ...     "flow": [1, 1, 1, 2, 2], "partner": ["CN", "US", "WORLD", "CN", "WORLD"],
+        ...     "OBS_VALUE": [60.0, 40.0, 100.0, 10.0, 10.0],
         ... })
         >>> config = VulnerabilityConfig(key_columns=("flow",))
         >>> data = nw.from_native(df, eager_only=True)
@@ -126,66 +254,86 @@ def compute_vulnerabilities(
         ...     data, [HerfindahlHirschmanIndex(config)], config)
         >>> round(float(scores.to_native()["HHI"][0]), 2), report.cells
         (0.52, 1)
-        >>> bool(scores.to_native()["HHI_ALERT"][0])
-        True
+        >>> bool(scores.to_native()["HHI_ALERT"][0]), list(report.flows)
+        (True, ['import'])
     """
-    # Clés de la grille de sortie
+    # Clés de la grille de sortie et codes des sens demandés
     keys = list(config.key_columns)
+    codes = dict(flow_codes) if flow_codes is not None else flow_code_map(config)
+    selected = _metrics_for_flows(metrics, flows)
+    representatives = _unique_by_name(selected)
 
-    # Validation de schéma (fail-fast) : union des colonnes exigées par les métriques,
-    # confrontée aux colonnes disponibles
-    available = set(data.columns)
-    required = set().union(*(metric.required_columns() for metric in metrics))
-    missing = required - available
-    if missing:
-        # Métriques concernées par au moins une colonne manquante
-        culprits = sorted(
-            metric.name
-            for metric in metrics
-            if metric.required_columns() & missing
-        )
-        raise ValueError(
-            f"Missing required column(s) {sorted(missing)} for metric(s) "
-            f"{culprits}. Available columns: {sorted(available)}."
-        )
+    # Validation de schéma (fail-fast)
+    _check_required_columns(data, selected)
 
     # Volumétrie d'entrée, mesurée avant tout filtrage
-    report = VulnerabilityReport(metrics=[metric.name for metric in metrics])
+    report = VulnerabilityReport(metrics=[metric.name for metric in representatives])
     report.input = compute_input_report(data, config)
-    n_input = report.input.n_observations
 
     # Suppression des observations inexploitables (partenaire ou valeur nuls) :
     # un partenaire nul fausse les masques booléens du filtre des pays individuels.
-    data = data.drop_nulls(subset=[config.partner_col, config.value_col])
-    # Effet du filtrage, rapporté plutôt que silencieux
-    share_rows_dropped_null = (
-        (n_input - len(data)) / n_input if n_input else float("nan")
-    )
+    clean = data.drop_nulls(subset=[config.partner_col, config.value_col])
 
-    # Grille canonique : cellules distinctes de la base
-    df_grid = data.select(*keys).unique()
+    # Grille canonique : cellules distinctes de la base, restreintes aux flux demandés
+    flow_col = nw.col(config.flow_col)
+    all_cells = clean.select(*keys).unique()
+    df_grid = all_cells.filter(flow_col.is_in([codes[flow] for flow in flows]))
+    # Grille vide sur une source non vide : codes de flux absents (typiquement une
+    # colonne de flux en texte face à des codes entiers) : signalée, jamais silencieuse
+    if len(df_grid) == 0 and len(all_cells) > 0:
+        logger.warning(
+            f"No cell of flow code(s) {[codes[flow] for flow in flows]} in column "
+            f"'{config.flow_col}' (values found: "
+            f"{sorted(map(str, all_cells.get_column(config.flow_col).unique().to_list()))}): "
+            "check the flow codes and the column type."
+        )
     result = df_grid
 
-    # Jointure gauche de la sortie de chaque métrique sur la grille
-    for metric in metrics:
-        # Calcul de la métrique (frame indexé par les clés + colonne metric.name)
-        scored = metric.compute(data)
+    # Une jointure gauche par colonne : sorties des instances (une par sens,
+    # aux lignes disjointes) empilées puis jointes en une fois
+    for representative in representatives:
+        scored = nw.concat(
+            [metric.compute(clean) for metric in selected if metric.name == representative.name],
+            how="vertical",
+        )
         result = result.join(scored, on=keys, how="left")
 
     # Drapeaux d'alerte persistés : un booléen de dépassement de seuil par
     # métrique, écrit à côté du score continu pour l'indicateur synthétique aval
-    result = append_alert_flags(result, metrics, config)
-
-    # Diagnostics de l'exécution
+    result = append_alert_flags(result, representatives, config)
     report.cells = len(result)
-    report.coverage = compute_coverage_report(result, metrics)
-    report.quality = compute_quality_report(
-        data, df_grid, config, share_rows_dropped_null=share_rows_dropped_null
-    )
-    report.distributions = compute_distribution_reports(result, metrics, config)
-    # Dérive : seulement si l'exécution précédente a été relue par l'appelant
-    if df_previous is not None:
-        report.drift = compute_drift_report(result, df_previous, metrics, config)
+
+    # Diagnostics par sens, chacun sur sa tranche (jamais de distribution mêlant
+    # import et export)
+    for flow in flows:
+        is_flow = flow_col == codes[flow]
+        flow_metrics = [metric for metric in selected if metric.flow == flow]
+        flow_result = result.filter(is_flow)
+        flow_grid = df_grid.filter(is_flow)
+        flow_input = data.filter(is_flow)
+        n_flow_input = len(flow_input)
+        n_flow_clean = len(clean.filter(is_flow))
+
+        # Rapport du sens : volumétrie, couverture, cohérence, distributions
+        sub = VulnerabilityReport(metrics=[metric.name for metric in flow_metrics])
+        sub.input = compute_input_report(flow_input, config)
+        sub.cells = len(flow_result)
+        sub.coverage = compute_coverage_report(flow_result, flow_metrics)
+        sub.quality = compute_quality_report(
+            clean,
+            flow_grid,
+            config,
+            share_rows_dropped_null=(
+                (n_flow_input - n_flow_clean) / n_flow_input if n_flow_input else float("nan")
+            ),
+        )
+        sub.distributions = compute_distribution_reports(flow_result, flow_metrics, config)
+        # Dérive : seulement si l'exécution précédente a été relue par l'appelant
+        if df_previous is not None and config.flow_col in df_previous.columns:
+            sub.drift = compute_drift_report(
+                flow_result, df_previous.filter(is_flow), flow_metrics, config
+            )
+        report.flows[flow] = sub
 
     return result, report
 
@@ -296,6 +444,7 @@ def read_previous_result(
     result_schema: str,
     *,
     reporters_products: Optional[Sequence[Tuple[str, str]]] = None,
+    flow_codes: Optional[Collection[int]] = None,
     config: VulnerabilityConfig = DEFAULT_CONFIG,
 ) -> Optional[nw.DataFrame]:
     """Read the previous run's scores, for the run-to-run drift diagnostics.
@@ -314,8 +463,10 @@ def read_previous_result(
         reporters_products: Reporter x product pairs to restrict the read to,
             mirroring the perimeter of an incremental recomputation. ``None``
             reads the whole table.
-        config: Column conventions (``reporter_col`` / ``product_col`` name the
-            filtered columns).
+        flow_codes: Flow codes to restrict the read to, mirroring the
+            directions recomputed. ``None`` reads every flow.
+        config: Column conventions (``reporter_col`` / ``product_col`` /
+            ``flow_col`` name the filtered columns).
 
     Returns:
         Narwhals frame of the previous scores, or ``None`` when no result table
@@ -331,11 +482,19 @@ def read_previous_result(
 
     # Projection intégrale : la table résultat est étroite (clés + métriques)
     query = f'SELECT * FROM "{catalog_alias}"."{result_schema}"."{FACT_TABLE}"'
-    # Restriction éventuelle au périmètre recalculé
+    # Restriction éventuelle au périmètre recalculé : couples et flux
+    predicates = []
     if reporters_products:
-        query += " WHERE " + _reporter_product_predicate(
-            config.reporter_col, config.product_col, reporters_products
+        predicates.append(
+            _reporter_product_predicate(
+                config.reporter_col, config.product_col, reporters_products
+            )
         )
+    if flow_codes:
+        codes = ", ".join(str(int(code)) for code in sorted(flow_codes))
+        predicates.append(f'"{config.flow_col}" IN ({codes})')
+    if predicates:
+        query += " WHERE " + " AND ".join(predicates)
     # Exécution de la requête
     previous_pdf = conn.execute(query).df()
 
@@ -383,6 +542,8 @@ def run_vulnerabilities(
     reporters_products: Optional[Collection[Tuple[str, str]]] = None,
     metrics: Optional[Sequence[VulnerabilityMetric]] = None,
     config: VulnerabilityConfig = DEFAULT_CONFIG,
+    flows: Sequence[str] = ("import",),
+    flow_codes: Optional[Mapping[str, int]] = None,
     backend: str = "pandas",
     tracker: RunTracker = NULL_TRACKER,
     log_artifacts: bool = True,
@@ -419,16 +580,25 @@ def run_vulnerabilities(
             recomputes the whole fact table (initialisation, notebooks); an
             empty collection is a no-op (nothing is read or written).
         metrics: Metric instances to apply. Defaults to
-            :func:`~macroforecast.trade.vulnerabilities.metrics.default_metrics`.
+            :func:`~macroforecast.trade.vulnerabilities.metrics.default_metrics`
+            instantiated for ``flows``; explicit instances of another direction
+            are ignored.
         config: Column and partner-code conventions.
+        flows: Directions to compute (``"import"``, ``"export"``). Only the
+            rows of these flows are written: the rows of another flow already
+            in the result table are left untouched by the upsert.
+        flow_codes: Flow code of each direction. Defaults to the
+            configuration's ``import_flow`` / ``export_flow``.
         backend: Native eager backend for narwhals computation (``"pandas"``
             or, when installed, ``"polars"``/``"pyarrow"``).
         tracker: Experiment tracker receiving the run parameters and artifacts.
             Defaults to the null tracker, so an unconfigured run behaves exactly
-            as before. The *metrics* are left to the caller, which sends
-            ``report.to_metrics()`` once the report is complete.
+            as before. The *metrics* are left to the caller, which sends the
+            per-direction ``report.flows[flow].to_metrics()`` once the report is
+            complete.
         log_artifacts: Whether to build and send the business artifacts (top
-            vulnerable cells, alert counts, missing aggregates, deciles).
+            vulnerable cells, alert counts, missing aggregates, deciles), one
+            sub-directory per direction.
         df_previous: Result of the previous run over the same perimeter,
             enabling the drift diagnostics (see :func:`read_previous_result`).
         write_options: Extra keyword arguments forwarded to
@@ -437,22 +607,28 @@ def run_vulnerabilities(
             keeps the library defaults.
 
     Returns:
-        A :class:`VulnerabilityReport` summarising the run.
+        A :class:`VulnerabilityReport` summarising the run, with one
+        sub-report per direction in ``report.flows``.
 
     Raises:
         ValueError: If ``result_conn`` is supplied without
-            ``result_catalog_alias``, or if the input frame is missing a column
-            required by one of the metrics.
+            ``result_catalog_alias``, if ``flows`` is empty or unknown, or if the
+            input frame is missing a column required by one of the metrics.
     """
-    # Initialisation de la liste des métriques
-    metric_list = list(metrics) if metrics is not None else default_metrics(config)
+    # Initialisation de la liste des métriques, restreinte aux sens demandés
+    metric_list = _metrics_for_flows(
+        list(metrics) if metrics is not None else default_metrics(config, flows), flows
+    )
+    codes = dict(flow_codes) if flow_codes is not None else flow_code_map(config)
 
     # Périmètre vide (distinct de None, qui vaut « tout le catalogue ») :
     # rien à recalculer, sortie anticipée sans toucher à la base
     if reporters_products is not None and not reporters_products:
         logger.info("No reporter-product pairs to recalculate; early termination.")
         return VulnerabilityReport(
-            cells=0, metrics=[metric.name for metric in metric_list], created=False
+            cells=0,
+            metrics=[metric.name for metric in _unique_by_name(metric_list)],
+            created=False,
         )
 
     # Catalogue résultat : partagé avec la source par défaut. Une connexion
@@ -472,7 +648,8 @@ def run_vulnerabilities(
                 "source_schema": source_schema,
                 "result_schema": result_schema,
                 "backend": backend,
-                "metrics": [metric.name for metric in metric_list],
+                "metrics": [metric.name for metric in _unique_by_name(metric_list)],
+                "flows": list(flows),
                 "n_reporter_product_pairs": (
                     len(reporters_products) if reporters_products is not None else None
                 ),
@@ -501,20 +678,24 @@ def run_vulnerabilities(
     # Calcul des métriques via narwhals (agnostique du backend)
     data = nw.from_native(_to_native(source_pdf, backend), eager_only=True)
     result, report = compute_vulnerabilities(
-        data, metric_list, config, df_previous=df_previous
+        data, metric_list, config, flows=flows, flow_codes=codes, df_previous=df_previous
     )
 
-    # Artefacts de synthèse : la grille est la projection du résultat sur les clés
+    # Artefacts de synthèse, un dossier par sens : la grille est la projection
+    # de la tranche du résultat sur les clés
     if log_artifacts:
-        log_vulnerability_artifacts(
-            tracker,
-            data=data,
-            df_grid=result.select(*config.key_columns),
-            df_result=result,
-            report=report,
-            metrics=metric_list,
-            config=config,
-        )
+        for flow, sub in report.flows.items():
+            flow_result = result.filter(nw.col(config.flow_col) == codes[flow])
+            log_vulnerability_artifacts(
+                tracker,
+                data=data,
+                df_grid=flow_result.select(*config.key_columns),
+                df_result=flow_result,
+                report=sub,
+                metrics=[metric for metric in metric_list if metric.flow == flow],
+                config=config,
+                flow=flow,
+            )
 
     # Écriture dans le schéma résultat : le frame narwhals est passé tel quel,
     # builder/updater de dt_ducklake_manager acceptant IntoDataFrame (aucune
@@ -527,6 +708,9 @@ def run_vulnerabilities(
         schema=result_schema,
         **(write_options or {}),
     )
+    # Issue de l'écriture reportée sur les rapports par sens
+    for sub in report.flows.values():
+        sub.created = report.created
 
     return report
 
@@ -541,40 +725,63 @@ def compute_network_vulnerabilities(
     metrics: Sequence[NetworkVulnerabilityMetric],
     config: NetworkVulnerabilityConfig = DEFAULT_NETWORK_CONFIG,
     *,
+    flows: Sequence[str] = ("import",),
+    flow_codes: Optional[Mapping[str, int]] = None,
     df_previous: Optional[nw.DataFrame] = None,
 ) -> Tuple[nw.DataFrame, NetworkVulnerabilityReport]:
-    """Compute every network metric and assemble a one-column-per-metric frame.
+    """Compute every network metric, per direction, in a one-column-per-metric frame.
 
     Twin of :func:`compute_vulnerabilities` for the graph family: same canonical
     grid, same left join per metric so a cell a metric does not score (a graph
     too small to close a triangle, say) carries a null rather than vanishing,
-    same principle of diagnostics being data rather than logs. What differs is
-    the coherence check — the shape of the graphs
+    same principle of diagnostics being data rather than logs.
+
+    The BACI matrix has no flow: **each direction is computed in its own
+    pass** over the whole matrix, by the instances of that direction (the
+    export pass reads the matrix transposed, through the role columns of the
+    metrics). The orientation-invariant metrics (clustering, diameter) are
+    computed once and their values copied onto every direction. Each pass
+    yields the rows of one direction, to which the ``flow_col`` column is added
+    last, so that the SPOF ranks are only ever taken within one direction. The
+    passes are then stacked.
+
+    What differs from the partner family is the coherence check — the shape of
+    the graphs
     (:class:`~macroforecast.trade.vulnerabilities.diagnostics.GraphQualityReport`)
     rather than the coherence of partner aggregates, which a BACI flow table
-    does not carry.
+    does not carry. It does not depend on the direction and is computed once.
 
     Args:
         data: Narwhals frame of reconciled bilateral flows, already carrying the
             classification column (see :func:`run_network_vulnerabilities`,
             which stamps it).
-        metrics: Metric instances to apply.
-        config: Column conventions (its ``key_columns`` define the grid).
+        metrics: Metric instances to apply; those whose direction is not in
+            ``flows`` are ignored.
+        config: Column conventions (its ``key_columns`` define the grid, its
+            ``flow_col`` names the flow column added to the result).
+        flows: Directions to compute (``"import"``, ``"export"``), in output
+            order.
+        flow_codes: Flow code of each direction. Defaults to the
+            configuration's ``import_flow`` / ``export_flow``.
         df_previous: Result of the previous run, same schema, enabling the
             run-to-run stability diagnostics. Reading it belongs to the caller
-            (see :func:`read_previous_network_result`).
+            (see :func:`read_previous_network_result`). A previous result
+            without flow column (written before the directions existed) is
+            ignored.
 
     Returns:
         Tuple ``(df_result, report)``: the scores — ``config.key_columns``, one
-        column per metric, and one boolean ``{metric}_ALERT`` column flagging the
-        cells above the metric's alert threshold (see
+        column per metric, one boolean ``{metric}_ALERT`` column per metric
+        (see
         :func:`~macroforecast.trade.vulnerabilities.diagnostics.append_alert_flags`)
-        — and the :class:`NetworkVulnerabilityReport` of the run (``created`` is
-        left ``False``; the caller sets it once the result is persisted).
+        and the ``flow_col`` column — and the
+        :class:`NetworkVulnerabilityReport` of the run, one sub-report per
+        direction in ``report.flows`` (``created`` is left ``False``; the
+        caller sets it once the result is persisted).
 
     Raises:
-        ValueError: If the input frame is missing any column required by one of
-            the metrics (see
+        ValueError: If ``flows`` is empty or unknown, or if the input frame is
+            missing any column required by one of the metrics (see
             :meth:`NetworkVulnerabilityMetric.required_columns`).
 
     Examples:
@@ -588,35 +795,26 @@ def compute_network_vulnerabilities(
         ... })
         >>> config = NetworkVulnerabilityConfig(key_columns=("product",))
         >>> data = nw.from_native(df, eager_only=True)
+        >>> metrics = [WorldExportConcentration(config, flow=f) for f in ("import", "export")]
         >>> scores, report = compute_network_vulnerabilities(
-        ...     data, [WorldExportConcentration(config)], config)
-        >>> round(float(scores.to_native()["EXPORT_HHI"][0]), 2), report.cells
-        (0.52, 1)
-        >>> bool(scores.to_native()["EXPORT_HHI_ALERT"][0])
-        True
+        ...     data, metrics, config, flows=("import", "export"))
+        >>> scores.to_native()[["flow", "WORLD_HHI"]].round(2).values.tolist()
+        [[1.0, 0.52], [2.0, 1.0]]
+        >>> bool(scores.to_native()["WORLD_HHI_ALERT"].iloc[0]), report.cells
+        (True, 2)
     """
-    # Clés de la grille de sortie
+    # Clés de la grille de sortie et codes des sens demandés
     keys = list(config.key_columns)
+    codes = dict(flow_codes) if flow_codes is not None else flow_code_map(config)
+    selected = _metrics_for_flows(metrics, flows)
 
-    # Validation de schéma (fail-fast) : union des colonnes exigées par les
-    # métriques, confrontée aux colonnes disponibles
-    available = set(data.columns)
-    required = set().union(*(metric.required_columns() for metric in metrics))
-    missing = required - available
-    if missing:
-        # Métriques concernées par au moins une colonne manquante
-        culprits = sorted(
-            metric.name
-            for metric in metrics
-            if metric.required_columns() & missing
-        )
-        raise ValueError(
-            f"Missing required column(s) {sorted(missing)} for metric(s) "
-            f"{culprits}. Available columns: {sorted(available)}."
-        )
+    # Validation de schéma (fail-fast)
+    _check_required_columns(data, selected)
 
     # Volumétrie d'entrée, mesurée avant tout filtrage
-    report = NetworkVulnerabilityReport(metrics=[metric.name for metric in metrics])
+    report = NetworkVulnerabilityReport(
+        metrics=[metric.name for metric in _unique_by_name(selected)]
+    )
     report.input = compute_input_report(data, config)
     n_input = report.input.n_observations
 
@@ -630,25 +828,12 @@ def compute_network_vulnerabilities(
         (n_input - len(data)) / n_input if n_input else float("nan")
     )
 
-    # Grille canonique : cellules distinctes de la base
+    # Grille canonique : cellules distinctes de la base (commune aux deux sens)
     df_grid = data.select(*keys).unique()
-    result = df_grid
 
-    # Jointure gauche de la sortie de chaque métrique sur la grille
-    for metric in metrics:
-        # Calcul de la métrique (frame indexé par les clés + colonne metric.name)
-        scored = metric.compute(data)
-        result = result.join(scored, on=keys, how="left")
-
-    # Drapeaux d'alerte persistés : un booléen de dépassement de seuil par
-    # métrique, écrit à côté du score continu pour l'indicateur synthétique aval
-    result = append_alert_flags(result, metrics, config)
-
-    # Diagnostics de l'exécution
-    report.cells = len(result)
-    report.coverage = compute_coverage_report(result, metrics)
     # Forme des graphes : passe structurelle, sans aucune mesure topologique
-    # (features vides), donc sans payer le prix des métriques déjà calculées
+    # (features vides), indépendante du sens. Colonnes d'arête explicites : la
+    # forme d'un graphe ne dépend pas de l'orientation de ses arêtes
     _, graph_report = compute_graph_features(
         data,
         keys=keys,
@@ -661,11 +846,49 @@ def compute_network_vulnerabilities(
     report.graph = GraphQualityReport.from_graph_report(
         graph_report, share_rows_dropped_null=share_rows_dropped_null
     )
-    report.distributions = compute_distribution_reports(result, metrics, config)
-    # Dérive : seulement si l'exécution précédente a été relue par l'appelant
-    if df_previous is not None:
-        report.drift = compute_drift_report(result, df_previous, metrics, config)
 
+    # Une passe par sens ; métriques invariantes calculées une seule fois
+    invariant_scores: Dict[Tuple[str, NetworkVulnerabilityConfig], nw.DataFrame] = {}
+    passes: List[nw.DataFrame] = []
+    for flow in flows:
+        flow_metrics = [metric for metric in selected if metric.flow == flow]
+        flow_result = df_grid
+        for metric in flow_metrics:
+            if metric.orientation_invariant:
+                cache_key = (metric.name, metric.config)
+                if cache_key not in invariant_scores:
+                    invariant_scores[cache_key] = metric.compute(data)
+                scored = invariant_scores[cache_key]
+            else:
+                scored = metric.compute(data)
+            flow_result = flow_result.join(scored, on=keys, how="left")
+
+        # Drapeaux d'alerte du sens, à côté des scores continus
+        flow_result = append_alert_flags(flow_result, flow_metrics, config)
+
+        # Rapport du sens : diagnostics des scores sur sa seule tranche
+        sub = NetworkVulnerabilityReport(metrics=[metric.name for metric in flow_metrics])
+        sub.input = report.input
+        sub.graph = report.graph
+        sub.cells = len(flow_result)
+        sub.coverage = compute_coverage_report(flow_result, flow_metrics)
+        sub.distributions = compute_distribution_reports(flow_result, flow_metrics, config)
+        # Dérive : seulement contre un résultat précédent qui distingue les sens
+        if df_previous is not None and config.flow_col in df_previous.columns:
+            sub.drift = compute_drift_report(
+                flow_result,
+                df_previous.filter(nw.col(config.flow_col) == codes[flow]),
+                flow_metrics,
+                config,
+            )
+        report.flows[flow] = sub
+
+        # Colonne du flux ajoutée en dernier : les rangs ont été pris dans le sens
+        passes.append(flow_result.with_columns(nw.lit(codes[flow]).alias(config.flow_col)))
+
+    # Empilement des passes ; une métrique absente d'un sens y reste nulle
+    result = passes[0] if len(passes) == 1 else nw.concat(passes, how="diagonal")
+    report.cells = len(result)
     return result, report
 
 
@@ -768,6 +991,8 @@ def run_network_vulnerabilities(
     result_catalog_alias: Optional[str] = None,
     metrics: Optional[Sequence[NetworkVulnerabilityMetric]] = None,
     config: NetworkVulnerabilityConfig = DEFAULT_NETWORK_CONFIG,
+    flows: Sequence[str] = ("import",),
+    flow_codes: Optional[Mapping[str, int]] = None,
     backend: str = "pandas",
     tracker: RunTracker = NULL_TRACKER,
     log_artifacts: bool = True,
@@ -777,11 +1002,12 @@ def run_network_vulnerabilities(
     """Compute the network vulnerability metrics of one HS vintage and persist them.
 
     Reads the BACI reconciled-flow table of a vintage, **stamps the vintage onto
-    every row** as the ``classification`` column, applies every metric, and
-    upserts the scores (one column per metric plus one boolean
-    ``{metric}_ALERT`` column) into the result schema keyed by
-    ``config.key_columns`` — ``nomenclature x product x year``, the nomenclature
-    being the primary key the partner-level result table does not carry.
+    every row** as the ``classification`` column, applies every metric in each
+    requested direction, and upserts the scores (one column per metric plus one
+    boolean ``{metric}_ALERT`` column) into the result schema keyed by
+    ``config.key_columns`` plus ``config.flow_col`` — ``nomenclature x product
+    x year x flow``, the nomenclature being the primary key the partner-level
+    result table does not carry.
 
     One vintage per call, deliberately: the BACI vintages live in one schema
     each, they overlap in time, and running them separately is what lets a
@@ -807,16 +1033,25 @@ def run_network_vulnerabilities(
         result_catalog_alias: Alias of the result catalog. Required whenever
             ``result_conn`` is supplied; defaults to ``source_catalog_alias``.
         metrics: Metric instances to apply. Defaults to
-            :func:`~macroforecast.trade.vulnerabilities.network_metrics.default_network_metrics`.
+            :func:`~macroforecast.trade.vulnerabilities.network_metrics.default_network_metrics`
+            instantiated for ``flows``; explicit instances of another direction
+            are ignored.
         config: Column conventions and thresholds.
+        flows: Directions to compute (``"import"``, ``"export"``). Only the
+            rows of these flows are written: the rows of another flow already
+            in the result table are left untouched by the upsert.
+        flow_codes: Flow code of each direction. Defaults to the
+            configuration's ``import_flow`` / ``export_flow``.
         backend: Native eager backend for narwhals computation (``"pandas"``
             or, when installed, ``"polars"``/``"pyarrow"``).
         tracker: Experiment tracker receiving the run parameters and artifacts.
             Defaults to the null tracker, so an unconfigured run behaves exactly
-            as before. The *metrics* are left to the caller, which sends
-            ``report.to_metrics()`` once the report is complete.
+            as before. The *metrics* are left to the caller, which sends the
+            per-direction ``report.flows[flow].to_metrics()`` once the report is
+            complete.
         log_artifacts: Whether to build and send the business artifacts (most
-            exposed products, alert counts, unscored cells, deciles).
+            exposed products, alert counts, unscored cells, deciles), one
+            sub-directory per direction.
         df_previous: Result of the previous run over the same vintage, enabling
             the drift diagnostics (see :func:`read_previous_network_result`).
         write_options: Extra keyword arguments forwarded to
@@ -825,17 +1060,20 @@ def run_network_vulnerabilities(
             keeps the library defaults.
 
     Returns:
-        A :class:`NetworkVulnerabilityReport` summarising the run.
+        A :class:`NetworkVulnerabilityReport` summarising the run, with one
+        sub-report per direction in ``report.flows``.
 
     Raises:
         ValueError: If ``result_conn`` is supplied without
-            ``result_catalog_alias``, or if the source frame is missing a column
-            required by one of the metrics.
+            ``result_catalog_alias``, if ``flows`` is empty or unknown, or if the
+            source frame is missing a column required by one of the metrics.
     """
-    # Initialisation de la liste des métriques
-    metric_list = (
-        list(metrics) if metrics is not None else default_network_metrics(config)
+    # Initialisation de la liste des métriques, restreinte aux sens demandés
+    metric_list = _metrics_for_flows(
+        list(metrics) if metrics is not None else default_network_metrics(config, flows),
+        flows,
     )
+    codes = dict(flow_codes) if flow_codes is not None else flow_code_map(config)
 
     # Catalogue résultat : partagé avec la source par défaut. Une connexion
     # distincte impose de nommer son alias, qui n'est pas déductible.
@@ -855,7 +1093,8 @@ def run_network_vulnerabilities(
                 "result_schema": result_schema,
                 "classification": classification,
                 "backend": backend,
-                "metrics": [metric.name for metric in metric_list],
+                "metrics": [metric.name for metric in _unique_by_name(metric_list)],
+                "flows": list(flows),
             },
         )
     )
@@ -882,30 +1121,37 @@ def run_network_vulnerabilities(
         nw.lit(classification).alias(config.classification_col)
     )
     result, report = compute_network_vulnerabilities(
-        data, metric_list, config, df_previous=df_previous
+        data, metric_list, config, flows=flows, flow_codes=codes, df_previous=df_previous
     )
     report.classification = classification
 
-    # Artefacts de synthèse
+    # Artefacts de synthèse, un dossier par sens
     if log_artifacts:
-        log_network_vulnerability_artifacts(
-            tracker,
-            df_result=result,
-            report=report,
-            metrics=metric_list,
-            config=config,
-        )
+        for flow, sub in report.flows.items():
+            log_network_vulnerability_artifacts(
+                tracker,
+                df_result=result.filter(nw.col(config.flow_col) == codes[flow]),
+                report=sub,
+                metrics=[metric for metric in metric_list if metric.flow == flow],
+                config=config,
+                flow=flow,
+            )
 
     # Écriture dans le schéma résultat : le frame narwhals est passé tel quel,
-    # builder/updater de dt_ducklake_manager acceptant IntoDataFrame.
+    # builder/updater de dt_ducklake_manager acceptant IntoDataFrame. Le flux
+    # entre dans la clé primaire (une ligne par sens et par cellule)
     report.created = write_dataframe(
         result_conn,
         result,
-        config.key_columns,
+        (*config.key_columns, config.flow_col),
         catalog_alias=result_catalog_alias,
         schema=result_schema,
         label=classification,
         **(write_options or {}),
     )
+    # Millésime et issue de l'écriture reportés sur les rapports par sens
+    for sub in report.flows.values():
+        sub.classification = classification
+        sub.created = report.created
 
     return report

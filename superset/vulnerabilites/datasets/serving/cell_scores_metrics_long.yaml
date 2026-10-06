@@ -18,7 +18,7 @@ sql: 'SELECT reporter, flow, year, product_label, primary_rank_by_reporter, in_f
   in_force, classification, ''CDI3'', "CDI3_norm" FROM serving.demo_dashboard.cell_scores
 
   UNION ALL SELECT reporter, flow, year, product_label, primary_rank_by_reporter,
-  in_force, classification, ''EXPORT_HHI'', "EXPORT_HHI_norm" FROM serving.demo_dashboard.cell_scores
+  in_force, classification, ''WORLD_HHI'', "WORLD_HHI_norm" FROM serving.demo_dashboard.cell_scores
 
   UNION ALL SELECT reporter, flow, year, product_label, primary_rank_by_reporter,
   in_force, classification, ''CENTRALITY_RISK'', "CENTRALITY_RISK_norm" FROM serving.demo_dashboard.cell_scores

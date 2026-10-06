@@ -214,16 +214,22 @@ def synthesis_source_tables(ducklake_conn) -> SynthesisSources:
     """Write the fake ``indicators`` and ``network_indicators`` schemas (S-2.2/S-2.3).
 
     ``indicators`` (famille partenaires, grille de la synthèse) : 2 périodes x 4
-    pays x 30 produits CN8, flux 1, indicateur ``VALUE_IN_EUROS``, fréquence
-    ``A``, colonnes ``HHI``, ``CDI2``, ``CDI3`` et ``_ALERT`` (colonne du schéma
-    réel non consommée par la méthodologie, incluse pour fidélité). Primary key
+    pays x 30 produits CN8, flux 1 (import) et 2 (export), indicateur
+    ``VALUE_IN_EUROS``, fréquence ``A``, colonnes ``HHI``, ``CDI2``, ``CDI3`` et
+    ``_ALERT`` (colonne du schéma réel non consommée par la méthodologie, incluse
+    pour fidélité). Primary key
     ``(freq, flow, indicators, TIME_PERIOD, reporter, product)``.
 
     ``network_indicators`` (famille réseau) : les mêmes 30 produits ramenés à
-    leur code HS6 (six premiers chiffres du CN8), 2 années,
-    ``classification='HS2022'``, colonnes ``EXPORT_HHI``, ``CENTRALITY_RISK``,
-    ``CLUSTERING_W``. Primary key ``(product, year, classification)``, jointe à
-    la grille par ``substr(product, 1, 6) = product`` et ``year`` (S-2.2).
+    leur code HS6 (six premiers chiffres du CN8), 2 années, flux 1 et 2,
+    ``classification='HS2022'``, colonnes ``WORLD_HHI``, ``CENTRALITY_RISK``,
+    ``CLUSTERING_W``. Primary key ``(product, year, classification, flow)``,
+    jointe à la grille par ``substr(product, 1, 6) = product``, ``year`` et
+    ``flow``.
+
+    Les lignes du flux 1 sont tirées en premier, avec le générateur de toujours :
+    leurs valeurs ne dépendent pas de la présence du flux 2, tiré ensuite par un
+    générateur distinct.
 
     Args:
         ducklake_conn: Connexion DuckLake sur catalogue temporaire.
@@ -235,27 +241,47 @@ def synthesis_source_tables(ducklake_conn) -> SynthesisSources:
 
     conn, catalog_alias = ducklake_conn
     rng = np.random.default_rng(0)
+    export_rng = np.random.default_rng(1)
     products = _synthesis_products()
 
-    df_indicators = pd.DataFrame(
-        [
+    def _indicator_rows(flow: int, generator: np.random.Generator) -> list:
+        return [
             {
                 "freq": "A",
-                "flow": 1,
+                "flow": flow,
                 "indicators": "VALUE_IN_EUROS",
                 "TIME_PERIOD": period,
                 "reporter": reporter,
                 "product": product,
-                "HHI": float(rng.uniform(0.0, 1.0)),
-                "CDI2": float(rng.uniform(0.0, 1.0)),
-                "CDI3": float(rng.uniform(0.0, 1.0)),
-                "_ALERT": bool(rng.integers(0, 2)),
+                "HHI": float(generator.uniform(0.0, 1.0)),
+                "CDI2": float(generator.uniform(0.0, 1.0)),
+                "CDI3": float(generator.uniform(0.0, 1.0)),
+                "_ALERT": bool(generator.integers(0, 2)),
             }
             for period in SYNTHESIS_PERIODS
             for reporter in SYNTHESIS_REPORTERS
             for product in products
         ]
-    )
+
+    def _network_rows(flow: int, generator: np.random.Generator) -> list:
+        return [
+            {
+                "product": product[:6],
+                "year": int(period),
+                "classification": "HS2022",
+                "flow": flow,
+                "WORLD_HHI": float(generator.uniform(0.0, 1.0)),
+                "CENTRALITY_RISK": float(generator.uniform(0.0, 1.0)),
+                "CLUSTERING_W": float(generator.uniform(0.0, 1.0)),
+            }
+            for period in SYNTHESIS_PERIODS
+            for product in products
+        ]
+
+    # Flux 1 d'abord (générateur historique), puis flux 2 (générateur distinct)
+    import_indicators = _indicator_rows(1, rng)
+    import_network = _network_rows(1, rng)
+    df_indicators = pd.DataFrame(import_indicators + _indicator_rows(2, export_rng))
     write_dataframe(
         conn,
         df_indicators,
@@ -264,24 +290,11 @@ def synthesis_source_tables(ducklake_conn) -> SynthesisSources:
         schema="indicators",
     )
 
-    df_network = pd.DataFrame(
-        [
-            {
-                "product": product[:6],
-                "year": int(period),
-                "classification": "HS2022",
-                "EXPORT_HHI": float(rng.uniform(0.0, 1.0)),
-                "CENTRALITY_RISK": float(rng.uniform(0.0, 1.0)),
-                "CLUSTERING_W": float(rng.uniform(0.0, 1.0)),
-            }
-            for period in SYNTHESIS_PERIODS
-            for product in products
-        ]
-    )
+    df_network = pd.DataFrame(import_network + _network_rows(2, export_rng))
     write_dataframe(
         conn,
         df_network,
-        ["product", "year", "classification"],
+        ["product", "year", "classification", "flow"],
         catalog_alias=catalog_alias,
         schema="network_indicators",
     )
@@ -377,6 +390,8 @@ SERVING_PARTNERS: tuple[str, ...] = tuple(
 SERVING_AGGREGATES: tuple[str, ...] = ("WORLD", "EXT_EU", "INT_EU27_2020")
 # Valeurs réseau distinctes par millésime : la jointure doit prendre celui en vigueur
 SERVING_NETWORK_HHI = {"HS2017": 0.17, "HS2022": 0.22}
+# Écart des métriques réseau du flux export (graphe transposé) à celles de l'import
+SERVING_NETWORK_EXPORT_SHIFT = 0.5
 SERVING_METHODS: tuple[str, ...] = ("consensus_borda", "auto_sum", "critic_sum", "pareto")
 
 
@@ -494,17 +509,20 @@ def _serving_frames(rng: "np.random.Generator") -> dict:
     )
 
     # Réseau : deux millésimes pour chaque année, valeurs distinctes par millésime
+    # et par flux (l'export, graphe transposé, décalé de SERVING_NETWORK_EXPORT_SHIFT)
     network_rows = []
     for year in SERVING_YEARS:
-        for classification, hhi in SERVING_NETWORK_HHI.items():
-            for hs6 in (854110, 854121, 10121):
-                network_rows.append(
-                    (hs6, year, classification, hhi, 1.5, 0.3, 0.8, hhi > 0.5, False, False, False)
-                )
+        for classification, base_hhi in SERVING_NETWORK_HHI.items():
+            for flow, hhi in ((1, base_hhi), (2, base_hhi + SERVING_NETWORK_EXPORT_SHIFT)):
+                for hs6 in (854110, 854121, 10121):
+                    network_rows.append(
+                        (hs6, year, classification, flow, hhi, 1.5, 0.3, 0.8, hhi > 0.5,
+                         False, False, False)
+                    )
     df_network = pd.DataFrame(
         network_rows,
-        columns=["product", "year", "classification", "EXPORT_HHI", "CENTRALITY_RISK",
-                 "CLUSTERING_W", "SPOF", "EXPORT_HHI_ALERT", "CENTRALITY_RISK_ALERT",
+        columns=["product", "year", "classification", "flow", "WORLD_HHI", "CENTRALITY_RISK",
+                 "CLUSTERING_W", "SPOF", "WORLD_HHI_ALERT", "CENTRALITY_RISK_ALERT",
                  "CLUSTERING_W_ALERT", "SPOF_ALERT"],
     )
 
@@ -558,7 +576,7 @@ def _serving_frames(rng: "np.random.Generator") -> dict:
 _SERVING_KEYS = {
     "comext": ["freq", "reporter", "partner", "product", "flow", "indicators", "TIME_PERIOD"],
     "indicators": ["freq", "reporter", "product", "flow", "indicators", "TIME_PERIOD"],
-    "network": ["product", "year", "classification"],
+    "network": ["product", "year", "classification", "flow"],
     "synthesis": ["freq", "flow", "indicators", "TIME_PERIOD", "reporter", "product", "method"],
     "diagnostics": ["freq", "flow", "indicators", "TIME_PERIOD", "level", "reporter", "product",
                     "family", "statistic", "item_a", "item_b"],

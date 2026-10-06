@@ -38,6 +38,7 @@
 | 2026-10-02 (K-05) | **Registres de fraîcheur v2** : `kedro_pipeline/io/freshness.py` (`fingerprint`, `Unit`, `FreshnessRegistry` fragmenté et paresseux, `ForceSpec`, `units_to_compute`, `summarize_upstream`) branché sur BACI, partenaires et réseau ; synthèse et cohérence sur une unité `global` en attendant K-08 ; `version` des métriques et `BACI_METHODOLOGY_VERSION`, listes d'exclusion de l'empreinte dans `macroforecast/` ; **séparateur `;`** sous `kedro run --params` (constat sur les sources Kedro) ; `FORCE_METRICS` / `FORCE_METHODS` seuls forcent les étapes concernées ; unité partenaires = millésime SH le plus récent jusqu'à K-06b ; migration par drapeau `ADOPT_LEGACY_FINGERPRINTS` (pas d'outil dédié) | PD-10, PS-04.1, PS-10, PS-11, PS-12.3, PS-14.6, §12 |
 | 2026-10-03 (K-05, suite) | **Plus de version déclarée** (métriques, BACI, synthèse, cohérence) : l'empreinte ne porte que le nom et les paramètres ; une correction d'implémentation se signale par **invalidation** des empreintes enregistrées (`FreshnessRegistry.invalidate`, commande `invalidate-freshness-script`), persistée et reprise à l'exécution planifiée suivante (raison `fingerprint`, cascade vers l'aval) ; le forçage par paramètres d'exécution reste pour les recalculs immédiats | PD-10, PS-10.2, PS-10.3, PS-11, §5.2, §5.3, §5.9, PR-05b |
 | 2026-10-05 | **Métriques réseau orientées** : constat que `CENTRALITY_RISK`, `EXPORT_HHI`, `SPOF`, `SPOF_DECILE` dépendent de l'orientation du graphe (lecture côté offre) ; à l'export, **miroirs par transposition** (valeur égale à celle de l'import sur le graphe transposé, sans nouvelle classe) ; **cadre commun du sens** pour toutes les métriques : hyperparamètre d'instance `flow` (convention sklearn), rôles `counterpart_col` / `exposed_col` côté réseau, `own` / `other` côté partenaires, distinct de l'**échelle** portée par la classe (pays / monde) ; `network_indicators` gagne la colonne `flow` (clé primaire) ; `EXPORT_HHI` renommée `WORLD_HHI` ; jointure de synthèse sur `flow` | C-12, PD-09, PD-20, PS-04.3, PS-15, PS-29, PR-11, PQ-06, K-06 |
+| 2026-10-05 (implémentation) | **Import / export implémentés** (partenaires, réseau, synthèse, service, Superset). Écarts à la spécification : pas de bloc `FLOW_CODES` (codes portés par les champs `import_flow` / `export_flow` des deux configurations, `NetworkVulnerabilityConfig` gagnant aussi `flow_col`) ; empreintes **modifiées à l'import** (clé `"<métrique>/<flux>"`, `flow` dans les paramètres) → **un recalcul complet des partenaires** au premier run, valeurs import identiques ; seuls les sens nommés par les plans de fraîcheur sont recalculés (union des unités planifiées) ; diagnostics, artefacts et métriques MLflow **par sens** (`partners/<flux>/…`, `network/<flux>/…`, artefacts `vulnerabilities/<flux>/…`) ; contrôle de l'agrégat extra-UE étendu à l'export ; `FORCE_METRICS=HHI` et `invalidate-freshness-script --metrics HHI` couvrent les deux sens (`HHI/export` pour un seul) ; migration du réseau en §12 | C-12, PD-09, PS-04.3, PS-10.2, PS-15, PS-29.2, §12 |
 
 ## Sommaire
 
@@ -119,7 +120,7 @@ gravité pour la mise en production (🔴 bloquant, 🟠 à traiter avant le ré
 | C-09 | 🟠 | Le client Eurostat décide de l'incrémental à partir de la date de mise à jour **du dataflow entier** (`get_data_last_update`) : après chaque publication Comext, toutes les requêtes déjà téléchargées redeviennent éligibles (10 dernières observations chacune). Le client Comtrade décide, lui, par période (`lastReleased`). | `statflows/sources/eurostat/client.py:733-786`, `statflows/sources/comtrade/client.py:871-925` |
 | C-10 | 🟠 | Les règles de fraîcheur ignorent les **changements de méthodologie** : corriger une formule ou ajouter une métrique ne déclenche aucun recalcul. Seuls `SYNTHESIS.FORCE` et `COHERENCE.FORCE` existent ; les étapes partenaires, réseau et BACI n'ont pas de forçage. | `scripts/compute_*.py` |
 | C-11 | 🟠 | La synthèse filtre en dur le flux import (`p."flow" = 1`) et les 5 dernières périodes. La jointure réseau ne retient que `HS2022`, y compris pour les années antérieures à 2022, dont les codes Comext sont pourtant déclarés dans un millésime plus ancien : la jointure `substr(product,1,6)` est alors **fausse pour tout code redéfini entre les millésimes** (PD-20). | `config/synthesis.yaml:55-64` |
-| C-12 | 🟡 | Côté partenaires, `HHI` est calculé pour les deux flux ; `CDI2` et `CDI3` ne sont définis que pour l'import (valeur nulle ailleurs). Aucune métrique d'export dédiée n'existe. Les métriques de réseau portent sur le graphe mondial d'un produit (une valeur par produit, aucune par pays) mais **ne sont pas toutes indépendantes de l'orientation** : `CENTRALITY_RISK` (degré sortant pondéré), `EXPORT_HHI` (parts des exportateurs), `SPOF` et `SPOF_DECILE` mesurent la concentration de l'**offre** mondiale (lecture « import ») et changent quand on transpose le graphe ; seuls `CLUSTERING_W` et `DIAMETER` sont invariants, parce que le graphe est symétrisé (`w_ij + w_ji`). Les joindre tels quels aux lignes export appliquerait une lecture côté offre à un exportateur. *(Révisions : définitions d'export partenaires retenues, PD-09 ; miroirs réseau par transposition, PD-09, 2026-10-05.)* | `macroforecast/trade/vulnerabilities/metrics.py` |
+| C-12 | 🟡 | Côté partenaires, `HHI` est calculé pour les deux flux ; `CDI2` et `CDI3` ne sont définis que pour l'import (valeur nulle ailleurs). Aucune métrique d'export dédiée n'existe. Les métriques de réseau portent sur le graphe mondial d'un produit (une valeur par produit, aucune par pays) mais **ne sont pas toutes indépendantes de l'orientation** : `CENTRALITY_RISK` (degré sortant pondéré), `EXPORT_HHI` (parts des exportateurs), `SPOF` et `SPOF_DECILE` mesurent la concentration de l'**offre** mondiale (lecture « import ») et changent quand on transpose le graphe ; seuls `CLUSTERING_W` et `DIAMETER` sont invariants, parce que le graphe est symétrisé (`w_ij + w_ji`). Les joindre tels quels aux lignes export appliquerait une lecture côté offre à un exportateur. *(Révisions : définitions d'export partenaires retenues, PD-09 ; miroirs réseau par transposition, PD-09, 2026-10-05 ; implémenté le 2026-10-05.)* | `macroforecast/trade/vulnerabilities/metrics.py` |
 | C-13 | ✅ | ~~L'upsert de `dt_ducklake_manager` ne sait pas ajouter une colonne~~ **Résolu par `dt-ducklake-manager 0.3.1`** : `DatabaseUpdater.update_database(..., allow_new_columns=True)` ajoute les colonnes absentes (`ALTER TABLE … ADD COLUMN … DEFAULT NULL` + ligne de métadonnées) avant l'upsert, et `add_columns(df)` diffuse une nouvelle colonne sur les lignes existantes par clé primaire en une seule mise à jour. Reste à faire : `statflows.write_dataframe` ne transmet ni `allow_new_columns` ni `compact_after_update` (PS-27, PD-11). | `dt_ducklake_manager/operations/updater.py:176-372`, `statflows/storage/ducklake/tables.py:165-175` |
 | C-14 | 🔴 | Le `Dockerfile` part de `python:3.12-slim` alors que `requires-python = ">=3.13"`, copie un dossier `parameters/` inexistant, n'installe aucun extra (`tracking`, `optimal-transport`) et utilise `uv:latest` (non reproductible). | `docker/Dockerfile` |
 | C-15 | 🔴 | `kubernetes/workflow.yaml` déclare `kind: Workflow` avec des champs de `CronWorkflow` (`schedule`, `concurrencyPolicy`…), invalides pour ce type ; il référence un script `trade-script` inexistant et un secret `comtrade-credentials` qui ne correspond pas aux secrets créés (`comtrade-api-credentials`, `trade-s3-credentials`). À traiter comme un exemple, pas comme une base. | `kubernetes/workflow.yaml` |
@@ -623,7 +624,10 @@ métriques changent, `CLUSTERING_W` et `DIAMETER` non.
   calculées qu'une fois et leur valeur est recopiée sur les deux flux.
 - **Table résultat.** `network_indicators` gagne la colonne `flow`, qui entre dans la
   clé primaire `(classification, product, flow, year)` et porte **les mêmes codes que
-  les partenaires** (`FLOW_CODES` : `1` = import, `2` = export), de sorte que la
+  les partenaires** (`1` = import, `2` = export : champs `import_flow` / `export_flow`
+  de `VulnerabilityConfig` et de `NetworkVulnerabilityConfig`, défauts identiques,
+  surchargeables par `PARAMETERS` ; pas de bloc `FLOW_CODES` séparé, révision
+  d'implémentation du 2026-10-05), de sorte que la
   jointure de synthèse soit une simple égalité `n."flow" = p."flow"` (PS-04.3). Les
   rangs du SPOF sont pris **par flux** : chaque orientation est calculée dans sa propre
   passe sur la matrice BACI (qui n'a pas de colonne `flow`), la colonne n'étant ajoutée
@@ -685,6 +689,13 @@ Mise en œuvre, identique pour `VulnerabilityMetric` et `NetworkVulnerabilityMet
 - le runner instancie `[cls(config, flow=f) for f in FLOWS if f in cls.supported_flows]` ;
   deux instances partagent un nom de colonne, la clé d'empreinte du registre de
   fraîcheur est donc `"<métrique>/<flux>"`.
+
+Implémentation (2026-10-05) : le cadre est porté par une classe parente commune
+(`_DirectedMetric` dans `macroforecast/trade/vulnerabilities/base.py` : validation,
+`fingerprint_key`, `fingerprint_params()`), la correspondance sens → code
+(`flow_code_map`) et sens → rôles (`NetworkVulnerabilityMetric._roles`) n'étant écrite
+qu'une fois. Un nom de métrique non qualifié (`HHI`) désigne ses deux sens pour le
+forçage (`FORCE_METRICS`) et l'invalidation ; `HHI/export` n'en désigne qu'un.
 
 Alternative écartée : permuter `exporter_col` et `importer_col` dans une copie de la
 configuration. Elle évitait de toucher aux métriques, mais rendait la configuration
@@ -1684,8 +1695,10 @@ baci:
 
 ```yaml
 vulnerabilities:
-  FLOWS: ["import", "export"]    # PD-09 (PQ-06 tranchée)
-  FLOW_CODES: {import: 1, export: 2}
+  FLOWS: ["import", "export"]    # PD-09 (PQ-06 tranchée) ; phase 0 : racine de
+                                 # config/vulnerabilities.yaml, ancre &flows
+  # Codes de flux : champs import_flow / export_flow des PARAMETERS (défauts 1 et 2),
+  # identiques dans les deux blocs ; pas de FLOW_CODES séparé (implémentation 2026-10-05)
   # Millésimes SH pour lesquels les métriques historiques sont calculées (PD-20) :
   # "all" → tous ceux de runtime.NOMENCLATURES.HS ; liste → sous-ensemble ; [] → en
   # vigueur seulement
@@ -1697,7 +1710,7 @@ vulnerabilities:
     BUCKET: "qbollietdgddi"
   PARAMETERS: { … inchangé … }
   NETWORK_VULNERABILITIES:
-    FLOWS: ${vulnerabilities.FLOWS}   # PD-09 : export = graphe BACI transposé
+    FLOWS: ${vulnerabilities.FLOWS}   # PD-09 : export = graphe BACI transposé (phase 0 : *flows)
     STATE:
       PATH_TEMPLATE: "trade/state/vulnerabilities/network/{vintage}.json"
     N_JOBS: ${runtime.N_JOBS}
@@ -2103,6 +2116,10 @@ def fingerprint(name: str, params: Mapping[str, Any]) -> str:
   `SynthesisConfig` qui la concernent (`normalization`, `winsorize_quantile`,
   `polarities`, `min_group_size`, `metric_columns`).
 - Pour BACI, l'empreinte est **unique par millésime** (toutes les étapes sont couplées).
+- Pour les métriques partenaires et réseau, l'empreinte est tenue **par métrique et par
+  sens** : clé `"<métrique>/<flux>"` (`HHI/import`), paramètres = configuration +
+  `flow` (PD-09, PS-15). Un nom non qualifié (`HHI`) désigne toutes ses clés pour le
+  forçage et l'invalidation (`kedro_pipeline.io.freshness.name_matches`).
 
 #### PS-10.3 Décision
 
@@ -2376,29 +2393,47 @@ métriques réseau dépendent de toutes les années).
   note `own(f)` le flux lui-même et `other(f)` l'autre sens (propriétés
   `own_flow_code` / `other_flow_code`, déduites de `import_flow` / `export_flow`) ;
   `CDI2(f) = extra_UE(own) / monde(own)` et `CDI3(f) = extra_UE(own) / monde(other)`.
-  À l'import, cela redonne exactement les définitions actuelles (valeurs et empreintes
-  inchangées) ; à l'export, les définitions retenues ;
-- le runner filtre la grille sur `FLOW_CODES[f]` pour `f ∈ FLOWS` et met à `null` toute
-  métrique non supportée pour un flux ;
+  À l'import, cela redonne exactement les définitions actuelles (valeurs inchangées,
+  vérifiées à l'identique sur données fictives ; les **empreintes**, elles, changent :
+  voir ci-dessous) ; à l'export, les définitions retenues ;
+- le runner filtre la grille sur les codes des flux de `FLOWS` (champs `import_flow` /
+  `export_flow` de la configuration, ou argument `flow_codes`) et met à `null` toute
+  métrique non supportée pour un flux ; les métriques lisent toute la source (`CDI3` a
+  besoin du flux opposé). Une grille vide sur une source non vide (codes de flux absents,
+  par exemple colonne de flux en texte) est signalée par un avertissement ;
 - **réseau** (PD-09, révision 2026-10-05) : toutes les métriques → `{"import",
   "export"}` ; propriétés de rôle `counterpart_col` (exportateur à l'import, importateur
   à l'export) et `exposed_col` (l'autre colonne), seules utilisées dans les formules ;
   `orientation_invariant: ClassVar[bool]` (vrai pour `CLUSTERING_W`, `DIAMETER`). Le
   runner réseau reçoit `flows` et `flow_codes` ; pour chaque flux `f`, il instancie
   `cls(config, flow=f)`, calcule les métriques orientées, recopie les métriques
-  invariantes calculées une seule fois, et ajoute `flow = FLOW_CODES[f]`. La
-  configuration n'est jamais modifiée. À l'import, les valeurs sont strictement
-  identiques à aujourd'hui ;
+  invariantes calculées une seule fois, et ajoute `flow` (code du flux) en dernier ; la
+  clé primaire écrite est `key_columns + (flow_col,)`. La configuration n'est jamais
+  modifiée. À l'import, les valeurs sont strictement identiques à aujourd'hui ;
 - empreintes : clé `"<métrique>/<flux>"` pour les deux familles (deux instances
   partagent un nom de colonne), paramètres = configuration + `flow`, de sorte qu'ajouter
-  un flux à `FLOWS` ne recalcule que ce flux ;
-- la synthèse génère `p."flow" IN (1, 2)` à partir de `FLOWS` et l'ajoute par conjonction
-  à `FILTERS.WHERE` ; `build_source_query` reçoit un argument `flow_codes` optionnel (le
-  test existant passe `None` et reste inchangé) ; la jointure réseau porte sur
-  `n."flow" = p."flow"` (PS-04.3) ;
-- MLflow : les métriques partenaires et réseau sont préfixées par flux
-  (`partners/import/HHI/mean`, `partners/export/HHI/mean`,
-  `network/import/SPOF/mean`, `network/export/SPOF/mean`).
+  un flux à `FLOWS` ne recalcule que ce flux : les scripts ne calculent que les sens
+  nommés par les plans (`qualifiers_to_compute`, union sur les unités planifiées ; des
+  raisons mixtes recalculent donc parfois un sens à jour, à valeurs identiques). Écart
+  assumé (choix de l'utilisateur, 2026-10-05) : l'empreinte import change aussi (nouvelle
+  clé, `flow` dans les paramètres), d'où **un recalcul complet des partenaires** au
+  premier run après déploiement, sans migration des registres ;
+- diagnostics : un sous-rapport par sens (`report.flows`), jamais de distribution, de
+  dérive ni de palmarès mêlant import et export ; artefacts dans
+  `vulnerabilities/<flux>/` et `network_vulnerabilities/<flux>/` ; l'agrégat extra-UE est
+  contrôlé sur les deux sens (`CDI2` / `CDI3` export en dépendent) ;
+- la synthèse génère `p."flow" IN (1, 2)` à partir de `FLOWS` (codes lus dans les
+  `PARAMETERS` partenaires) et l'ajoute par conjonction à `FILTERS.WHERE` ;
+  `build_source_query` reçoit un argument `flow_codes` optionnel (le test existant passe
+  `None` et reste inchangé) ; la jointure réseau porte sur `n."flow" = p."flow"`
+  (PS-04.3) ; avec plus d'un sens, l'absence de `flow` dans `context_columns` fait
+  échouer le chargement de la configuration (synthèse et cohérence) ; `FLOWS` entre dans
+  l'empreinte de la synthèse ;
+- MLflow : les métriques partenaires et réseau sont préfixées par flux par le script
+  (`scripts/_run_report.flow_run_metrics`) : `partners/import/HHI/mean`,
+  `partners/export/HHI/mean`, `network/import/SPOF/mean`, `network/export/SPOF/mean` ;
+  les contrôles de `config/tracking.yaml` visent `partners/<flux>/cells/n_total` et
+  `network/<flux>/cells/n_total`.
 
 ### PS-16 — Évolution de schéma (délégation à `dt-ducklake-manager 0.3.1`)
 
@@ -3863,6 +3898,7 @@ les autres depuis le poste local.
 | Mesure des limites de l'API Eurostat pour `products_step` (PR-03) | K-01 ou K-04b | local possible (réseau public), **mais** l'adresse IP et le limiteur diffèrent en production → mesurer aussi depuis un pod | débit réel |
 | Migration des registres v1 → v2 sur S3 (`adopt_legacy_fingerprints`) | après K-05 | un run de chaque étape avec `ADOPT_LEGACY_FINGERPRINTS=true` (variable d'environnement ou `STATE.ADOPT_LEGACY_FINGERPRINTS` / bloc `SYNTHESIS` / `COHERENCE`), puis retour à `false` ; pas d'outil dédié (choix K-05) | S3 réel : sauvegarder les registres v1 avant ; synthèse et cohérence réécrivent leur fichier en place |
 | Recréation de la table `indicators` avec la nouvelle clé (`classification`) | après K-06b | runbook §5.3, depuis un service Onyxia | catalogue et Parquet réels |
+| **Migration import / export du réseau** (colonne `flow` dans la clé primaire de `network_indicators`, `EXPORT_HHI` renommée `WORLD_HHI`) | au déploiement de l'implémentation import / export (2026-10-05), avant tout run réseau | 1. suppression de la table `network_indicators` et de `demo_network_indicators` (session DuckDB attachée au catalogue `vulnerabilities`, `DROP TABLE` du `fact_table` de chaque schéma) ; 2. réinitialisation des registres de fraîcheur réseau (suppression des fragments `trade/state/vulnerabilities/network/` et `trade/demo/state/vulnerabilities/network/`) ; 3. recalcul réseau forcé (`FORCE_STEPS=network`) ; 4. synthèse, cohérence, puis publication de service (`serving-script`), afin que `cell_scores` porte `WORLD_HHI` et la jointure par flux. Le premier run partenaires recalcule de lui-même tout le périmètre (empreintes `"<métrique>/<flux>"`), sans action manuelle. **Rien n'a été supprimé par le prompt d'implémentation** | suppressions irréversibles sur le catalogue et S3 réels ; réexporter ensuite les objets Superset si leur ID de jeu de données change |
 | Première passe BACI par millésime sur données réelles ; relevé de `memory/peak_mb` et de la durée | après K-07 | `argo submit --entrypoint weekly` | seul moyen d'avoir les vraies volumétries |
 | Déploiement des manifestes générés, bascule, recette, runbooks | K-17 | K-17 🔌 | `kubectl apply`, `argo` |
 | **Retrait des données de démonstration et fictives** : bases `demo_*`, schémas `demo_*`, préfixes S3 `trade/demo/`, registres du profil, expériences MLflow `demo-*`, objets Superset du demo, workflow de transition ; contrôle de non-contamination de la production | K-17b (après K-17, données réelles complètes — PQ-20) | K-17b 🔌, confirmation objet par objet | suppressions **irréversibles** sur PostgreSQL, S3, MLflow, Superset |

@@ -68,7 +68,7 @@ serving:
   COMEXT_FILTER: 'CAST(c."indicators" AS VARCHAR) = ''VALUE_IN_EUROS'' AND CAST(c."freq" AS VARCHAR) = ''A'''
   # Métriques normalisées min-max (<métrique>_norm, dans [0, 1]) pour la heatmap, et
   # colonnes définissant le contexte de normalisation
-  NORM_METRICS: ["HHI", "CDI2", "CDI3", "EXPORT_HHI", "CENTRALITY_RISK", "CLUSTERING_W", "SPOF"]
+  NORM_METRICS: ["HHI", "CDI2", "CDI3", "WORLD_HHI", "CENTRALITY_RISK", "CLUSTERING_W", "SPOF"]
   NORM_PARTITION: ["flow", "year"]
 
   # Codes partenaires agrégés de Comext, alignés sur VulnerabilityConfig (world_code,
@@ -97,11 +97,13 @@ serving:
       classification: "VARCHAR"
       product: "VARCHAR"
       year: "INTEGER"
-      EXPORT_HHI: "DOUBLE"
+      # Code de flux entier, comme dans indicators (1 import, 2 export)
+      flow: "BIGINT"
+      WORLD_HHI: "DOUBLE"
       CENTRALITY_RISK: "DOUBLE"
       CLUSTERING_W: "DOUBLE"
       SPOF: "DOUBLE"
-      EXPORT_HHI_ALERT: "BOOLEAN"
+      WORLD_HHI_ALERT: "BOOLEAN"
       CENTRALITY_RISK_ALERT: "BOOLEAN"
       CLUSTERING_W_ALERT: "BOOLEAN"
       SPOF_ALERT: "BOOLEAN"
@@ -151,6 +153,8 @@ serving:
     # partenaires et réseau, alertes, scores et rangs de synthèse, métriques normalisées.
     # classification / hs_vintage / in_force sont DÉRIVÉS tant qu'indicators ne les porte
     # pas (PS-29.3) ; la jointure réseau se fait sur le millésime en vigueur (corrige C-11).
+    # Elle porte aussi sur le flux : une ligne export reçoit les métriques réseau du graphe
+    # transposé (concentration de la demande mondiale), une ligne import celles de l'offre.
     cell_scores:
       PARTITIONED: true
       SORT_BY: ["year", "reporter", "product"]
@@ -178,11 +182,12 @@ serving:
             CAST(n."classification" AS VARCHAR) AS classification,
             lpad(CAST(n."product" AS VARCHAR), 6, '0') AS hs6,
             CAST(n."year" AS INTEGER) AS year,
-            CAST(n."EXPORT_HHI" AS DOUBLE) AS "EXPORT_HHI",
+            CAST(n."flow" AS VARCHAR) AS flow,
+            CAST(n."WORLD_HHI" AS DOUBLE) AS "WORLD_HHI",
             CAST(n."CENTRALITY_RISK" AS DOUBLE) AS "CENTRALITY_RISK",
             CAST(n."CLUSTERING_W" AS DOUBLE) AS "CLUSTERING_W",
             CAST(n."SPOF" AS DOUBLE) AS "SPOF",
-            CAST(n."EXPORT_HHI_ALERT" AS BOOLEAN) AS "EXPORT_HHI_ALERT",
+            CAST(n."WORLD_HHI_ALERT" AS BOOLEAN) AS "WORLD_HHI_ALERT",
             CAST(n."CENTRALITY_RISK_ALERT" AS BOOLEAN) AS "CENTRALITY_RISK_ALERT",
             CAST(n."CLUSTERING_W_ALERT" AS BOOLEAN) AS "CLUSTERING_W_ALERT",
             CAST(n."SPOF_ALERT" AS BOOLEAN) AS "SPOF_ALERT"
@@ -219,9 +224,9 @@ serving:
             g.reporter, rl.label AS reporter_label,
             g.product, pl.label AS product_label, length(g.product) AS product_level,
             g."HHI", g."CDI2", g."CDI3",
-            net."EXPORT_HHI", net."CENTRALITY_RISK", net."CLUSTERING_W", net."SPOF",
+            net."WORLD_HHI", net."CENTRALITY_RISK", net."CLUSTERING_W", net."SPOF",
             g."HHI_ALERT", g."CDI2_ALERT", g."CDI3_ALERT",
-            net."EXPORT_HHI_ALERT", net."CENTRALITY_RISK_ALERT", net."CLUSTERING_W_ALERT",
+            net."WORLD_HHI_ALERT", net."CENTRALITY_RISK_ALERT", net."CLUSTERING_W_ALERT",
             net."SPOF_ALERT",
             sc.* EXCLUDE (freq, flow, indicators, time_period, reporter, product)
           FROM grid AS g
@@ -230,6 +235,7 @@ serving:
            AND net.hs6 = substr(g.product, 1, 6)
            AND length(g.product) >= 6
            AND net.year = g.year
+           AND net.flow = g.flow
           LEFT JOIN scores AS sc
             ON sc.freq = g.freq AND sc.flow = g.flow AND sc.indicators = g.indicators
            AND sc.time_period = g.time_period AND sc.reporter = g.reporter

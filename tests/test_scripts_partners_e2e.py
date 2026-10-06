@@ -104,7 +104,10 @@ def test_partner_step_second_run_recomputes_nothing(ducklake_conn, tmp_path: Pat
     assert n_rows > 0
     fragment = json.loads(Path(first.written[0]).read_text(encoding="utf-8"))
     assert fragment["schema_version"] == 2
-    assert all(set(e["fingerprints"]) == {"HHI", "CDI2", "CDI3"} for e in fragment["entries"].values())
+    assert all(
+        set(e["fingerprints"]) == {"HHI/import", "CDI2/import", "CDI3/import"}
+        for e in fragment["entries"].values()
+    )
 
     # Seconde exécution, registre relu depuis le disque : rien à recalculer
     second = run_partner_step(
@@ -139,3 +142,56 @@ def test_partner_step_second_run_recomputes_nothing(ducklake_conn, tmp_path: Pat
     )
     assert set(forced.plans) == set(units)
     assert {plan.reason for plan in forced.plans.values()} == {"forced"}
+
+
+def test_adding_export_computes_only_export_rows(ducklake_conn, tmp_path: Path) -> None:
+    """Passer de FLOWS=[import] à [import, export] : seules les lignes export sont écrites."""
+    from statflows.storage.ducklake.tables import write_dataframe
+
+    conn, alias = ducklake_conn
+    write_dataframe(
+        conn, _comext_fact_table(),
+        ["freq", "reporter", "product", "flow", "indicators", "TIME_PERIOD", "partner"],
+        catalog_alias=alias, schema="comext",
+    )
+    config = VulnerabilityConfig()
+    block = {
+        "BUCKET": None,
+        "PATHS": {},
+        "STATE": {"PATH_TEMPLATE": f"{tmp_path.as_posix()}/state/{{classification}}/{{reporter}}.json"},
+    }
+    units = partner_units({(r, p): T0 for r in REPORTERS for p in PRODUCTS}, "HS2022")
+    kwargs = dict(
+        source_catalog_alias=alias, source_schema="comext",
+        result_catalog_alias=alias, result_schema="indicators",
+        config=config, log_artifacts=False,
+    )
+    read = lambda: conn.execute(  # noqa: E731
+        f'SELECT * FROM "{alias}"."indicators"."fact_table" ORDER BY ALL'
+    ).df()
+
+    # Import seul : aucune ligne export
+    run_partner_step(
+        conn, conn, registry=partner_registry(block, "HS2022"), units=units,
+        requested=partner_requested(config, ("import",)), force=ForceSpec(),
+        now=T0 + timedelta(hours=1), flows=("import",), **kwargs,
+    )
+    imports_only = read()
+    assert set(imports_only["flow"]) == {config.import_flow}
+
+    # Ajout de l'export : plans limités aux empreintes export, lignes import intactes
+    both = ("import", "export")
+    added = run_partner_step(
+        conn, conn, registry=partner_registry(block, "HS2022"), units=units,
+        requested=partner_requested(config, both), force=ForceSpec(),
+        now=T0 + timedelta(hours=2), flows=both, **kwargs,
+    )
+    assert {plan.reason for plan in added.plans.values()} == {"fingerprint"}
+    assert list(added.report.flows) == ["export"]
+    after = read()
+    assert set(after["flow"]) == {config.import_flow, config.export_flow}
+    pd.testing.assert_frame_equal(
+        after[after["flow"] == config.import_flow].reset_index(drop=True),
+        imports_only.reset_index(drop=True),
+    )
+    assert after.loc[after["flow"] == config.export_flow, ["HHI", "CDI2", "CDI3"]].notna().all().all()

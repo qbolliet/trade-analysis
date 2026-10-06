@@ -1,7 +1,8 @@
 """Script de calcul/mise à jour des indicateurs de vulnérabilité commerciale.
 
 Recalcule les indicateurs (HHI, CDI2, CDI3 — cf. `macroforecast.trade.vulnerabilities`)
-par unité de fraîcheur `classification x reporter x produit`. La classification
+par unité de fraîcheur `classification x reporter x produit`, pour chaque sens de
+flux de `FLOWS` (racine de `config/vulnerabilities.yaml` : `import`, `export`). La classification
 est, pour toutes les unités, le millésime SH le plus récent de
 `runtime.NOMENCLATURES.HS` (une paire couvre toutes les périodes). Une unité est
 recalculée, avec toutes ses métriques, quand :
@@ -15,6 +16,12 @@ recalculée, avec toutes ses métriques, quand :
 - l'empreinte méthodologique d'une métrique a changé ou manque (métrique
   ajoutée, paramètre modifié, ou empreinte invalidée après la correction d'une
   formule : `scripts/invalidate_freshness.py --step partners --metrics HHI`).
+
+Les empreintes sont tenues par métrique ET par sens (`HHI/import`,
+`HHI/export`) : ajouter `export` à `FLOWS` ne recalcule que les lignes export,
+les lignes import de la table résultat restant intactes (upsert par clé, le flux
+faisant partie de la clé). Les métriques MLflow sont préfixées par sens
+(`partners/import/...`, `partners/export/...`).
 
 Le registre de fraîcheur est fragmenté (`STATE.PATH_TEMPLATE`, un fichier par
 classification x reporter) et n'est écrit qu'après succès du calcul et de
@@ -72,6 +79,7 @@ from kedro_pipeline.io.freshness import (
     fingerprint,
     legacy_entry,
     plan_metrics,
+    qualifiers_to_compute,
     units_to_compute,
     utc_now,
 )
@@ -83,22 +91,22 @@ from scripts.download_comtrade import load_runtime_config
 from statflows.core.download import _parse_iso, _schema_name
 
 # Module de suivi d'exécution (MLflow optionnel, objet nul par défaut)
-from macroforecast.tracking import NULL_TRACKER, CapturingTracker, get_tracker, rekey_metrics
+from macroforecast.tracking import NULL_TRACKER, CapturingTracker, get_tracker
 from macroforecast.tracking.figures import (
     key_figures_partner_vulnerabilities,
     sections_partner_vulnerabilities,
 )
 from macroforecast.tracking.report import Units
-from scripts._run_report import RunScope, guarded_run, run_name
+from scripts._run_report import RunScope, flow_run_metrics, guarded_run, run_name
 # Module de calcul des indicateurs
-from macroforecast.trade.methodology import methodology_params
 from macroforecast.trade.vulnerabilities import (
     DEFAULT_CONFIG,
     DEFAULT_METRIC_CLASSES,
-    VULNERABILITY_FINGERPRINT_EXCLUDED,
     VulnerabilityConfig,
     VulnerabilityMetric,
     VulnerabilityReport,
+    flow_code_map,
+    parse_flows,
 )
 from macroforecast.trade.vulnerabilities.runner import (
     read_previous_result,
@@ -118,6 +126,10 @@ logger = logging.getLogger(__name__)
 _REGISTRY_ROOT = "VULNERABILITIES"
 # Clé YAML portant le backend de calcul narwhals (hors VulnerabilityConfig)
 _BACKEND_KEY = "BACKEND"
+# Clé YAML des sens de flux calculés (racine du fichier)
+_FLOWS_KEY = "FLOWS"
+# Préfixe des métriques MLflow de l'étape (suivi du sens : partners/import/...)
+_METRICS_FAMILY = "partners"
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -211,6 +223,31 @@ def vulnerability_config_from_params(params: Optional[Dict]) -> VulnerabilityCon
         overrides[key] = value
 
     return replace(DEFAULT_CONFIG, **overrides)
+
+
+# Fonction de lecture des sens de flux calculés
+def load_flows(block: Optional[Mapping[str, Any]]) -> Tuple[str, ...]:
+    """Read the flow directions to compute from a configuration block.
+
+    Args:
+        block: Mapping holding a ``FLOWS`` key (the root of
+            ``config/vulnerabilities.yaml``, or its ``NETWORK_VULNERABILITIES``
+            block). An absent key keeps the import direction alone, the
+            behaviour of the metrics before the export directions existed.
+
+    Returns:
+        The validated directions, in configuration order.
+
+    Raises:
+        ValueError: If ``FLOWS`` is empty or names an unknown direction.
+
+    Examples:
+        >>> load_flows({"FLOWS": ["import", "export"]})
+        ('import', 'export')
+        >>> load_flows({})
+        ('import',)
+    """
+    return parse_flows((block or {}).get(_FLOWS_KEY, ["import"]))
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -425,29 +462,44 @@ def partner_units(
 # Fonction de calcul des empreintes demandées des métriques partenaires
 def partner_requested(
     config: VulnerabilityConfig,
+    flows: Sequence[str] = ("import",),
     metric_classes: Sequence[type] = DEFAULT_METRIC_CLASSES,
 ) -> Dict[str, str]:
-    """Current methodological fingerprint of every partner metric.
+    """Current methodological fingerprint of every partner metric and direction.
 
-    Each fingerprint digests the metric name and the configuration fields that
-    shape the written values (diagnostic-only fields excluded). Adding a metric
-    class or changing such a parameter therefore makes every existing unit
-    stale; a formula fix is signalled by invalidating the recorded
-    fingerprints (``scripts/invalidate_freshness.py``).
+    Each fingerprint digests the metric name, the configuration fields that
+    shape the written values (diagnostic-only fields excluded) and the flow
+    direction. It is keyed by ``"<metric>/<flow>"``: two instances of a metric
+    share a column name, and adding a direction must only make that direction
+    stale. Adding a metric class or changing such a parameter makes every
+    existing unit stale; a formula fix is signalled by invalidating the
+    recorded fingerprints (``scripts/invalidate_freshness.py``).
 
     Args:
         config: Methodological configuration of the partner metrics.
-        metric_classes: Metric classes computed by the step.
+        flows: Directions computed by the step.
+        metric_classes: Metric classes computed by the step (each in the
+            directions it supports).
 
     Returns:
-        Mapping ``metric name -> fingerprint``.
+        Mapping ``"<metric>/<flow>" -> fingerprint``.
 
     Examples:
         >>> sorted(partner_requested(VulnerabilityConfig()))
-        ['CDI2', 'CDI3', 'HHI']
+        ['CDI2/import', 'CDI3/import', 'HHI/import']
+        >>> len(partner_requested(VulnerabilityConfig(), ("import", "export")))
+        6
     """
-    params = methodology_params(config, VULNERABILITY_FINGERPRINT_EXCLUDED)
-    return {cls.name: fingerprint(cls.name, params) for cls in metric_classes}
+    metrics = [
+        cls(config, flow=flow)
+        for flow in flows
+        for cls in metric_classes
+        if flow in cls.supported_flows
+    ]
+    return {
+        metric.fingerprint_key: fingerprint(metric.name, metric.fingerprint_params())
+        for metric in metrics
+    }
 
 
 # Fonction de lecture du registre v1 des partenaires en entrées héritées
@@ -533,8 +585,9 @@ def plan_partner_units(
 
     A unit is planned when it was never computed, when it is forced, when its
     series was downloaded again since, or when a metric fingerprint changed.
-    Every metric of a planned unit is recomputed (the result table is wide and
-    upserted by whole rows), whatever the subset named by the plan.
+    Every metric of a planned direction is recomputed (the result table is wide
+    and upserted by whole rows); the directions recomputed are those named by
+    the plans (see :func:`kedro_pipeline.io.freshness.qualifiers_to_compute`).
 
     Args:
         registry: Partners freshness registry.
@@ -618,6 +671,7 @@ def compute_partner_units(
     result_catalog_alias: str,
     result_schema: str,
     config: VulnerabilityConfig,
+    flows: Sequence[str] = ("import",),
     metrics: Optional[Sequence[VulnerabilityMetric]] = None,
     backend: str = "pandas",
     tracker: Any = NULL_TRACKER,
@@ -633,6 +687,12 @@ def compute_partner_units(
     is captured before reading the source, so an upstream update landing
     during the run is never missed.
 
+    Only the directions named by the plans are computed, in a single pass over
+    the union of the planned units: after ``export`` is added to ``flows``,
+    nothing but the export rows is computed and written. When some units are
+    stale for another reason (new data), the other units of the pass recompute
+    that direction too, with identical values — the price of a single pass.
+
     Args:
         source_conn: Open connection on the source catalog (owned by the caller).
         result_conn: Open connection on the result catalog (owned by the caller).
@@ -646,6 +706,7 @@ def compute_partner_units(
         result_catalog_alias: Alias of the result catalog.
         result_schema: Result schema.
         config: Methodological configuration.
+        flows: Every configured direction (``FLOWS``), in output order.
         metrics: Metric instances (the default registry when ``None``).
         backend: Narwhals computation backend.
         tracker: Run tracker (metrics ``freshness/*`` and tag ``forced``).
@@ -660,6 +721,9 @@ def compute_partner_units(
     """
     computed_at = now or utc_now()
     pairs = {(unit.get("reporter"), unit.get("product")) for unit in plans}
+    # Sens à recalculer : ceux que nomment les plans (empreintes qualifiées)
+    computed_flows = qualifiers_to_compute(plans, flows)
+    codes = flow_code_map(config)
 
     # Fraîcheur : métriques de décision et tag de forçage
     tracker.log_metrics(plan_metrics(plans, n_candidates=len(units)))
@@ -670,7 +734,9 @@ def compute_partner_units(
     df_previous = (
         read_previous_result(
             result_conn, result_catalog_alias, result_schema,
-            reporters_products=sorted(pairs), config=config,
+            reporters_products=sorted(pairs),
+            flow_codes=[codes[flow] for flow in computed_flows],
+            config=config,
         )
         if measure_drift
         else None
@@ -685,6 +751,7 @@ def compute_partner_units(
         reporters_products=pairs,
         metrics=metrics,
         config=config,
+        flows=computed_flows,
         backend=backend,
         tracker=tracker,
         log_artifacts=log_artifacts,
@@ -763,6 +830,8 @@ def main() -> None:
     # Construction des paramètres méthodologiques (seuils, conventions de colonnes)
     parameters = vulnerability_config.get("PARAMETERS") or {}
     vulnerability_parameters = vulnerability_config_from_params(parameters)
+    # Sens de flux calculés (racine du fichier)
+    flows = load_flows(vulnerability_config)
     # Backend de calcul narwhals, lu à part (pas un paramètre méthodologique)
     backend = parameters.get(_BACKEND_KEY, "pandas")
 
@@ -787,7 +856,7 @@ def main() -> None:
 
     # Registre de fraîcheur fragmenté, empreintes courantes et forçage ponctuel
     registry = partner_registry(block, classification)
-    requested = partner_requested(vulnerability_parameters)
+    requested = partner_requested(vulnerability_parameters, flows)
     force = ForceSpec.from_runtime(runtime_config)
     plans = plan_partner_units(
         registry, units, requested, force,
@@ -871,6 +940,7 @@ def main() -> None:
                     result_catalog_alias=result_connector.catalog_alias,
                     result_schema=result_schema,
                     config=vulnerability_parameters,
+                    flows=flows,
                     backend=backend,
                     tracker=tracker,
                     log_artifacts=log_artifacts,
@@ -881,16 +951,18 @@ def main() -> None:
                 )
                 report = result.report
 
-                # Envoi des métriques : le rapport connaît sa mise en forme.
-                # Les paramètres sont journalisés par le runner lui-même ; seuls
+                # Envoi des métriques, préfixées par sens (le rapport connaît sa
+                # mise en forme, le préfixe appartient à l'appelant). Les
+                # paramètres sont journalisés par le runner lui-même ; seuls
                 # les tags propres au script restent ici.
-                tracker.log_metrics(rekey_metrics(report.to_metrics()))
+                tracker.log_metrics(flow_run_metrics(report, _METRICS_FAMILY))
                 tracker.set_tags(
                     {
                         "dataflow": DATAFLOW,
                         "result_schema": result_schema,
                         "created": str(report.created),
                         "n_pairs": str(len(plans)),
+                        "flows": ",".join(report.flows),
                     }
                 )
 

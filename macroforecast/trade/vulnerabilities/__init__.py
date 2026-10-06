@@ -11,6 +11,10 @@ from .base import (
     individual_partner_expr,
     VULNERABILITY_FINGERPRINT_EXCLUDED,
     NETWORK_FINGERPRINT_EXCLUDED,
+    Flow,
+    FLOW_NAMES,
+    flow_code_map,
+    parse_flows,
 )
 # Diagnostics et rapports structurés
 from .diagnostics import (
@@ -85,6 +89,10 @@ __all__ = [
     "NetworkVulnerabilityMetric",
     "ScoreConfig",
     "individual_partner_expr",
+    "Flow",
+    "FLOW_NAMES",
+    "flow_code_map",
+    "parse_flows",
     # Diagnostics et rapports structurés
     "VulnerabilityReport",
     "NetworkVulnerabilityReport",

@@ -76,9 +76,11 @@ position:
 
 
         **HHI** : concentration des fournisseurs (Herfindahl-Hirschman, 0-1, 1 = un
-        seul fournisseur). **CDI2/CDI3** : dependance extra-UE (variantes). **EXPORT_HHI**,
+        seul fournisseur). **CDI2/CDI3** : dependance extra-UE (variantes). **WORLD_HHI**,
         **CENTRALITY_RISK**, **CLUSTERING_W**, **SPOF** : metriques de reseau (structure
-        des echanges mondiaux du produit). Score et rang synthetiques : consensus
+        des echanges mondiaux du produit ; flux import : concentration de l''offre mondiale,
+        flux export : concentration de la demande mondiale). Import et export ne sont
+        jamais classes ensemble. Score et rang synthetiques : consensus
         multi-methodes (`consensus_borda` par defaut). **Convention : rang 1 = unite
         la plus vulnerable.**'
     parents:

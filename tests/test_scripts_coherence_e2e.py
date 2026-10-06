@@ -44,7 +44,7 @@ def _build_synthesis_config() -> SynthesisConfig:
     """Build the ``SynthesisConfig`` the scores are produced with."""
     return SynthesisConfig(
         metric_columns=(
-            "HHI", "CDI2", "CDI3", "EXPORT_HHI", "CENTRALITY_RISK", "CLUSTERING_W",
+            "HHI", "CDI2", "CDI3", "WORLD_HHI", "CENTRALITY_RISK", "CLUSTERING_W",
         ),
         levels=("by_product", "by_reporter", "global"),
         min_group_size=3,
@@ -85,7 +85,7 @@ def _build_synthesis_config() -> SynthesisConfig:
             ),
             MethodSpec(
                 name="kantorovich", kind="kantorovich",
-                metrics=("HHI", "CDI2", "CDI3", "EXPORT_HHI"),
+                metrics=("HHI", "CDI2", "CDI3", "WORLD_HHI"),
                 params={
                     "epsilon": 0.1, "n_target": 4096, "fit_sample_size": 20_000,
                     "alpha": 0.05, "theta0_degrees": 60.0,
@@ -110,31 +110,29 @@ def _build_coherence_config() -> CoherenceConfig:
     )
 
 
-def _build_query(catalog_alias: str) -> str:
+def _build_query(catalog_alias: str, flow_codes=(1,)) -> str:
     """Build the S-2.3 source query joining the fixture's two schemas."""
     sources = [
         {"SCHEMA": "indicators", "ALIAS": "p", "COLUMNS": ["HHI", "CDI2", "CDI3"]},
         {
             "SCHEMA": "network_indicators",
             "ALIAS": "n",
-            "COLUMNS": ["EXPORT_HHI", "CENTRALITY_RISK", "CLUSTERING_W"],
+            "COLUMNS": ["WORLD_HHI", "CENTRALITY_RISK", "CLUSTERING_W"],
             "JOIN": {
                 "ON": [
                     'substr(p."product", 1, 6) = n."product"',
                     'CAST(substr(p."TIME_PERIOD", 1, 4) AS INTEGER) = n."year"',
+                    'n."flow" = p."flow"',
                 ],
                 "WHERE": "n.\"classification\" = 'HS2022'",
             },
         },
     ]
     filters = {
-        "WHERE": (
-            'p."flow" = 1 AND p."indicators" = \'VALUE_IN_EUROS\' '
-            'AND p."freq" = \'A\''
-        ),
+        "WHERE": 'p."indicators" = \'VALUE_IN_EUROS\' AND p."freq" = \'A\'',
         "LAST_N_PERIODS": None,
     }
-    return build_source_query(sources, filters, catalog_alias)
+    return build_source_query(sources, filters, catalog_alias, list(flow_codes))
 
 
 def _read_diagnostics(conn, catalog_alias: str) -> pd.DataFrame:

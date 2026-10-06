@@ -26,6 +26,12 @@
 # Scores synthétiques
 # ──────────────────────────────────────────────────────────────────────
 SYNTHESIS:
+  # Sens de flux synthétisés : même valeur que FLOWS de config/vulnerabilities.yaml
+  # (vérifié par les tests). Génère le prédicat p."flow" IN (...) ajouté à
+  # FILTERS.WHERE, les codes étant ceux des PARAMETERS partenaires. Avec plus d'un
+  # sens, "flow" doit figurer dans PARAMETERS.context_columns : import et export ne
+  # sont jamais comparés entre eux (échec au chargement sinon).
+  FLOWS: ["import", "export"]
   # Bucket S3 où sont stockées les données de la table de faits « synthesis »
   BUCKET: "qbollietdgddi"
   # Schéma résultat des scores dans le catalogue « vulnerabilities »
@@ -58,22 +64,27 @@ SYNTHESIS:
     # Source jointe : famille réseau (indices BACI)
     - SCHEMA: "demo_network_indicators"               # schéma résultat de compute_network_vulnerabilities.py
       ALIAS: "n"                                 # alias de la source jointe
-      COLUMNS: ["EXPORT_HHI", "CENTRALITY_RISK", "CLUSTERING_W"]  # métriques réseau retenues
+      COLUMNS: ["WORLD_HHI", "CENTRALITY_RISK", "CLUSTERING_W"]  # métriques réseau retenues
       JOIN:
         # Conditions de correspondance grille -> réseau (CN8 -> HS6, période -> année).
         "ON":
           # CAST + lpad : `product` peut être stocké en entier (zéro initial perdu pour les chapitres 01-09)
           - 'substr(lpad(CAST(p."product" AS VARCHAR), 8, ''0''), 1, 6) = lpad(CAST(n."product" AS VARCHAR), 6, ''0'')'
           - 'CAST(substr(CAST(p."TIME_PERIOD" AS VARCHAR), 1, 4) AS INTEGER) = n."year"'
+          # Même sens : une ligne export reçoit les métriques du graphe transposé
+          # (concentration de la demande mondiale), une ligne import celles de l'offre
+          - 'n."flow" = p."flow"'
         # Filtre sur la source jointe, placé dans le ON (jointure gauche) :
         # un seul millésime de nomenclature réseau
         WHERE: 'n."classification" = ''HS2017'''
 
   # Contextes retenus : prédicat SQL évalué sur la grille p.
   FILTERS:
-    # Flux import, indicateur en valeur, fréquence annuelle (modalités à vérifier
-    # contre les données réelles de DS-045409, cf. §11 de l'architecture)
-    WHERE: 'p."flow" = 1 AND p."indicators" = ''VALUE_IN_EUROS'' AND p."freq" = ''A'' AND p."reporter" <> ''EU27_2020'''
+    # Indicateur en valeur, fréquence annuelle (modalités à vérifier contre les
+    # données réelles de DS-045409) ; le reporter agrégé EU27_2020 est exclu de la
+    # synthèse (ses flux sont extra-UE par construction, CDI2 y vaut 1), pas des
+    # métriques. Le prédicat sur le flux est généré depuis FLOWS.
+    WHERE: 'p."indicators" = ''VALUE_IN_EUROS'' AND p."freq" = ''A'' AND p."reporter" <> ''EU27_2020'''
     # Nombre de dernières périodes conservées (sous-requête sur les TIME_PERIOD
     # distincts) ; null => toutes les périodes
     LAST_N_PERIODS: null
@@ -100,8 +111,11 @@ SYNTHESIS:
     # Colonne du produit (cellule)
     product_col: "product"
     # Colonnes de métriques mises à disposition des méthodes
-    metric_columns: ["HHI", "CDI2", "CDI3", "EXPORT_HHI", "CENTRALITY_RISK", "CLUSTERING_W"]
-    # Paires (métrique, +/-1) ; toute métrique non listée a une polarité positive
+    metric_columns: ["HHI", "CDI2", "CDI3", "WORLD_HHI", "CENTRALITY_RISK", "CLUSTERING_W"]
+    # Paires (métrique, +/-1) ; toute métrique non listée a une polarité positive.
+    # Aucune différence entre import et export : plus concentré = plus vulnérable,
+    # côté fournisseurs à l'import, côté débouchés à l'export, pour les métriques
+    # partenaires comme réseau
     polarities: []
     # Niveaux de comparaison à l'intérieur d'un contexte (D-09)
     levels: ["by_product", "by_reporter", "global"]
@@ -161,7 +175,7 @@ SYNTHESIS:
       # Score de Kantorovitch orienté (transport optimal) sur un sous-ensemble de
       # métriques (M-17) ; calibration conforme par découpage, alerte projetée
       - {name: "kantorovich", kind: "kantorovich",
-         metrics: ["HHI", "CDI2", "CDI3", "EXPORT_HHI"],
+         metrics: ["HHI", "CDI2", "CDI3", "WORLD_HHI"],
          params: {epsilon: 0.1, n_target: 4096, fit_sample_size: 20000, alpha: 0.05,
                   theta0_degrees: 60.0, conformal: "split", alert: "projected"}}
       # SMAA sur une somme pondérée (acceptabilité de rang par tirages de poids)

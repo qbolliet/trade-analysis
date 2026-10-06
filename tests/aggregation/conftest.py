@@ -99,7 +99,7 @@ def df_synthesis_toy() -> pd.DataFrame:
 
     Reproduit la forme de la table d'entrée de la synthèse (S-2.3) : les
     quatre clés de contexte, ``reporter``, ``product``, puis quatre métriques
-    de polarité positive. La métrique ``EXPORT_HHI`` porte des valeurs
+    de polarité positive. La métrique ``WORLD_HHI`` porte des valeurs
     manquantes (jointure réseau incomplète), support des tests de la règle
     « lignes complètes par méthode » (D-15).
     """
@@ -121,8 +121,8 @@ def df_synthesis_toy() -> pd.DataFrame:
     ]
     df_cells = pd.DataFrame(keys)
     n = len(df_cells)
-    for metric in ("HHI", "CDI2", "CDI3", "EXPORT_HHI"):
+    for metric in ("HHI", "CDI2", "CDI3", "WORLD_HHI"):
         df_cells[metric] = rng.random(n)
     # Cellules privées de la métrique de réseau : lignes incomplètes (D-15)
-    df_cells.loc[[3, 7, 42, 61, 95, 110], "EXPORT_HHI"] = np.nan
+    df_cells.loc[[3, 7, 42, 61, 95, 110], "WORLD_HHI"] = np.nan
     return df_cells

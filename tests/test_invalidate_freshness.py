@@ -30,7 +30,8 @@ from scripts.invalidate_freshness import (
 )
 
 T0 = datetime(2026, 9, 1, tzinfo=timezone.utc)
-REQUESTED = {"HHI": "h", "CDI2": "c", "CDI3": "d"}
+# Empreintes qualifiées par sens de flux, comme celles de l'étape partenaires
+REQUESTED = {"HHI/import": "h", "HHI/export": "x", "CDI2/import": "c", "CDI3/import": "d"}
 FR = Unit.of(classification="HS2022", reporter="FR", product="280530")
 DE = Unit.of(classification="HS2022", reporter="DE", product="854140")
 
@@ -61,6 +62,13 @@ def test_main_invalidates_and_next_pass_recomputes(tmp_path: Path, factory) -> N
     assert _stale(tmp_path) == {FR}
 
 
+def test_plain_name_invalidates_every_direction_qualified_name_only_one(tmp_path: Path, factory) -> None:
+    assert main(["--step", "partners", "--metrics", "HHI/export", "--reporters", "FR"], factory) == 0
+    assert set(_registry(tmp_path).get(FR).fingerprints) == {"HHI/import", "CDI2/import", "CDI3/import"}
+    assert main(["--step", "partners", "--metrics", "HHI"], factory) == 0
+    assert set(_registry(tmp_path).get(DE).fingerprints) == {"CDI2/import", "CDI3/import"}
+
+
 def test_main_dry_run_writes_nothing(tmp_path: Path, factory) -> None:
     assert main(["--step", "partners", "--metrics", "HHI", "--dry-run"], factory) == 0
     assert _stale(tmp_path) == set()
@@ -76,6 +84,7 @@ def test_main_without_names_invalidates_every_fingerprint(tmp_path: Path, factor
     "argv",
     [
         ["--step", "partners", "--metrics", "HHHI"],
+        ["--step", "partners", "--metrics", "HHI/transit"],
         ["--step", "network", "--reporters", "FR"],
         ["--step", "baci", "--metrics", "HHI"],
         ["--step", "synthesis", "--products", "28"],

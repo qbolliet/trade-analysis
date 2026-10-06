@@ -18,7 +18,7 @@ params:
     label: CDI2
   size:
     expressionType: SQL
-    sqlExpression: AVG("EXPORT_HHI")
+    sqlExpression: AVG("WORLD_HHI")
     label: Taille (proxy)
   adhoc_filters: []
   row_limit: 200

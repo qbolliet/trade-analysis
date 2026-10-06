@@ -5,8 +5,16 @@ indicateurs portant sur le graphe mondial des échanges d'un produit — risque 
 centralité, clustering pondéré, diamètre, concentration des exportations
 mondiales et risque de point de défaillance unique (cf.
 `macroforecast.trade.vulnerabilities.network_metrics`). La cellule de sortie est
-un triplet `nomenclature x produit x année`, le millésime étant la clé primaire
-supplémentaire que la table des indicateurs partenaires ne porte pas.
+un quadruplet `nomenclature x produit x année x flux`, le millésime étant la clé
+primaire supplémentaire que la table des indicateurs partenaires ne porte pas.
+
+Chaque sens de `NETWORK_VULNERABILITIES.FLOWS` est calculé sur la même matrice
+BACI : tel quel à l'import (concentration de l'offre mondiale), transposé à
+l'export (concentration de la demande mondiale). La colonne `flow` porte les
+mêmes codes que la table partenaires, ce qui ramène la jointure de synthèse à
+une égalité. Les empreintes sont tenues par métrique et par sens
+(`SPOF/export`) : ajouter un sens ne recalcule que ce sens. Les métriques MLflow
+sont préfixées par sens (`network/import/...`, `network/export/...`).
 
 Script distinct de `compute_trade_vulnerabilities.py`, et non une étape de plus
 dans celui-ci : les deux familles n'ont ni la même source (flux réconciliés BACI
@@ -72,6 +80,7 @@ from kedro_pipeline.io.freshness import (
     fingerprint,
     legacy_entry,
     plan_metrics,
+    qualifiers_to_compute,
     units_to_compute,
 )
 # Registre BACI (amont, lecture seule) et complétude d'une passe
@@ -80,19 +89,19 @@ from scripts.process_baci_hs import baci_registry, pass_is_complete
 from scripts.download_comtrade import load_runtime_config
 
 # Module de suivi d'exécution (MLflow optionnel, objet nul par défaut)
-from macroforecast.tracking import CapturingTracker, get_tracker, rekey_metrics
+from macroforecast.tracking import CapturingTracker, get_tracker
 from macroforecast.tracking.figures import (
     key_figures_network_vulnerabilities,
     sections_network_vulnerabilities,
 )
 from macroforecast.tracking.report import Units
-from scripts._run_report import RunScope, guarded_run, run_name
+from scripts._run_report import RunScope, flow_run_metrics, guarded_run, run_name
+# Lecture des sens de flux calculés (règle commune aux deux familles)
+from scripts.compute_trade_vulnerabilities import load_flows
 # Module de calcul des indicateurs
-from macroforecast.trade.methodology import methodology_params
 from macroforecast.trade.vulnerabilities import (
     DEFAULT_NETWORK_CONFIG,
     DEFAULT_NETWORK_METRIC_CLASSES,
-    NETWORK_FINGERPRINT_EXCLUDED,
     NetworkVulnerabilityConfig,
 )
 from macroforecast.trade.vulnerabilities.runner import (
@@ -118,6 +127,8 @@ _REGISTRY_ROOT = "NETWORK_VULNERABILITIES"
 _CONFIG_ROOT = "NETWORK_VULNERABILITIES"
 # Clé YAML portant le backend de calcul narwhals (hors NetworkVulnerabilityConfig)
 _BACKEND_KEY = "BACKEND"
+# Préfixe des métriques MLflow de l'étape (suivi du sens : network/import/...)
+_METRICS_FAMILY = "network"
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -442,24 +453,42 @@ STEP = "network"
 # Fonction de calcul des empreintes demandées des métriques de réseau
 def network_requested(
     config: NetworkVulnerabilityConfig,
+    flows: Sequence[str] = ("import",),
     metric_classes: Sequence[type] = DEFAULT_NETWORK_METRIC_CLASSES,
 ) -> Dict[str, str]:
-    """Current methodological fingerprint of every network metric.
+    """Current methodological fingerprint of every network metric and direction.
+
+    Keyed by ``"<metric>/<flow>"``, like the partner step: two instances share
+    a column name, and adding a direction must only make that direction stale.
+    The orientation-invariant metrics (clustering, diameter) also get one key
+    per direction, their value being written on the rows of each.
 
     Args:
         config: Methodological configuration of the network metrics.
-        metric_classes: Metric classes computed by the step.
+        flows: Directions computed by the step.
+        metric_classes: Metric classes computed by the step (each in the
+            directions it supports).
 
     Returns:
-        Mapping ``metric name -> fingerprint`` (name and result-shaping
-        configuration fields).
+        Mapping ``"<metric>/<flow>" -> fingerprint`` (name, result-shaping
+        configuration fields and direction).
 
     Examples:
-        >>> "SPOF" in network_requested(NetworkVulnerabilityConfig())
+        >>> "SPOF/import" in network_requested(NetworkVulnerabilityConfig())
+        True
+        >>> "SPOF/export" in network_requested(NetworkVulnerabilityConfig(), ("import", "export"))
         True
     """
-    params = methodology_params(config, NETWORK_FINGERPRINT_EXCLUDED)
-    return {cls.name: fingerprint(cls.name, params) for cls in metric_classes}
+    metrics = [
+        cls(config, flow=flow)
+        for flow in flows
+        for cls in metric_classes
+        if flow in cls.supported_flows
+    ]
+    return {
+        metric.fingerprint_key: fingerprint(metric.name, metric.fingerprint_params())
+        for metric in metrics
+    }
 
 
 # Fonction de lecture du registre v1 du réseau en entrées héritées
@@ -610,6 +639,8 @@ def main() -> None:
     parameters = network_config.get("PARAMETERS") or {}
     network_parameters = network_config_from_params(parameters)
     backend = parameters.get(_BACKEND_KEY, "pandas")
+    # Sens de flux calculés (bloc réseau, même valeur que celle des partenaires)
+    flows = load_flows(network_config)
 
     # Options de suivi d'exécution (un run par millésime, construit dans la boucle)
     mlflow_config = network_config.get("MLFLOW") or {}
@@ -631,7 +662,7 @@ def main() -> None:
 
     # Registre de fraîcheur fragmenté, empreintes courantes et forçage ponctuel
     registry = network_registry(network_config)
-    requested = network_requested(network_parameters)
+    requested = network_requested(network_parameters, flows)
     force = ForceSpec.from_runtime(runtime_config)
     plans = plan_network_units(
         registry, units, requested, force,
@@ -718,6 +749,8 @@ def main() -> None:
                     scope = RunScope(node)
                     unit = Unit.of(vintage=label)
                     plan = plans[unit]
+                    # Sens à recalculer pour ce millésime : ceux que nomme le plan
+                    computed_flows = qualifiers_to_compute({unit: plan}, flows)
                     with tracker, guarded_run(scope, tracker):
                         # Fraîcheur : décision du millésime et tag de forçage
                         tracker.log_metrics(plan_metrics({unit: plan}, n_candidates=len(units)))
@@ -750,6 +783,7 @@ def main() -> None:
                             result_conn=result_conn,
                             result_catalog_alias=result_connector.catalog_alias,
                             config=network_parameters,
+                            flows=computed_flows,
                             backend=backend,
                             tracker=tracker,
                             log_artifacts=log_artifacts,
@@ -757,10 +791,11 @@ def main() -> None:
                             write_options=compute_write_options(f"{NODE} {label}"),
                         )
 
-                        # Envoi des métriques : le rapport connaît sa mise en
-                        # forme. Les paramètres sont journalisés par le runner
-                        # lui-même ; seuls les tags propres au script restent ici.
-                        tracker.log_metrics(rekey_metrics(report.to_metrics()))
+                        # Envoi des métriques, préfixées par sens (le rapport
+                        # connaît sa mise en forme, le préfixe appartient à
+                        # l'appelant). Les paramètres sont journalisés par le
+                        # runner lui-même ; seuls les tags propres au script restent ici.
+                        tracker.log_metrics(flow_run_metrics(report, _METRICS_FAMILY))
                         tracker.set_tags(
                             {
                                 "dataflow": DATAFLOW,
@@ -768,6 +803,7 @@ def main() -> None:
                                 "result_schema": result_schema,
                                 "created": str(report.created),
                                 "n_cells": str(report.cells),
+                                "flows": ",".join(report.flows),
                             }
                         )
 

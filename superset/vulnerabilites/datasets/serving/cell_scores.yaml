@@ -52,10 +52,10 @@ metrics:
   currency: null
   extra: null
   warning_text: null
-- metric_name: max_export_hhi
-  verbose_name: Max EXPORT_HHI
+- metric_name: max_world_hhi
+  verbose_name: Max WORLD_HHI
   metric_type: null
-  expression: MAX("EXPORT_HHI")
+  expression: MAX("WORLD_HHI")
   description: null
   d3format: null
   currency: null
@@ -233,7 +233,7 @@ columns:
   description: null
   python_date_format: null
   extra: null
-- column_name: EXPORT_HHI_ALERT
+- column_name: WORLD_HHI_ALERT
   verbose_name: null
   is_dttm: false
   is_active: true
@@ -449,7 +449,7 @@ columns:
   description: null
   python_date_format: null
   extra: null
-- column_name: EXPORT_HHI_norm
+- column_name: WORLD_HHI_norm
   verbose_name: null
   is_dttm: false
   is_active: true
@@ -461,7 +461,7 @@ columns:
   description: null
   python_date_format: null
   extra: null
-- column_name: EXPORT_HHI
+- column_name: WORLD_HHI
   verbose_name: null
   is_dttm: false
   is_active: true

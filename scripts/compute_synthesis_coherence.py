@@ -90,6 +90,7 @@ from scripts.compute_synthetic_scores import (
     _result_connector,
     build_source_query,
     freshness_tags,
+    load_synthesis_flows,
     global_entry,
     global_registry,
     load_synthesis_config,
@@ -645,6 +646,10 @@ def main() -> None:
     coherence_config = coherence_config_from_params(
         coherence_config_block.get("PARAMETERS") or {}
     )
+    # Sens synthétisés et leurs codes, mêmes règles que le script de synthèse
+    _, flow_codes = load_synthesis_flows(
+        synthesis_config_block, vulnerability_config, synthesis_config
+    )
 
     # Options de suivi d'exécution (un seul run par exécution, D-14)
     mlflow_config = coherence_config_block.get("MLFLOW") or {}
@@ -715,6 +720,7 @@ def main() -> None:
         synthesis_config_block["SOURCES"],
         synthesis_config_block.get("FILTERS") or {},
         catalog_alias,
+        flow_codes,
     )
     # Logging
     logger.info(f"Requête des métriques :\n{source_query}")

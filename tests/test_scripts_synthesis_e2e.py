@@ -41,7 +41,7 @@ def _build_synthesis_config() -> SynthesisConfig:
     """Build the ``SynthesisConfig`` exercised by the end-to-end test."""
     return SynthesisConfig(
         metric_columns=(
-            "HHI", "CDI2", "CDI3", "EXPORT_HHI", "CENTRALITY_RISK", "CLUSTERING_W",
+            "HHI", "CDI2", "CDI3", "WORLD_HHI", "CENTRALITY_RISK", "CLUSTERING_W",
         ),
         levels=("by_product", "by_reporter", "global"),
         min_group_size=3,
@@ -82,7 +82,7 @@ def _build_synthesis_config() -> SynthesisConfig:
             ),
             MethodSpec(
                 name="kantorovich", kind="kantorovich",
-                metrics=("HHI", "CDI2", "CDI3", "EXPORT_HHI"),
+                metrics=("HHI", "CDI2", "CDI3", "WORLD_HHI"),
                 params={
                     "epsilon": 0.1, "n_target": 4096, "fit_sample_size": 20_000,
                     "alpha": 0.05, "theta0_degrees": 60.0,
@@ -94,32 +94,30 @@ def _build_synthesis_config() -> SynthesisConfig:
 
 
 # Requête source de test : jointure indicators/network_indicators de S-2.2, sans
-# restriction de périodes (la fixture n'en écrit que deux)
-def _build_query(catalog_alias: str) -> str:
-    """Build the S-2.3 source query joining the fixture's two schemas."""
+# restriction de périodes (la fixture n'en écrit que deux), sur le flux 1 par défaut
+def _build_query(catalog_alias: str, flow_codes=(1,)) -> str:
+    """Build the S-2.3 source query joining the fixture's two schemas, flow by flow."""
     sources = [
         {"SCHEMA": "indicators", "ALIAS": "p", "COLUMNS": ["HHI", "CDI2", "CDI3"]},
         {
             "SCHEMA": "network_indicators",
             "ALIAS": "n",
-            "COLUMNS": ["EXPORT_HHI", "CENTRALITY_RISK", "CLUSTERING_W"],
+            "COLUMNS": ["WORLD_HHI", "CENTRALITY_RISK", "CLUSTERING_W"],
             "JOIN": {
                 "ON": [
                     'substr(p."product", 1, 6) = n."product"',
                     'CAST(substr(p."TIME_PERIOD", 1, 4) AS INTEGER) = n."year"',
+                    'n."flow" = p."flow"',
                 ],
                 "WHERE": "n.\"classification\" = 'HS2022'",
             },
         },
     ]
     filters = {
-        "WHERE": (
-            'p."flow" = 1 AND p."indicators" = \'VALUE_IN_EUROS\' '
-            'AND p."freq" = \'A\''
-        ),
+        "WHERE": 'p."indicators" = \'VALUE_IN_EUROS\' AND p."freq" = \'A\'',
         "LAST_N_PERIODS": None,
     }
-    return build_source_query(sources, filters, catalog_alias)
+    return build_source_query(sources, filters, catalog_alias, list(flow_codes))
 
 
 def _read_scores(conn, catalog_alias: str) -> pd.DataFrame:
@@ -211,3 +209,47 @@ def test_synthesis_run_from_connections_end_to_end(synthesis_source_tables) -> N
     left = df_scores.sort_values(scores_keys).reset_index(drop=True)
     right = df_scores_again.sort_values(scores_keys).reset_index(drop=True)
     pd.testing.assert_frame_equal(left, right, check_dtype=False)
+
+
+@pytest.mark.slow
+def test_synthesis_two_flows_never_compared_together(synthesis_source_tables) -> None:
+    """Import et export : contextes distincts, ligne export jointe au réseau du flux 2."""
+    from scripts.compute_synthetic_scores import read_source_metrics
+
+    conn = synthesis_source_tables.conn
+    catalog_alias = synthesis_source_tables.catalog_alias
+    n_reporters = len(synthesis_source_tables.reporters)
+    n_products = len(synthesis_source_tables.products)
+    n_periods = len(synthesis_source_tables.periods)
+    query = _build_query(catalog_alias, flow_codes=(1, 2))
+
+    # Jointure réseau par flux : une ligne par cellule, valeur réseau du même sens
+    source = read_source_metrics(conn, query)
+    assert len(source) == 2 * n_periods * n_reporters * n_products
+    network = conn.execute(
+        f'SELECT * FROM "{catalog_alias}"."network_indicators"."fact_table"'
+    ).df()
+    export_row = source[source["flow"] == 2].iloc[0]
+    expected = network[
+        (network["flow"] == 2)
+        & (network["product"] == str(export_row["product"])[:6])
+        & (network["year"] == int(str(export_row["TIME_PERIOD"])[:4]))
+    ]["WORLD_HHI"]
+    assert export_row["WORLD_HHI"] == pytest.approx(float(expected.iloc[0]))
+
+    config = _build_synthesis_config()
+    reports, failures, _, n_contexts = run_from_connections(
+        conn, conn, query, config, catalog_alias=catalog_alias,
+        result_schema="synthesis", diagnostics_schema="synthesis_diagnostics",
+        log_artifacts=False,
+    )
+    assert failures == {} and n_contexts == 2 * n_periods
+    df_scores = _read_scores(conn, catalog_alias)
+    assert set(df_scores["flow"].astype(int)) == {1, 2}
+    # Groupe global = cellules d'un seul flux : l'import n'est jamais classé contre l'export
+    assert (df_scores["n_global"] == n_reporters * n_products).all()
+    for _, group in df_scores[df_scores["method"] == "rank_mean"].groupby(
+        list(config.context_columns)
+    ):
+        assert group["rank_global"].min() == 1.0
+        assert group["rank_global"].max() <= n_reporters * n_products

@@ -153,7 +153,7 @@ DEFAULT_METHODS: Tuple[MethodSpec, ...] = (
     MethodSpec(
         name="kantorovich",
         kind="kantorovich",
-        metrics=("HHI", "CDI2", "CDI3", "EXPORT_HHI"),
+        metrics=("HHI", "CDI2", "CDI3", "WORLD_HHI"),
         params={
             "epsilon": 0.1,
             "n_target": 4096,

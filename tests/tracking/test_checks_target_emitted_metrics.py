@@ -21,6 +21,7 @@ import pytest
 import yaml
 
 from macroforecast.tracking import CapturingTracker, rekey_metrics
+from scripts._run_report import flow_run_metrics
 from macroforecast.tracking.report import Check, checks_for_node
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -215,9 +216,10 @@ def test_baci_and_network_checks_target_emitted_metrics(
     net_report = run_network_vulnerabilities(
         conn, source_catalog_alias=alias, source_schema="baci_hs2017", classification="HS2017",
         result_schema="network_indicators", config=NetworkVulnerabilityConfig(), tracker=net_tracker,
-        log_artifacts=False,
+        log_artifacts=False, flows=("import", "export"),
     )
-    assert_checks_target_emitted(_nodes()["network"], rekey_metrics(net_report.to_metrics()))
+    # Métriques telles que les émet le script : préfixées par famille et par sens
+    assert_checks_target_emitted(_nodes()["network"], flow_run_metrics(net_report, "network"))
 
 
 @slow
@@ -228,7 +230,7 @@ def test_partner_vulnerabilities_checks_target_emitted_metrics(ducklake_conn, sy
 
     conn, alias = ducklake_conn
     iso2 = {c.iso3: c.iso2 for c in synthetic_world.config.countries}
-    dims = {"freq": "A", "partner": "*", "flow": ["1", "2"], "indicators": ["QUANTITY_IN_100KG", "VALUE_IN_EUROS"]}
+    dims = {"freq": "A", "partner": "*", "flow": [1, 2], "indicators": ["QUANTITY_IN_100KG", "VALUE_IN_EUROS"]}
     frames = [
         build_comext(synthetic_world, iso2, ComextConfig.from_mapping({}), ComextTemplate(),
                      reporter=reporter, product=product, dimensions=dims)
@@ -241,17 +243,20 @@ def test_partner_vulnerabilities_checks_target_emitted_metrics(ducklake_conn, sy
     tracker = CapturingTracker()
     report = run_vulnerabilities(
         conn, source_catalog_alias=alias, source_schema="DS_045409", result_schema="indicators",
-        tracker=tracker, log_artifacts=True,
+        tracker=tracker, log_artifacts=True, flows=("import", "export"),
     )
-    assert_checks_target_emitted(_nodes()["partners"], rekey_metrics(report.to_metrics()))
-    assert any(path.startswith("vulnerabilities/") for path in tracker.tables)
+    # Métriques telles que les émet le script : préfixées par famille et par sens
+    assert_checks_target_emitted(_nodes()["partners"], flow_run_metrics(report, "partners"))
+    # Artefacts rangés par sens : jamais de palmarès mêlant import et export
+    assert any(path.startswith("vulnerabilities/import/") for path in tracker.tables)
+    assert any(path.startswith("vulnerabilities/export/") for path in tracker.tables)
 
 
 def _synthesis_config():
     from macroforecast.trade.aggregation import MethodSpec, SynthesisConfig
 
     return SynthesisConfig(
-        metric_columns=("HHI", "CDI2", "CDI3", "EXPORT_HHI", "CENTRALITY_RISK", "CLUSTERING_W"),
+        metric_columns=("HHI", "CDI2", "CDI3", "WORLD_HHI", "CENTRALITY_RISK", "CLUSTERING_W"),
         levels=("by_product", "by_reporter", "global"),
         min_group_size=3,
         consensus=("borda",),
@@ -272,17 +277,18 @@ def _query(catalog_alias: str) -> str:
         {"SCHEMA": "indicators", "ALIAS": "p", "COLUMNS": ["HHI", "CDI2", "CDI3"]},
         {
             "SCHEMA": "network_indicators", "ALIAS": "n",
-            "COLUMNS": ["EXPORT_HHI", "CENTRALITY_RISK", "CLUSTERING_W"],
+            "COLUMNS": ["WORLD_HHI", "CENTRALITY_RISK", "CLUSTERING_W"],
             "JOIN": {
                 "ON": ['substr(p."product", 1, 6) = n."product"',
-                       'CAST(substr(p."TIME_PERIOD", 1, 4) AS INTEGER) = n."year"'],
+                       'CAST(substr(p."TIME_PERIOD", 1, 4) AS INTEGER) = n."year"',
+                       'n."flow" = p."flow"'],
                 "WHERE": "n.\"classification\" = 'HS2022'",
             },
         },
     ]
-    filters = {"WHERE": 'p."flow" = 1 AND p."indicators" = \'VALUE_IN_EUROS\' AND p."freq" = \'A\'',
+    filters = {"WHERE": 'p."indicators" = \'VALUE_IN_EUROS\' AND p."freq" = \'A\'',
                "LAST_N_PERIODS": None}
-    return build_source_query(sources, filters, catalog_alias)
+    return build_source_query(sources, filters, catalog_alias, [1, 2])
 
 
 @slow

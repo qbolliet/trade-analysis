@@ -55,7 +55,7 @@ _METHODS = (
 def _config() -> SynthesisConfig:
     """Configuration de synthèse réduite, déterministe et rapide."""
     return SynthesisConfig(
-        metric_columns=("HHI", "CDI2", "CDI3", "EXPORT_HHI"),
+        metric_columns=("HHI", "CDI2", "CDI3", "WORLD_HHI"),
         methods=_METHODS,
         min_group_size=3,
         smaa_n_draws=64,
@@ -160,7 +160,7 @@ def test_incomplete_rows_are_not_scored(
 ) -> None:
     """D-15 : une cellule incomplète reçoit ``NaN`` en score et en rang."""
     df_scores, df_fit, _ = _run
-    incomplete = df_synthesis_toy[df_synthesis_toy["EXPORT_HHI"].isna()]
+    incomplete = df_synthesis_toy[df_synthesis_toy["WORLD_HHI"].isna()]
     assert not incomplete.empty
     merged = df_scores.merge(incomplete[PRIMARY_KEY[:-1]], on=PRIMARY_KEY[:-1])
     real_methods = merged[~merged["method"].str.startswith(CONSENSUS_PREFIX)]

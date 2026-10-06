@@ -209,3 +209,21 @@ def test_no_priority_key_in_config() -> None:
     for path in CONFIG.rglob("*.yaml"):
         for key_path, _ in _walk(_load(path) or {}):
             assert "priority" not in key_path[-1].lower(), (path, key_path)
+
+
+@pytest.mark.parametrize("folder", [CONFIG, DEMO])
+def test_flows_are_the_same_for_partners_network_and_synthesis(folder: Path) -> None:
+    """Les sens de flux sont communs aux trois étapes ; le flux sépare les contextes."""
+    vulnerabilities = _load(folder / "vulnerabilities.yaml")
+    synthesis = _load(folder / "synthesis.yaml")["SYNTHESIS"]
+    flows = vulnerabilities["FLOWS"]
+    assert flows == ["import", "export"]
+    assert vulnerabilities["NETWORK_VULNERABILITIES"]["FLOWS"] == flows
+    assert synthesis["FLOWS"] == flows
+    # Import et export jamais comparés : le flux est une clé de contexte
+    assert "flow" in synthesis["PARAMETERS"]["context_columns"]
+    # Filtre de flux généré (plus de littéral) ; reporter agrégé exclu de la synthèse
+    assert '"flow"' not in synthesis["FILTERS"]["WHERE"]
+    assert "EU27_2020" in synthesis["FILTERS"]["WHERE"]
+    network_join = synthesis["SOURCES"][1]["JOIN"]["ON"]
+    assert 'n."flow" = p."flow"' in network_join

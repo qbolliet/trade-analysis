@@ -5955,23 +5955,63 @@ décrivent, issues de deux familles construites sur des sources différentes.
   \item \textbf{Famille « partenaires »}, calculée sur les déclarations de commerce
   extérieur du pays déclarant. Elle comprend l'indice de Herfindahl--Hirschman des parts de
   partenaires (\texttt{HHI}), qui mesure la concentration des flux sur un petit nombre de
-  fournisseurs, et deux indices de dépendance (\texttt{CDI2}, \texttt{CDI3}) qui cumulent
-  les parts des deux et des trois premiers partenaires.
+  contreparties, et deux indices de dépendance extra-européenne : \texttt{CDI2}, part
+  extra-UE du flux (extra-UE rapporté au total du même flux), et \texttt{CDI3}, flux
+  extra-UE rapporté au total du flux opposé (importations extra-UE sur exportations totales
+  à l'import), qui renseigne sur la substituabilité par la production domestique.
   \item \textbf{Famille « réseau »}, calculée sur la matrice mondiale des échanges
-  bilatéraux. Elle comprend la concentration des exportations mondiales du produit
-  (\texttt{EXPORT\_HHI}), une mesure de risque de centralité (\texttt{CENTRALITY\_RISK})
-  qui pèse la position des fournisseurs dans le graphe des échanges, et un coefficient de
-  \emph{clustering} pondéré (\texttt{CLUSTERING\_W}) qui décrit le degré de fermeture du
-  voisinage commercial du produit.
+  bilatéraux. Elle comprend la concentration mondiale des contreparties du produit
+  (\texttt{WORLD\_HHI}, indice de Herfindahl--Hirschman des parts des pays dans les
+  exportations mondiales à l'import, dans les importations mondiales à l'export), une
+  mesure de risque de centralité (\texttt{CENTRALITY\_RISK}) qui pèse la position des
+  contreparties dans le graphe des échanges, et un coefficient de \emph{clustering} pondéré
+  (\texttt{CLUSTERING\_W}) qui décrit le degré de fermeture du voisinage commercial du
+  produit.
 \end{itemize}
 
 \bigskip
 
+\paragraph{Importations et exportations.} Chaque métrique est calculée dans les deux sens
+du flux, le sens désignant le côté où le pays est exposé à ses contreparties : ses
+fournisseurs à l'importation, ses débouchés à l'exportation. Pour la famille partenaires,
+les définitions à l'exportation sont les miroirs formels des définitions à l'importation,
+obtenus en permutant les rôles des importations et des exportations : \texttt{HHI} mesure
+la concentration des débouchés, \texttt{CDI2} la part des exportations destinées aux pays
+tiers, \texttt{CDI3} les exportations extra-UE rapportées aux importations totales,
+c'est-à-dire à la capacité d'absorption du pays. Ce dernier indice est proposé par
+analogie et n'a pas d'ancrage dans la littérature. Pour le reporter agrégé que constitue
+l'Union dans son ensemble, tous les flux sont extra-européens par construction, de sorte
+que \texttt{CDI2} y vaut~1 : ce reporter est exclu de la synthèse.
+
+\medskip
+
+Pour la famille réseau, la lecture habituelle des métriques orientées --- risque de
+centralité, \texttt{WORLD\_HHI} et risque de point de défaillance unique --- est celle de
+la concentration de l'\emph{offre} mondiale : un choc sur un grand exportateur se propage
+à tous les importateurs. C'est une lecture d'importateur. À l'exportation, ces métriques
+sont calculées sur le graphe des échanges \emph{transposé} : elles décrivent alors la
+concentration de la \emph{demande} mondiale, c'est-à-dire la présence d'acheteurs
+centraux (centralité entrante pondérée $C_j^{\text{in}} = \sum_i w_{ij} / \langle w_i
+\rangle$, où $\langle w_i \rangle$ est l'exportation moyenne du pays $i$, au lieu de la
+centralité sortante $C_i^{\text{out}} = \sum_j w_{ij} / \langle w_j \rangle$),
+la concentration des importations mondiales et un point de défaillance unique côté
+demande. La lecture côté offre n'est pas réutilisée à l'exportation : pour un pays qui est
+lui-même l'exportateur dominant, une offre mondiale concentrée traduit un pouvoir de
+marché, non une vulnérabilité. Ces miroirs sont, eux aussi, proposés par analogie, sans
+calibrage propre dans la littérature ; le seuil de~2,5 du risque de centralité garde une
+lecture formelle par symétrie (le premier importateur absorbe environ les deux tiers des
+importations mondiales). Le coefficient de \emph{clustering} et le diamètre, mesurés sur
+le graphe symétrisé, ont la même valeur dans les deux sens.
+
+\bigskip
+
 Les six métriques sont de \emph{polarité positive} au sens de la
-définition~\ref{def:polarite} : une valeur élevée traduit une vulnérabilité élevée, de
-sorte que l'orientation de la section~\ref{sec:orientation} est l'identité et que
-$\Xor = X$. Cette homogénéité n'est pas fortuite --- les six indices sont des mesures de
-concentration ou de dépendance --- mais elle est vérifiée plutôt que supposée : une
+définition~\ref{def:polarite}, à l'importation comme à l'exportation : une valeur élevée
+traduit une vulnérabilité élevée (contreparties plus concentrées, côté fournisseurs à
+l'importation, côté débouchés à l'exportation), de sorte que l'orientation de la
+section~\ref{sec:orientation} est l'identité et que $\Xor = X$. Cette homogénéité n'est
+pas fortuite --- les six indices sont des mesures de concentration ou de dépendance ---
+mais elle est vérifiée plutôt que supposée : une
 polarité mal déclarée est l'erreur la plus lourde de conséquences du dispositif, puisqu'elle
 inverse la contribution d'une métrique entière sans produire aucune anomalie visible dans
 les diagnostics.
@@ -5982,9 +6022,11 @@ les diagnostics.
 maille. La famille partenaires est indexée par produit CN8 et par période ; la famille
 réseau est indexée par produit du système harmonisé à six chiffres (HS6) et par année. La
 jointure retient la troncature de la position CN8 à ses six premiers caractères, qui
-correspond par construction à la position HS6 englobante, et l'année extraite de la période.
-Un millésime unique de nomenclature (HS2022) est fixé côté réseau, faute de quoi une même
-position serait jointe à plusieurs versions de l'indice.
+correspond par construction à la position HS6 englobante, l'année extraite de la période
+et le sens du flux : une cellule d'exportation reçoit les métriques réseau du graphe
+transposé, une cellule d'importation celles du graphe tel quel. Un millésime unique de
+nomenclature (HS2022) est fixé côté réseau, faute de quoi une même position serait jointe à
+plusieurs versions de l'indice.
 
 \medskip
 
@@ -6010,8 +6052,10 @@ Un \emph{contexte} est un univers de comparaison à l'intérieur duquel les vale
 homogènes. Il est défini ici par quatre clés : la fréquence d'observation, le flux
 (importations ou exportations), l'indicateur sous-jacent (valeur en euros, masse) et la
 période. Deux contextes ne sont jamais comparés entre eux, et toutes les quantités estimées
-le sont à l'intérieur d'un contexte. La sélection courante retient le flux d'importation,
-l'indicateur en valeur, la fréquence annuelle et les cinq dernières périodes disponibles.
+le sont à l'intérieur d'un contexte : un pays importateur n'est donc jamais classé contre
+un pays exportateur. La sélection courante retient les deux flux, comme contextes
+distincts, l'indicateur en valeur, la fréquence annuelle et les cinq dernières périodes
+disponibles, et exclut le reporter agrégé de l'Union.
 
 \medskip
 
@@ -6160,8 +6204,9 @@ PARAMETERS:
   # Clés définissant un univers de comparaison ; deux contextes ne sont jamais comparés
   context_columns: ["freq", "flow", "indicators", "TIME_PERIOD"]
   # Colonnes de métriques mises à disposition des méthodes
-  metric_columns: ["HHI", "CDI2", "CDI3", "EXPORT_HHI", "CENTRALITY_RISK", "CLUSTERING_W"]
+  metric_columns: ["HHI", "CDI2", "CDI3", "WORLD_HHI", "CENTRALITY_RISK", "CLUSTERING_W"]
   # Paires (métrique, +/-1) ; toute métrique non listée a une polarité positive
+  # (identique à l'import et à l'export)
   polarities: []
   # Niveaux de comparaison à l'intérieur d'un contexte
   levels: ["by_product", "by_reporter", "global"]
@@ -6207,7 +6252,7 @@ PARAMETERS:
        params: {covariance_estimator: "mcd"}}
     # Kantorovitch orienté sur un sous-ensemble de metriques (dimension)
     - {name: "kantorovich", kind: "kantorovich",
-       metrics: ["HHI", "CDI2", "CDI3", "EXPORT_HHI"],
+       metrics: ["HHI", "CDI2", "CDI3", "WORLD_HHI"],
        params: {epsilon: 0.1, n_target: 4096, fit_sample_size: 20000, alpha: 0.05,
                 theta0_degrees: 60.0, conformal: "split", alert: "projected"}}
     # Exploration du simplexe des poids

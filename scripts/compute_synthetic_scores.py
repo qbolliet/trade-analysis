@@ -86,7 +86,12 @@ from kedro_pipeline.io.freshness import (
     units_to_compute,
 )
 # Registres amont (partenaires et réseau), lus seulement
-from scripts.compute_trade_vulnerabilities import partner_classification, partner_registry
+from scripts.compute_trade_vulnerabilities import (
+    load_flows,
+    partner_classification,
+    partner_registry,
+    vulnerability_config_from_params,
+)
 from scripts.compute_network_vulnerabilities import network_registry
 # Paramètres d'exécution partagés (nomenclatures, forçage ponctuel)
 from scripts.download_comtrade import load_runtime_config
@@ -101,6 +106,7 @@ from macroforecast.tracking.report import Units
 from scripts._run_report import RunScope, guarded_run, run_name
 # Méthodologie de synthèse multiniveau (fonction pure)
 from macroforecast.trade.methodology import methodology_params
+from macroforecast.trade.vulnerabilities import flow_code_map
 from macroforecast.trade.aggregation import (
     LevelReport,
     SynthesisConfig,
@@ -128,6 +134,9 @@ _NETWORK_ROOT = "NETWORK_VULNERABILITIES"
 # porte `FILTERS.LAST_N_PERIODS` — fait de schéma source, pas un paramètre
 # méthodologique
 _PERIOD_COLUMN = "TIME_PERIOD"
+# Colonne du flux de la grille partenaires (clé de contexte) sur laquelle porte
+# le prédicat généré depuis `FLOWS` — fait de schéma source
+_FLOW_COLUMN = "flow"
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -242,6 +251,72 @@ def synthesis_config_from_params(params: Optional[Mapping[str, Any]]) -> Synthes
     return replace(default, **overrides)
 
 
+# Fonction de validation du contexte de comparaison au regard des sens synthétisés
+def validate_flow_context(config: SynthesisConfig, flows: Sequence[str]) -> None:
+    """Check that import and export cells can never be compared together.
+
+    The synthesis compares cells within a context only (``context_columns``):
+    with more than one direction, the flow column must be part of the context,
+    otherwise an importer's and an exporter's scores would be ranked against
+    each other. The polarities need no such care: a more concentrated cell is
+    a more vulnerable one in both directions (suppliers at the import, outlets
+    at the export), for the partner and the network metrics alike.
+
+    Args:
+        config: Synthesis configuration.
+        flows: Directions synthesised.
+
+    Raises:
+        ValueError: If more than one direction is synthesised and the flow
+            column is not a context column.
+
+    Examples:
+        >>> validate_flow_context(SynthesisConfig(context_columns=("flow",)), ["import", "export"])
+        >>> validate_flow_context(SynthesisConfig(context_columns=("freq",)), ["import"])
+    """
+    if len(flows) > 1 and _FLOW_COLUMN not in config.context_columns:
+        raise ValueError(
+            f"FLOWS={list(flows)} requires '{_FLOW_COLUMN}' in context_columns "
+            f"(got {list(config.context_columns)}): import and export cells must "
+            "never be compared together."
+        )
+
+
+# Fonction de lecture des sens synthétisés et de leurs codes
+def load_synthesis_flows(
+    synthesis_block: Mapping[str, Any],
+    vulnerability_config: Mapping[str, Any],
+    config: SynthesisConfig,
+) -> Tuple[Tuple[str, ...], List[int]]:
+    """Read the synthesised directions and translate them into flow codes.
+
+    Args:
+        synthesis_block: ``SYNTHESIS`` block of ``config/synthesis.yaml``
+            (``FLOWS`` key; the import direction alone when absent).
+        vulnerability_config: Whole ``config/vulnerabilities.yaml``: the codes
+            are those of the partner ``PARAMETERS`` (``import_flow`` /
+            ``export_flow``), never literals of this script.
+        config: Synthesis configuration (context columns checked).
+
+    Returns:
+        ``(flows, flow_codes)``.
+
+    Raises:
+        ValueError: If ``FLOWS`` is invalid, or names several directions while
+            the flow column is not a context column.
+
+    Examples:
+        >>> load_synthesis_flows({"FLOWS": ["import", "export"]}, {}, SynthesisConfig())
+        (('import', 'export'), [1, 2])
+    """
+    flows = load_flows(synthesis_block)
+    validate_flow_context(config, flows)
+    codes = flow_code_map(
+        vulnerability_config_from_params(vulnerability_config.get("PARAMETERS"))
+    )
+    return flows, [codes[flow] for flow in flows]
+
+
 # ──────────────────────────────────────────────────────────────────────
 # Construction de la requête source (fonction pure, testable sans base)
 # ──────────────────────────────────────────────────────────────────────
@@ -251,6 +326,7 @@ def build_source_query(
     sources: Sequence[Mapping[str, Any]],
     filters: Mapping[str, Any],
     catalog_alias: str,
+    flow_codes: Optional[Sequence[int]] = None,
 ) -> str:
     """Build the single DuckDB query reading and joining the source tables (S-2.3).
 
@@ -264,9 +340,12 @@ def build_source_query(
     ``JOIN.ON`` expressions and its ``JOIN.WHERE`` predicate conjoined in the
     ``ON`` clause (so unmatched grid rows are kept, with ``NULL`` on the joined
     columns), and only its listed ``COLUMNS`` projected, prefixed by its alias.
-    ``FILTERS.WHERE`` is appended as-is; ``FILTERS.LAST_N_PERIODS`` becomes a
-    sub-query restricting the grid to its most recent distinct periods (omitted
-    when ``None``).
+    ``FILTERS.WHERE`` is appended as-is, then, when ``flow_codes`` is given,
+    the predicate ``<grid alias>."flow" IN (...)`` generated from the
+    synthesised directions; ``FILTERS.LAST_N_PERIODS`` becomes a sub-query
+    restricting the grid to its most recent distinct periods (omitted when
+    ``None``). Without ``flow_codes`` the query is exactly the one of the
+    configuration alone.
 
     Args:
         sources: The ``SOURCES`` list; the first entry is the grid. Each entry
@@ -275,6 +354,8 @@ def build_source_query(
         filters: The ``FILTERS`` mapping (``WHERE`` string, ``LAST_N_PERIODS``
             integer or ``None``).
         catalog_alias: DuckLake catalog alias the fact tables live in.
+        flow_codes: Flow codes of the synthesised directions (see
+            :func:`load_synthesis_flows`); ``None`` adds no flow predicate.
 
     Returns:
         The SQL query as a string.
@@ -286,11 +367,15 @@ def build_source_query(
     Examples:
         >>> query = build_source_query(
         ...     [{"SCHEMA": "indicators", "ALIAS": "p", "COLUMNS": ["HHI"]}],
-        ...     {"WHERE": 'p."flow" = 1', "LAST_N_PERIODS": None},
+        ...     {"WHERE": "p.freq = 'A'", "LAST_N_PERIODS": None},
         ...     "vulnerabilities",
         ... )
         >>> query.splitlines()[0]
         'SELECT p.*'
+        >>> build_source_query(
+        ...     [{"SCHEMA": "indicators", "ALIAS": "p"}], {}, "v", flow_codes=[1, 2]
+        ... ).splitlines()[-1]
+        'WHERE p."flow" IN (1, 2)'
     """
     if not sources:
         raise ValueError("`SOURCES` doit contenir au moins la grille.")
@@ -333,6 +418,9 @@ def build_source_query(
     where_parts: List[str] = []
     if filters.get("WHERE"):
         where_parts.append(filters["WHERE"])
+    if flow_codes is not None:
+        codes = ", ".join(str(int(code)) for code in flow_codes)
+        where_parts.append(f'{grid["ALIAS"]}."{_FLOW_COLUMN}" IN ({codes})')
     last_n_periods = filters.get("LAST_N_PERIODS")
     if last_n_periods is not None:
         where_parts.append(
@@ -573,13 +661,14 @@ def synthesis_requested(
     config: SynthesisConfig,
     sources: Optional[Sequence[Mapping[str, Any]]] = None,
     filters: Optional[Mapping[str, Any]] = None,
+    flows: Optional[Sequence[str]] = None,
 ) -> Dict[str, str]:
     """Current methodological fingerprint of the synthesis (a single, global one).
 
     Digests the complete list of methods (name, kind, parameters, metrics,
     levels…), the result-shaping fields of the configuration and the source
-    selection (``SOURCES`` / ``FILTERS``): adding or changing a method, or
-    changing the selected contexts, makes the whole synthesis stale. A fix in
+    selection (``SOURCES`` / ``FILTERS`` / ``FLOWS``): adding or changing a
+    method, or changing the selected contexts, makes the whole synthesis stale. A fix in
     the implementation of a method is signalled by invalidating the recorded
     fingerprint (``scripts/invalidate_freshness.py --step synthesis``).
 
@@ -587,6 +676,8 @@ def synthesis_requested(
         config: Synthesis configuration.
         sources: ``SYNTHESIS.SOURCES`` block.
         filters: ``SYNTHESIS.FILTERS`` block.
+        flows: ``SYNTHESIS.FLOWS`` directions (``None`` leaves them out of the
+            digest).
 
     Returns:
         ``{"synthesis": fingerprint}``.
@@ -598,6 +689,8 @@ def synthesis_requested(
     params = methodology_params(config, _SYNTHESIS_FINGERPRINT_EXCLUDED)
     params["sources"] = list(sources or [])
     params["filters"] = dict(filters or {})
+    if flows is not None:
+        params["flows"] = list(flows)
     return {STEP: fingerprint(STEP, params)}
 
 
@@ -1103,6 +1196,9 @@ def main() -> None:
     # Construction de la configuration méthodologique
     parameters = synthesis_config.get("PARAMETERS") or {}
     config = synthesis_config_from_params(parameters)
+    # Sens synthétisés et leurs codes (échec explicite si le flux n'est pas une
+    # clé de contexte alors que plusieurs sens sont demandés)
+    flows, flow_codes = load_synthesis_flows(synthesis_config, vulnerability_config, config)
 
     # Options de suivi d'exécution (un seul run par exécution, D-14)
     mlflow_config = synthesis_config.get("MLFLOW") or {}
@@ -1130,7 +1226,7 @@ def main() -> None:
         _REGISTRY_ROOT,
     )
     requested = synthesis_requested(
-        config, synthesis_config["SOURCES"], synthesis_config.get("FILTERS") or {}
+        config, synthesis_config["SOURCES"], synthesis_config.get("FILTERS") or {}, flows
     )
     force = ForceSpec.from_runtime(runtime_config)
     # Amont : registres partenaires et réseau, résumés depuis le dernier calcul
@@ -1172,6 +1268,7 @@ def main() -> None:
         synthesis_config["SOURCES"],
         synthesis_config.get("FILTERS") or {},
         catalog_alias,
+        flow_codes,
     )
     # Logging
     logger.info(f"Requête source :\n{query}")

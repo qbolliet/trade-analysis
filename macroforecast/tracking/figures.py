@@ -608,26 +608,88 @@ def sections_baci(
 # Vulnérabilités (partenaires et réseau)
 # ──────────────────────────────────────────────────────────────────────
 
+# Préfixes des métriques et des artefacts des deux familles de vulnérabilités
+_PARTNER_METRICS = "partners"
+_PARTNER_ARTIFACTS = "vulnerabilities"
+_NETWORK_METRICS = "network"
+_NETWORK_ARTIFACTS = "network_vulnerabilities"
+
+
+# Sens de flux présents dans les métriques d'une famille
+def _flows_in(metrics: Mapping[str, float], family: str) -> List[str]:
+    """List the flow directions a vulnerability run reported, in order of appearance.
+
+    The vulnerability metrics are emitted per direction
+    (``<family>/<flow>/cells/n_total``), never pooled across directions.
+
+    Args:
+        metrics: Metrics of the run.
+        family: Metric family prefix (``"partners"``, ``"network"``).
+
+    Returns:
+        The directions found.
+
+    Examples:
+        >>> _flows_in({"partners/export/cells/n_total": 1.0, "partners/import/cells/n_total": 2.0}, "partners")
+        ['export', 'import']
+    """
+    flows: List[str] = []
+    for name in metrics:
+        parts = name.split("/")
+        if len(parts) == 4 and parts[0] == family and parts[2:] == ["cells", "n_total"]:
+            flows.append(parts[1])
+    return list(dict.fromkeys(flows))
+
+
+# Somme ou maximum d'une métrique sur les sens d'une famille
+def _over_flows(metrics: Mapping[str, float], family: str, name: str, how: str = "sum") -> Optional[float]:
+    """Combine one per-direction metric over the directions of a run.
+
+    Args:
+        metrics: Metrics of the run.
+        family: Metric family prefix.
+        name: Metric name below ``<family>/<flow>/``.
+        how: ``"sum"`` (additive counts such as cells) or ``"max"``
+            (cardinalities shared by the directions).
+
+    Returns:
+        The combined value, ``None`` when no direction reports it.
+
+    Examples:
+        >>> m = {"p/import/cells/n_total": 2.0, "p/export/cells/n_total": 3.0}
+        >>> _over_flows(m, "p", "cells/n_total"), _over_flows(m, "p", "cells/n_total", "max")
+        (5.0, 3.0)
+    """
+    values = [
+        metrics[key]
+        for key in (f"{family}/{flow}/{name}" for flow in ("import", "export"))
+        if key in metrics
+    ]
+    if not values:
+        return None
+    return float(sum(values)) if how == "sum" else float(max(values))
+
+
 # Chiffres clés des vulnérabilités
 def key_figures_partner_vulnerabilities(metrics: Mapping[str, float]) -> List[str]:
     """Key figures of the partner-vulnerability run.
 
     Args:
-        metrics: Metrics of the run (``vulnerabilities/*``).
+        metrics: Metrics of the run (``partners/<flow>/*``).
 
     Returns:
-        Cells, reporters, products and periods scored.
+        Cells (all directions), reporters, products and periods scored.
 
     Examples:
-        >>> key_figures_partner_vulnerabilities({"vulnerabilities/cells/n_total": 1200.0})
+        >>> key_figures_partner_vulnerabilities({"partners/import/cells/n_total": 1200.0})
         ['1 200 cellules']
     """
-    v = "vulnerabilities/"
+    family = _PARTNER_METRICS
     return _figs(
-        _fig("cellules", metrics.get(v + "cells/n_total")),
-        _fig("déclarants", metrics.get(v + "input/n_reporters")),
-        _fig("produits", metrics.get(v + "input/n_products")),
-        _fig("périodes", metrics.get(v + "input/n_periods")),
+        _fig("cellules", _over_flows(metrics, family, "cells/n_total")),
+        _fig("déclarants", _over_flows(metrics, family, "input/n_reporters", "max")),
+        _fig("produits", _over_flows(metrics, family, "input/n_products", "max")),
+        _fig("périodes", _over_flows(metrics, family, "input/n_periods", "max")),
         _fig("Mo de pic mémoire", metrics.get("run/peak_memory_mb")),
     )
 
@@ -636,20 +698,21 @@ def key_figures_partner_vulnerabilities(metrics: Mapping[str, float]) -> List[st
 def sections_partner_vulnerabilities(
     metrics: Mapping[str, float], artifacts: Mapping[str, pd.DataFrame]
 ) -> List[Section]:
-    """HTML sections of the partner-vulnerability run.
+    """HTML sections of the partner-vulnerability run, one block per direction.
 
     Args:
-        metrics: Metrics of the run (``vulnerabilities/*``).
-        artifacts: Artifact tables (``vulnerabilities/top_vulnerable_products.csv``…).
+        metrics: Metrics of the run (``partners/<flow>/*``).
+        artifacts: Artifact tables (``vulnerabilities/<flow>/top_vulnerable_products.csv``…).
 
     Returns:
-        Distribution of each score, coverage, quality, drift, entries, top cells.
+        Per direction: distribution of each score, coverage, quality, drift,
+        entries, top cells; then the timing section.
 
     Examples:
-        >>> sections_partner_vulnerabilities({"vulnerabilities/cells/n_total": 3.0}, {})[0].title
-        'Entrée'
+        >>> sections_partner_vulnerabilities({"partners/import/cells/n_total": 3.0}, {})[0].title
+        'Entrée — import'
     """
-    return _vulnerability_sections(metrics, artifacts, "vulnerabilities")
+    return _flow_sections(metrics, artifacts, _PARTNER_METRICS, _PARTNER_ARTIFACTS)
 
 
 # Chiffres clés des vulnérabilités de réseau
@@ -657,21 +720,26 @@ def key_figures_network_vulnerabilities(metrics: Mapping[str, float]) -> List[st
     """Key figures of a network-vulnerability run.
 
     Args:
-        metrics: Metrics of the run (``network_vulnerabilities/*``).
+        metrics: Metrics of the run (``network/<flow>/*``).
 
     Returns:
-        Cells, graphs, median graph size and share of disconnected graphs.
+        Cells (all directions), graphs, median graph size and share of
+        disconnected graphs (the graph shape does not depend on the direction).
 
     Examples:
-        >>> key_figures_network_vulnerabilities({"network_vulnerabilities/graph/n_graphs": 40.0})
+        >>> key_figures_network_vulnerabilities({"network/import/graph/n_graphs": 40.0})
         ['40 graphes']
     """
-    v = "network_vulnerabilities/"
+    family = _NETWORK_METRICS
     return _figs(
-        _fig("cellules", metrics.get(v + "cells/n_total")),
-        _fig("graphes", metrics.get(v + "graph/n_graphs")),
-        _fig("nœuds (médiane)", metrics.get(v + "graph/median_n_nodes")),
-        _fig("de graphes déconnectés", metrics.get(v + "graph/share_graphs_disconnected"), pct=True),
+        _fig("cellules", _over_flows(metrics, family, "cells/n_total")),
+        _fig("graphes", _over_flows(metrics, family, "graph/n_graphs", "max")),
+        _fig("nœuds (médiane)", _over_flows(metrics, family, "graph/median_n_nodes", "max")),
+        _fig(
+            "de graphes déconnectés",
+            _over_flows(metrics, family, "graph/share_graphs_disconnected", "max"),
+            pct=True,
+        ),
         _fig("Mo de pic mémoire", metrics.get("run/peak_memory_mb")),
     )
 
@@ -680,38 +748,76 @@ def key_figures_network_vulnerabilities(metrics: Mapping[str, float]) -> List[st
 def sections_network_vulnerabilities(
     metrics: Mapping[str, float], artifacts: Mapping[str, pd.DataFrame]
 ) -> List[Section]:
-    """HTML sections of a network-vulnerability run.
+    """HTML sections of a network-vulnerability run, one block per direction.
 
     Args:
-        metrics: Metrics of the run (``network_vulnerabilities/*``).
-        artifacts: Artifact tables (``network_vulnerabilities/*.csv``).
+        metrics: Metrics of the run (``network/<flow>/*``).
+        artifacts: Artifact tables (``network_vulnerabilities/<flow>/*.csv``).
 
     Returns:
-        Distribution of each network metric, coverage, graph quality, drift, entries.
+        Per direction: distribution of each network metric, coverage, graph
+        quality, drift, entries; then the timing section.
 
     Examples:
         >>> sections_network_vulnerabilities({}, {})
         []
     """
-    return _vulnerability_sections(metrics, artifacts, "network_vulnerabilities")
+    return _flow_sections(metrics, artifacts, _NETWORK_METRICS, _NETWORK_ARTIFACTS)
+
+
+# Sections par sens d'une famille de vulnérabilités
+def _flow_sections(
+    metrics: Mapping[str, float],
+    artifacts: Mapping[str, pd.DataFrame],
+    family: str,
+    artifact_family: str,
+) -> List[Section]:
+    """Build the sections of each direction, titled after it, then the timing.
+
+    Args:
+        metrics: Metrics of the run.
+        artifacts: Artifact tables.
+        family: Metric family prefix.
+        artifact_family: Artifact directory of the family.
+
+    Returns:
+        The sections, skipping the empty ones.
+
+    Examples:
+        >>> _flow_sections({}, {}, "p", "a")
+        []
+    """
+    sections: List[Section] = []
+    for flow in _flows_in(metrics, family):
+        for section in _vulnerability_sections(
+            metrics, artifacts, f"{family}/{flow}", f"{artifact_family}/{flow}"
+        ):
+            section.title = f"{section.title} — {flow}"
+            sections.append(section)
+    timing = _timing_section(metrics)
+    return sections + ([timing] if timing else [])
 
 
 # Sections communes aux deux familles de vulnérabilités
 def _vulnerability_sections(
-    metrics: Mapping[str, float], artifacts: Mapping[str, pd.DataFrame], prefix: str
+    metrics: Mapping[str, float],
+    artifacts: Mapping[str, pd.DataFrame],
+    prefix: str,
+    artifact_prefix: str,
 ) -> List[Section]:
     """Build the sections shared by the partner and network vulnerability runs.
 
     Args:
         metrics: Metrics of the run.
         artifacts: Artifact tables.
-        prefix: Metric prefix of the family.
+        prefix: Metric prefix of the family and direction.
+        artifact_prefix: Artifact directory of the family and direction.
 
     Returns:
-        The sections, skipping the empty ones.
+        The sections, skipping the empty ones (timing excluded).
 
     Examples:
-        >>> _vulnerability_sections({}, {}, "p")
+        >>> _vulnerability_sections({}, {}, "p", "a")
         []
     """
     sections: List[Section] = []
@@ -731,11 +837,13 @@ def _vulnerability_sections(
         section = _scalar_section(metrics, f"{prefix}/{name}", title)
         if section is not None:
             sections.append(section)
-    top = {path: table for path, table in artifacts.items() if path.startswith(prefix + "/") and path.endswith(".csv")}
+    top = {
+        path: table for path, table in artifacts.items()
+        if path.startswith(artifact_prefix + "/") and path.endswith(".csv")
+    }
     if top:
         sections.append(_section("Tables journalisées", tables={path: table.head(50) for path, table in top.items()}))
-    timing = _timing_section(metrics)
-    return sections + ([timing] if timing else [])
+    return sections
 
 
 # ──────────────────────────────────────────────────────────────────────

@@ -25,7 +25,7 @@ from macroforecast.trade.aggregation.synthesis import DEFAULT_METHODS, Synthesis
 @pytest.fixture
 def _config() -> SynthesisConfig:
     """Configuration minimale à quatre métriques."""
-    return SynthesisConfig(metric_columns=("HHI", "CDI2", "CDI3", "EXPORT_HHI"))
+    return SynthesisConfig(metric_columns=("HHI", "CDI2", "CDI3", "WORLD_HHI"))
 
 
 def test_registry_covers_the_s14_table() -> None:
@@ -145,7 +145,7 @@ def test_default_methods_are_all_buildable() -> None:
             "HHI",
             "CDI2",
             "CDI3",
-            "EXPORT_HHI",
+            "WORLD_HHI",
             "CENTRALITY_RISK",
             "CLUSTERING_W",
         )

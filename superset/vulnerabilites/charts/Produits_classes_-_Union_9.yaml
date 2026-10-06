@@ -17,7 +17,7 @@ params:
   - HHI
   - CDI2
   - CDI3
-  - EXPORT_HHI
+  - WORLD_HHI
   - CENTRALITY_RISK
   - CLUSTERING_W
   - HHI_ALERT
@@ -49,7 +49,7 @@ params:
       d3NumberFormat: .2f
     CDI3:
       d3NumberFormat: .2f
-    EXPORT_HHI:
+    WORLD_HHI:
       d3NumberFormat: .2f
     CENTRALITY_RISK:
       d3NumberFormat: .2f

@@ -107,12 +107,24 @@ doivent reproduire :
 
 Famille partenaires (`vulnerabilities.indicators.fact_table`) :
 clés `freq, reporter, product, flow, indicators, TIME_PERIOD` ; colonnes `HHI, CDI2, CDI3`
-et `HHI_ALERT, CDI2_ALERT, CDI3_ALERT`. `CDI2`/`CDI3` sont nulles hors flux import.
+et `HHI_ALERT, CDI2_ALERT, CDI3_ALERT`. Les trois métriques sont calculées pour chaque
+sens de `FLOWS` (révision du 2026-10-05) : à l'export, `HHI` mesure la concentration des
+débouchés, `CDI2` = exports extra-UE / exports totaux, `CDI3` = exports extra-UE /
+imports totaux.
 Famille réseau (`vulnerabilities.network_indicators.fact_table`) : clés
-`classification, product, year` (HS6, millésime BACI) ; colonnes `CENTRALITY_RISK,
-CLUSTERING_W, DIAMETER, EXPORT_HHI, SPOF, SPOF_DECILE` et leurs `_ALERT`. Les deux familles
-n'ont ni la même clé produit (CN8 contre HS6) ni la même clé temporelle (`TIME_PERIOD`
-contre `year`) : une jointure est nécessaire pour les combiner (cf. D-09, S-2.3).
+`classification, product, year, flow` (HS6, millésime BACI, mêmes codes de flux que les
+partenaires) ; colonnes `CENTRALITY_RISK, CLUSTERING_W, DIAMETER, WORLD_HHI`
+(ex-`EXPORT_HHI`), `SPOF, SPOF_DECILE` et leurs `_ALERT`. Sur une ligne import, les
+métriques orientées décrivent la concentration de l'offre mondiale ; sur une ligne export,
+celle de la demande mondiale (graphe BACI transposé). Les deux familles n'ont ni la même
+clé produit (CN8 contre HS6) ni la même clé temporelle (`TIME_PERIOD` contre `year`) : une
+jointure est nécessaire pour les combiner (cf. D-09, S-2.3), qui porte aussi sur le flux.
+
+**Polarités et sens du flux.** Aucune différence de polarité entre import et export : plus
+concentré = plus vulnérable, côté fournisseurs à l'import, côté débouchés à l'export, pour
+les métriques partenaires comme réseau. Ce qui interdit de comparer une cellule import à
+une cellule export est le contexte (`flow` fait partie de `context_columns`, contrôlé au
+chargement dès que `FLOWS` compte plus d'un sens), jamais la polarité.
 
 ---
 
@@ -1088,16 +1100,21 @@ SYNTHESIS:
       COLUMNS: ["HHI", "CDI2", "CDI3"]
     - SCHEMA: "network_indicators"               # famille réseau (BACI)
       ALIAS: "n"
-      COLUMNS: ["EXPORT_HHI", "CENTRALITY_RISK", "CLUSTERING_W"]
+      COLUMNS: ["WORLD_HHI", "CENTRALITY_RISK", "CLUSTERING_W"]
       JOIN:
         ON:
           - 'substr(p."product", 1, 6) = n."product"'
           - 'CAST(substr(p."TIME_PERIOD", 1, 4) AS INTEGER) = n."year"'
+          - 'n."flow" = p."flow"'                  # métriques réseau du même sens
         WHERE: 'n."classification" = ''HS2022'''
 
-  # Contextes retenus (prédicat SQL sur la grille p)
+  # Sens synthétisés (même valeur que vulnerabilities.FLOWS) : le prédicat
+  # p."flow" IN (...) est généré et ajouté à FILTERS.WHERE
+  FLOWS: ["import", "export"]
+
+  # Contextes retenus (prédicat SQL sur la grille p ; reporter agrégé exclu)
   FILTERS:
-    WHERE: 'p."flow" = 1 AND p."indicators" = ''VALUE_IN_EUROS'' AND p."freq" = ''A'''
+    WHERE: 'p."indicators" = ''VALUE_IN_EUROS'' AND p."freq" = ''A'' AND p."reporter" <> ''EU27_2020'''
     LAST_N_PERIODS: 5
 
   MLFLOW:
@@ -1109,8 +1126,8 @@ SYNTHESIS:
     context_columns: ["freq", "flow", "indicators", "TIME_PERIOD"]
     reporter_col: "reporter"
     product_col: "product"
-    metric_columns: ["HHI", "CDI2", "CDI3", "EXPORT_HHI", "CENTRALITY_RISK", "CLUSTERING_W"]
-    polarities: []                       # toutes en polarité positive
+    metric_columns: ["HHI", "CDI2", "CDI3", "WORLD_HHI", "CENTRALITY_RISK", "CLUSTERING_W"]
+    polarities: []                       # toutes en polarité positive, dans les deux sens
     levels: ["by_product", "by_reporter", "global"]
     normalization: "minmax"
     winsorize_quantile: null
@@ -1141,7 +1158,7 @@ SYNTHESIS:
       - {name: "bod", kind: "bod", params: {rho: 4.0, restriction: "assurance_region"}}
       - {name: "whitened", kind: "whitened_projection", params: {covariance_estimator: "mcd"}}
       - {name: "kantorovich", kind: "kantorovich",
-         metrics: ["HHI", "CDI2", "CDI3", "EXPORT_HHI"],       # sous-ensemble (M-17)
+         metrics: ["HHI", "CDI2", "CDI3", "WORLD_HHI"],        # sous-ensemble (M-17)
          params: {epsilon: 0.1, n_target: 4096, fit_sample_size: 20000, alpha: 0.05,
                   theta0_degrees: 60.0, conformal: "split", alert: "projected"}}
       - {name: "smaa", kind: "smaa", params: {aggregation: "weighted_sum"}}
@@ -1172,18 +1189,21 @@ sous `min_group_size` produit des `NaN` et une ligne de diagnostic `skipped`.
 
 ### S-2.3 Lecture des sources (script de synthèse)
 
-Le script construit **une** requête DuckDB à partir de `SOURCES` et `FILTERS` :
+Le script construit **une** requête DuckDB à partir de `SOURCES`, `FILTERS` et `FLOWS`
+(dont les codes viennent des paramètres partenaires `import_flow` / `export_flow`) :
 
 ```sql
 SELECT p."freq", p."flow", p."indicators", p."TIME_PERIOD", p."reporter", p."product",
        p."HHI", p."CDI2", p."CDI3",
-       n."EXPORT_HHI", n."CENTRALITY_RISK", n."CLUSTERING_W"
+       n."WORLD_HHI", n."CENTRALITY_RISK", n."CLUSTERING_W"
 FROM "vulnerabilities"."indicators"."fact_table" AS p
 LEFT JOIN "vulnerabilities"."network_indicators"."fact_table" AS n
        ON substr(p."product", 1, 6) = n."product"
       AND CAST(substr(p."TIME_PERIOD", 1, 4) AS INTEGER) = n."year"
+      AND n."flow" = p."flow"
       AND n."classification" = 'HS2022'
-WHERE p."flow" = 1 AND p."indicators" = 'VALUE_IN_EUROS' AND p."freq" = 'A'
+WHERE p."indicators" = 'VALUE_IN_EUROS' AND p."freq" = 'A' AND p."reporter" <> 'EU27_2020'
+  AND p."flow" IN (1, 2)
   AND p."TIME_PERIOD" IN (SELECT DISTINCT "TIME_PERIOD" FROM ... ORDER BY 1 DESC LIMIT 5)
 ```
 
@@ -1393,16 +1413,17 @@ sans S3 ni DuckLake sauf mention. Aucun test ne doit dépendre de `jax` (skip pr
 Hypothèses retenues en l'absence de réponse (le travail est spécifié avec elles ; les
 changer ne modifie que la configuration ou une règle locale) :
 
-1. **Six métriques** : `HHI, CDI2, CDI3` (partenaires) + `EXPORT_HHI, CENTRALITY_RISK,
-   CLUSTERING_W` (réseau), jointes par `substr(product, 1, 6) = product` et année,
-   millésime `HS2022`. `DIAMETER`, `SPOF`, `SPOF_DECILE` exclues (SPOF est déjà une
+1. **Six métriques** : `HHI, CDI2, CDI3` (partenaires) + `WORLD_HHI` (ex-`EXPORT_HHI`),
+   `CENTRALITY_RISK, CLUSTERING_W` (réseau), jointes par `substr(product, 1, 6) = product`,
+   année et flux, millésime `HS2022`. `DIAMETER`, `SPOF`, `SPOF_DECILE` exclues (SPOF est déjà une
    agrégation ; `DIAMETER` est entier et faiblement discriminant). Toutes en polarité
    `+1`. **Question** : est-ce le bon jeu ? faut-il inclure `DIAMETER` ?
 2. **Niveaux** : interprétation D-09. **Question** : confirmer que « pour une nomenclature
    indépendamment pour chaque pays » signifie « ordonner les pays d'un même produit ».
-3. **Contextes** : flux import, indicateur valeur, fréquence annuelle, cinq dernières
-   périodes. **Question** : modalités exactes de `indicators` et `freq` dans
-   `DS-045409` ; faut-il aussi les flux export (`CDI2`/`CDI3` y sont nulles) ?
+3. **Contextes** : flux import et export (contextes distincts, *révision du 2026-10-05* :
+   métriques d'export définies, réseau transposé), indicateur valeur, fréquence annuelle,
+   cinq dernières périodes. **Question** : modalités exactes de `indicators` et `freq`
+   dans `DS-045409`.
 4. **Fraîcheur v1** : recalcul de tous les contextes sélectionnés dès qu'un registre amont
    est plus récent. **Question** : acceptable en attendant un registre par contexte ?
 5. **Méthodes par défaut** : la liste S-2.2. **Question** : conserver `mahalanobis`

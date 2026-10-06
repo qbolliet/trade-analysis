@@ -130,7 +130,7 @@ SHARE_STATISTICS = (
 def _synthesis_config() -> SynthesisConfig:
     """Configuration de synthèse réduite, déterministe et rapide."""
     return SynthesisConfig(
-        metric_columns=("HHI", "CDI2", "CDI3", "EXPORT_HHI"),
+        metric_columns=("HHI", "CDI2", "CDI3", "WORLD_HHI"),
         methods=_METHODS,
         min_group_size=3,
         smaa_n_draws=64,
@@ -357,7 +357,7 @@ def test_degenerate_group_skips_undefined_statistics(
             "HHI": [0.8, 0.2],
             "CDI2": [0.7, 0.3],
             "CDI3": [0.6, 0.1],
-            "EXPORT_HHI": [0.5, 0.4],
+            "WORLD_HHI": [0.5, 0.4],
         }
     )
     config = SynthesisConfig(

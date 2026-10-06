@@ -26,6 +26,8 @@ Exemples::
     invalidate-freshness-script --step partners --metrics HHI
     # Aperçu, sans écriture, restreint à deux reporters
     invalidate-freshness-script --step partners --metrics HHI --reporters "FR;DE" --dry-run
+    # Un seul sens de flux : nom qualifié par le sens
+    invalidate-freshness-script --step partners --metrics HHI/export
     # Étape BACI corrigée : réestimation du millésime HS2017
     invalidate-freshness-script --step baci --vintages HS2017
     # Méthode de synthèse corrigée : recalcul de toute la synthèse
@@ -43,11 +45,18 @@ import logging
 from typing import Any, Callable, FrozenSet, List, Mapping, Optional, Sequence, Tuple
 
 # Registres de fraîcheur v2
-from kedro_pipeline.io.freshness import ForceSpec, FreshnessRegistry, Unit, parse_force_list
+from kedro_pipeline.io.freshness import (
+    ForceSpec,
+    FreshnessRegistry,
+    Unit,
+    parse_force_list,
+    split_qualified,
+)
 # Métriques calculées par les étapes de vulnérabilité
 from macroforecast.trade.vulnerabilities import (
     DEFAULT_METRIC_CLASSES,
     DEFAULT_NETWORK_METRIC_CLASSES,
+    FLOW_NAMES,
 )
 
 # Configuration de logging
@@ -119,7 +128,10 @@ def step_names(step: str) -> Tuple[str, ...]:
 def resolve_names(step: str, names: Sequence[str]) -> Optional[FrozenSet[str]]:
     """Validate the names to invalidate.
 
-    A typo would otherwise silently invalidate nothing.
+    A typo would otherwise silently invalidate nothing. The partner and network
+    steps record one fingerprint per metric and flow direction
+    (``HHI/import``): a plain metric name invalidates every direction, a name
+    qualified by a direction (``HHI/export``) only that one.
 
     Args:
         step: Step name.
@@ -134,12 +146,20 @@ def resolve_names(step: str, names: Sequence[str]) -> Optional[FrozenSet[str]]:
     Examples:
         >>> resolve_names("partners", ["HHI"])
         frozenset({'HHI'})
+        >>> resolve_names("partners", ["HHI/export"])
+        frozenset({'HHI/export'})
         >>> resolve_names("partners", []) is None
         True
     """
     if not names:
         return None
-    unknown = sorted(set(names) - set(step_names(step)))
+
+    # Nom connu de l'étape, éventuellement qualifié par un sens de flux connu
+    def _known(name: str) -> bool:
+        base, qualifier = split_qualified(name)
+        return base in step_names(step) and (qualifier is None or qualifier in FLOW_NAMES)
+
+    unknown = sorted(name for name in set(names) if not _known(name))
     if unknown:
         raise ValueError(
             f"Unknown name(s) {unknown} for step '{step}', expected among {list(step_names(step))}"

@@ -46,10 +46,14 @@ tracking:
       - {metric: baci/tonnage/share_tonnage_missing,       op: "<=", threshold: 0.05, severity: warning, label: "Flux sans tonnage (1 − part convertie en tonnes)"}
       - {metric: baci/gravity/r_squared,                   op: ">=", threshold: 0.5,  severity: warning, label: "R² de l'équation de gravité"}
       - {metric: baci/fobisation/share_clipped_to_zero,    op: "<=", threshold: 0.01, severity: warning, label: "Valeurs FOB tronquées à zéro"}
+    # Métriques préfixées par sens de flux : un contrôle par sens, ignoré (« skipped ») pour
+    # un sens absent de FLOWS ou non recalculé par ce run
     compute_partner_vulnerabilities:
-      - {metric: vulnerabilities/cells/n_total,            op: ">",  threshold: 0,    severity: warning, label: "Cellules de vulnérabilité calculées"}
+      - {metric: partners/import/cells/n_total,            op: ">",  threshold: 0,    severity: warning, label: "Cellules de vulnérabilité calculées (import)"}
+      - {metric: partners/export/cells/n_total,            op: ">",  threshold: 0,    severity: warning, label: "Cellules de vulnérabilité calculées (export)"}
     "compute_network_vulnerabilities*":   # un run par millésime : compute_network_vulnerabilities_<millésime>
-      - {metric: network_vulnerabilities/cells/n_total,    op: ">",  threshold: 0,    severity: warning, label: "Cellules de vulnérabilité de réseau calculées"}
+      - {metric: network/import/cells/n_total,             op: ">",  threshold: 0,    severity: warning, label: "Cellules de vulnérabilité de réseau calculées (import)"}
+      - {metric: network/export/cells/n_total,             op: ">",  threshold: 0,    severity: warning, label: "Cellules de vulnérabilité de réseau calculées (export)"}
     compute_synthetic_scores:
       - {metric: synthesis/n_contexts,                     op: ">",  threshold: 0,    severity: warning, label: "Contextes calculés"}
     compute_synthesis_coherence:

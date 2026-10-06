@@ -26,6 +26,7 @@ from kedro_pipeline.io.freshness import (
     RegistryEntry,
     Unit,
     UnitPlan,
+    qualifiers_to_compute,
     summarize_upstream,
 )
 from macroforecast.trade.processing import DEFAULT_CONFIG as BACI_DEFAULT_CONFIG
@@ -126,7 +127,7 @@ def test_partners_invalidated_metric_recomputes_everything_once(tmp_path: Path, 
     registry.save()
     plans = _partner_pass(tmp_path, partner_units_fixture, requested)
     assert set(plans) == set(partner_units_fixture)
-    assert {plan for plan in plans.values()} == {UnitPlan("fingerprint", frozenset({"HHI"}))}
+    assert {plan for plan in plans.values()} == {UnitPlan("fingerprint", frozenset({"HHI/import"}))}
     # Empreintes réenregistrées : la passe suivante ne recalcule rien
     assert _partner_pass(tmp_path, partner_units_fixture, requested) == {}
 
@@ -157,9 +158,38 @@ def test_partners_force_metric_then_nothing(tmp_path: Path, partner_units_fixtur
     force = ForceSpec.from_runtime({"FORCE_METRICS": "HHI"}, environ={})
     plans = _partner_pass(tmp_path, partner_units_fixture, requested, force)
     assert set(plans) == set(partner_units_fixture)
-    assert {plan for plan in plans.values()} == {UnitPlan("forced", frozenset({"HHI"}))}
+    assert {plan for plan in plans.values()} == {UnitPlan("forced", frozenset({"HHI/import"}))}
     # Empreintes inchangées : la passe suivante, sans forçage, ne recalcule rien
     assert _partner_pass(tmp_path, partner_units_fixture, requested) == {}
+
+
+def test_partners_adding_export_plans_only_the_export_direction(
+    tmp_path: Path, partner_units_fixture
+) -> None:
+    config = VulnerabilityConfig()
+    _partner_pass(tmp_path, partner_units_fixture, partner_requested(config, ("import",)))
+    both = partner_requested(config, ("import", "export"))
+    plans = _partner_pass(tmp_path, partner_units_fixture, both)
+    assert set(plans) == set(partner_units_fixture)
+    assert {plan for plan in plans.values()} == {
+        UnitPlan("fingerprint", frozenset({"HHI/export", "CDI2/export", "CDI3/export"}))
+    }
+    assert qualifiers_to_compute(plans, ("import", "export")) == ("export",)
+    # Les deux sens à jour : plus rien ; forcer HHI couvre ses deux sens
+    assert _partner_pass(tmp_path, partner_units_fixture, both) == {}
+    forced = _partner_pass(tmp_path, partner_units_fixture, both, ForceSpec(metrics=("HHI",)))
+    assert {plan.names for plan in forced.values()} == {frozenset({"HHI/import", "HHI/export"})}
+    assert qualifiers_to_compute(forced, ("import", "export")) == ("import", "export")
+
+
+def test_partners_invalidating_one_direction(tmp_path: Path, partner_units_fixture) -> None:
+    both = partner_requested(VulnerabilityConfig(), ("import", "export"))
+    _partner_pass(tmp_path, partner_units_fixture, both)
+    registry = partner_registry(_partner_block(tmp_path), "HS2022")
+    registry.invalidate({"CDI3/export"})
+    registry.save()
+    plans = _partner_pass(tmp_path, partner_units_fixture, both)
+    assert {plan.names for plan in plans.values()} == {frozenset({"CDI3/export"})}
 
 
 def test_partners_new_download_recomputes_the_pair(tmp_path: Path, partner_units_fixture) -> None:
@@ -251,6 +281,19 @@ def test_network_first_second_invalidation_and_force(tmp_path: Path) -> None:
     # Forçage d'un millésime seulement
     force = ForceSpec(steps=frozenset({"network"}), vintages=("HS2017",))
     assert [unit.get("vintage") for unit in _network_pass(tmp_path, requested, force)] == ["HS2017"]
+
+
+def test_network_adding_export_plans_only_the_export_direction(tmp_path: Path) -> None:
+    _write_baci(tmp_path, "HS2017", T0)
+    config = NetworkVulnerabilityConfig()
+    _network_pass(tmp_path, network_requested(config, ("import",)))
+    plans = _network_pass(tmp_path, network_requested(config, ("import", "export")))
+    assert [unit.get("vintage") for unit in plans] == ["HS2017"]
+    names = next(iter(plans.values())).names
+    assert names == {f"{name}/export" for name in (
+        "CENTRALITY_RISK", "CLUSTERING_W", "DIAMETER", "WORLD_HHI", "SPOF", "SPOF_DECILE"
+    )}
+    assert qualifiers_to_compute(plans, ("import", "export")) == ("export",)
 
 
 def test_network_follows_baci_and_skips_incomplete_pass(tmp_path: Path) -> None:

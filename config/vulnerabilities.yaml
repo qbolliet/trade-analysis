@@ -8,6 +8,19 @@
 #     clustering, diamètre, SPOF) sur les flux BACI
 #                                           -> bloc NETWORK_VULNERABILITIES
 
+# Sens de flux calculés, communs aux deux familles : "import" (exposition du pays à
+# ses fournisseurs) et/ou "export" (exposition à ses débouchés). Les métriques
+# partenaires (HHI, CDI2, CDI3) sont calculées dans chaque sens ; les métriques de
+# réseau aussi (graphe BACI transposé à l'export), via NETWORK_VULNERABILITIES.FLOWS.
+# Placé à la racine (et non dans PARAMETERS) parce qu'il pilote quelles lignes sont
+# calculées, pas une valeur de VulnerabilityConfig ; l'ancre &flows le partage avec
+# le bloc réseau. Les codes écrits dans la colonne flow viennent des champs
+# import_flow / export_flow des PARAMETERS de chaque bloc (défauts 1 et 2), qui
+# doivent rester identiques entre les deux blocs : la synthèse joint les deux
+# familles par égalité du flux. Même valeur attendue dans synthesis.yaml
+# (SYNTHESIS.FLOWS), une ancre ne traversant pas les fichiers.
+FLOWS: &flows ["import", "export"]
+
 VULNERABILITIES:
   # Un catalogue DuckLake n'a qu'un DATA_PATH : les quatre blocs (partenaires, réseau, synthèse,
   # cohérence) doivent donc pointer vers le même préfixe ; les schémas les distinguent.
@@ -69,16 +82,22 @@ PARAMETERS:
   metric_alert_thresholds:
     - ["HHI", 0.5]   # littérature (seuil de forte concentration)
     - ["CDI2", 0.5]  # littérature (seuil de forte concentration)
-    - ["CDI3", 1.0]  # littérature (parité extra-UE / exportations)
+    - ["CDI3", 1.0]  # littérature (parité extra-UE / flux opposé)
   artifact_top_n: 50
 
 # ──────────────────────────────────────────────────────────────────────
 # Indicateurs de réseau, calculés sur les flux réconciliés BACI
 # ──────────────────────────────────────────────────────────────────────
 # Le catalogue est celui du bloc VULNERABILITIES ci-dessus ; seul le schéma
-# résultat change (clé primaire supplémentaire : le millésime de nomenclature).
+# résultat change (clés primaires supplémentaires : le millésime de nomenclature
+# et le flux, une ligne par sens).
 # Les schémas sources, eux, sont ceux de config/baci.yaml
 NETWORK_VULNERABILITIES:
+  # Sens calculés : même valeur que FLOWS (ancre). À l'export, les métriques
+  # orientées (CENTRALITY_RISK, WORLD_HHI, SPOF, SPOF_DECILE) décrivent la
+  # concentration de la demande mondiale (graphe transposé) ; CLUSTERING_W et
+  # DIAMETER, invariants, sont calculés une fois et recopiés sur les deux sens
+  FLOWS: *flows
   BUCKET: "qbollietdgddi"
   RESULT_SCHEMA: "network_indicators"
   PATHS:
@@ -125,10 +144,10 @@ NETWORK_VULNERABILITIES:
     # Seuils d'alerte par métrique, matérialisés en colonnes booléennes
     # « {métrique}_ALERT » à côté du score continu dans la table résultat.
     metric_alert_thresholds:
-      - ["CENTRALITY_RISK", 2.5]  # littérature (1er exportateur ~2/3 du monde)
+      - ["CENTRALITY_RISK", 2.5]  # littérature (1er exportateur ~2/3 du monde ; à l'export, 1er importateur, par symétrie)
       - ["CLUSTERING_W", 0.5]     # hors littérature (convention)
       - ["DIAMETER", 4.0]         # hors littérature (convention)
-      - ["EXPORT_HHI", 0.5]       # littérature (seuil de forte concentration)
+      - ["WORLD_HHI", 0.5]        # littérature (seuil de forte concentration)
       - ["SPOF", 0.9]            # hors littérature (convention)
       - ["SPOF_DECILE", 9.0]     # hors littérature (dernier décile sur 10)
     # Métrique servant de critère de tri du palmarès des produits exposés

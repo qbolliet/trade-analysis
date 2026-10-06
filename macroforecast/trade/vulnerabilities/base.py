@@ -1,7 +1,7 @@
 """Vulnerability metric abstraction.
 
 Defines the shared contract for trade-vulnerability metrics. Each metric scores
-the supply vulnerability of a good for a given
+the vulnerability of a good for a given
 ``date x nomenclature x indicator x flow x reporter`` cell, looking at the link
 between the reporter country and its trading partners.
 
@@ -17,15 +17,47 @@ the sourcing of one declaring country: :class:`NetworkVulnerabilityMetric` and
 concrete metrics in :mod:`macroforecast.trade.vulnerabilities.network_metrics`.
 The two families share no partner-aggregate machinery, only the
 :class:`ScoreConfig` fields the metric-agnostic diagnostics read.
+
+Both families also share one framework for the **direction** of exposure,
+independent from their **scale** (one country or the world graph, carried by the
+class): every metric instance takes a ``flow`` hyperparameter, ``"import"`` (the
+country is exposed to its suppliers) or ``"export"`` (the country is exposed to
+its outlets). The shared configuration is never altered by the direction: a
+partner metric resolves the flow into its own and opposite flow codes
+(:attr:`VulnerabilityMetric.own_flow_code`), a network metric into the roles of
+the two edge columns (:attr:`NetworkVulnerabilityMetric.counterpart_col`).
 """
 # Importation des modules
 from __future__ import annotations
 # Modules de base
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from typing import ClassVar, Optional, Protocol, Set, Tuple
+from typing import (
+    Any,
+    ClassVar,
+    Dict,
+    FrozenSet,
+    Literal,
+    Optional,
+    Protocol,
+    Set,
+    Tuple,
+    get_args,
+)
 # Module de manipulation de données
 import narwhals as nw
+# Module du package
+from ..methodology import methodology_params
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Sens du flux
+# ──────────────────────────────────────────────────────────────────────
+
+# Sens d'exposition d'un pays : à ses fournisseurs (import) ou à ses débouchés (export)
+Flow = Literal["import", "export"]
+# Sens reconnus, dans l'ordre de la définition du type
+FLOW_NAMES: Tuple[str, ...] = get_args(Flow)
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -200,18 +232,214 @@ def individual_partner_expr(config: VulnerabilityConfig = DEFAULT_CONFIG) -> nw.
 
 
 # ──────────────────────────────────────────────────────────────────────
+# Cadre commun du sens
+# ──────────────────────────────────────────────────────────────────────
+
+# Correspondance unique sens → code de flux, pour les deux familles
+def flow_code_map(config: Any) -> Dict[str, int]:
+    """Map each flow direction to its flow code.
+
+    The single place where a direction name becomes a code. Both
+    configurations carry ``import_flow`` / ``export_flow``: the partner one
+    reads them in the source table, the network one writes them in its result.
+
+    Args:
+        config: :class:`VulnerabilityConfig` or
+            :class:`NetworkVulnerabilityConfig` (any object exposing
+            ``import_flow`` and ``export_flow``).
+
+    Returns:
+        Mapping ``{"import": import_flow, "export": export_flow}``.
+
+    Examples:
+        >>> flow_code_map(VulnerabilityConfig())
+        {'import': 1, 'export': 2}
+        >>> flow_code_map(VulnerabilityConfig(import_flow=10, export_flow=20))["export"]
+        20
+    """
+    return {"import": config.import_flow, "export": config.export_flow}
+
+
+# Fonction de lecture et de validation d'une liste de sens (paramètre FLOWS)
+def parse_flows(value: Any) -> Tuple[str, ...]:
+    """Read and validate a list of flow directions.
+
+    Args:
+        value: Directions, as a list or tuple of names, or a single name.
+
+    Returns:
+        The directions, duplicates removed, in their original order.
+
+    Raises:
+        ValueError: If the list is empty or names an unknown direction.
+
+    Examples:
+        >>> parse_flows(["import", "export", "import"])
+        ('import', 'export')
+        >>> parse_flows("export")
+        ('export',)
+    """
+    # Normalisation : un nom isolé vaut une liste d'un élément
+    items = [value] if isinstance(value, str) else list(value or ())
+    flows = tuple(dict.fromkeys(str(item) for item in items))
+    # Vérification des arguments
+    if not flows:
+        raise ValueError("At least one flow direction must be requested.")
+    unknown = [flow for flow in flows if flow not in FLOW_NAMES]
+    if unknown:
+        raise ValueError(
+            f"Unknown flow direction(s) {unknown}: expected among {list(FLOW_NAMES)}."
+        )
+    return flows
+
+
+# Fonction de validation d'un sens au regard des sens supportés par une classe
+def _validate_flow(cls: type, flow: str) -> None:
+    """Check that a metric class supports a flow direction.
+
+    Args:
+        cls: Metric class.
+        flow: Requested direction.
+
+    Raises:
+        ValueError: If ``flow`` is not a known direction or not one of
+            ``cls.supported_flows``.
+
+    Examples:
+        >>> _validate_flow(type("M", (), {"supported_flows": frozenset({"import"})}), "import")
+    """
+    # Vérification du sens demandé (vocabulaire, puis support par la classe)
+    if flow not in FLOW_NAMES:
+        raise ValueError(
+            f"Unknown flow {flow!r} for {cls.__name__}: expected one of {list(FLOW_NAMES)}."
+        )
+    if flow not in cls.supported_flows:
+        raise ValueError(
+            f"{cls.__name__} does not support flow {flow!r}: supported flows are "
+            f"{sorted(cls.supported_flows)}."
+        )
+
+
+# Classe parente commune aux deux familles : hyperparamètre de sens et empreinte
+class _DirectedMetric(ABC):
+    """Shared direction framework of the partner and network metric families.
+
+    Carries everything the two families have in common about the direction of
+    exposure, so that it is written once: the ``flow`` hyperparameter and its
+    validation, the class-level declarations of the supported directions and of
+    the orientation invariance, and the methodological fingerprint of an
+    instance. The scale (one country or the world graph) is carried by the
+    concrete subclass, never by this hyperparameter.
+
+    Args:
+        config: Configuration dataclass of the family.
+        flow: Direction of exposure, ``"import"`` (suppliers) or ``"export"``
+            (outlets). Stored as given, following the scikit-learn convention.
+
+    Raises:
+        ValueError: If ``flow`` is not in :attr:`supported_flows`.
+
+    Attributes:
+        name: Output column name of the metric (class attribute). Two instances
+            of a class in two directions share it: the direction is carried by
+            the flow column of the result table.
+        supported_flows: Directions the class can compute. Defaults to the
+            import direction only — the safe choice for a metric whose export
+            reading has not been defined.
+        orientation_invariant: Whether the value does not depend on the
+            direction (a measure of the symmetrised graph): the runner then
+            computes it once and copies it onto every direction.
+        reciprocal_is_effective_count: Whether ``1 / score`` reads as an
+            effective number of counterparts — true for a concentration index,
+            false for a ratio or a topological measure. Drives the
+            ``effective_suppliers_median`` diagnostic.
+    """
+
+    # Nom de la métrique (colonne de sortie) — défini par chaque sous-classe
+    name: ClassVar[str]
+    # Sens calculables par la classe (import seul par défaut : choix sûr)
+    supported_flows: ClassVar[FrozenSet[str]] = frozenset({"import"})
+    # Valeur indépendante du sens (graphe symétrisé) : calcul unique, recopie
+    orientation_invariant: ClassVar[bool] = False
+    # Interprétation de l'inverse du score : nombre effectif de contreparties
+    reciprocal_is_effective_count: ClassVar[bool] = False
+    # Champs de configuration exclus de l'empreinte — définis par chaque famille
+    _fingerprint_excluded: ClassVar[FrozenSet[str]] = frozenset()
+
+    # Initialisation
+    def __init__(self, config: Any, *, flow: Flow = "import") -> None:
+        # Vérification du sens, puis stockage tel quel des hyperparamètres
+        _validate_flow(type(self), flow)
+        self.config = config
+        self.flow = flow
+
+    # Représentation textuelle (journaux, messages d'erreur)
+    def __repr__(self) -> str:
+        return f"{type(self).__name__}(flow={self.flow!r})"
+
+    # Clé de l'empreinte dans un registre de fraîcheur
+    @property
+    def fingerprint_key(self) -> str:
+        """Key of the instance's fingerprint in a freshness registry.
+
+        Two instances of a class share a column name, so the key qualifies the
+        name by the direction: adding a direction then only makes that
+        direction stale.
+
+        Returns:
+            ``"<name>/<flow>"``.
+
+        Examples:
+            >>> from macroforecast.trade.vulnerabilities import SinglePointOfFailureRisk
+            >>> SinglePointOfFailureRisk(flow="export").fingerprint_key
+            'SPOF/export'
+        """
+        return f"{self.name}/{self.flow}"
+
+    # Paramètres de l'empreinte méthodologique
+    def fingerprint_params(self) -> Dict[str, Any]:
+        """Parameters digested by the methodological fingerprint.
+
+        Returns:
+            The configuration fields that shape the written values (the
+            family's diagnostic-only fields excluded) plus the ``flow``
+            hyperparameter.
+
+        Examples:
+            >>> from macroforecast.trade.vulnerabilities import HerfindahlHirschmanIndex
+            >>> params = HerfindahlHirschmanIndex(flow="export").fingerprint_params()
+            >>> params["flow"], "artifact_top_n" in params
+            ('export', False)
+        """
+        params = methodology_params(self.config, self._fingerprint_excluded)
+        params["flow"] = self.flow
+        return params
+
+    # Méthode abstraite de calcul de la métrique
+    @abstractmethod
+    def compute(self, data: nw.DataFrame) -> nw.DataFrame:
+        """Compute the metric over an entire dataset (see the families)."""
+        raise NotImplementedError
+
+
+# ──────────────────────────────────────────────────────────────────────
 # Classe parente abstraite
 # ──────────────────────────────────────────────────────────────────────
 
 # Classe parente normalisant l'API des métriques de vulnérabilité
-class VulnerabilityMetric(ABC):
+class VulnerabilityMetric(_DirectedMetric):
     """Abstract base class for trade-vulnerability metrics.
 
     Subclasses implement :meth:`compute`, which scores a whole dataset at once
     and returns a narwhals frame keyed by :attr:`VulnerabilityConfig.key_columns`
     with a single value column named after the metric (:attr:`name`). Operating
     on the full frame (rather than cell by cell) keeps the implementation
-    vectorised and lets cross-flow metrics (e.g. CDI3) join imports to exports.
+    vectorised and lets cross-flow metrics (e.g. CDI3) join both flows.
+
+    An instance only returns rows of its **own** flow
+    (:attr:`own_flow_code`); a cross-flow metric reads the opposite one
+    (:attr:`other_flow_code`) as an input. The configuration is the same object
+    in both directions.
 
     The class provides reusable narwhals helpers shared by the concrete metrics
     so that adding a new metric usually amounts to a few narwhals expressions.
@@ -219,6 +447,10 @@ class VulnerabilityMetric(ABC):
     Args:
         config: Column and partner-code conventions. Defaults to
             :data:`DEFAULT_CONFIG`.
+        flow: Direction of exposure, ``"import"`` or ``"export"``.
+
+    Raises:
+        ValueError: If ``flow`` is not in :attr:`supported_flows`.
 
     Attributes:
         name: Output column name of the metric (class attribute).
@@ -227,18 +459,35 @@ class VulnerabilityMetric(ABC):
             as the HHI, false for a ratio. Drives the
             ``effective_suppliers_median`` diagnostic, which is left ``NaN``
             for the metrics that do not declare it.
+
+    Examples:
+        >>> from macroforecast.trade.vulnerabilities import HerfindahlHirschmanIndex
+        >>> metric = HerfindahlHirschmanIndex(flow="export")
+        >>> metric.own_flow_code, metric.other_flow_code, metric.fingerprint_key
+        (2, 1, 'HHI/export')
     """
 
-    # Nom de la métrique (colonne de sortie) — défini par chaque sous-classe
-    name: ClassVar[str]
-    # Interprétation de l'inverse du score : nombre effectif de fournisseurs.
-    # Vraie pour un indice de concentration (HHI), fausse pour un ratio.
-    reciprocal_is_effective_count: ClassVar[bool] = False
+    # Champs de configuration exclus de l'empreinte méthodologique
+    _fingerprint_excluded: ClassVar[FrozenSet[str]] = VULNERABILITY_FINGERPRINT_EXCLUDED
 
     # Initialisation
-    def __init__(self, config: VulnerabilityConfig = DEFAULT_CONFIG) -> None:
-        # Configuration des conventions de colonnes/codes
-        self.config = config
+    def __init__(
+        self, config: VulnerabilityConfig = DEFAULT_CONFIG, *, flow: Flow = "import"
+    ) -> None:
+        super().__init__(config, flow=flow)
+
+    # Code du flux propre de l'instance
+    @property
+    def own_flow_code(self) -> int:
+        """Flow code of the instance's direction (rows it returns)."""
+        return flow_code_map(self.config)[self.flow]
+
+    # Code du flux opposé
+    @property
+    def other_flow_code(self) -> int:
+        """Flow code of the opposite direction (read by cross-flow metrics)."""
+        other = next(name for name in FLOW_NAMES if name != self.flow)
+        return flow_code_map(self.config)[other]
 
     # Méthode abstraite de calcul de la métrique
     @abstractmethod
@@ -252,7 +501,8 @@ class VulnerabilityMetric(ABC):
 
         Returns:
             Narwhals frame with the configured ``key_columns`` and a single
-            additional column named :attr:`name`, holding one value per cell.
+            additional column named :attr:`name`, holding one value per cell
+            of the instance's own flow (:attr:`own_flow_code`).
         """
         raise NotImplementedError
 
@@ -409,11 +659,21 @@ class NetworkVulnerabilityConfig:
         value_col: Column holding the reconciled flow value (edge weight).
         product_col: Column holding the product code.
         period_col: Column holding the year.
+        flow_col: Column holding the flow code in the *result* table. The BACI
+            matrix has no flow: each direction is computed in its own pass and
+            this column is added to its output, then joins the primary key.
+        import_flow: Flow code written on the import-direction rows. Must equal
+            :attr:`VulnerabilityConfig.import_flow`, so that the synthesis joins
+            the two families with a plain equality on the flow.
+        export_flow: Flow code written on the export-direction rows, same
+            constraint with :attr:`VulnerabilityConfig.export_flow`.
         reporter_col: Alias of :attr:`exporter_col` for the shared diagnostics.
         partner_col: Alias of :attr:`importer_col` for the shared diagnostics.
         centrality_risk_threshold: Centrality-risk value above which a product
             is flagged (2.5 in the literature — roughly the situation where the
-            world's first exporter supplies two thirds of world exports).
+            world's first exporter supplies two thirds of world exports; read by
+            symmetry in the export direction, where the world's first importer
+            absorbs about two thirds of world imports).
         high_score_threshold: Score above which a cell is reported as high
             (0.5, the "highly concentrated" threshold of the literature).
         unit_score_threshold: Score above which a ratio-type index exceeds
@@ -447,6 +707,8 @@ class NetworkVulnerabilityConfig:
     Examples:
         >>> NetworkVulnerabilityConfig().key_columns
         ('classification', 'product', 'year')
+        >>> flow_code_map(NetworkVulnerabilityConfig())
+        {'import': 1, 'export': 2}
         >>> NetworkVulnerabilityConfig(value_col="v").value_col
         'v'
     """
@@ -459,6 +721,11 @@ class NetworkVulnerabilityConfig:
     value_col: str = "reconciled_value"
     product_col: str = "product"
     period_col: str = "year"
+    # Colonne et codes du sens ajoutés en sortie (la table BACI n'a pas de flux) :
+    # mêmes codes que les partenaires, condition d'une jointure de synthèse par égalité
+    flow_col: str = "flow"
+    import_flow: int = 1
+    export_flow: int = 2
     # Alias satisfaisant ScoreConfig : les diagnostics de volumétrie partagés
     # rapportent ici les cardinalités des deux extrémités des arêtes
     reporter_col: str = "exporter"
@@ -485,7 +752,7 @@ class NetworkVulnerabilityConfig:
         ("CENTRALITY_RISK", 2.5),  # littérature (1er exportateur ~2/3 du monde)
         ("CLUSTERING_W", 0.5),  # hors littérature (convention)
         ("DIAMETER", 4.0),  # hors littérature (convention)
-        ("EXPORT_HHI", 0.5),  # littérature (seuil de forte concentration)
+        ("WORLD_HHI", 0.5),  # littérature (seuil de forte concentration)
         ("SPOF", 0.9),  # hors littérature (convention)
         ("SPOF_DECILE", 9.0),  # hors littérature (dernier décile sur 10)
     )
@@ -519,7 +786,7 @@ NETWORK_FINGERPRINT_EXCLUDED: frozenset = frozenset(
 # ──────────────────────────────────────────────────────────────────────
 
 # Classe parente normalisant l'API des métriques de réseau
-class NetworkVulnerabilityMetric(ABC):
+class NetworkVulnerabilityMetric(_DirectedMetric):
     """Abstract base class for trade-network vulnerability metrics.
 
     Same contract as :class:`VulnerabilityMetric` — score a whole dataset at
@@ -534,29 +801,80 @@ class NetworkVulnerabilityMetric(ABC):
     carries no ``WORLD`` / ``EXT_EU`` row, every row being a pair of individual
     countries. Hence a sibling hierarchy rather than a subclass.
 
+    The direction is resolved into the **roles** of the two edge columns, which
+    the oriented formulas use instead of the raw exporter / importer columns:
+    :attr:`counterpart_col` (the side a country is exposed to: exporters in the
+    import direction, importers in the export direction) and
+    :attr:`exposed_col` (the other side). Computing a metric in the export
+    direction is therefore computing it on the **transposed** BACI matrix,
+    without ever altering the configuration. A column used for another reason
+    than its role in the flow is still named explicitly.
+
     Args:
         config: Column conventions and thresholds. Defaults to
             :data:`DEFAULT_NETWORK_CONFIG`.
+        flow: Direction of exposure, ``"import"`` or ``"export"``.
+
+    Raises:
+        ValueError: If ``flow`` is not in :attr:`supported_flows`.
 
     Attributes:
         name: Output column name of the metric (class attribute).
         reciprocal_is_effective_count: Whether ``1 / score`` reads as an
-            effective number of suppliers — true for a concentration index such
-            as the export HHI, false for a topological measure. Drives the
+            effective number of counterparts — true for a concentration index
+            such as the world HHI, false for a topological measure. Drives the
             ``effective_suppliers_median`` diagnostic.
+
+    Examples:
+        >>> from macroforecast.trade.vulnerabilities import WorldExportConcentration
+        >>> metric = WorldExportConcentration(flow="export")
+        >>> metric.counterpart_col, metric.exposed_col
+        ('importer', 'exporter')
     """
 
-    # Nom de la métrique (colonne de sortie) — défini par chaque sous-classe
-    name: ClassVar[str]
-    # Interprétation de l'inverse du score : nombre effectif de fournisseurs
-    reciprocal_is_effective_count: ClassVar[bool] = False
+    # Champs de configuration exclus de l'empreinte méthodologique
+    _fingerprint_excluded: ClassVar[FrozenSet[str]] = NETWORK_FINGERPRINT_EXCLUDED
 
     # Initialisation
     def __init__(
-        self, config: NetworkVulnerabilityConfig = DEFAULT_NETWORK_CONFIG
+        self,
+        config: NetworkVulnerabilityConfig = DEFAULT_NETWORK_CONFIG,
+        *,
+        flow: Flow = "import",
     ) -> None:
-        # Configuration des conventions de colonnes et des seuils
-        self.config = config
+        super().__init__(config, flow=flow)
+
+    # Correspondance unique sens → rôles des deux colonnes d'arête
+    def _roles(self) -> Tuple[str, str]:
+        """Resolve the direction into ``(counterpart_col, exposed_col)``.
+
+        Returns:
+            At the import, the exporters are the counterparts (suppliers) and
+            the importers the exposed side; at the export, the reverse.
+
+        Examples:
+            >>> from macroforecast.trade.vulnerabilities import WorldExportConcentration
+            >>> WorldExportConcentration()._roles()
+            ('exporter', 'importer')
+        """
+        cfg = self.config
+        roles = {
+            "import": (cfg.exporter_col, cfg.importer_col),
+            "export": (cfg.importer_col, cfg.exporter_col),
+        }
+        return roles[self.flow]
+
+    # Colonne des contreparties
+    @property
+    def counterpart_col(self) -> str:
+        """Edge column of the counterparts: exporters at the import, importers at the export."""
+        return self._roles()[0]
+
+    # Colonne du côté exposé
+    @property
+    def exposed_col(self) -> str:
+        """Edge column of the exposed side: importers at the import, exporters at the export."""
+        return self._roles()[1]
 
     # Méthode abstraite de calcul de la métrique
     @abstractmethod
@@ -570,7 +888,8 @@ class NetworkVulnerabilityMetric(ABC):
 
         Returns:
             Narwhals frame with the configured ``key_columns`` and a single
-            additional column named :attr:`name`, holding one value per cell.
+            additional column named :attr:`name`, holding one value per cell
+            of the instance's direction (no flow column: the runner adds it).
         """
         raise NotImplementedError
 

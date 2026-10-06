@@ -93,7 +93,7 @@ def test_comext_rows_feed_the_partner_vulnerabilities(
 
     conn, alias = ducklake_conn
     iso2 = {c.iso3: c.iso2 for c in synthetic_world.config.countries}
-    dims = {"freq": "A", "partner": "*", "flow": ["1", "2"],
+    dims = {"freq": "A", "partner": "*", "flow": [1, 2],
             "indicators": ["QUANTITY_IN_100KG", "VALUE_IN_EUROS"]}
     frames = [
         build_comext(synthetic_world, iso2, ComextConfig.from_mapping({}), ComextTemplate(),

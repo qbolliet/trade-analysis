@@ -609,16 +609,26 @@ class VulnerabilityReport:
         distributions: Distribution of each metric, keyed by metric name.
         drift: Comparison with the previous run, ``None`` when no previous
             result was supplied.
+        flows: Report of each direction computed, keyed by flow name
+            (``"import"``, ``"export"``). The runner fills the diagnostics
+            (coverage, quality, distributions, drift) **per direction only**,
+            import and export cells never being pooled in one distribution;
+            the top-level report then keeps the run-wide ``cells``,
+            ``metrics``, ``input`` and ``created``. :meth:`to_metrics` ignores
+            this field: prefixing the per-direction metrics is the caller's
+            business.
     """
     cells: int = 0
     metrics: Optional[List[str]] = None
     created: bool = False
-    # Rapports d'étape (principe P3 : les diagnostics sont des données)
+    # Rapports d'étape (les diagnostics sont des données, pas des journaux)
     input: InputReport = field(default_factory=InputReport)
     coverage: CoverageReport = field(default_factory=CoverageReport)
     quality: AggregateQualityReport = field(default_factory=AggregateQualityReport)
     distributions: Dict[str, ScoreDistributionReport] = field(default_factory=dict)
     drift: Optional[DriftReport] = None
+    # Rapports par sens
+    flows: Dict[str, "VulnerabilityReport"] = field(default_factory=dict)
 
     # Mise en forme des métriques (la seule à connaître les contraintes MLflow)
     def to_metrics(self, prefix: str = "vulnerabilities") -> Dict[str, float]:
@@ -686,6 +696,11 @@ class NetworkVulnerabilityReport:
         distributions: Distribution of each metric, keyed by metric name.
         drift: Comparison with the previous run, ``None`` when no previous
             result was supplied.
+        flows: Report of each direction computed, keyed by flow name. The
+            runner fills the score diagnostics (coverage, distributions, drift)
+            per direction only — the SPOF ranks themselves are taken within one
+            direction — and copies the direction-independent ones (input,
+            graph shape) into each. :meth:`to_metrics` ignores this field.
     """
     cells: int = 0
     metrics: Optional[List[str]] = None
@@ -697,6 +712,8 @@ class NetworkVulnerabilityReport:
     graph: GraphQualityReport = field(default_factory=GraphQualityReport)
     distributions: Dict[str, ScoreDistributionReport] = field(default_factory=dict)
     drift: Optional[DriftReport] = None
+    # Rapports par sens
+    flows: Dict[str, "NetworkVulnerabilityReport"] = field(default_factory=dict)
 
     # Mise en forme des métriques (la seule à connaître les contraintes MLflow)
     def to_metrics(self, prefix: str = "network_vulnerabilities") -> Dict[str, float]:
@@ -844,22 +861,21 @@ def _cells_missing_partner(
     df_grid: nw.DataFrame,
     config: VulnerabilityConfig,
     partner_code: str,
-    *,
-    import_only: bool,
 ) -> Tuple[nw.DataFrame, int]:
     """Locate the grid cells deprived of a given partner aggregate.
 
     Implemented with an **anti-join**, the exact complement of the ``inner``
     join the metrics perform: what this returns is precisely what silently
-    disappears from the result.
+    disappears from the result. The perimeter is the whole grid, which the
+    runner has already restricted to the flows of the run: both aggregates
+    matter in both directions (the extra-EU one feeds CDI2 and CDI3 at the
+    import as at the export).
 
     Args:
         data: Narwhals frame of partner-level observations.
         df_grid: Canonical grid of output cells.
         config: Column and partner-code conventions.
         partner_code: Aggregate partner code to look for (e.g. ``WORLD``).
-        import_only: Whether to restrict the perimeter to the import flow — the
-            extra-EU aggregate only matters for the import-only metrics.
 
     Returns:
         Tuple ``(missing_cells, n_perimeter)``: the cells lacking the aggregate,
@@ -867,13 +883,9 @@ def _cells_missing_partner(
     """
     # Clés de la grille de sortie
     keys = list(config.key_columns)
-    # Périmètre considéré : grille entière ou cellules d'import
+    # Périmètre considéré : grille entière (déjà restreinte aux flux calculés)
     perimeter = df_grid
     holders = data.filter(nw.col(config.partner_col) == partner_code)
-    if import_only and config.flow_col in df_grid.columns:
-        flow_is_import = nw.col(config.flow_col) == config.import_flow
-        perimeter = perimeter.filter(flow_is_import)
-        holders = holders.filter(flow_is_import)
 
     # Cellules disposant de l'agrégat, dédoublonnées
     holder_cells = holders.select(*keys).unique()
@@ -902,16 +914,11 @@ def missing_aggregate_cells(
         Narwhals frame of the grid keys plus a ``missing_aggregate`` column
         holding the missing partner code.
     """
-    # Agrégats contrôlés : WORLD sur toute la grille, extra-UE sur les imports
-    checks = (
-        (config.world_code, False),
-        (config.extra_eu_code, True),
-    )
+    # Agrégats contrôlés, chacun sur toute la grille : WORLD et extra-UE
+    checks = (config.world_code, config.extra_eu_code)
     frames = []
-    for partner_code, import_only in checks:
-        missing, _ = _cells_missing_partner(
-            data, df_grid, config, partner_code, import_only=import_only
-        )
+    for partner_code in checks:
+        missing, _ = _cells_missing_partner(data, df_grid, config, partner_code)
         frames.append(missing.with_columns(nw.lit(partner_code).alias(_MISSING)))
     # Empilement des deux diagnostics
     return nw.concat(frames, how="vertical")
@@ -998,10 +1005,10 @@ def compute_quality_report(
     """
     # Cellules privées de leur agrégat : complément exact des jointures internes
     missing_world, n_cells = _cells_missing_partner(
-        data, df_grid, config, config.world_code, import_only=False
+        data, df_grid, config, config.world_code
     )
-    missing_extra, n_import_cells = _cells_missing_partner(
-        data, df_grid, config, config.extra_eu_code, import_only=True
+    missing_extra, n_extra_cells = _cells_missing_partner(
+        data, df_grid, config, config.extra_eu_code
     )
 
     # Somme des parts par cellule (jointure gauche : rien ne disparaît)
@@ -1026,7 +1033,7 @@ def compute_quality_report(
     return AggregateQualityReport(
         share_rows_dropped_null=share_rows_dropped_null,
         share_cells_missing_world=_share(len(missing_world), n_cells),
-        share_cells_missing_extra_eu=_share(len(missing_extra), n_import_cells),
+        share_cells_missing_extra_eu=_share(len(missing_extra), n_extra_cells),
         share_cells_shares_gt_1=_share(row.get("n_gt_1"), n_with_world),
         share_cells_shares_lt_0_9=_share(row.get("n_lt_lower"), n_with_world),
         n_cells_world_le_zero=_as_int(row.get("n_world_le_zero")),
@@ -1597,6 +1604,7 @@ def log_vulnerability_artifacts(
     report: VulnerabilityReport,
     metrics: Sequence[VulnerabilityMetric],
     config: VulnerabilityConfig = DEFAULT_CONFIG,
+    flow: Optional[str] = None,
 ) -> None:
     """Send the four business artifacts of a run to the tracker.
 
@@ -1608,25 +1616,31 @@ def log_vulnerability_artifacts(
         report: Completed run report (its distributions feed the deciles).
         metrics: Metric instances applied to the run.
         config: Column, threshold and artifact conventions.
+        flow: Direction the frames are restricted to; the artifacts are then
+            written in a sub-directory named after it, so that the import and
+            export cells are never ranked together. ``None`` keeps the family
+            directory.
     """
+    # Dossier d'artefacts : famille, puis sens le cas échéant
+    prefix = f"{_PARTNER_PREFIX}/{flow}" if flow else _PARTNER_PREFIX
     # Métriques effectivement présentes dans le résultat
     present = _present_metrics(df_result, metrics)
 
     # Cellules les plus vulnérables, par score de concentration décroissant
-    _log_top_cells(tracker, df_result, present, config, prefix=_PARTNER_PREFIX)
+    _log_top_cells(tracker, df_result, present, config, prefix=prefix)
     # Comptes d'alertes par métrique
-    _log_alerts(tracker, df_result, present, config, prefix=_PARTNER_PREFIX)
+    _log_alerts(tracker, df_result, present, config, prefix=prefix)
 
     # Cellules privées d'un agrégat : liste auditable des disparitions silencieuses
     missing = missing_aggregate_cells(data, df_grid, config)
     tracker.log_table(
         _bounded_table(missing, config.artifact_max_rows, "missing_aggregates.csv"),
-        f"{_PARTNER_PREFIX}/missing_aggregates.csv",
+        f"{prefix}/missing_aggregates.csv",
     )
 
     # Déciles et distributions de chaque métrique
     _log_metric_distributions(
-        tracker, df_result, present, report.distributions, prefix=_PARTNER_PREFIX
+        tracker, df_result, present, report.distributions, prefix=prefix
     )
 
 
@@ -1642,6 +1656,7 @@ def log_network_vulnerability_artifacts(
     report: NetworkVulnerabilityReport,
     metrics: Sequence[NetworkVulnerabilityMetric],
     config: NetworkVulnerabilityConfig = DEFAULT_NETWORK_CONFIG,
+    flow: Optional[str] = None,
 ) -> None:
     """Send the four business artifacts of a network run to the tracker.
 
@@ -1660,24 +1675,29 @@ def log_network_vulnerability_artifacts(
         report: Completed run report (its distributions feed the deciles).
         metrics: Metric instances applied to the run.
         config: Column, threshold and artifact conventions.
+        flow: Direction the result is restricted to; the artifacts are then
+            written in a sub-directory named after it. ``None`` keeps the
+            family directory.
     """
+    # Dossier d'artefacts : famille, puis sens le cas échéant
+    prefix = f"{_NETWORK_PREFIX}/{flow}" if flow else _NETWORK_PREFIX
     # Métriques effectivement présentes dans le résultat
     present = _present_metrics(df_result, metrics)
 
     # Produits les plus exposés, par score décroissant
-    _log_top_cells(tracker, df_result, present, config, prefix=_NETWORK_PREFIX)
+    _log_top_cells(tracker, df_result, present, config, prefix=prefix)
     # Comptes d'alertes par métrique
-    _log_alerts(tracker, df_result, present, config, prefix=_NETWORK_PREFIX)
+    _log_alerts(tracker, df_result, present, config, prefix=prefix)
 
     # Cellules laissées sans score : graphes dégénérés ou fragmentés, liste
     # auditable de ce que la couverture ne fait que compter
     unscored = unscored_cells(df_result, present, config)
     tracker.log_table(
         _bounded_table(unscored, config.artifact_max_rows, "unscored_cells.csv"),
-        f"{_NETWORK_PREFIX}/unscored_cells.csv",
+        f"{prefix}/unscored_cells.csv",
     )
 
     # Déciles et distributions de chaque métrique
     _log_metric_distributions(
-        tracker, df_result, present, report.distributions, prefix=_NETWORK_PREFIX
+        tracker, df_result, present, report.distributions, prefix=prefix
     )
