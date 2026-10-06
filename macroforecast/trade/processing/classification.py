@@ -886,3 +886,158 @@ class HsHarmonizer:
             The harmonised table, as :meth:`transform` returns it.
         """
         return self.fit(df_data).transform(df_data)
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Conversion des flux partenaires
+# ──────────────────────────────────────────────────────────────────────
+
+# Colonne de travail portant le millésime source des lignes à convertir
+_PARTNER_VINTAGE = "_hs_source_vintage"
+# Nom de colonne de quantité volontairement absent : les flux partenaires
+# portent leurs mesures en colonnes additives, sans couple quantité / unité
+_NO_QUANTITY = "_hs_no_quantity"
+
+
+# Fonction de conversion des flux partenaires vers un millésime SH antérieur
+def harmonize_partner_flows(
+    df_flows: pd.DataFrame,
+    *,
+    source_vintage: str,
+    target_vintage: str,
+    concordances: Mapping[Tuple[str, str], pd.DataFrame],
+    key_columns: Sequence[str],
+    measure_columns: Sequence[str],
+    product_col: str = "product",
+    period_col: str = "TIME_PERIOD",
+    on_unmapped: Literal["raise", "drop", "keep"] = "raise",
+) -> pd.DataFrame:
+    """Convert six-digit partner flows declared in one HS vintage into an older one.
+
+    The partner flows (one row per reporter, partner, flow, indicator, period
+    and product) are declared in the vintage in force at their period. To read
+    a product over a long time series in a fixed nomenclature, the flows of the
+    later years are converted *downward* into an older vintage, with the very
+    class and correspondence tables used by the BACI reconstruction
+    (:class:`HsHarmonizer`), so that both families speak the same codes.
+
+    The conversion rules are those of :class:`HsHarmonizer`:
+
+    - ``n:1`` (several recent codes merged into one older code): the measures
+      are **summed exactly** over the merged codes;
+    - ``1:n`` (one recent code covering several older codes): the UNSD
+      *Conversion* table designates a single older code, which receives the
+      **whole** value — no split between the older codes is attempted, for
+      want of a distribution key;
+    - aggregated partners (world total, extra-EU) are rows like the others, so
+      they are converted the same way and a sum of individual partners never
+      exceeds its world total after conversion if it did not before.
+
+    Only additive measures may be converted (values, masses): they are summed
+    over the merged codes. When ``source_vintage`` and ``target_vintage`` are
+    the same vintage, the conversion is the identity and the codes are left
+    untouched: the rows of the vintage in force follow the very same path as
+    the historical ones.
+
+    Args:
+        df_flows: Partner flows, every row declared in ``source_vintage``.
+        source_vintage: Vintage the codes of ``df_flows`` are declared in, in
+            any spelling accepted by :func:`resolve_vintage`.
+        target_vintage: Vintage to convert into, at most as recent as
+            ``source_vintage``.
+        concordances: Mapping ``(source, target) -> normalised conversion
+            table`` (see :func:`build_conversion_map`).
+        key_columns: Identifying columns other than the product (reporter,
+            partner, flow, indicator, period…), kept as they are.
+        measure_columns: Additive measure columns, summed over merged codes.
+        product_col: Product column (six-digit HS codes, as text or integers).
+        period_col: Period column, reported in the logs per vintage.
+        on_unmapped: Policy for a code absent from the conversion table:
+            ``"raise"``, ``"drop"`` (rows discarded) or ``"keep"`` (rows left
+            unconverted).
+
+    Returns:
+        The converted flows, restricted to ``key_columns``, ``product_col``
+        and ``measure_columns``, one row per distinct key and converted code.
+        The product column keeps its input dtype (an integer column stays an
+        integer column).
+
+    Raises:
+        ValueError: If a column is missing, if ``target_vintage`` is more
+            recent than ``source_vintage``, or — under ``on_unmapped="raise"``
+            — if a code has no counterpart.
+
+    Examples:
+        >>> table = pd.DataFrame({"source_code": ["010121", "010129"],
+        ...                       "target_code": ["010121", "010121"]})
+        >>> flows = pd.DataFrame({"partner": ["CN", "CN"], "product": [10121, 10129],
+        ...                       "OBS_VALUE": [1.0, 2.0]})
+        >>> harmonize_partner_flows(
+        ...     flows, source_vintage="HS2022", target_vintage="HS2017",
+        ...     concordances={("HS2022", "HS2017"): table},
+        ...     key_columns=["partner"], measure_columns=["OBS_VALUE"],
+        ... ).to_dict("records")
+        [{'partner': 'CN', 'product': 10121, 'OBS_VALUE': 3.0}]
+    """
+    # Vérification des colonnes
+    columns = list(dict.fromkeys([*key_columns, product_col, *measure_columns]))
+    missing = [column for column in columns if column not in df_flows.columns]
+    if missing:
+        raise ValueError(
+            f"Columns {missing} are absent from df_flows. Available columns: "
+            f"{list(df_flows.columns)}."
+        )
+    df_out = df_flows.loc[:, columns].reset_index(drop=True)
+
+    # Identité : millésime source déjà cible, codes laissés intacts
+    if resolve_vintage(source_vintage) == resolve_vintage(target_vintage):
+        return df_out.copy()
+
+    # Conversion par l'harmoniseur de BACI, millésime source porté par une
+    # colonne de travail retirée ensuite
+    product_dtype = df_out[product_col].dtype
+    df_out[_PARTNER_VINTAGE] = source_vintage
+    harmonizer = HsHarmonizer(
+        concordances,
+        target_vintage=target_vintage,
+        classification_col=_PARTNER_VINTAGE,
+        product_col=product_col,
+        period_col=period_col,
+        value_cols=tuple(measure_columns),
+        weight_cols=(),
+        qty_col=_NO_QUANTITY,
+        qty_unit_col=_NO_QUANTITY,
+        on_unmapped=on_unmapped,
+    )
+    df_out = harmonizer.fit_transform(df_out).drop(columns=_PARTNER_VINTAGE)
+
+    # Restitution du type d'origine des codes (table résultat en entiers)
+    if pd.api.types.is_integer_dtype(product_dtype):
+        df_out[product_col] = pd.to_numeric(df_out[product_col]).astype(product_dtype)
+    return df_out[columns]
+
+
+# Fonction d'inversion d'un dictionnaire de conversion
+def conversion_preimage(conversion_map: Mapping[str, str]) -> Dict[str, frozenset]:
+    """Invert a conversion map: every target code and the source codes it absorbs.
+
+    The preimage of a target code is the set of recent codes whose flows sum
+    into it; it tells which downloaded series a converted row depends on.
+
+    Args:
+        conversion_map: Mapping ``source code -> target code``
+            (:func:`build_conversion_map`).
+
+    Returns:
+        Mapping ``target code -> frozenset of source codes``.
+
+    Examples:
+        >>> sorted(conversion_preimage({"010121": "010121", "010129": "010121"})["010121"])
+        ['010121', '010129']
+    """
+    # Initialisation du dictionnaire résultat
+    preimage: Dict[str, set] = {}
+    # Parcours des clés-valeurs du dictionnaire
+    for source, target in conversion_map.items():
+        preimage.setdefault(target, set()).add(source)
+    return {target: frozenset(sources) for target, sources in preimage.items()}

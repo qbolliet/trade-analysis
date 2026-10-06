@@ -39,6 +39,7 @@
 | 2026-10-03 (K-05, suite) | **Plus de version déclarée** (métriques, BACI, synthèse, cohérence) : l'empreinte ne porte que le nom et les paramètres ; une correction d'implémentation se signale par **invalidation** des empreintes enregistrées (`FreshnessRegistry.invalidate`, commande `invalidate-freshness-script`), persistée et reprise à l'exécution planifiée suivante (raison `fingerprint`, cascade vers l'aval) ; le forçage par paramètres d'exécution reste pour les recalculs immédiats | PD-10, PS-10.2, PS-10.3, PS-11, §5.2, §5.3, §5.9, PR-05b |
 | 2026-10-05 | **Métriques réseau orientées** : constat que `CENTRALITY_RISK`, `EXPORT_HHI`, `SPOF`, `SPOF_DECILE` dépendent de l'orientation du graphe (lecture côté offre) ; à l'export, **miroirs par transposition** (valeur égale à celle de l'import sur le graphe transposé, sans nouvelle classe) ; **cadre commun du sens** pour toutes les métriques : hyperparamètre d'instance `flow` (convention sklearn), rôles `counterpart_col` / `exposed_col` côté réseau, `own` / `other` côté partenaires, distinct de l'**échelle** portée par la classe (pays / monde) ; `network_indicators` gagne la colonne `flow` (clé primaire) ; `EXPORT_HHI` renommée `WORLD_HHI` ; jointure de synthèse sur `flow` | C-12, PD-09, PD-20, PS-04.3, PS-15, PS-29, PR-11, PQ-06, K-06 |
 | 2026-10-05 (implémentation) | **Import / export implémentés** (partenaires, réseau, synthèse, service, Superset). Écarts à la spécification : pas de bloc `FLOW_CODES` (codes portés par les champs `import_flow` / `export_flow` des deux configurations, `NetworkVulnerabilityConfig` gagnant aussi `flow_col`) ; empreintes **modifiées à l'import** (clé `"<métrique>/<flux>"`, `flow` dans les paramètres) → **un recalcul complet des partenaires** au premier run, valeurs import identiques ; seuls les sens nommés par les plans de fraîcheur sont recalculés (union des unités planifiées) ; diagnostics, artefacts et métriques MLflow **par sens** (`partners/<flux>/…`, `network/<flux>/…`, artefacts `vulnerabilities/<flux>/…`) ; contrôle de l'agrégat extra-UE étendu à l'export ; `FORCE_METRICS=HHI` et `invalidate-freshness-script --metrics HHI` couvrent les deux sens (`HHI/export` pour un seul) ; migration du réseau en §12 | C-12, PD-09, PS-04.3, PS-10.2, PS-15, PS-29.2, §12 |
+| 2026-10-06 (K-06b) | **Millésimes de nomenclature implémentés** : `indicators` clé `(classification, freq, reporter, product, flow, indicators, TIME_PERIOD)`, colonnes `hs_vintage`, `in_force`, `is_provisional`, partition `classification` ; lignes historiques par conversion des flux SH6 Comext (`harmonize_partner_flows`, fondée sur `HsHarmonizer`, règle 1 → n = affectation intégrale au code désigné par la table UNSD) ; `prepare_concordances` extrait dans `kedro_pipeline/steps/baci.py` (cache partagé) ; unité historique `(V, reporter, code SH6)` avec préimage multi-millésimes, attente des sources jamais téléchargées, empreinte `concordance` ; synthèse : `VINTAGES`, contexte **`hs_vintage`** (écart assumé : NC8 et SH comparés ensemble), jointure réseau sur `p."hs_vintage"` et `product_code` (correction d'un bug SH6) ; service : colonnes réelles, repli dérivé par `DESCRIBE` ; `network_indicators.in_force` ; migration `tools/migrate_indicators_key.py` (§12). Volumétrie mesurée : ×3,63 en SH6, ×1,86 sur la table | C-11, C-25, PD-20, PS-04.3, PS-10.1, PS-28, PS-29.3, §12 |
 
 ## Sommaire
 
@@ -119,7 +120,7 @@ gravité pour la mise en production (🔴 bloquant, 🟠 à traiter avant le ré
 | C-08 | 🔴 | Dans `statflows.core.download.SDMXDownloader._process_query`, le registre des téléchargements est **réécrit intégralement sur S3 après chaque requête**, et chaque requête non vide déclenche un upsert DuckLake avec `compact_after_update=True`. Pour 10⁴ à 10⁵ requêtes, le coût devient quadratique (PUT de fichiers de plusieurs Mo, compaction répétée, un snapshot par requête). | `statflows/core/download.py:593-602`, `statflows/storage/ducklake/tables.py:171-175` |
 | C-09 | 🟠 | Le client Eurostat décide de l'incrémental à partir de la date de mise à jour **du dataflow entier** (`get_data_last_update`) : après chaque publication Comext, toutes les requêtes déjà téléchargées redeviennent éligibles (10 dernières observations chacune). Le client Comtrade décide, lui, par période (`lastReleased`). | `statflows/sources/eurostat/client.py:733-786`, `statflows/sources/comtrade/client.py:871-925` |
 | C-10 | 🟠 | Les règles de fraîcheur ignorent les **changements de méthodologie** : corriger une formule ou ajouter une métrique ne déclenche aucun recalcul. Seuls `SYNTHESIS.FORCE` et `COHERENCE.FORCE` existent ; les étapes partenaires, réseau et BACI n'ont pas de forçage. | `scripts/compute_*.py` |
-| C-11 | 🟠 | La synthèse filtre en dur le flux import (`p."flow" = 1`) et les 5 dernières périodes. La jointure réseau ne retient que `HS2022`, y compris pour les années antérieures à 2022, dont les codes Comext sont pourtant déclarés dans un millésime plus ancien : la jointure `substr(product,1,6)` est alors **fausse pour tout code redéfini entre les millésimes** (PD-20). | `config/synthesis.yaml:55-64` |
+| C-11 | 🟠 | La synthèse filtre en dur le flux import (`p."flow" = 1`) et les 5 dernières périodes. La jointure réseau ne retient que `HS2022`, y compris pour les années antérieures à 2022, dont les codes Comext sont pourtant déclarés dans un millésime plus ancien : la jointure `substr(product,1,6)` est alors **fausse pour tout code redéfini entre les millésimes** (PD-20). *(Traité en K-06b, 2026-10-06 : jointure `n."classification" = p."hs_vintage"`, flux généré depuis `FLOWS`.)* | `config/synthesis.yaml:55-64` |
 | C-12 | 🟡 | Côté partenaires, `HHI` est calculé pour les deux flux ; `CDI2` et `CDI3` ne sont définis que pour l'import (valeur nulle ailleurs). Aucune métrique d'export dédiée n'existe. Les métriques de réseau portent sur le graphe mondial d'un produit (une valeur par produit, aucune par pays) mais **ne sont pas toutes indépendantes de l'orientation** : `CENTRALITY_RISK` (degré sortant pondéré), `EXPORT_HHI` (parts des exportateurs), `SPOF` et `SPOF_DECILE` mesurent la concentration de l'**offre** mondiale (lecture « import ») et changent quand on transpose le graphe ; seuls `CLUSTERING_W` et `DIAMETER` sont invariants, parce que le graphe est symétrisé (`w_ij + w_ji`). Les joindre tels quels aux lignes export appliquerait une lecture côté offre à un exportateur. *(Révisions : définitions d'export partenaires retenues, PD-09 ; miroirs réseau par transposition, PD-09, 2026-10-05 ; implémenté le 2026-10-05.)* | `macroforecast/trade/vulnerabilities/metrics.py` |
 | C-13 | ✅ | ~~L'upsert de `dt_ducklake_manager` ne sait pas ajouter une colonne~~ **Résolu par `dt-ducklake-manager 0.3.1`** : `DatabaseUpdater.update_database(..., allow_new_columns=True)` ajoute les colonnes absentes (`ALTER TABLE … ADD COLUMN … DEFAULT NULL` + ligne de métadonnées) avant l'upsert, et `add_columns(df)` diffuse une nouvelle colonne sur les lignes existantes par clé primaire en une seule mise à jour. Reste à faire : `statflows.write_dataframe` ne transmet ni `allow_new_columns` ni `compact_after_update` (PS-27, PD-11). | `dt_ducklake_manager/operations/updater.py:176-372`, `statflows/storage/ducklake/tables.py:165-175` |
 | C-14 | 🔴 | Le `Dockerfile` part de `python:3.12-slim` alors que `requires-python = ">=3.13"`, copie un dossier `parameters/` inexistant, n'installe aucun extra (`tracking`, `optimal-transport`) et utilise `uv:latest` (non reproductible). | `docker/Dockerfile` |
@@ -133,7 +134,7 @@ gravité pour la mise en production (🔴 bloquant, 🟠 à traiter avant le ré
 | C-22 | 🟠 | **Aucune table de référence** (libellés de produits par millésime, libellés de pays, tables de passage HS exposées) n'est produite : un tableau de bord ne peut afficher que des codes. Les codelists sont pourtant téléchargées à chaque exécution (`fetch_dimension_codelists`) et les concordances UNSD sont en cache Parquet. *(Traité en phase 0, K-03b, 2026-09-21 : `publish_reference` / `publish_hs_reference` appelées par `download_*.py` et `process_baci_hs.py`, PS-28.4.)* | `scripts/download_*.py`, `scripts/process_baci_hs.py:_ensure_concordances` |
 | C-23 | 🔴 | **Aucune couche de restitution** : les résultats ne sont lisibles que par une session DuckDB attachée au catalogue DuckLake (extensions, identifiants S3 et PostgreSQL), sous forme de tables normalisées sans libellés. *(Révision 2 : l'accès technique est réglé — le chart Superset d'Onyxia embarque `duckdb-engine` et l'accès S3 est assuré, PQ-13 ; reste à produire des tables prêtes à l'affichage, PD-21.)* *(Traité en phase 0, K-03b, 2026-09-21 : catalogue `serving`, `serving-script`, PS-29 ; première publication à faire sur Onyxia.)* | — |
 | C-24 | 🔴 | La fraîcheur BACI envisagée initialement (unité = millésime × **année**) est **méthodologiquement fausse** : les paramètres estimés sur l'ensemble des années du millésime (C-06) changent dès qu'une année est ajoutée ou révisée, donc toutes les années du millésime doivent être réécrites. C'est aussi la pratique du CEPII, qui republie chaque année la totalité de chaque millésime. | ce document, PS-14 v0 |
-| C-25 | 🟠 | Les tables de résultats partenaires (`indicators`, `synthesis`, `synthesis_diagnostics`) n'ont **pas de dimension de nomenclature** : un code produit y désigne des définitions différentes selon l'année (SH6 révisé tous les ~5 ans, NC8 chaque année), ce qui rend toute lecture temporelle d'un produit ambiguë. | `config/vulnerabilities.yaml`, `config/synthesis.yaml` |
+| C-25 | 🟠 | Les tables de résultats partenaires (`indicators`, `synthesis`, `synthesis_diagnostics`) n'ont **pas de dimension de nomenclature** : un code produit y désigne des définitions différentes selon l'année (SH6 révisé tous les ~5 ans, NC8 chaque année), ce qui rend toute lecture temporelle d'un produit ambiguë. *(Traité en K-06b, 2026-10-06 : clé `classification`, lignes historiques par millésime, contexte de synthèse `hs_vintage`.)* | `config/vulnerabilities.yaml`, `config/synthesis.yaml` |
 | C-26 | ✅ | L'ordre de construction des requêtes Comtrade est **produit-majeur** (`for lot in produits: for période …`, `build_split_queries`), et la période n'est pas une dimension de découpage (`period_start` fixé dans `fixed_dims`) : une requête rapporte toutes les années d'un lot. BACI ayant besoin d'**années complètes** (PD-06), c'est l'ordre inverse qui est utile. *(Traité en phase 0, 2026-09-18 : liste année-majeure (`build_split_queries` + `periods_order`), période = dimension de découpage (`periods=<année>`), `reporters=None` quand le filtre est vide ; bug de la branche sans découpage produit corrigé.)* | `scripts/download_comtrade.py:163-190` |
 
 Points solides sur lesquels on s'appuie :
@@ -1141,8 +1142,15 @@ identiques pour les codes stables.
      rattachement du code), `in_force BOOLEAN`, `is_provisional BOOLEAN` ;
    - `network_indicators` : déjà clé par `classification` ; colonne `in_force` ajoutée ;
      clé `(classification, product, flow, year)` depuis PD-09 (révision 2026-10-05) ;
-   - `synthesis`, `synthesis_diagnostics` : `classification` entre dans
-     `context_columns` (deux millésimes ne sont jamais comparés).
+   - `synthesis`, `synthesis_diagnostics` : **`hs_vintage`** entre dans
+     `context_columns` (deux millésimes ne sont jamais comparés). *(Implémentation
+     K-06b, choix utilisateur : `hs_vintage` plutôt que `classification`, pour que les
+     codes NC8 (`CN<t>`) et SH2/4/6 (`HSxxxx`) d'une même année en vigueur restent
+     comparés ensemble, comme avant ; en vigueur et historiques ont toujours des
+     `hs_vintage` distincts pour une même période.)*
+   - `is_provisional` (implémentation K-06b) : **drapeau du profil**
+     (`VULNERABILITIES.<dataflow>.IS_PROVISIONAL`, vrai en `demo`, faux en base), même
+     sens que pour BACI (périmètre de produits restreint).
 3. **Quelles lignes existent** dans `indicators`, pour un reporter et une période `t` :
    - les lignes **« en vigueur »** (`in_force = true`) : tous les codes tels que
      déclarés dans Comext pour `t`, à tous les niveaux (SH2, SH4, SH6, NC8), avec
@@ -1156,7 +1164,15 @@ identiques pour les codes stables.
      La conversion est **rétrograde** (codes récents → millésime plus ancien), c'est-à-
      dire presque toujours une agrégation (n → 1), exacte pour des valeurs ; les
      rares cas 1 → n suivent la règle déjà implémentée dans `HsHarmonizer` (même
-     règle que BACI, donc cohérence entre familles).
+     règle que BACI, donc cohérence entre familles). **Règle 1 → n retenue
+     (vérifiée K-06b)** : les tables UNSD *Conversion* sont des fonctions (un code
+     cible par code source ; `build_conversion_map` refuse une table qui ne l'est
+     pas) ; un code récent qui recouvre plusieurs codes anciens est donc affecté **en
+     totalité** au code ancien que désigne la table, sans ventilation, et les autres
+     codes anciens ne reçoivent rien de ce code. Les indicateurs téléchargés
+     (`VALUE_IN_EUROS`, `QUANTITY_IN_100KG`) sont additifs ; les codes SH6 Comext
+     absents d'une table suivent `vulnerabilities.VINTAGES_ON_UNMAPPED` (`drop` par
+     défaut, dans l'empreinte).
    Ainsi, pour la période `t`, la ligne `in_force` **est** la ligne du millésime
    `vintage_in_force(t)` : il n'y a pas de duplication entre « table principale » et
    « table temporelle », la première n'est qu'un **filtre** sur la seconde.
@@ -1177,6 +1193,11 @@ identiques pour les codes stables.
    valeurs identiques entre millésimes (codes stables) sont compressées efficacement
    par le stockage colonnaire Parquet, et `classification` est clé de partition
    (PD-16). La synthèse ne tourne par défaut que sur `in_force` (PD-12).
+   **Mesure sur fixture (K-06b)** : un reporter, 1988-2025, 7 millésimes, deux flux,
+   codes dans les proportions de Comext (1 SH2 : 4 SH4 : 18 SH6 : 32 NC8), tables de
+   passage identité : 4 180 cellules en vigueur dont 1 368 SH6, 3 600 cellules
+   historiques, soit **×3,63 au niveau SH6** (138/38 attendu) et **×1,86 sur la table
+   entière**.
 6. **Calcul** : dans le nœud partenaires, l'unité de fraîcheur devient
    `(classification, reporter, product)` ; pour une ligne historique, la source d'un
    produit cible est l'ensemble des codes de la nomenclature en vigueur qui s'y
@@ -1187,11 +1208,21 @@ identiques pour les codes stables.
    millésimes NC8 (`CN<t>`) ne sont pas convertis tant qu'aucune table de passage NC8
    cohérente n'existe (extension prévue : même mécanisme, nouveau bloc
    `runtime.NOMENCLATURES.CN`).
+   *Implémentation K-06b* : l'unité **en vigueur** reste le couple téléchargé
+   (reporter, produit), toutes périodes, étiqueté par le **millésime le plus récent**
+   du référentiel (pas de migration du registre ; jamais en collision avec une unité
+   historique, toujours plus ancienne ; recalcul complet seulement à l'ajout d'un
+   millésime). Une passe par classification (en vigueur, puis chaque millésime
+   historique), chacune dans son run MLflow.
 7. **Jointure réseau dans la synthèse** : `n."classification" = p."hs_vintage" AND
    n."product" = substr(p."product", 1, 6)` remplace le `HS2022` en dur (C-11) : chaque
    ligne partenaires est jointe au BACI **de son propre millésime**, y compris pour les
    lignes historiques. La condition `n."flow" = p."flow"` s'y ajoute (PD-09) : une ligne
-   export reçoit les métriques réseau du graphe transposé.
+   export reçoit les métriques réseau du graphe transposé. *(K-06b : le produit est
+   comparé par `substr(product_code(p."product"), 1, 6)` — l'ancien
+   `substr(lpad(product, 8, '0'), 1, 6)` était faux pour tout code SH6 stocké en
+   `BIGINT` (854110 → `008541`) ; macros de session enregistrées par les scripts de
+   synthèse et de cohérence.)*
 
 **Alternatives écartées.** Une table par système de nomenclature (×20, duplication) ;
 une conversion **prograde** vers le millésime le plus récent pour allonger ses séries
@@ -1703,11 +1734,14 @@ vulnerabilities:
   # "all" → tous ceux de runtime.NOMENCLATURES.HS ; liste → sous-ensemble ; [] → en
   # vigueur seulement
   VINTAGES: "all"
+  # Codes SH6 absents d'une table de passage : "drop" | "keep" | "raise" (empreinte)
+  VINTAGES_ON_UNMAPPED: "drop"     # K-06b
   DATAFLOW: "DS-045409"
   VULNERABILITIES: { … inchangé … }
   STATE:
     PATH_TEMPLATE: "trade/state/vulnerabilities/partners/{classification}/{reporter}.json"   # PS-10
     BUCKET: "qbollietdgddi"
+  IS_PROVISIONAL: false          # K-06b : drapeau du profil (true en demo)
   PARAMETERS: { … inchangé … }
   NETWORK_VULNERABILITIES:
     FLOWS: ${vulnerabilities.FLOWS}   # PD-09 : export = graphe BACI transposé (phase 0 : *flows)
@@ -1735,8 +1769,9 @@ synthesis:
         COLUMNS: ["WORLD_HHI", "CENTRALITY_RISK", "CLUSTERING_W"]
         JOIN:
           "ON":
-            - 'substr(p."product", 1, 6) = n."product"'
-            - 'CAST(substr(p."TIME_PERIOD", 1, 4) AS INTEGER) = n."year"'
+            - 'length(product_code(p."product")) >= 6'   # K-06b : macros de session
+            - 'substr(product_code(p."product"), 1, 6) = lpad(CAST(n."product" AS VARCHAR), 6, ''0'')'
+            - 'CAST(substr(CAST(p."TIME_PERIOD" AS VARCHAR), 1, 4) AS INTEGER) = n."year"'
             - 'n."classification" = p."hs_vintage"'      # PD-20 (remplace HS2022 en dur)
             - 'n."flow" = p."flow"'                      # PD-09 : métriques réseau orientées
     FILTERS:
@@ -1744,7 +1779,7 @@ synthesis:
       WHERE: 'p."indicators" = ''VALUE_IN_EUROS'' AND p."freq" = ''A'' AND p."reporter" <> ''EU27_2020'''
       LAST_N_PERIODS: null
     PARAMETERS:
-      context_columns: ["classification", "freq", "flow", "indicators", "TIME_PERIOD"]
+      context_columns: ["hs_vintage", "freq", "flow", "indicators", "TIME_PERIOD"]   # K-06b
       # … reste inchangé …
   COHERENCE:
     STATE:
@@ -2071,6 +2106,16 @@ Maille et fragment par étape :
 | Cohérence | contexte | période | `last_computed` synthèse du contexte |
 | Publication de service | table de service (× année en mode `by_year`) | table | max `last_computed` des étapes sources de la table |
 
+> **État après K-06b.** Partenaires : deux familles d'unités dans le même registre.
+> Unité en vigueur : couple téléchargé (reporter, produit), toutes périodes,
+> `classification` = millésime SH le plus récent (inchangé depuis K-05, aucune
+> migration). Unité historique : `(V, reporter, code SH6 cible)`, fragment `V/<reporter>`,
+> watermark = max des `last_download` des sources (préimage sur tous les millésimes
+> postérieurs à `V`), reportée tant qu'une source n'a jamais été téléchargée
+> (`freshness/units_waiting_sources`), empreinte = métriques + `concordance` (somme de
+> contrôle des tables `W → V` et `VINTAGES_ON_UNMAPPED`). Nom invalidable :
+> `invalidate-freshness-script --step partners --metrics concordance`.
+>
 > **État après K-05.** Partenaires : jusqu'à K-06b, une paire (reporter, produit)
 > couvrant toutes les périodes, `classification` vaut **le millésime SH le plus
 > récent** de `runtime.NOMENCLATURES.HS` pour tous les codes, NC8 compris (choix
@@ -2958,10 +3003,23 @@ Pour un reporter `r`, un millésime cible `V` et une période `t ≥ entrée(V)`
 Quand `vintage_in_force(t) = V`, l'étape 2 est l'identité : les lignes « en vigueur »
 sont produites par le même chemin (une seule implémentation).
 
+**Implémentation (K-06b).** `macroforecast.trade.processing.harmonize_partner_flows`
+(enveloppe de `HsHarmonizer`, colonne de millésime temporaire, type de `product`
+conservé : `BIGINT` en table) ; `prepare_vintage_flows` (script partenaires) groupe
+les lignes par millésime source `vintage_in_force(t)` et convertit chaque groupe vers
+la cible (identité pour la passe en vigueur, qui garde tous les niveaux et
+`classification_of`). Lecture d'une passe historique : couples (reporter, sources
+des cibles planifiées), `length(product_code(product)) = 6`, années ≥ entrée du
+millésime suivant ; les cibles non planifiées produites par une source lue une autre
+année sont écartées (somme partielle). Une lecture, un calcul et une écriture par
+passe, comme la passe en vigueur (découpage mémoire laissé à K-09). Une table
+`indicators` existante sans `classification` est refusée (garde avant écriture).
+
 #### PS-28.3 Unité de fraîcheur et gate des sources
 
 Unité `(V, r, p_V)`. Sources : `S(p_V) = {codes c de vintage_in_force(t) : c ↦ p_V}` par
-la table de passage (préimage). Watermark = `max(last_download(r, c), c ∈ S)`. Si un
+la table de passage (préimage) — union sur tous les millésimes postérieurs à `V`
+(K-06b). Watermark = `max(last_download(r, c), c ∈ S)`. Si un
 code de `S` n'a jamais été téléchargé, l'unité est reportée
 (`freshness/units_waiting_sources`). Empreinte : celle des métriques **plus** la somme de
 contrôle de la table de passage utilisée (une table UNSD corrigée déclenche le recalcul).
@@ -3158,6 +3216,15 @@ joints **par code** (dernier libellé connu) : les codelists des fournisseurs ne
 millésimées (PS-28.4).
 
 #### PS-29.3 Phase 0 (avant PD-20)
+
+> **Après K-06b** : `cell_scores` lit `classification`, `hs_vintage` et `in_force`
+> d'`indicators`, et `hs_vintage` de `synthesis` / `synthesis_diagnostics` (jointure des
+> scores sur `hs_vintage`, réseau sur `net.classification = g.hs_vintage`). Une source
+> écrite avant ces colonnes est détectée par `DESCRIBE` et lue à travers une vue qui
+> les dérive comme ci-dessous, avec un WARNING (`NOMENCLATURE_FALLBACKS` de
+> `kedro_pipeline/steps/serving.py`). `cell_scores` contient aussi les lignes
+> historiques (filtre natif `in_force` du tableau de bord) ; `NORM_PARTITION` devient
+> `[hs_vintage, flow, year]`.
 
 Tant que `indicators` n'a pas de colonnes `classification`/`hs_vintage`/`in_force`, la
 requête de `cell_scores` les **dérive** : `hs_vintage = vintage_in_force(year)`,
@@ -3897,7 +3964,7 @@ les autres depuis le poste local.
 | Connexion DuckDB de Superset, construction du tableau de bord, export versionné | K-03c | K-03c 🔌 | interface et pod Superset du namespace |
 | Mesure des limites de l'API Eurostat pour `products_step` (PR-03) | K-01 ou K-04b | local possible (réseau public), **mais** l'adresse IP et le limiteur diffèrent en production → mesurer aussi depuis un pod | débit réel |
 | Migration des registres v1 → v2 sur S3 (`adopt_legacy_fingerprints`) | après K-05 | un run de chaque étape avec `ADOPT_LEGACY_FINGERPRINTS=true` (variable d'environnement ou `STATE.ADOPT_LEGACY_FINGERPRINTS` / bloc `SYNTHESIS` / `COHERENCE`), puis retour à `false` ; pas d'outil dédié (choix K-05) | S3 réel : sauvegarder les registres v1 avant ; synthèse et cohérence réécrivent leur fichier en place |
-| Recréation de la table `indicators` avec la nouvelle clé (`classification`) | après K-06b | runbook §5.3, depuis un service Onyxia | catalogue et Parquet réels |
+| Recréation de la table `indicators` avec la nouvelle clé (`classification`) | après K-06b, avant tout run partenaires | entre deux exécutions de l'étape : 1. sauvegarde des registres `trade/state/vulnerabilities/partners/` (et `trade/demo/…`) ; 2. `tools/migrate_indicators_key.py --dry-run` (profil par `VULNERABILITIES_CONFIG_PATH`, `SYNTHESIS_CONFIG_PATH`, `EUROSTAT_CONFIG_PATH`, `RUNTIME_CONFIG_PATH`) ; 3. `tools/migrate_indicators_key.py --drop-dependent --network` (recrée `indicators` avec `classification`, `hs_vintage`, `in_force = true`, `is_provisional` du profil, partition `classification` ; contrôle nombre de lignes / clés uniques, sauvegarde conservée en cas d'écart ou avec `--keep-backup` ; supprime `synthesis` et `synthesis_diagnostics` ; renseigne `network_indicators.in_force`) ; démo puis base ; 4. run partenaires : lignes en vigueur inchangées (empreintes intactes), lignes historiques calculées (`first`), tables de passage lues dans le cache UNSD de BACI ; 5. synthèse et cohérence (recalcul complet automatique : empreinte modifiée) puis `serving-script` | catalogue et Parquet réels ; suppressions irréversibles |
 | **Migration import / export du réseau** (colonne `flow` dans la clé primaire de `network_indicators`, `EXPORT_HHI` renommée `WORLD_HHI`) | au déploiement de l'implémentation import / export (2026-10-05), avant tout run réseau | 1. suppression de la table `network_indicators` et de `demo_network_indicators` (session DuckDB attachée au catalogue `vulnerabilities`, `DROP TABLE` du `fact_table` de chaque schéma) ; 2. réinitialisation des registres de fraîcheur réseau (suppression des fragments `trade/state/vulnerabilities/network/` et `trade/demo/state/vulnerabilities/network/`) ; 3. recalcul réseau forcé (`FORCE_STEPS=network`) ; 4. synthèse, cohérence, puis publication de service (`serving-script`), afin que `cell_scores` porte `WORLD_HHI` et la jointure par flux. Le premier run partenaires recalcule de lui-même tout le périmètre (empreintes `"<métrique>/<flux>"`), sans action manuelle. **Rien n'a été supprimé par le prompt d'implémentation** | suppressions irréversibles sur le catalogue et S3 réels ; réexporter ensuite les objets Superset si leur ID de jeu de données change |
 | Première passe BACI par millésime sur données réelles ; relevé de `memory/peak_mb` et de la durée | après K-07 | `argo submit --entrypoint weekly` | seul moyen d'avoir les vraies volumétries |
 | Déploiement des manifestes générés, bascule, recette, runbooks | K-17 | K-17 🔌 | `kubectl apply`, `argo` |

@@ -34,6 +34,7 @@ import logging
 from typing import (
     TYPE_CHECKING,
     Any,
+    Callable,
     Collection,
     Dict,
     Iterable,
@@ -403,6 +404,7 @@ def _read_source_fact_table(
     reporter_col: Optional[str] = None,
     product_col: Optional[str] = None,
     reporters_products: Optional[Sequence[Tuple[str, str]]] = None,
+    where: Optional[str] = None,
 ) -> pd.DataFrame:
     """Read the projected source fact table, optionally restricted to a perimeter.
 
@@ -419,6 +421,8 @@ def _read_source_fact_table(
         product_col: Name of the product column, same purpose.
         reporters_products: Reporter x product pairs to restrict the read to.
             ``None`` reads the whole fact table.
+        where: Additional SQL predicate, conjoined with the pair predicate
+            (period bounds, code length…). ``None`` adds nothing.
 
     Returns:
         A pandas DataFrame of the projected (and possibly filtered) fact table.
@@ -430,11 +434,64 @@ def _read_source_fact_table(
         f'FROM "{catalog_alias}"."{source_schema}"."{FACT_TABLE}"'
     )
     # Restriction éventuelle au périmètre recalculé
+    predicates = []
     if reporters_products:
-        query += " WHERE " + _reporter_product_predicate(
-            reporter_col, product_col, reporters_products
+        predicates.append(
+            _reporter_product_predicate(reporter_col, product_col, reporters_products)
         )
+    if where:
+        predicates.append(f"({where})")
+    if predicates:
+        query += " WHERE " + " AND ".join(predicates)
     return conn.execute(query).df()
+
+
+# Fonction publique de lecture des flux partenaires sources
+def read_source_flows(
+    conn: duckdb.DuckDBPyConnection,
+    catalog_alias: str,
+    source_schema: str,
+    *,
+    config: VulnerabilityConfig = DEFAULT_CONFIG,
+    columns: Optional[Sequence[str]] = None,
+    reporters_products: Optional[Sequence[Tuple[str, str]]] = None,
+    where: Optional[str] = None,
+) -> pd.DataFrame:
+    """Read the partner flows a computation needs, restricted to a perimeter.
+
+    The read a caller performs before transforming the flows itself (a
+    nomenclature conversion, say) and handing them to
+    :func:`run_vulnerabilities_on_frame`.
+
+    Args:
+        conn: Open DuckLake connection on the source catalog, owned by the
+            caller.
+        catalog_alias: Alias under which the source catalog is attached.
+        source_schema: Schema holding the source ``fact_table``.
+        config: Column conventions; the grid keys, partner and value columns
+            are read by default.
+        columns: Columns to read instead of the default ones.
+        reporters_products: Reporter x product pairs to restrict the read to.
+        where: Additional SQL predicate (e.g. a period bound).
+
+    Returns:
+        The projected and filtered flows.
+    """
+    required = (
+        list(columns)
+        if columns is not None
+        else list(dict.fromkeys([*config.key_columns, config.partner_col, config.value_col]))
+    )
+    return _read_source_fact_table(
+        conn,
+        catalog_alias,
+        source_schema,
+        required,
+        reporter_col=config.reporter_col,
+        product_col=config.product_col,
+        reporters_products=reporters_products,
+        where=where,
+    )
 
 
 # Fonction de lecture du résultat de l'exécution précédente (diagnostics de dérive)
@@ -446,6 +503,7 @@ def read_previous_result(
     reporters_products: Optional[Sequence[Tuple[str, str]]] = None,
     flow_codes: Optional[Collection[int]] = None,
     config: VulnerabilityConfig = DEFAULT_CONFIG,
+    where: Optional[str] = None,
 ) -> Optional[nw.DataFrame]:
     """Read the previous run's scores, for the run-to-run drift diagnostics.
 
@@ -467,6 +525,9 @@ def read_previous_result(
             directions recomputed. ``None`` reads every flow.
         config: Column conventions (``reporter_col`` / ``product_col`` /
             ``flow_col`` name the filtered columns).
+        where: Additional SQL predicate restricting the read (e.g. to the
+            rows of one nomenclature), so that the drift compares the rows the
+            run recomputes and nothing else.
 
     Returns:
         Narwhals frame of the previous scores, or ``None`` when no result table
@@ -493,6 +554,8 @@ def read_previous_result(
     if flow_codes:
         codes = ", ".join(str(int(code)) for code in sorted(flow_codes))
         predicates.append(f'"{config.flow_col}" IN ({codes})')
+    if where:
+        predicates.append(f"({where})")
     if predicates:
         query += " WHERE " + " AND ".join(predicates)
     # Exécution de la requête
@@ -640,23 +703,6 @@ def run_vulnerabilities(
     result_conn = result_conn if result_conn is not None else source_conn
     result_catalog_alias = result_catalog_alias or source_catalog_alias
 
-    # Paramètres de l'exécution : configuration aplatie et contexte
-    tracker.log_params(
-        run_params(
-            config,
-            {
-                "source_schema": source_schema,
-                "result_schema": result_schema,
-                "backend": backend,
-                "metrics": [metric.name for metric in _unique_by_name(metric_list)],
-                "flows": list(flows),
-                "n_reporter_product_pairs": (
-                    len(reporters_products) if reporters_products is not None else None
-                ),
-            },
-        )
-    )
-
     # Colonnes nécessaires : clés de la grille + partenaire + valeur
     required = list(
         dict.fromkeys([*config.key_columns, config.partner_col, config.value_col])
@@ -673,6 +719,119 @@ def run_vulnerabilities(
         reporters_products=(
             sorted(reporters_products) if reporters_products is not None else None
         ),
+    )
+
+    # Calcul, artefacts et écriture : chemin commun à toute lecture
+    return run_vulnerabilities_on_frame(
+        source_pdf,
+        result_conn=result_conn,
+        result_catalog_alias=result_catalog_alias,
+        result_schema=result_schema,
+        metrics=metric_list,
+        config=config,
+        flows=flows,
+        flow_codes=codes,
+        backend=backend,
+        tracker=tracker,
+        log_artifacts=log_artifacts,
+        df_previous=df_previous,
+        write_options=write_options,
+        params={
+            "source_schema": source_schema,
+            "n_reporter_product_pairs": (
+                len(reporters_products) if reporters_products is not None else None
+            ),
+        },
+    )
+
+
+# Fonction de calcul et d'écriture des métriques sur des flux déjà lus
+def run_vulnerabilities_on_frame(
+    source_pdf: pd.DataFrame,
+    *,
+    result_conn: duckdb.DuckDBPyConnection,
+    result_catalog_alias: str,
+    result_schema: str,
+    metrics: Optional[Sequence[VulnerabilityMetric]] = None,
+    config: VulnerabilityConfig = DEFAULT_CONFIG,
+    flows: Sequence[str] = ("import",),
+    flow_codes: Optional[Mapping[str, int]] = None,
+    backend: str = "pandas",
+    tracker: RunTracker = NULL_TRACKER,
+    log_artifacts: bool = True,
+    df_previous: Optional[nw.DataFrame] = None,
+    write_options: Optional[Mapping[str, Any]] = None,
+    annotate: Optional[Callable[[nw.DataFrame], nw.DataFrame]] = None,
+    params: Optional[Mapping[str, Any]] = None,
+) -> VulnerabilityReport:
+    """Compute the metrics on flows already read, then write them.
+
+    The second half of :func:`run_vulnerabilities`, for a caller that reads
+    or transforms the flows itself (a nomenclature conversion, say) before the
+    computation. The grid, the primary key of the written table and the
+    columns the metrics group by are ``config.key_columns``: a caller adding a
+    key dimension (a classification column) extends them in the
+    configuration and stamps the column on ``source_pdf``.
+
+    Args:
+        source_pdf: Partner-level flows, carrying ``config.key_columns``, the
+            partner and the value columns.
+        result_conn: Open connection on the result catalog, owned by the
+            caller.
+        result_catalog_alias: Alias of the result catalog.
+        result_schema: Schema to create or upsert the scores into.
+        metrics: Metric instances to apply. Defaults to
+            :func:`~macroforecast.trade.vulnerabilities.metrics.default_metrics`
+            instantiated for ``flows``.
+        config: Column and partner-code conventions.
+        flows: Directions to compute.
+        flow_codes: Flow code of each direction. Defaults to the
+            configuration's ``import_flow`` / ``export_flow``.
+        backend: Native eager backend for narwhals computation.
+        tracker: Experiment tracker receiving the parameters and artifacts.
+        log_artifacts: Whether to build and send the business artifacts.
+        df_previous: Result of the previous run over the same perimeter,
+            enabling the drift diagnostics.
+        write_options: Extra keyword arguments forwarded to
+            :func:`~statflows.storage.ducklake.tables.write_dataframe`
+            (``update_options``, ``build_options``, ``run_id``,
+            ``commit_message``).
+        annotate: Function adding descriptive columns to the scores before
+            the write (columns derived from the keys, outside the primary
+            key). ``None`` writes the scores as computed.
+        params: Context parameters logged with the flattened configuration.
+
+    Returns:
+        A :class:`VulnerabilityReport` summarising the run, with one
+        sub-report per direction in ``report.flows``.
+
+    Raises:
+        ValueError: If ``flows`` is empty or unknown, or if the input frame is
+            missing a column required by one of the metrics.
+
+    Examples:
+        >>> report = run_vulnerabilities_on_frame(
+        ...     df, result_conn=conn, result_catalog_alias="v",
+        ...     result_schema="indicators")  # doctest: +SKIP
+    """
+    # Initialisation de la liste des métriques, restreinte aux sens demandés
+    metric_list = _metrics_for_flows(
+        list(metrics) if metrics is not None else default_metrics(config, flows), flows
+    )
+    codes = dict(flow_codes) if flow_codes is not None else flow_code_map(config)
+
+    # Paramètres de l'exécution : configuration aplatie et contexte
+    tracker.log_params(
+        run_params(
+            config,
+            {
+                **dict(params or {}),
+                "result_schema": result_schema,
+                "backend": backend,
+                "metrics": [metric.name for metric in _unique_by_name(metric_list)],
+                "flows": list(flows),
+            },
+        )
     )
 
     # Calcul des métriques via narwhals (agnostique du backend)
@@ -696,6 +855,10 @@ def run_vulnerabilities(
                 config=config,
                 flow=flow,
             )
+
+    # Colonnes descriptives dérivées des clés, ajoutées hors clé primaire
+    if annotate is not None:
+        result = annotate(result)
 
     # Écriture dans le schéma résultat : le frame narwhals est passé tel quel,
     # builder/updater de dt_ducklake_manager acceptant IntoDataFrame (aucune
@@ -998,6 +1161,7 @@ def run_network_vulnerabilities(
     log_artifacts: bool = True,
     df_previous: Optional[nw.DataFrame] = None,
     write_options: Optional[Mapping[str, Any]] = None,
+    annotate: Optional[Callable[[nw.DataFrame], nw.DataFrame]] = None,
 ) -> NetworkVulnerabilityReport:
     """Compute the network vulnerability metrics of one HS vintage and persist them.
 
@@ -1058,6 +1222,9 @@ def run_network_vulnerabilities(
             :func:`~statflows.storage.ducklake.tables.write_dataframe`
             (``update_options``, ``run_id``, ``commit_message``). ``None``
             keeps the library defaults.
+        annotate: Function adding descriptive columns to the scores before
+            the write (e.g. whether the vintage is the one in force each
+            year). ``None`` writes the scores as computed.
 
     Returns:
         A :class:`NetworkVulnerabilityReport` summarising the run, with one
@@ -1136,6 +1303,10 @@ def run_network_vulnerabilities(
                 config=config,
                 flow=flow,
             )
+
+    # Colonnes descriptives dérivées des clés, ajoutées hors clé primaire
+    if annotate is not None:
+        result = annotate(result)
 
     # Écriture dans le schéma résultat : le frame narwhals est passé tel quel,
     # builder/updater de dt_ducklake_manager acceptant IntoDataFrame. Le flux

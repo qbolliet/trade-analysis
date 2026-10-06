@@ -1,59 +1,74 @@
 """Script de calcul/mise à jour des indicateurs de vulnérabilité commerciale.
 
 Recalcule les indicateurs (HHI, CDI2, CDI3 — cf. `macroforecast.trade.vulnerabilities`)
-par unité de fraîcheur `classification x reporter x produit`, pour chaque sens de
-flux de `FLOWS` (racine de `config/vulnerabilities.yaml` : `import`, `export`). La classification
-est, pour toutes les unités, le millésime SH le plus récent de
-`runtime.NOMENCLATURES.HS` (une paire couvre toutes les périodes). Une unité est
-recalculée, avec toutes ses métriques, quand :
+pour chaque sens de flux de `FLOWS` (racine de `config/vulnerabilities.yaml` :
+`import`, `export`) et les écrit dans une table unique dont la clé porte la
+nomenclature (`classification`). Deux familles de lignes y coexistent :
 
-- elle n'a jamais été calculée ;
-- elle entre dans le périmètre d'un forçage ponctuel (`runtime.FORCE_*` ou
-  variables d'environnement `FORCE_*`). `FORCE_METRICS=HHI` suffit à recalculer
-  HHI partout ;
-- sa série a été retéléchargée depuis le dernier calcul (registre
-  `LAST_DOWNLOAD_PATH` du téléchargement, lu en lecture seule) ;
-- l'empreinte méthodologique d'une métrique a changé ou manque (métrique
-  ajoutée, paramètre modifié, ou empreinte invalidée après la correction d'une
-  formule : `scripts/invalidate_freshness.py --step partners --metrics HHI`).
+- les lignes **en vigueur** (`in_force = true`) : tous les codes tels que
+  déclarés dans Comext (SH2, SH4, SH6, NC8), `classification` valant le
+  millésime SH en vigueur l'année de la période (`CN<année>` pour un code à 8
+  chiffres) ;
+- les lignes **historiques** (`in_force = false`) : pour chaque millésime SH
+  antérieur demandé (`VINTAGES`), les flux SH6 des années postérieures convertis
+  vers ce millésime par les tables de passage UNSD de BACI (somme exacte des
+  codes fusionnés, code récent affecté en totalité au code ancien que désigne la
+  table quand il en recouvre plusieurs), puis les mêmes métriques. Un produit se
+  lit ainsi sur une longue série dans une nomenclature fixe.
 
-Les empreintes sont tenues par métrique ET par sens (`HHI/import`,
-`HHI/export`) : ajouter `export` à `FLOWS` ne recalcule que les lignes export,
-les lignes import de la table résultat restant intactes (upsert par clé, le flux
-faisant partie de la clé). Les métriques MLflow sont préfixées par sens
-(`partners/import/...`, `partners/export/...`).
+Les deux familles passent par la même fonction (`prepare_vintage_flows`) : les
+lignes en vigueur sont la conversion identité. Chaque ligne porte aussi
+`hs_vintage` (millésime SH de rattachement, joint au réseau BACI par la
+synthèse) et `is_provisional` (drapeau du profil : périmètre de produits
+restreint).
 
-Le registre de fraîcheur est fragmenté (`STATE.PATH_TEMPLATE`, un fichier par
-classification x reporter) et n'est écrit qu'après succès du calcul et de
-l'écriture. L'ancien registre global (`PATHS.LAST_COMPUTATION_PATH`) n'est plus
-qu'une source de migration (`STATE.ADOPT_LEGACY_FINGERPRINTS`).
+Fraîcheur (registre fragmenté `STATE.PATH_TEMPLATE`, un fichier par
+classification x reporter, écrit après succès du calcul et de l'écriture) :
+
+- unité en vigueur : (millésime SH le plus récent du référentiel, reporter,
+  produit), une unité couvrant toutes les périodes du couple téléchargé ; son
+  amont est la date de dernier téléchargement du couple ;
+- unité historique : (millésime, reporter, code SH6 cible) ; ses sources sont
+  les codes récents qui s'y convertissent (préimage des tables de passage), son
+  amont le plus récent de leurs téléchargements. Elle attend tant qu'une source
+  n'a jamais été téléchargée (`freshness/units_waiting_sources`), une somme
+  partielle étant fausse. Son empreinte ajoute aux métriques la somme de
+  contrôle des tables de passage : une table corrigée recalcule les lignes.
+
+Une unité est recalculée, avec toutes ses métriques, quand elle n'a jamais été
+calculée, quand elle entre dans le périmètre d'un forçage (`runtime.FORCE_*` ou
+variables `FORCE_*`), quand son amont a été retéléchargé depuis, ou quand une
+empreinte a changé ou manque (métrique ajoutée, paramètre modifié, empreinte
+invalidée : `scripts/invalidate_freshness.py --step partners --metrics HHI`).
+Les empreintes sont tenues par métrique ET par sens (`HHI/import`) : ajouter
+`export` ne recalcule que les lignes export.
+
+Un run MLflow par passe (en vigueur, puis un par millésime historique), tags
+`classification` et `in_force`, métriques préfixées par sens
+(`partners/import/...`). L'échec d'une passe n'interrompt pas les suivantes ; le
+script sort en erreur à la fin si l'une a échoué.
 
 Source et résultat sont adressés par deux connecteurs DuckLake distincts, dont
-les connexions sont ouvertes ici et passées à `run_vulnerabilities` : le runner
-ne suppose rien du backend de catalogue et ne gère pas le cycle de vie des
-connexions.
-
-Prévu comme étape Argo s'exécutant après le téléchargement (dépendance directe,
-mais couplage faible : ce script ne lit que le registre JSON produit par le
-téléchargement, il ne dépend d'aucun état en mémoire de ce dernier).
-
-Le suivi d'exécution MLflow est piloté par le bloc `MLFLOW` de
-`config/vulnerabilities.yaml` : sans `TRACKING_URI` (ou sans serveur joignable),
-`get_tracker` retourne un objet nul et l'exécution est strictement inchangée. La
-relecture du résultat précédent, qui alimente les diagnostics de dérive, est
-faite ici — jamais par le module de calcul.
+les connexions sont ouvertes ici : le runner ne gère pas leur cycle de vie. Une
+table résultat créée avant la clé `classification` est refusée : elle doit être
+recréée par `tools/migrate_indicators_key.py`.
 """
 # Importation des modules
 from __future__ import annotations
 # Modules de base
 from collections import Counter
-from dataclasses import dataclass, fields, replace
+from dataclasses import dataclass, field, fields, replace
 from datetime import datetime
+from functools import partial
 import logging
 import os
 from pathlib import Path
-from typing import Any, Dict, Iterator, List, Mapping, Optional, Sequence, Set, Tuple
+from typing import Any, Dict, FrozenSet, Iterator, List, Mapping, Optional, Sequence, Set, Tuple
 import yaml
+
+# Modules de manipulation de données
+import narwhals as nw
+import pandas as pd
 
 # Modules de chargement/sauvegarde JSON (local ou S3), même brique que le téléchargement
 from statflows.storage.json import Loader, Saver
@@ -83,8 +98,21 @@ from kedro_pipeline.io.freshness import (
     units_to_compute,
     utc_now,
 )
-# Millésime SH en vigueur une année donnée
-from kedro_pipeline.config import vintage_in_force
+# Référentiel des millésimes SH (fonctions pures et macros SQL équivalentes)
+from kedro_pipeline.config import (
+    classification_of,
+    first_historical_year,
+    nomenclature_macros_sql,
+    product_code,
+    requested_vintages,
+    vintage_in_force,
+)
+# Cache des tables de passage UNSD, partagé avec BACI
+from kedro_pipeline.steps.baci import (
+    concordances_checksum,
+    downward_pairs,
+    prepare_concordances,
+)
 # Paramètres d'exécution partagés (même lecteur que le téléchargement)
 from scripts.download_comtrade import load_runtime_config
 # Module d'utilitaires de téléchargement
@@ -110,8 +138,19 @@ from macroforecast.trade.vulnerabilities import (
 )
 from macroforecast.trade.vulnerabilities.runner import (
     read_previous_result,
-    run_vulnerabilities,
+    read_source_flows,
+    run_vulnerabilities_on_frame,
 )
+# Conversion des flux vers un millésime antérieur (mêmes règles que BACI)
+from macroforecast.trade.processing import (
+    build_conversion_map,
+    conversion_preimage,
+    harmonize_partner_flows,
+)
+# Modules de lecture/écriture tabulaire (cache Parquet des tables de passage)
+from macroforecast.storage import Loader as TableLoader, Saver as TableSaver
+# Existence et nom de la table de faits DuckLake
+from statflows.storage.ducklake.tables import FACT_TABLE, fact_table_exists
 
 # Configuration de logging
 logging.basicConfig(
@@ -130,6 +169,21 @@ _BACKEND_KEY = "BACKEND"
 _FLOWS_KEY = "FLOWS"
 # Préfixe des métriques MLflow de l'étape (suivi du sens : partners/import/...)
 _METRICS_FAMILY = "partners"
+# Clés YAML des millésimes historiques (racine du fichier) et du drapeau de
+# périmètre provisoire (bloc du dataflow)
+_VINTAGES_KEY = "VINTAGES"
+_ON_UNMAPPED_KEY = "VINTAGES_ON_UNMAPPED"
+_PROVISIONAL_KEY = "IS_PROVISIONAL"
+# Colonnes de nomenclature de la table résultat (faits de schéma, lus par la
+# synthèse et la couche de service)
+CLASSIFICATION_COL = "classification"
+HS_VINTAGE_COL = "hs_vintage"
+IN_FORCE_COL = "in_force"
+PROVISIONAL_COL = "is_provisional"
+# Longueur des codes SH6, seuls codes que les tables de passage convertissent
+_HS6_LENGTH = 6
+# Nom de l'empreinte des tables de passage d'une unité historique
+CONCORDANCE_FINGERPRINT = "concordance"
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -400,15 +454,16 @@ STEP = "partners"
 
 # Fonction de détermination de la classification des unités partenaires
 def partner_classification(nomenclatures: Mapping[str, int]) -> str:
-    """Return the classification label of every partner unit.
+    """Return the classification label of every unit of rows in force.
 
-    A (reporter, product) pair covers every period of the source, so no single
-    period can give it a classification. Until the result table is keyed by
-    classification and period, every unit is labelled with the **most recent
-    HS vintage** of the configured nomenclatures, eight-digit Combined
-    Nomenclature codes included: the label is stable from one year to the
-    next, so it never triggers a recomputation by itself; it only changes when
-    a new HS vintage is added to the configuration.
+    A unit in force is a downloaded (reporter, product) pair and covers every
+    period of the source, whose rows carry several classifications (the
+    vintage in force each year, ``CN<year>`` for eight-digit codes): no single
+    one can name it. It is labelled with the **most recent HS vintage** of the
+    referential: stable from one year to the next (a new year never triggers a
+    recomputation by itself), and never equal to the label of a historical
+    unit, which is always an older vintage. It only changes when a new HS
+    vintage is added to the referential, which recomputes every row in force.
 
     Args:
         nomenclatures: Mapping HS vintage -> entry-into-force year
@@ -640,6 +695,451 @@ def record_computed_units(
         )
 
 
+# ──────────────────────────────────────────────────────────────────────
+# Millésimes de nomenclature : lignes en vigueur et lignes historiques
+# ──────────────────────────────────────────────────────────────────────
+
+# Fonction d'extension de la clé des cellules par la classification
+def nomenclature_config(config: VulnerabilityConfig) -> VulnerabilityConfig:
+    """Return the configuration whose cell key starts with the classification.
+
+    The same product code designates different goods in two vintages: the
+    classification is part of the cell, of the grid the metrics group by and
+    of the primary key of the result table. The methodological fingerprints
+    are computed on the configuration *before* this extension, so adding the
+    column never makes a unit stale by itself.
+
+    Args:
+        config: Methodological configuration of the partner metrics.
+
+    Returns:
+        The configuration with ``classification`` prepended to
+        ``key_columns`` (unchanged if already present).
+
+    Examples:
+        >>> nomenclature_config(VulnerabilityConfig()).key_columns[:2]
+        ('classification', 'freq')
+    """
+    if CLASSIFICATION_COL in config.key_columns:
+        return config
+    return replace(config, key_columns=(CLASSIFICATION_COL, *config.key_columns))
+
+
+# Fonction d'extraction de l'année d'une colonne de périodes
+def _period_years(periods: pd.Series) -> pd.Series:
+    """Return the year of every period (``"2019"``, ``"2019-03"``…) as integers."""
+    return periods.astype(str).str[:4].astype(int)
+
+
+# Fonction de préparation des flux d'une passe (en vigueur ou historique)
+def prepare_vintage_flows(
+    df_flows: pd.DataFrame,
+    *,
+    target_vintage: Optional[str],
+    nomenclatures: Mapping[str, int],
+    concordances: Mapping[Tuple[str, str], pd.DataFrame],
+    config: VulnerabilityConfig,
+    on_unmapped: str = "drop",
+) -> pd.DataFrame:
+    """Convert partner flows into one vintage and stamp their classification.
+
+    The single path of both kinds of rows. Each row is declared in the HS
+    vintage in force at its period; the rows are grouped by that source
+    vintage and converted into ``target_vintage``
+    (:func:`~macroforecast.trade.processing.harmonize_partner_flows`):
+
+    - rows in force (``target_vintage=None``): each group is converted into
+      its own vintage, i.e. left untouched, and the classification is the one
+      in force (``CN<year>`` for an eight-digit code);
+    - historical rows (``target_vintage="HS2017"``…): six-digit flows of later
+      years, converted into the older vintage, which becomes their
+      classification.
+
+    Args:
+        df_flows: Partner flows read from the source (grid keys, partner and
+            value columns).
+        target_vintage: Vintage to convert into, ``None`` for the rows in
+            force.
+        nomenclatures: Mapping vintage label -> entry-into-force year.
+        concordances: Correspondence tables ``(source, target) -> table``;
+            unused for the rows in force.
+        config: Column conventions (base configuration, without the
+            classification key).
+        on_unmapped: Policy for a code absent from a correspondence table
+            (``"raise"``, ``"drop"``, ``"keep"``).
+
+    Returns:
+        The flows, converted, with a ``classification`` column.
+
+    Raises:
+        ValueError: If a period precedes the first vintage, or a conversion
+            fails under ``on_unmapped="raise"``.
+
+    Examples:
+        >>> hs = {"HS2017": 2017, "HS2022": 2022}
+        >>> flows = pd.DataFrame({"freq": "A", "reporter": "FR", "product": ["854110", "85411000"],
+        ...                       "flow": 1, "indicators": "VALUE_IN_EUROS", "TIME_PERIOD": "2019",
+        ...                       "partner": "CN", "OBS_VALUE": 1.0})
+        >>> prepare_vintage_flows(flows, target_vintage=None, nomenclatures=hs, concordances={},
+        ...                       config=VulnerabilityConfig())["classification"].tolist()
+        ['HS2017', 'CN2019']
+    """
+    # Colonnes d'identification hors produit et hors classification
+    key_columns = [
+        column
+        for column in [*config.key_columns, config.partner_col]
+        if column not in (CLASSIFICATION_COL, config.product_col)
+    ]
+    columns = [*key_columns, config.product_col, config.value_col]
+    if df_flows.empty:
+        return df_flows.loc[:, columns].assign(**{CLASSIFICATION_COL: pd.Series(dtype="object")})
+
+    # Millésime source de chaque ligne : celui en vigueur l'année de sa période
+    years = _period_years(df_flows[config.period_col])
+    sources = years.map({year: vintage_in_force(year, nomenclatures) for year in years.unique()})
+
+    parts: List[pd.DataFrame] = []
+    for source, df_part in df_flows.groupby(sources, sort=True):
+        converted = harmonize_partner_flows(
+            df_part,
+            source_vintage=source,
+            target_vintage=target_vintage or source,
+            concordances=concordances,
+            key_columns=key_columns,
+            measure_columns=[config.value_col],
+            product_col=config.product_col,
+            period_col=config.period_col,
+            on_unmapped=on_unmapped,
+        )
+        if target_vintage is None:
+            # Classification en vigueur, évaluée une fois par couple distinct
+            pairs = pd.MultiIndex.from_arrays(
+                [converted[config.product_col], converted[config.period_col]]
+            )
+            labels = {
+                pair: classification_of(pair[0], int(str(pair[1])[:4]), nomenclatures)
+                for pair in pairs.unique()
+            }
+            converted[CLASSIFICATION_COL] = pairs.map(labels).to_numpy()
+        else:
+            converted[CLASSIFICATION_COL] = target_vintage
+        parts.append(converted)
+    return pd.concat(parts, ignore_index=True)
+
+
+# Fonction d'ajout des colonnes descriptives de nomenclature
+def annotate_nomenclature(
+    result: nw.DataFrame,
+    *,
+    target_vintage: Optional[str],
+    nomenclatures: Mapping[str, int],
+    is_provisional: bool,
+    period_col: str = "TIME_PERIOD",
+) -> nw.DataFrame:
+    """Add ``hs_vintage``, ``in_force`` and ``is_provisional`` to the scores.
+
+    ``hs_vintage`` is the HS vintage a row is attached to — the one the
+    synthesis joins the network metrics of: the vintage in force at the
+    period for the rows in force (eight-digit codes included, whose first six
+    digits are HS codes of that vintage), the target vintage for the
+    historical rows.
+
+    Args:
+        result: Scores of one pass.
+        target_vintage: Target vintage of the pass, ``None`` for the rows in
+            force.
+        nomenclatures: Mapping vintage label -> entry-into-force year.
+        is_provisional: Whether the profile computes a restricted product
+            perimeter.
+        period_col: Period column.
+
+    Returns:
+        The scores with the three descriptive columns.
+
+    Examples:
+        >>> frame = nw.from_native(pd.DataFrame({"TIME_PERIOD": ["2019", "2023"]}), eager_only=True)
+        >>> out = annotate_nomenclature(frame, target_vintage=None,
+        ...                             nomenclatures={"HS2017": 2017, "HS2022": 2022},
+        ...                             is_provisional=False)
+        >>> out.to_native()[["hs_vintage", "in_force"]].values.tolist()
+        [['HS2017', True], ['HS2022', True]]
+    """
+    if target_vintage is not None:
+        hs_vintage: Any = nw.lit(target_vintage)
+    else:
+        years = result.get_column(period_col).cast(nw.String).str.slice(0, 4)
+        mapping = {year: vintage_in_force(int(year), nomenclatures) for year in years.unique().to_list()}
+        hs_vintage = years.replace_strict(mapping, return_dtype=nw.String)
+    return result.with_columns(
+        hs_vintage.alias(HS_VINTAGE_COL),
+        nw.lit(target_vintage is None).alias(IN_FORCE_COL),
+        nw.lit(bool(is_provisional)).alias(PROVISIONAL_COL),
+    )
+
+
+# Fonction de construction des dictionnaires de conversion vers chaque millésime
+def historical_conversions(
+    concordances: Mapping[Tuple[str, str], pd.DataFrame],
+    vintages: Sequence[str],
+    nomenclatures: Mapping[str, int],
+) -> Dict[str, Dict[str, Dict[str, str]]]:
+    """Build, per historical vintage, the conversion map of every later vintage.
+
+    Args:
+        concordances: Correspondence tables ``(source, target) -> table``.
+        vintages: Historical vintages requested.
+        nomenclatures: Mapping vintage label -> entry-into-force year.
+
+    Returns:
+        Mapping ``target vintage -> {source vintage -> {source code -> target
+        code}}``.
+
+    Raises:
+        ValueError: If a pair is missing and no chain of tables connects it.
+    """
+    return {
+        target: {
+            source: build_conversion_map(concordances, source, target)
+            for source, pair_target in downward_pairs([target], nomenclatures)
+            if pair_target == target
+        }
+        for target in vintages
+    }
+
+
+# Classe des unités historiques d'un millésime
+@dataclass(frozen=True)
+class HistoricalUnits:
+    """Freshness units of the historical rows of one vintage.
+
+    Attributes:
+        vintage: Target vintage of the units.
+        watermarks: Units whose sources were all downloaded, and the most
+            recent download among their sources.
+        sources: Source codes of every unit of ``watermarks`` (the recent
+            codes converted into its target code).
+        waiting: Units with at least one source never downloaded, and the
+            missing sources: a partial sum would be wrong, so they wait.
+    """
+
+    vintage: str
+    watermarks: Dict[Unit, datetime] = field(default_factory=dict)
+    sources: Dict[Unit, FrozenSet[str]] = field(default_factory=dict)
+    waiting: Dict[Unit, FrozenSet[str]] = field(default_factory=dict)
+
+
+# Fonction de construction des unités historiques d'un millésime
+def historical_units(
+    last_download: Mapping[Tuple[str, str], datetime],
+    conversions: Mapping[str, Mapping[str, str]],
+    vintage: str,
+) -> HistoricalUnits:
+    """Turn the downloaded pairs into the historical units of one vintage.
+
+    A historical unit is a reporter and a six-digit code of ``vintage``. Its
+    sources are the codes of every later vintage that convert into it (the
+    preimage of the correspondence tables); its upstream instant is the most
+    recent download among them. A unit exists as soon as one of its sources
+    was downloaded for the reporter, and waits until all of them were.
+
+    Args:
+        last_download: Last-download date per (reporter, product) pair.
+        conversions: Conversion maps into ``vintage``, keyed by source vintage
+            (:func:`historical_conversions`).
+        vintage: Target vintage.
+
+    Returns:
+        The units, their sources, and the units waiting for a source.
+
+    Examples:
+        >>> from datetime import timezone
+        >>> t1, t2 = datetime(2026, 1, 1, tzinfo=timezone.utc), datetime(2026, 2, 1, tzinfo=timezone.utc)
+        >>> units = historical_units({("FR", "010121"): t1, ("FR", "010129"): t2},
+        ...                          {"HS2022": {"010121": "010121", "010129": "010121"}}, "HS2017")
+        >>> [(unit.key, when == t2) for unit, when in units.watermarks.items()]
+        [('HS2017|FR|010121', True)]
+    """
+    # Préimage de chaque code cible, tous millésimes sources confondus
+    preimage: Dict[str, Set[str]] = {}
+    for conversion_map in conversions.values():
+        for target, sources in conversion_preimage(conversion_map).items():
+            preimage.setdefault(target, set()).update(sources)
+    targets_of: Dict[str, Set[str]] = {}
+    for target, sources in preimage.items():
+        for source in sources:
+            targets_of.setdefault(source, set()).add(target)
+
+    # Codes SH6 téléchargés par reporter (zéro initial restitué)
+    downloaded: Dict[str, Dict[str, datetime]] = {}
+    for (reporter, product), when in last_download.items():
+        code = product_code(product)
+        if len(code) != _HS6_LENGTH:
+            continue
+        codes = downloaded.setdefault(reporter, {})
+        if code not in codes or when > codes[code]:
+            codes[code] = when
+
+    units = HistoricalUnits(vintage)
+    for reporter, codes in sorted(downloaded.items()):
+        targets = {target for code in codes for target in targets_of.get(code, ())}
+        for target in sorted(targets):
+            unit = Unit.of(classification=vintage, reporter=reporter, product=target)
+            sources = frozenset(preimage[target])
+            missing = sources - codes.keys()
+            if missing:
+                units.waiting[unit] = frozenset(missing)
+                continue
+            units.watermarks[unit] = max(codes[code] for code in sources)
+            units.sources[unit] = sources
+    return units
+
+
+# Fonction de calcul des empreintes d'une passe historique
+def historical_requested(
+    requested: Mapping[str, str],
+    concordances: Mapping[Tuple[str, str], pd.DataFrame],
+    vintage: str,
+    on_unmapped: str,
+) -> Dict[str, str]:
+    """Fingerprints of the historical rows of one vintage.
+
+    Those of the metrics, plus one digest of the correspondence tables into
+    ``vintage`` and of the policy applied to unmapped codes: a table corrected
+    by UNSD, or a policy change, makes every historical unit of the vintage
+    stale.
+
+    Args:
+        requested: Fingerprints of the metrics (:func:`partner_requested`).
+        concordances: Correspondence tables ``(source, target) -> table``.
+        vintage: Target vintage.
+        on_unmapped: Policy for codes absent from a table.
+
+    Returns:
+        ``requested`` plus the ``concordance`` fingerprint.
+
+    Examples:
+        >>> sorted(historical_requested({"HHI/import": "x"}, {}, "HS2017", "drop"))
+        ['HHI/import', 'concordance']
+    """
+    tables = {pair: table for pair, table in concordances.items() if pair[1] == vintage}
+    return {
+        **dict(requested),
+        CONCORDANCE_FINGERPRINT: fingerprint(
+            CONCORDANCE_FINGERPRINT,
+            {"checksum": concordances_checksum(tables), "on_unmapped": on_unmapped},
+        ),
+    }
+
+
+# Fonction de construction du prédicat de lecture des flux SH6 historiques
+def historical_source_predicate(config: VulnerabilityConfig, first_year: int) -> str:
+    """SQL predicate selecting the six-digit flows converted into a vintage.
+
+    Relies on the ``product_code`` session macro (leading zero of the codes
+    stored as integers restored before counting the digits).
+
+    Args:
+        config: Column conventions.
+        first_year: First year converted (entry of the next vintage).
+
+    Returns:
+        The SQL predicate.
+
+    Examples:
+        >>> print(historical_source_predicate(VulnerabilityConfig(), 2022))
+        length(product_code("product")) = 6 AND CAST(substr(CAST("TIME_PERIOD" AS VARCHAR), 1, 4) AS INTEGER) >= 2022
+    """
+    return (
+        f'length(product_code("{config.product_col}")) = {_HS6_LENGTH} AND '
+        f'CAST(substr(CAST("{config.period_col}" AS VARCHAR), 1, 4) AS INTEGER) >= {int(first_year)}'
+    )
+
+
+# Fonction de vérification de la clé de la table résultat
+def ensure_nomenclature_key(conn: Any, catalog_alias: str, schema: str) -> None:
+    """Refuse to write into a result table created before the classification key.
+
+    The upsert matches rows on the primary key of the existing table: on a
+    table keyed without ``classification``, a historical row would overwrite
+    the row in force of the same cell. Such a table must first be recreated
+    with the new key.
+
+    Args:
+        conn: Open connection on the result catalog.
+        catalog_alias: Alias of the result catalog.
+        schema: Result schema.
+
+    Raises:
+        RuntimeError: If the table exists without a ``classification`` column.
+    """
+    if not fact_table_exists(conn, catalog_alias, schema):
+        return
+    columns = {
+        row[0]
+        for row in conn.execute(
+            f'DESCRIBE "{catalog_alias}"."{schema}"."{FACT_TABLE}"'
+        ).fetchall()
+    }
+    if CLASSIFICATION_COL not in columns:
+        raise RuntimeError(
+            f"Table '{schema}' has no '{CLASSIFICATION_COL}' column: it was created "
+            "before the nomenclature key. Recreate it with "
+            "tools/migrate_indicators_key.py before running this step."
+        )
+
+
+# Fonction de chargement de la configuration BACI (cache des tables de passage)
+def load_baci_config(config_path: Optional[os.PathLike] = None) -> dict:
+    """Load the BACI configuration, which locates the correspondence-table cache.
+
+    Args:
+        config_path: Path to config file. If None, uses the
+            ``BACI_CONFIG_PATH`` environment variable, then
+            ``config/baci.yaml``.
+
+    Returns:
+        dict: Configuration dictionary.
+    """
+    if config_path is None:
+        config_path = os.environ.get("BACI_CONFIG_PATH", "config/baci.yaml")
+    with open(config_path, "r", encoding="utf-8") as file:
+        return yaml.safe_load(file)
+
+
+# Fonction de chargement des tables de passage des millésimes historiques
+def load_partner_concordances(
+    vintages: Sequence[str],
+    nomenclatures: Mapping[str, int],
+    baci_config: Mapping[str, Any],
+) -> Dict[Tuple[str, str], pd.DataFrame]:
+    """Load the correspondence tables into every historical vintage requested.
+
+    Same Parquet cache as the BACI step (``CLASSIFICATIONS.CONCORDANCE_PATH``
+    of ``config/baci.yaml``); a missing pair is downloaded from UNSD and
+    cached.
+
+    Args:
+        vintages: Historical vintages requested.
+        nomenclatures: Mapping vintage label -> entry-into-force year.
+        baci_config: Parsed ``config/baci.yaml``.
+
+    Returns:
+        Mapping ``(source, target) -> table``.
+    """
+    from statflows import UNSDClient
+
+    classifications = baci_config["CLASSIFICATIONS"]
+    return prepare_concordances(
+        downward_pairs(vintages, nomenclatures),
+        client_factory=UNSDClient,
+        loader=TableLoader(),
+        saver=TableSaver(),
+        concordance_path=classifications["CONCORDANCE_PATH"],
+        bucket=baci_config.get("BUCKET"),
+        force_refresh=bool(classifications.get("FORCE_REFRESH", False)),
+    )
+
+
 # Classe de résultat de l'étape partenaires
 @dataclass
 class PartnerStepResult:
@@ -671,7 +1171,14 @@ def compute_partner_units(
     result_catalog_alias: str,
     result_schema: str,
     config: VulnerabilityConfig,
+    nomenclatures: Mapping[str, int],
     flows: Sequence[str] = ("import",),
+    target_vintage: Optional[str] = None,
+    sources: Optional[Mapping[Unit, FrozenSet[str]]] = None,
+    concordances: Optional[Mapping[Tuple[str, str], pd.DataFrame]] = None,
+    on_unmapped: str = "drop",
+    is_provisional: bool = False,
+    n_waiting: Optional[int] = None,
     metrics: Optional[Sequence[VulnerabilityMetric]] = None,
     backend: str = "pandas",
     tracker: Any = NULL_TRACKER,
@@ -680,83 +1187,169 @@ def compute_partner_units(
     write_options: Optional[Mapping[str, Any]] = None,
     now: Optional[datetime] = None,
 ) -> PartnerStepResult:
-    """Compute the planned partner units, write them, then record them.
+    """Compute the planned units of one pass, write them, then record them.
+
+    A pass is either the rows in force (``target_vintage=None``: the planned
+    pairs are read as declared, at every level) or the historical rows of one
+    vintage (the six-digit sources of the planned target codes are read for
+    the years following the vintage, then converted). Both go through
+    :func:`prepare_vintage_flows`, then the same computation and write.
 
     The registry is written only after the computation and the table write
     succeeded: a date is never moved forward wrongly. The computation instant
     is captured before reading the source, so an upstream update landing
-    during the run is never missed.
-
-    Only the directions named by the plans are computed, in a single pass over
-    the union of the planned units: after ``export`` is added to ``flows``,
-    nothing but the export rows is computed and written. When some units are
-    stale for another reason (new data), the other units of the pass recompute
-    that direction too, with identical values — the price of a single pass.
+    during the run is never missed. Only the directions named by the plans
+    are computed, in a single pass over the union of the planned units.
 
     Args:
         source_conn: Open connection on the source catalog (owned by the caller).
         result_conn: Open connection on the result catalog (owned by the caller).
         plans: Units to compute (:func:`plan_partner_units`).
         registry: Partners freshness registry.
-        units: Candidate units and their last-download date.
-        requested: Current metric fingerprints.
+        units: Candidate units of the pass and their upstream instant.
+        requested: Current fingerprints of the pass.
         force: One-off forcing (``forced`` tag of the run).
         source_catalog_alias: Alias of the source catalog.
         source_schema: Source schema (Comext fact table).
         result_catalog_alias: Alias of the result catalog.
         result_schema: Result schema.
-        config: Methodological configuration.
+        config: Methodological configuration (without the classification key).
+        nomenclatures: Mapping vintage label -> entry-into-force year.
         flows: Every configured direction (``FLOWS``), in output order.
-        metrics: Metric instances (the default registry when ``None``).
+        target_vintage: Historical vintage of the pass, ``None`` for the rows
+            in force.
+        sources: Source codes of every historical unit
+            (:attr:`HistoricalUnits.sources`); required with
+            ``target_vintage``.
+        concordances: Correspondence tables; required with ``target_vintage``.
+        on_unmapped: Policy for codes absent from a correspondence table.
+        is_provisional: Value of the ``is_provisional`` column.
+        n_waiting: Units waiting for a source, logged as
+            ``freshness/units_waiting_sources`` when given.
+        metrics: Metric instances, built on the configuration extended by
+            :func:`nomenclature_config` (the default registry when ``None``).
         backend: Narwhals computation backend.
         tracker: Run tracker (metrics ``freshness/*`` and tag ``forced``).
         log_artifacts: Whether to log the business artifacts.
-        measure_drift: Whether to re-read the previous result for the drift
-            diagnostics.
-        write_options: Options forwarded to the table write.
+        measure_drift: Whether to re-read the previous result of the pass for
+            the drift diagnostics.
+        write_options: Options forwarded to the table write; the table is
+            partitioned by classification at its creation.
         now: Computation instant (current UTC instant by default).
 
     Returns:
         The step result.
+
+    Raises:
+        ValueError: If a historical pass lacks its sources or tables.
+        RuntimeError: If the result table predates the classification key.
     """
     computed_at = now or utc_now()
-    pairs = {(unit.get("reporter"), unit.get("product")) for unit in plans}
+    pairs = sorted({(unit.get("reporter"), unit.get("product")) for unit in plans})
     # Sens à recalculer : ceux que nomment les plans (empreintes qualifiées)
     computed_flows = qualifiers_to_compute(plans, flows)
     codes = flow_code_map(config)
+    keyed = nomenclature_config(config)
 
     # Fraîcheur : métriques de décision et tag de forçage
-    tracker.log_metrics(plan_metrics(plans, n_candidates=len(units)))
+    freshness = plan_metrics(plans, n_candidates=len(units))
+    if n_waiting is not None:
+        freshness["freshness/units_waiting_sources"] = float(n_waiting)
+    tracker.log_metrics(freshness)
     if force.forces_step(STEP, requested):
         tracker.set_tags({"forced": force.describe()})
 
-    # Résultat précédent du périmètre : lecture par le script, jamais par le runner
+    # Garde : jamais d'upsert sur une table indexée sans classification
+    ensure_nomenclature_key(result_conn, result_catalog_alias, result_schema)
+
+    # Lecture des flux de la passe ; les macros de session restituent le zéro
+    # initial des codes stockés en entiers
+    for statement in nomenclature_macros_sql(nomenclatures):
+        source_conn.execute(statement)
+    if target_vintage is None:
+        df_flows = read_source_flows(
+            source_conn, source_catalog_alias, source_schema,
+            config=config, reporters_products=pairs,
+        )
+        pass_predicate = f'"{IN_FORCE_COL}"'
+    else:
+        if sources is None or concordances is None:
+            raise ValueError("A historical pass requires its sources and correspondence tables")
+        source_pairs = sorted(
+            {(unit.get("reporter"), code) for unit in plans for code in sources[unit]}
+        )
+        df_flows = read_source_flows(
+            source_conn, source_catalog_alias, source_schema,
+            config=config, reporters_products=source_pairs,
+            where=historical_source_predicate(
+                config, first_historical_year(target_vintage, nomenclatures)
+            ),
+        )
+        pass_predicate = (
+            f"\"{CLASSIFICATION_COL}\" = '{target_vintage}' AND NOT \"{IN_FORCE_COL}\""
+        )
+
+    # Conversion (identité pour les lignes en vigueur) et classification
+    df_flows = prepare_vintage_flows(
+        df_flows,
+        target_vintage=target_vintage,
+        nomenclatures=nomenclatures,
+        concordances=concordances or {},
+        config=config,
+        on_unmapped=on_unmapped,
+    )
+    if target_vintage is not None:
+        # Codes cibles non planifiés : une source lue pour un code planifié peut,
+        # une autre année, se convertir vers un autre code dont les autres
+        # sources n'ont pas été lues ; sa somme serait partielle
+        planned = set(pairs)
+        cells = zip(df_flows[config.reporter_col], df_flows[config.product_col].map(product_code))
+        df_flows = df_flows[[cell in planned for cell in cells]].reset_index(drop=True)
+
+    # Résultat précédent de la passe : lecture par le script, jamais par le runner
     df_previous = (
         read_previous_result(
             result_conn, result_catalog_alias, result_schema,
-            reporters_products=sorted(pairs),
+            reporters_products=pairs,
             flow_codes=[codes[flow] for flow in computed_flows],
             config=config,
+            where=pass_predicate,
         )
         if measure_drift
         else None
     )
-    report = run_vulnerabilities(
-        source_conn,
-        source_catalog_alias=source_catalog_alias,
-        source_schema=source_schema,
-        result_schema=result_schema,
+    # Partition de la table par classification, posée à sa création
+    options: Dict[str, Any] = dict(write_options or {})
+    options["build_options"] = {
+        **dict(options.get("build_options") or {}),
+        "partition_by": [CLASSIFICATION_COL],
+    }
+    report = run_vulnerabilities_on_frame(
+        df_flows,
         result_conn=result_conn,
         result_catalog_alias=result_catalog_alias,
-        reporters_products=pairs,
+        result_schema=result_schema,
         metrics=metrics,
-        config=config,
+        config=keyed,
         flows=computed_flows,
+        flow_codes=codes,
         backend=backend,
         tracker=tracker,
         log_artifacts=log_artifacts,
         df_previous=df_previous,
-        write_options=write_options,
+        write_options=options,
+        annotate=partial(
+            annotate_nomenclature,
+            target_vintage=target_vintage,
+            nomenclatures=nomenclatures,
+            is_provisional=is_provisional,
+            period_col=config.period_col,
+        ),
+        params={
+            "source_schema": source_schema,
+            "classification": target_vintage or "in_force",
+            "n_reporter_product_pairs": len(pairs),
+        },
     )
 
     # Inscription des unités calculées, puis écriture des seuls fragments modifiés
@@ -817,15 +1410,45 @@ def run_partner_step(
 NODE = "compute_partner_vulnerabilities"
 
 
+# Classe décrivant une passe planifiée (lignes en vigueur ou d'un millésime)
+@dataclass
+class PartnerPass:
+    """One pass of the partner step: the rows in force, or one historical vintage.
+
+    Args:
+        label: Classification label of the pass (tag of its run).
+        target_vintage: Historical vintage, ``None`` for the rows in force.
+        units: Candidate units and their upstream instant.
+        requested: Current fingerprints of the pass.
+        plans: Units to compute.
+        sources: Source codes of the historical units.
+        n_waiting: Historical units waiting for a source.
+    """
+
+    label: str
+    target_vintage: Optional[str]
+    units: Dict[Unit, datetime]
+    requested: Dict[str, str]
+    plans: Dict[Unit, UnitPlan]
+    sources: Optional[Dict[Unit, FrozenSet[str]]] = None
+    n_waiting: Optional[int] = None
+
+
 # Fonction principale de calcul des vulnérabilités
 def main() -> None:
-    """CLI entry point for the incremental vulnerability computation script."""
+    """CLI entry point for the incremental vulnerability computation script.
+
+    Raises:
+        RuntimeError: If at least one pass failed, once every pass has been
+            attempted.
+    """
     # Chargement de la configuration dédiée aux données eurostat qui servent de source au calcul des vulnérabilités
     eurostat_config = load_eurostat_config()
     # Chargement de la configuration dédiée au calcul des vulnérabilités
     vulnerability_config = load_vulnerability_config()
     # Paramètres d'exécution partagés : nomenclatures et forçage ponctuel
     runtime_config = load_runtime_config()
+    nomenclatures = runtime_config["NOMENCLATURES"]["HS"]
 
     # Construction des paramètres méthodologiques (seuils, conventions de colonnes)
     parameters = vulnerability_config.get("PARAMETERS") or {}
@@ -834,6 +1457,9 @@ def main() -> None:
     flows = load_flows(vulnerability_config)
     # Backend de calcul narwhals, lu à part (pas un paramètre méthodologique)
     backend = parameters.get(_BACKEND_KEY, "pandas")
+    # Millésimes historiques demandés et politique des codes sans correspondance
+    vintages = requested_vintages(vulnerability_config.get(_VINTAGES_KEY, []), nomenclatures)
+    on_unmapped = vulnerability_config.get(_ON_UNMAPPED_KEY, "drop")
 
     # Options de suivi d'exécution (MLflow optionnel)
     mlflow_config = vulnerability_config.get("MLFLOW") or {}
@@ -843,153 +1469,235 @@ def main() -> None:
     # Initialisation du Dataflow sur lequel sont calculées les métriques de vulnérabilité
     DATAFLOW = eurostat_config["DATAFLOW"]
     block = vulnerability_config["VULNERABILITIES"][DATAFLOW]
+    is_provisional = bool(block.get(_PROVISIONAL_KEY, False))
 
-    # Unités candidates : couples reporter x produit du registre de téléchargement
-    # (lecture seule), rattachés au millésime SH le plus récent
+    # Couples reporter x produit du registre de téléchargement (lecture seule)
     last_download = load_last_download_dates(
         last_download_path=Path(eurostat_config["DOWNLOADS"][DATAFLOW]["PATHS"]["LAST_DOWNLOAD_PATH"]),
         loader=Loader(),
         bucket=eurostat_config["DOWNLOADS"][DATAFLOW]["BUCKET"]
     )
-    classification = partner_classification(runtime_config["NOMENCLATURES"]["HS"])
-    units = partner_units(last_download, classification)
+    classification = partner_classification(nomenclatures)
 
     # Registre de fraîcheur fragmenté, empreintes courantes et forçage ponctuel
     registry = partner_registry(block, classification)
     requested = partner_requested(vulnerability_parameters, flows)
     force = ForceSpec.from_runtime(runtime_config)
-    plans = plan_partner_units(
-        registry, units, requested, force,
-        adopt_legacy_fingerprints=adopt_legacy_flag(block.get("STATE")),
-    )
+    adopt = adopt_legacy_flag(block.get("STATE"))
+
+    # Passe des lignes en vigueur : unités du registre de téléchargement
+    units = partner_units(last_download, classification)
+    passes = [
+        PartnerPass(
+            label=classification,
+            target_vintage=None,
+            units=units,
+            requested=requested,
+            plans=plan_partner_units(registry, units, requested, force, adopt_legacy_fingerprints=adopt),
+        )
+    ]
+
+    # Passes historiques : unités par préimage des tables de passage
+    concordances: Dict[Tuple[str, str], pd.DataFrame] = {}
+    if vintages:
+        concordances = load_partner_concordances(vintages, nomenclatures, load_baci_config())
+        conversions = historical_conversions(concordances, vintages, nomenclatures)
+        for vintage in vintages:
+            historical = historical_units(last_download, conversions[vintage], vintage)
+            vintage_requested = historical_requested(requested, concordances, vintage, on_unmapped)
+            passes.append(
+                PartnerPass(
+                    label=vintage,
+                    target_vintage=vintage,
+                    units=historical.watermarks,
+                    requested=vintage_requested,
+                    plans=plan_partner_units(registry, historical.watermarks, vintage_requested, force),
+                    sources=historical.sources,
+                    n_waiting=len(historical.waiting),
+                )
+            )
+            # Logging
+            if historical.waiting:
+                logger.info(
+                    f"{vintage} : {len(historical.waiting)} unité(s) en attente d'une source "
+                    f"jamais téléchargée (ex. {next(iter(historical.waiting)).key})"
+                )
 
     # Logging
-    reasons = Counter(plan.reason for plan in plans.values())
-    logger.info(
-        f"{len(plans)} unité(s) reporter x produit à recalculer sur {len(units)} "
-        f"({dict(reasons)})"
-    )
+    for partner_pass in passes:
+        reasons = Counter(plan.reason for plan in partner_pass.plans.values())
+        logger.info(
+            f"{partner_pass.label} ({'en vigueur' if partner_pass.target_vintage is None else 'historique'}) : "
+            f"{len(partner_pass.plans)} unité(s) à recalculer sur {len(partner_pass.units)} ({dict(reasons)})"
+        )
 
     # Sortie anticipée : rien à recalculer (entrées v1 adoptées écrites malgré tout)
-    if not plans:
+    if not any(partner_pass.plans for partner_pass in passes):
         registry.save()
         logger.info("Nothing to recompute, stop.")
         return
 
+    # Identifiants du catalogue et du stockage (lus une fois dans l'environnement)
+    pg_credentials = pg_credentials_from_env()
+    s3_credentials = s3_credentials_from_env()
+    # Connecteur DuckLake aux données sources
+    source_connector = build_connector(
+        DuckLakeLocation(
+            dbname=eurostat_config["DOWNLOADS"]["DBNAME"],
+            catalog_alias=eurostat_config["DOWNLOADS"]["CATALOG_ALIAS"],
+            schema=_schema_name(DATAFLOW),
+            bucket=eurostat_config["DOWNLOADS"][DATAFLOW]["BUCKET"],
+            data_path=eurostat_config["DOWNLOADS"][DATAFLOW]["PATHS"]["DATA_PATH"],
+        ),
+        pg=pg_credentials,
+        s3=s3_credentials,
+    )
+    # Connecteur DuckLake résultat : catalogue Postgres positionné sur le schéma résultat des vulnérabilités.
+    result_schema = _schema_name(block["RESULT_SCHEMA"])
+    result_connector = build_connector(
+        DuckLakeLocation(
+            dbname=vulnerability_config["VULNERABILITIES"]["DBNAME"],
+            catalog_alias=vulnerability_config["VULNERABILITIES"]["CATALOG_ALIAS"],
+            schema=result_schema,
+            bucket=block["BUCKET"],
+            data_path=block["PATHS"]["DATA_PATH"],
+        ),
+        pg=pg_credentials,
+        s3=s3_credentials,
+    )
+
+    # Ouverture des connexions : leur cycle de vie appartient au script, le
+    # runner ne les ouvre ni ne les ferme
+    failures: Dict[str, Exception] = {}
+    source_conn = source_connector.connect()
+    try:
+        result_conn = result_connector.connect()
+        try:
+            for partner_pass in passes:
+                if not partner_pass.plans:
+                    continue
+                try:
+                    _run_partner_pass(
+                        partner_pass,
+                        source_conn=source_conn,
+                        result_conn=result_conn,
+                        registry=registry,
+                        force=force,
+                        source_catalog_alias=source_connector.catalog_alias,
+                        source_schema=_schema_name(DATAFLOW),
+                        result_catalog_alias=result_connector.catalog_alias,
+                        result_schema=result_schema,
+                        config=vulnerability_parameters,
+                        nomenclatures=nomenclatures,
+                        flows=flows,
+                        concordances=concordances,
+                        on_unmapped=on_unmapped,
+                        is_provisional=is_provisional,
+                        backend=backend,
+                        mlflow_config=mlflow_config,
+                        log_artifacts=log_artifacts,
+                        measure_drift=measure_drift,
+                        dataflow=DATAFLOW,
+                    )
+                except Exception as exc:  # une passe en échec n'emporte pas les autres
+                    logger.exception(f"Passe {partner_pass.label} en échec : {exc}")
+                    failures[partner_pass.label] = exc
+        finally:
+            result_conn.close()
+    finally:
+        source_conn.close()
+
+    # Échec global en fin de parcours si au moins une passe a échoué
+    if failures:
+        raise RuntimeError(f"Passe(s) partenaires en échec : {sorted(failures)}")
+
+
+# Fonction d'exécution d'une passe avec son run MLflow et son rapport de run
+def _run_partner_pass(
+    partner_pass: PartnerPass,
+    *,
+    mlflow_config: Mapping[str, Any],
+    dataflow: str,
+    **compute_kwargs: Any,
+) -> PartnerStepResult:
+    """Run one pass inside its own MLflow run and publish its run report.
+
+    Args:
+        partner_pass: The planned pass.
+        mlflow_config: ``MLFLOW`` block of ``config/vulnerabilities.yaml``.
+        dataflow: Source dataflow (tag of the run).
+        **compute_kwargs: Remaining arguments of :func:`compute_partner_units`.
+
+    Returns:
+        The step result of the pass.
+    """
+    in_force = partner_pass.target_vintage is None
     # Construction du suivi d'exécution : sans URI (ou sans MLflow installé,
-    # ou serveur injoignable), get_tracker retourne un tracker inerte et
-    # l'exécution est strictement inchangée
+    # ou serveur injoignable), get_tracker retourne un tracker inerte
     tracker = CapturingTracker(
         get_tracker(
             tracking_uri=mlflow_config.get("TRACKING_URI"),
             experiment=mlflow_config.get("EXPERIMENT", "trade-03-vulnerabilities"),
-            run_name=run_name(f"vulnerabilities-{datetime.now():%Y%m%d-%H%M}", NODE),
+            run_name=run_name(
+                f"vulnerabilities-{partner_pass.label}-{datetime.now():%Y%m%d-%H%M}", NODE
+            ),
+            tags={"classification": partner_pass.label, "in_force": str(in_force).lower()},
         )
     )
     scope = RunScope(NODE)
+    plans = partner_pass.plans
+    result_schema = compute_kwargs["result_schema"]
 
     with tracker, guarded_run(scope, tracker):
-        # Identifiants du catalogue et du stockage (lus une fois dans l'environnement)
-        pg_credentials = pg_credentials_from_env()
-        s3_credentials = s3_credentials_from_env()
-
-        # Connecteur DuckLake aux données sources
-        source_connector = build_connector(
-            DuckLakeLocation(
-                dbname=eurostat_config["DOWNLOADS"]["DBNAME"],
-                catalog_alias=eurostat_config["DOWNLOADS"]["CATALOG_ALIAS"],
-                schema=_schema_name(DATAFLOW),
-                bucket=eurostat_config["DOWNLOADS"][DATAFLOW]["BUCKET"],
-                data_path=eurostat_config["DOWNLOADS"][DATAFLOW]["PATHS"]["DATA_PATH"],
+        result = compute_partner_units(
+            plans=plans,
+            units=partner_pass.units,
+            requested=partner_pass.requested,
+            target_vintage=partner_pass.target_vintage,
+            sources=partner_pass.sources,
+            n_waiting=partner_pass.n_waiting,
+            tracker=tracker,
+            write_options=compute_write_options(
+                f"{NODE} {partner_pass.label} {len(plans)} unités"
             ),
-            pg=pg_credentials,
-            s3=s3_credentials,
+            **compute_kwargs,
+        )
+        report = result.report
+
+        # Envoi des métriques, préfixées par sens ; mêmes noms pour toutes les
+        # passes, la classification étant portée par les tags du run
+        tracker.log_metrics(flow_run_metrics(report, _METRICS_FAMILY))
+        tracker.set_tags(
+            {
+                "dataflow": dataflow,
+                "result_schema": result_schema,
+                "created": str(report.created),
+                "n_pairs": str(len(plans)),
+                "flows": ",".join(report.flows),
+            }
         )
 
-        # Connecteur DuckLake résultat : catalogue Postgres positionné sur le schéma résultat des vulnérabilités.
-        result_schema = _schema_name(block["RESULT_SCHEMA"])
-        result_connector = build_connector(
-            DuckLakeLocation(
-                dbname=vulnerability_config["VULNERABILITIES"]["DBNAME"],
-                catalog_alias=vulnerability_config["VULNERABILITIES"]["CATALOG_ALIAS"],
-                schema=result_schema,
-                bucket=block["BUCKET"],
-                data_path=block["PATHS"]["DATA_PATH"],
+        # Rapport de run : contrôles, chiffres clés, sections, publiés avant toute
+        # sortie en erreur
+        scope.step = "rapport de run"
+        run_report = scope.build(
+            metrics=tracker.metrics,
+            units=Units(
+                planned=len(plans),
+                succeeded=len(plans),
+                planned_label=f"{len(plans)} unités {partner_pass.label} × reporter × produit",
             ),
-            pg=pg_credentials,
-            s3=s3_credentials,
+            key_figures=key_figures_partner_vulnerabilities,
+            sections=lambda m: sections_partner_vulnerabilities(m, tracker.tables),
         )
-
-        # Ouverture des connexions : leur cycle de vie appartient au script, le
-        # runner ne les ouvre ni ne les ferme (cf. `run_vulnerabilities`)
-        source_conn = source_connector.connect()
-        try:
-            result_conn = result_connector.connect()
-            try:
-                # Calcul des unités planifiées, upsert, puis registre (après succès)
-                result = compute_partner_units(
-                    source_conn,
-                    result_conn,
-                    plans=plans,
-                    registry=registry,
-                    units=units,
-                    requested=requested,
-                    force=force,
-                    source_catalog_alias=source_connector.catalog_alias,
-                    source_schema=_schema_name(DATAFLOW),
-                    result_catalog_alias=result_connector.catalog_alias,
-                    result_schema=result_schema,
-                    config=vulnerability_parameters,
-                    flows=flows,
-                    backend=backend,
-                    tracker=tracker,
-                    log_artifacts=log_artifacts,
-                    measure_drift=measure_drift,
-                    write_options=compute_write_options(
-                        f"{NODE} {len(plans)} couples reporter x produit"
-                    ),
-                )
-                report = result.report
-
-                # Envoi des métriques, préfixées par sens (le rapport connaît sa
-                # mise en forme, le préfixe appartient à l'appelant). Les
-                # paramètres sont journalisés par le runner lui-même ; seuls
-                # les tags propres au script restent ici.
-                tracker.log_metrics(flow_run_metrics(report, _METRICS_FAMILY))
-                tracker.set_tags(
-                    {
-                        "dataflow": DATAFLOW,
-                        "result_schema": result_schema,
-                        "created": str(report.created),
-                        "n_pairs": str(len(plans)),
-                        "flows": ",".join(report.flows),
-                    }
-                )
-
-                # Rapport de run : contrôles, chiffres clés, sections, publiés avant toute
-                # sortie en erreur
-                scope.step = "rapport de run"
-                run_report = scope.build(
-                    metrics=tracker.metrics,
-                    units=Units(
-                        planned=len(plans),
-                        succeeded=len(plans),
-                        planned_label=f"{len(plans)} couples reporter × produit",
-                    ),
-                    key_figures=key_figures_partner_vulnerabilities,
-                    sections=lambda m: sections_partner_vulnerabilities(m, tracker.tables),
-                )
-                scope.publish(tracker, run_report)
-            finally:
-                result_conn.close()
-        finally:
-            source_conn.close()
+        scope.publish(tracker, run_report)
 
     # Logging
     logger.info(
-        f"Vulnerability computation complete : {report} ; "
+        f"Passe {partner_pass.label} terminée : {report} ; "
         f"{len(result.written)} fragment(s) de registre écrit(s)"
     )
+    return result
 
 
 # Exécution du script principal

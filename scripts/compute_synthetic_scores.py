@@ -95,6 +95,8 @@ from scripts.compute_trade_vulnerabilities import (
 from scripts.compute_network_vulnerabilities import network_registry
 # Paramètres d'exécution partagés (nomenclatures, forçage ponctuel)
 from scripts.download_comtrade import load_runtime_config
+# Macros SQL de nomenclature (référentiel des millésimes)
+from kedro_pipeline.config import nomenclature_macros_sql
 
 # Module de manipulation de données
 import pandas as pd
@@ -137,6 +139,13 @@ _PERIOD_COLUMN = "TIME_PERIOD"
 # Colonne du flux de la grille partenaires (clé de contexte) sur laquelle porte
 # le prédicat généré depuis `FLOWS` — fait de schéma source
 _FLOW_COLUMN = "flow"
+# Colonnes de nomenclature de la grille partenaires — faits de schéma source :
+# drapeau des lignes en vigueur (prédicat généré depuis `VINTAGES`) et millésime
+# SH de rattachement (clé de contexte : deux millésimes ne sont jamais comparés)
+_IN_FORCE_COLUMN = "in_force"
+_VINTAGE_COLUMN = "hs_vintage"
+# Valeurs admises de `SYNTHESIS.VINTAGES`
+VINTAGE_MODES: Tuple[str, ...] = ("in_force", "all")
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -317,6 +326,50 @@ def load_synthesis_flows(
     return flows, [codes[flow] for flow in flows]
 
 
+# Fonction de lecture du périmètre de nomenclature synthétisé
+def load_synthesis_vintages(
+    synthesis_block: Mapping[str, Any], config: SynthesisConfig
+) -> str:
+    """Read which partner rows the synthesis scores, by nomenclature.
+
+    ``"in_force"`` keeps the rows of the nomenclature in force (codes as
+    declared, the dashboard's yearly view); ``"all"`` also scores the
+    historical rows (flows of later years converted into an older HS vintage),
+    which then requires the HS vintage among the context columns: a row in
+    force and a historical row of the same period must never be ranked
+    together.
+
+    Args:
+        synthesis_block: ``SYNTHESIS`` block (``VINTAGES`` key, ``"in_force"``
+            when absent).
+        config: Synthesis configuration (context columns checked).
+
+    Returns:
+        ``"in_force"`` or ``"all"``.
+
+    Raises:
+        ValueError: If the value is unknown, or ``"all"`` without the HS
+            vintage in the context columns.
+
+    Examples:
+        >>> load_synthesis_vintages({}, SynthesisConfig())
+        'in_force'
+        >>> load_synthesis_vintages({"VINTAGES": "all"},
+        ...                         SynthesisConfig(context_columns=("hs_vintage", "flow")))
+        'all'
+    """
+    vintages = synthesis_block.get("VINTAGES", "in_force")
+    if vintages not in VINTAGE_MODES:
+        raise ValueError(f"SYNTHESIS.VINTAGES must be one of {VINTAGE_MODES}, got {vintages!r}")
+    if vintages == "all" and _VINTAGE_COLUMN not in config.context_columns:
+        raise ValueError(
+            f"SYNTHESIS.VINTAGES='all' requires '{_VINTAGE_COLUMN}' in context_columns "
+            f"(got {list(config.context_columns)}): rows of two vintages must never be "
+            "compared together."
+        )
+    return vintages
+
+
 # ──────────────────────────────────────────────────────────────────────
 # Construction de la requête source (fonction pure, testable sans base)
 # ──────────────────────────────────────────────────────────────────────
@@ -327,6 +380,7 @@ def build_source_query(
     filters: Mapping[str, Any],
     catalog_alias: str,
     flow_codes: Optional[Sequence[int]] = None,
+    vintages: Optional[str] = None,
 ) -> str:
     """Build the single DuckDB query reading and joining the source tables (S-2.3).
 
@@ -342,10 +396,14 @@ def build_source_query(
     columns), and only its listed ``COLUMNS`` projected, prefixed by its alias.
     ``FILTERS.WHERE`` is appended as-is, then, when ``flow_codes`` is given,
     the predicate ``<grid alias>."flow" IN (...)`` generated from the
-    synthesised directions; ``FILTERS.LAST_N_PERIODS`` becomes a sub-query
+    synthesised directions, and, when ``vintages`` is ``"in_force"``, the
+    predicate ``<grid alias>."in_force" = true`` keeping the rows of the
+    nomenclature in force; ``FILTERS.LAST_N_PERIODS`` becomes a sub-query
     restricting the grid to its most recent distinct periods (omitted when
-    ``None``). Without ``flow_codes`` the query is exactly the one of the
-    configuration alone.
+    ``None``). Without ``flow_codes`` nor ``vintages`` the query is exactly the
+    one of the configuration alone. The join conditions come from the
+    configuration only (``JOIN.ON``): the network rows are matched on the HS
+    vintage of each partner row there.
 
     Args:
         sources: The ``SOURCES`` list; the first entry is the grid. Each entry
@@ -356,6 +414,9 @@ def build_source_query(
         catalog_alias: DuckLake catalog alias the fact tables live in.
         flow_codes: Flow codes of the synthesised directions (see
             :func:`load_synthesis_flows`); ``None`` adds no flow predicate.
+        vintages: ``"in_force"`` (rows in force only), ``"all"`` or ``None``
+            (no predicate on the nomenclature; see
+            :func:`load_synthesis_vintages`).
 
     Returns:
         The SQL query as a string.
@@ -376,6 +437,10 @@ def build_source_query(
         ...     [{"SCHEMA": "indicators", "ALIAS": "p"}], {}, "v", flow_codes=[1, 2]
         ... ).splitlines()[-1]
         'WHERE p."flow" IN (1, 2)'
+        >>> build_source_query(
+        ...     [{"SCHEMA": "indicators", "ALIAS": "p"}], {}, "v", vintages="in_force"
+        ... ).splitlines()[-1]
+        'WHERE p."in_force" = true'
     """
     if not sources:
         raise ValueError("`SOURCES` doit contenir au moins la grille.")
@@ -421,6 +486,8 @@ def build_source_query(
     if flow_codes is not None:
         codes = ", ".join(str(int(code)) for code in flow_codes)
         where_parts.append(f'{grid["ALIAS"]}."{_FLOW_COLUMN}" IN ({codes})')
+    if vintages == "in_force":
+        where_parts.append(f'{grid["ALIAS"]}."{_IN_FORCE_COLUMN}" = true')
     last_n_periods = filters.get("LAST_N_PERIODS")
     if last_n_periods is not None:
         where_parts.append(
@@ -662,12 +729,13 @@ def synthesis_requested(
     sources: Optional[Sequence[Mapping[str, Any]]] = None,
     filters: Optional[Mapping[str, Any]] = None,
     flows: Optional[Sequence[str]] = None,
+    vintages: Optional[str] = None,
 ) -> Dict[str, str]:
     """Current methodological fingerprint of the synthesis (a single, global one).
 
     Digests the complete list of methods (name, kind, parameters, metrics,
     levels…), the result-shaping fields of the configuration and the source
-    selection (``SOURCES`` / ``FILTERS`` / ``FLOWS``): adding or changing a
+    selection (``SOURCES`` / ``FILTERS`` / ``FLOWS`` / ``VINTAGES``): adding or changing a
     method, or changing the selected contexts, makes the whole synthesis stale. A fix in
     the implementation of a method is signalled by invalidating the recorded
     fingerprint (``scripts/invalidate_freshness.py --step synthesis``).
@@ -678,6 +746,7 @@ def synthesis_requested(
         filters: ``SYNTHESIS.FILTERS`` block.
         flows: ``SYNTHESIS.FLOWS`` directions (``None`` leaves them out of the
             digest).
+        vintages: ``SYNTHESIS.VINTAGES`` (``None`` leaves it out of the digest).
 
     Returns:
         ``{"synthesis": fingerprint}``.
@@ -691,6 +760,8 @@ def synthesis_requested(
     params["filters"] = dict(filters or {})
     if flows is not None:
         params["flows"] = list(flows)
+    if vintages is not None:
+        params["vintages"] = vintages
     return {STEP: fingerprint(STEP, params)}
 
 
@@ -1199,6 +1270,8 @@ def main() -> None:
     # Sens synthétisés et leurs codes (échec explicite si le flux n'est pas une
     # clé de contexte alors que plusieurs sens sont demandés)
     flows, flow_codes = load_synthesis_flows(synthesis_config, vulnerability_config, config)
+    # Nomenclatures synthétisées (en vigueur seulement, ou aussi les historiques)
+    vintages = load_synthesis_vintages(synthesis_config, config)
 
     # Options de suivi d'exécution (un seul run par exécution, D-14)
     mlflow_config = synthesis_config.get("MLFLOW") or {}
@@ -1226,7 +1299,8 @@ def main() -> None:
         _REGISTRY_ROOT,
     )
     requested = synthesis_requested(
-        config, synthesis_config["SOURCES"], synthesis_config.get("FILTERS") or {}, flows
+        config, synthesis_config["SOURCES"], synthesis_config.get("FILTERS") or {}, flows,
+        vintages,
     )
     force = ForceSpec.from_runtime(runtime_config)
     # Amont : registres partenaires et réseau, résumés depuis le dernier calcul
@@ -1269,6 +1343,7 @@ def main() -> None:
         synthesis_config.get("FILTERS") or {},
         catalog_alias,
         flow_codes,
+        vintages,
     )
     # Logging
     logger.info(f"Requête source :\n{query}")
@@ -1293,6 +1368,10 @@ def main() -> None:
     # lecture / calcul / écriture sur des connexions déjà ouvertes)
     scores_conn = scores_connector.connect()
     try:
+        # Macros de nomenclature de la session (product_code des conditions de
+        # jointure : zéro initial des codes stockés en entiers)
+        for statement in nomenclature_macros_sql(runtime_config["NOMENCLATURES"]["HS"]):
+            scores_conn.execute(statement)
         diagnostics_conn = diagnostics_connector.connect()
         try:
             reports, failures, created_any, n_contexts = run_from_connections(

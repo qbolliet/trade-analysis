@@ -270,3 +270,64 @@ def test_fragments_reject_unsafe_identifiers() -> None:
     with pytest.raises(ValueError):
         synthesis_pivot_sql(["auto_sum"], ["by_country"], "auto_sum")
     assert "strpos" in individual_partner_sql({"EXCLUDE_UNDERSCORE": True})
+
+
+def test_cell_scores_read_real_nomenclature_columns(tmp_path: Path, caplog) -> None:
+    """Table partenaires migrée + lignes historiques : colonnes lues, jointures au millésime."""
+    import importlib.util
+    import logging
+    import sys
+
+    from statflows.storage.ducklake.tables import write_dataframe
+
+    spec = importlib.util.spec_from_file_location(
+        "migrate_indicators_key", Path(__file__).resolve().parents[1] / "tools" / "migrate_indicators_key.py"
+    )
+    migrate = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = migrate
+    spec.loader.exec_module(migrate)
+
+    world = build_serving_world(tmp_path)
+    indicators = world.tables["indicators"]
+    connector = world.factory(world.locations[indicators.catalog_alias], None, None)
+    conn = connector.connect()
+    try:
+        migrate.migrate_indicators(
+            conn, catalog_alias=indicators.catalog_alias, schema=indicators.schema,
+            nomenclatures=world.runtime["NOMENCLATURES"]["HS"],
+            key_columns=["freq", "reporter", "product", "flow", "indicators", "TIME_PERIOD"],
+            is_provisional=False,
+        )
+        # Lignes historiques : flux 2023 du code stable 854110 convertis vers HS2017
+        qualified = f'"{indicators.catalog_alias}"."{indicators.schema}"."fact_table"'
+        df_past = conn.execute(
+            f"SELECT * FROM {qualified} WHERE product = 854110 AND \"TIME_PERIOD\" = '2023'"
+        ).df().assign(classification="HS2017", hs_vintage="HS2017", in_force=False)
+        write_dataframe(
+            conn, df_past,
+            ["classification", "freq", "reporter", "product", "flow", "indicators", "TIME_PERIOD"],
+            catalog_alias=indicators.catalog_alias, schema=indicators.schema,
+        )
+    finally:
+        conn.close()
+
+    with caplog.at_level(logging.WARNING, logger="kedro_pipeline.steps.serving"):
+        result = publish_serving(world.tables, world.catalog, params=world.params, runtime=world.runtime)
+    assert result["failures"] == {}
+    derived = [record.getMessage() for record in caplog.records if "dérivée" in record.getMessage()]
+    # indicators lue telle quelle ; synthèse et cohérence (non migrées) dérivées
+    assert not any("'indicators'" in message for message in derived)
+    assert any("'synthesis'" in message for message in derived)
+
+    df = _read(world, "cell_scores")
+    assert not df.duplicated(["classification", "reporter", "product", "flow", "year"]).any()
+    past = df[~df["in_force"]]
+    assert len(past) == len(SERVING_REPORTERS) * 2
+    assert set(past["classification"]) == {"HS2017"} and set(past["year"]) == {2023}
+    # Ligne historique 2023 jointe au réseau HS2017, ligne en vigueur au réseau HS2022
+    imports = df[(df["flow"] == "1") & (df["product"] == "854110") & (df["year"] == 2023)]
+    assert set(imports.loc[~imports["in_force"], "WORLD_HHI"].round(6)) == {SERVING_NETWORK_HHI["HS2017"]}
+    assert set(imports.loc[imports["in_force"], "WORLD_HHI"].round(6)) == {SERVING_NETWORK_HHI["HS2022"]}
+    # Scores de synthèse (en vigueur seulement) : jamais reportés sur une ligne historique
+    assert past["primary_score_by_reporter"].isna().all()
+    assert df.loc[df["in_force"] & (df["reporter"] != "EU27_2020"), "primary_score_by_reporter"].notna().any()

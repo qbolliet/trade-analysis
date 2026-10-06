@@ -7,12 +7,16 @@ publishes every table in one transaction through
 testable: :func:`source_tables` resolves the physical tables from the
 configurations of the upstream steps (``demo_*`` schemas of the profile
 included), and the generated fragments (synthesis pivot, normalised columns,
-partner predicate) come from the parameters. The nomenclature columns
-(``classification``, ``hs_vintage``, ``in_force``) are derived by SQL macros
-generated from ``runtime.NOMENCLATURES.HS`` while the result tables do not
-carry them (PS-29.3).
+partner predicate) come from the parameters.
 
-No environment variable and no YAML path are read here (PS-08 invariant 4).
+The nomenclature columns (``classification``, ``hs_vintage``, ``in_force`` of
+the partner table, ``hs_vintage`` of the synthesis and coherence tables) are
+read as written by the upstream steps. A source table written before them is
+read through a view deriving them (rows in force: classification and vintage in
+force at the period), detected by ``DESCRIBE`` and reported by a warning, so the
+dashboard contract does not depend on the migration of the result tables.
+
+No environment variable and no YAML path are read here.
 """
 # Importation des modules
 # Modules de base
@@ -35,6 +39,19 @@ logger = logging.getLogger(__name__)
 _IDENTIFIER = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 # Niveaux de comparaison de la table synthesis (S-2.4)
 _LEVELS = ("by_product", "by_reporter", "global")
+# Année d'une période (« 2019 », « 2019-03 ») dans les vues de repli
+_YEAR_SQL = 'CAST(substr(CAST("TIME_PERIOD" AS VARCHAR), 1, 4) AS INTEGER)'
+# Colonnes de nomenclature attendues par source et leur dérivation de repli, pour
+# une table écrite avant elles (toutes ses lignes sont alors des lignes en vigueur)
+NOMENCLATURE_FALLBACKS: Mapping[str, Mapping[str, str]] = {
+    "indicators": {
+        "classification": f'classification_of("product", {_YEAR_SQL})',
+        "hs_vintage": f"vintage_in_force({_YEAR_SQL})",
+        "in_force": "TRUE",
+    },
+    "synthesis": {"hs_vintage": f"vintage_in_force({_YEAR_SQL})"},
+    "diagnostics": {"hs_vintage": f"vintage_in_force({_YEAR_SQL})"},
+}
 # Table de référence de chaque variable de référentiel
 _REFERENCE_OF = {
     "ref_eurostat_products": "products",
@@ -319,11 +336,66 @@ def empty_table_sql(columns: Mapping[str, str]) -> str:
     return f"(SELECT {select} WHERE false)"
 
 
+# Fonction de génération d'une vue dérivant les colonnes de nomenclature absentes
+def nomenclature_view_sql(
+    qualified_name: str, present: Set[str], fallbacks: Mapping[str, str]
+) -> Tuple[str, List[str]]:
+    """Read a source table, deriving the nomenclature columns it lacks.
+
+    Args:
+        qualified_name: Quoted qualified name of the source table.
+        present: Columns of the table (``DESCRIBE``).
+        fallbacks: Expected column -> SQL expression deriving it.
+
+    Returns:
+        Tuple ``(sql, derived)``: the table name when nothing is missing,
+        otherwise a sub-query adding the derived columns; and the names of the
+        derived columns.
+
+    Examples:
+        >>> nomenclature_view_sql("v.p.t", {"product"}, {"in_force": "TRUE"})
+        ('(SELECT *, TRUE AS "in_force" FROM v.p.t)', ['in_force'])
+        >>> nomenclature_view_sql("v.p.t", {"in_force"}, {"in_force": "TRUE"})
+        ('v.p.t', [])
+    """
+    derived = [column for column in fallbacks if column not in present]
+    if not derived:
+        return qualified_name, []
+    select = ", ".join(f'{fallbacks[column]} AS "{column}"' for column in derived)
+    return f"(SELECT *, {select} FROM {qualified_name})", derived
+
+
+# Fonction de lecture des colonnes des sources à colonnes de nomenclature
+def source_columns(
+    conn: Any, tables: Mapping[str, SourceTable], existing: Set[str]
+) -> Dict[str, Set[str]]:
+    """Return the columns of the existing sources that carry nomenclature columns.
+
+    Args:
+        conn: Open session with the sources attached.
+        tables: Template variable -> source table.
+        existing: Tables present in the session.
+
+    Returns:
+        Template variable -> column names (``DESCRIBE``), for the variables of
+        :data:`NOMENCLATURE_FALLBACKS` whose table exists.
+    """
+    columns: Dict[str, Set[str]] = {}
+    for name in NOMENCLATURE_FALLBACKS:
+        table = tables.get(name)
+        if table is None or table.key not in existing:
+            continue
+        rows = conn.execute(f"DESCRIBE SELECT * FROM {table.qualified_name}").fetchall()
+        columns[name] = {row[0] for row in rows}
+    return columns
+
+
 # Fonction de construction du contexte de rendu des gabarits
 def build_context(
     tables: Mapping[str, SourceTable],
     existing: Set[str],
     params: Mapping[str, Any],
+    columns: Optional[Mapping[str, Set[str]]] = None,
 ) -> Tuple[Dict[str, str], List[str]]:
     """Build the substitution context of the SQL templates.
 
@@ -332,6 +404,10 @@ def build_context(
         existing: Tables present in the session
             (``ServingCatalog.existing_tables``).
         params: ``serving`` parameters.
+        columns: Columns of the sources carrying nomenclature columns
+            (:func:`source_columns`). A source lacking some of them is read
+            through :func:`nomenclature_view_sql`, with a warning; ``None``
+            reads every source as it is.
 
     Returns:
         Tuple ``(context, missing)``: variable -> SQL text, and the optional
@@ -341,13 +417,24 @@ def build_context(
     context: Dict[str, str] = {}
     missing: List[str] = []
     for name, table in tables.items():
+        if columns is not None and name in columns and name in NOMENCLATURE_FALLBACKS:
+            # Source écrite avant les colonnes de nomenclature : vue de repli
+            context[name], derived = nomenclature_view_sql(
+                table.qualified_name, columns[name], NOMENCLATURE_FALLBACKS[name]
+            )
+            if derived:
+                logger.warning(
+                    f"Source '{name}' ({table.key}) sans colonne(s) {derived} : "
+                    "dérivée(s) comme des lignes en vigueur (table à migrer)."
+                )
+            continue
         if table.key in existing or name not in optional:
             # Source présente, ou obligatoire (son absence fera échouer la requête)
             context[name] = table.qualified_name
             continue
         spec = optional[name]
-        columns = REFERENCE_COLUMNS[_REFERENCE_OF[name]] if spec == "reference" else spec
-        context[name] = empty_table_sql(columns)
+        stub_columns = REFERENCE_COLUMNS[_REFERENCE_OF[name]] if spec == "reference" else spec
+        context[name] = empty_table_sql(stub_columns)
         missing.append(name)
 
     partners = params.get("PARTNERS") or {}
@@ -508,7 +595,10 @@ def publish_serving(
 
     try:
         with serving.connect() as conn:
-            context, missing = build_context(sources, serving.existing_tables(conn), params)
+            existing = serving.existing_tables(conn)
+            context, missing = build_context(
+                sources, existing, params, source_columns(conn, sources, existing)
+            )
             for name in missing:
                 logger.warning(
                     f"Source facultative absente '{name}' ({sources[name].key}) : "

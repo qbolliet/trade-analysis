@@ -91,6 +91,7 @@ from scripts.compute_synthetic_scores import (
     build_source_query,
     freshness_tags,
     load_synthesis_flows,
+    load_synthesis_vintages,
     global_entry,
     global_registry,
     load_synthesis_config,
@@ -110,6 +111,8 @@ from kedro_pipeline.io.freshness import (
 from macroforecast.trade.methodology import methodology_params
 # Paramètres d'exécution partagés (forçage ponctuel)
 from scripts.download_comtrade import load_runtime_config
+# Macros SQL de nomenclature (référentiel des millésimes)
+from kedro_pipeline.config import nomenclature_macros_sql
 
 # Configuration de logging
 logging.basicConfig(
@@ -650,6 +653,8 @@ def main() -> None:
     _, flow_codes = load_synthesis_flows(
         synthesis_config_block, vulnerability_config, synthesis_config
     )
+    # Même périmètre de nomenclature que la synthèse dont on contrôle les scores
+    vintages = load_synthesis_vintages(synthesis_config_block, synthesis_config)
 
     # Options de suivi d'exécution (un seul run par exécution, D-14)
     mlflow_config = coherence_config_block.get("MLFLOW") or {}
@@ -721,6 +726,7 @@ def main() -> None:
         synthesis_config_block.get("FILTERS") or {},
         catalog_alias,
         flow_codes,
+        vintages,
     )
     # Logging
     logger.info(f"Requête des métriques :\n{source_query}")
@@ -746,6 +752,9 @@ def main() -> None:
     # lecture / calcul / écriture sur des connexions déjà ouvertes)
     read_conn = read_connector.connect()
     try:
+        # Macros de nomenclature de la session (conditions de jointure de la requête)
+        for statement in nomenclature_macros_sql(runtime_config["NOMENCLATURES"]["HS"]):
+            read_conn.execute(statement)
         diagnostics_conn = diagnostics_connector.connect()
         try:
             reports, failures, created_any, n_contexts = run_from_connections(

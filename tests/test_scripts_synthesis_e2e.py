@@ -253,3 +253,109 @@ def test_synthesis_two_flows_never_compared_together(synthesis_source_tables) ->
     ):
         assert group["rank_global"].min() == 1.0
         assert group["rank_global"].max() <= n_reporters * n_products
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Millésimes de nomenclature : contextes et jointure réseau (configuration réelle)
+# ──────────────────────────────────────────────────────────────────────
+
+# Référentiel restreint de la fixture et valeurs réseau distinctes par millésime x année
+_HS = {"HS2017": 2017, "HS2022": 2022}
+_NETWORK_HHI = {("HS2017", 2019): 0.11, ("HS2017", 2023): 0.22, ("HS2022", 2023): 0.33}
+_REPORTERS = [f"R{i:02d}" for i in range(6)]
+_PRODUCTS = [854110, 10121, 854140, 300490]
+
+
+def _vintage_world(conn, alias: str) -> None:
+    """Partenaires : 2019 en vigueur (HS2017), 2023 en vigueur (HS2022) et historique (HS2017)."""
+    import numpy as np
+    from statflows.storage.ducklake.tables import write_dataframe
+
+    rng = np.random.default_rng(11)
+    rows = []
+    for period, classification, in_force in (
+        ("2019", "HS2017", True), ("2023", "HS2022", True), ("2023", "HS2017", False)
+    ):
+        for reporter in _REPORTERS:
+            for product in _PRODUCTS:
+                hhi, cdi2, cdi3 = rng.uniform(0, 1, 3)
+                rows.append(
+                    {"classification": classification, "freq": "A", "reporter": reporter,
+                     "product": product, "flow": 1, "indicators": "VALUE_IN_EUROS",
+                     "TIME_PERIOD": period, "HHI": hhi, "CDI2": cdi2, "CDI3": cdi3,
+                     "hs_vintage": classification, "in_force": in_force, "is_provisional": False}
+                )
+    write_dataframe(
+        conn, pd.DataFrame(rows),
+        ["classification", "freq", "reporter", "product", "flow", "indicators", "TIME_PERIOD"],
+        catalog_alias=alias, schema="indicators",
+    )
+    network = [
+        {"classification": classification, "product": str(product).zfill(6), "year": year,
+         "flow": 1, "WORLD_HHI": hhi, "CENTRALITY_RISK": 1.0 + hhi, "CLUSTERING_W": 0.5}
+        for (classification, year), hhi in _NETWORK_HHI.items()
+        for product in _PRODUCTS
+    ]
+    write_dataframe(
+        conn, pd.DataFrame(network), ["classification", "product", "year", "flow"],
+        catalog_alias=alias, schema="network_indicators",
+    )
+    from kedro_pipeline.config import nomenclature_macros_sql
+
+    for statement in nomenclature_macros_sql(_HS):
+        conn.execute(statement)
+
+
+def _real_query(alias: str, vintages: str) -> str:
+    """Requête source de la configuration réelle (SOURCES et JOIN de config/synthesis.yaml)."""
+    from conftest import serving_configs
+
+    block = serving_configs("base")["synthesis"]["SYNTHESIS"]
+    filters = {"WHERE": block["FILTERS"]["WHERE"], "LAST_N_PERIODS": None}
+    return build_source_query(block["SOURCES"], filters, alias, [1], vintages)
+
+
+@pytest.mark.slow
+@pytest.mark.parametrize("vintages", ["in_force", "all"])
+def test_synthesis_vintages_contexts_and_network_join(ducklake_conn, vintages: str) -> None:
+    from scripts.compute_synthetic_scores import read_source_metrics
+
+    conn, alias = ducklake_conn
+    _vintage_world(conn, alias)
+    source = read_source_metrics(conn, _real_query(alias, vintages))
+
+    # Jointure réseau au millésime de chaque ligne : une ligne 2019 lit HS2017
+    # (jamais HS2022), une ligne 2023 historique lit HS2017 2023
+    year = source["TIME_PERIOD"].str[:4].astype(int)
+    expected = [
+        _NETWORK_HHI[(vintage, y)] for vintage, y in zip(source["hs_vintage"], year)
+    ]
+    assert source["WORLD_HHI"].tolist() == pytest.approx(expected)
+    assert (source.loc[year == 2019, "WORLD_HHI"] == _NETWORK_HHI[("HS2017", 2019)]).all()
+
+    config = SynthesisConfig(
+        context_columns=("hs_vintage", "freq", "flow", "indicators", "TIME_PERIOD"),
+        metric_columns=("HHI", "CDI2", "CDI3", "WORLD_HHI", "CENTRALITY_RISK"),
+        levels=("by_reporter", "global"),
+        min_group_size=3,
+        consensus=(),
+        methods=(MethodSpec(name="rank_mean", kind="rank_mean"),),
+    )
+    _, failures, _, n_contexts = run_from_connections(
+        conn, conn, _real_query(alias, vintages), config, catalog_alias=alias,
+        result_schema="synthesis", diagnostics_schema="synthesis_diagnostics",
+        log_artifacts=False,
+    )
+    assert failures == {}
+    df_scores = _read_scores(conn, alias)
+    contexts = set(zip(df_scores["hs_vintage"], df_scores["TIME_PERIOD"].astype(str)))
+    if vintages == "in_force":
+        # Contextes en vigueur seulement
+        assert source["in_force"].all()
+        assert contexts == {("HS2017", "2019"), ("HS2022", "2023")}
+    else:
+        # Un contexte par millésime et par période, jamais mélangés
+        assert contexts == {("HS2017", "2019"), ("HS2022", "2023"), ("HS2017", "2023")}
+    assert n_contexts == len(contexts)
+    # Groupe global = cellules d'un seul millésime
+    assert (df_scores["n_global"] == len(_REPORTERS) * len(_PRODUCTS)).all()

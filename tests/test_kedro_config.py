@@ -12,9 +12,12 @@ import pytest
 
 from kedro_pipeline.config import (
     classification_of,
+    first_historical_year,
     historical_vintages,
+    hs_vintage_of,
     nomenclature_macros_sql,
     product_code,
+    requested_vintages,
     vintage_in_force,
 )
 
@@ -80,3 +83,37 @@ def test_sql_macros_match_python_functions() -> None:
     assert conn.execute("SELECT product_code(1012100), product_code('ALL')").fetchone() == (
         "01012100", "ALL"
     )
+
+
+def test_requested_vintages_all_list_and_empty() -> None:
+    # « all » : tous les millésimes sauf le plus récent, jamais historique
+    assert requested_vintages("all", HS) == [
+        "HS1992", "HS1996", "HS2002", "HS2007", "HS2012", "HS2017"
+    ]
+    # Liste : ordre du référentiel, pas celui de la configuration
+    assert requested_vintages(["HS2017", "HS1992"], HS) == ["HS1992", "HS2017"]
+    assert requested_vintages([], HS) == []
+    assert requested_vintages(None, HS) == []
+
+
+@pytest.mark.parametrize("spec", ["some", ["HS1900"], ["HS2022"]])
+def test_requested_vintages_rejects_invalid(spec) -> None:
+    with pytest.raises(ValueError):
+        requested_vintages(spec, HS)
+
+
+def test_first_historical_year_is_next_entry() -> None:
+    assert first_historical_year("HS1992", HS) == 1996
+    assert first_historical_year("HS2017", HS) == 2022
+    with pytest.raises(ValueError):
+        first_historical_year("HS2022", HS)
+
+
+def test_hs_vintage_of_macro_matches_python() -> None:
+    conn = duckdb.connect()
+    for statement in nomenclature_macros_sql(HS):
+        conn.execute(statement)
+    for year in range(1988, 2031):
+        for classification in (f"CN{year}", "HS2017", "HS1992"):
+            sql = conn.execute("SELECT hs_vintage_of(?, ?)", [classification, year]).fetchone()[0]
+            assert sql == hs_vintage_of(classification, year, HS)

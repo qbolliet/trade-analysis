@@ -17,9 +17,14 @@
 #   - fragments générés depuis les paramètres ci-dessous : $cell_filter, $comext_filter,
 #     $synthesis_pivot (METHODS × LEVELS, et méthode principale), $norm_columns,
 #     $individual_partner, $top_partners, $world_code, $extra_eu_code ;
-#   - macros SQL de session, générées depuis runtime.NOMENCLATURES.HS (PS-29.3) :
+#   - macros SQL de session, générées depuis runtime.NOMENCLATURES.HS :
 #     vintage_in_force(année), classification_of(code, année), product_code(code)
-#     (restitue le zéro initial des codes stockés en entier).
+#     (restitue le zéro initial des codes stockés en entier), hs_vintage_of(classification, année).
+#
+# Colonnes de nomenclature : $indicators porte classification, hs_vintage et in_force,
+# $synthesis et $diagnostics portent hs_vintage (clé de contexte). Une table source
+# écrite avant ces colonnes est lue à travers une vue qui les dérive (lignes en
+# vigueur : classification_of, vintage_in_force, in_force = true), avec un WARNING.
 serving:
   # Identité du catalogue DuckLake `serving` : base de métadonnées PostgreSQL dédiée (même
   # instance et mêmes identifiants trade-postgres-credentials que les autres catalogues,
@@ -60,7 +65,8 @@ serving:
   # Métriques normalisées min-max (<métrique>_norm, dans [0, 1]) pour la heatmap, et
   # colonnes définissant le contexte de normalisation
   NORM_METRICS: ["HHI", "CDI2", "CDI3", "WORLD_HHI", "CENTRALITY_RISK", "CLUSTERING_W", "SPOF"]
-  NORM_PARTITION: ["flow", "year"]
+  # hs_vintage sépare les lignes en vigueur des lignes historiques d'une même année
+  NORM_PARTITION: ["hs_vintage", "flow", "year"]
 
   # Codes partenaires agrégés de Comext, alignés sur VulnerabilityConfig (world_code,
   # extra_eu_code, aggregate_codes, exclude_underscore_partners)
@@ -99,6 +105,7 @@ serving:
       CLUSTERING_W_ALERT: "BOOLEAN"
       SPOF_ALERT: "BOOLEAN"
     synthesis:
+      hs_vintage: "VARCHAR"
       freq: "VARCHAR"
       flow: "VARCHAR"
       indicators: "VARCHAR"
@@ -116,6 +123,7 @@ serving:
       n_by_reporter: "INTEGER"
       n_global: "INTEGER"
     diagnostics:
+      hs_vintage: "VARCHAR"
       freq: "VARCHAR"
       flow: "VARCHAR"
       indicators: "VARCHAR"
@@ -142,16 +150,20 @@ serving:
   TABLES:
     # Une ligne par cellule (classification, reporter, product, flow, year) : métriques
     # partenaires et réseau, alertes, scores et rangs de synthèse, métriques normalisées.
-    # classification / hs_vintage / in_force sont DÉRIVÉS tant qu'indicators ne les porte
-    # pas (PS-29.3) ; la jointure réseau se fait sur le millésime en vigueur (corrige C-11).
-    # Elle porte aussi sur le flux : une ligne export reçoit les métriques réseau du graphe
-    # transposé (concentration de la demande mondiale), une ligne import celles de l'offre.
+    # Lignes en vigueur (in_force) et historiques (flux convertis vers un millésime SH
+    # antérieur) ; la jointure réseau se fait sur le millésime de rattachement de chaque
+    # ligne (hs_vintage), les scores sur hs_vintage aussi. Elle porte enfin sur le flux :
+    # une ligne export reçoit les métriques réseau du graphe transposé (concentration de
+    # la demande mondiale), une ligne import celles de l'offre.
     cell_scores:
       PARTITIONED: true
       SORT_BY: ["year", "reporter", "product"]
       SQL: |
         WITH grid AS (
           SELECT
+            CAST(p."classification" AS VARCHAR) AS classification,
+            CAST(p."hs_vintage" AS VARCHAR) AS hs_vintage,
+            CAST(p."in_force" AS BOOLEAN) AS in_force,
             CAST(p."freq" AS VARCHAR) AS freq,
             CAST(p."flow" AS VARCHAR) AS flow,
             CAST(p."indicators" AS VARCHAR) AS indicators,
@@ -186,6 +198,7 @@ serving:
         ),
         scores AS (
           SELECT
+            CAST(s."hs_vintage" AS VARCHAR) AS hs_vintage,
             CAST(s."freq" AS VARCHAR) AS freq,
             CAST(s."flow" AS VARCHAR) AS flow,
             CAST(s."indicators" AS VARCHAR) AS indicators,
@@ -208,9 +221,7 @@ serving:
         ),
         cells AS (
           SELECT
-            classification_of(g.product, g.year) AS classification,
-            vintage_in_force(g.year) AS hs_vintage,
-            TRUE AS in_force,
+            g.classification, g.hs_vintage, g.in_force,
             g.year, g.time_period, g.freq, g.flow, g.indicators,
             g.reporter, rl.label AS reporter_label,
             g.product, pl.label AS product_label, length(g.product) AS product_level,
@@ -219,16 +230,17 @@ serving:
             g."HHI_ALERT", g."CDI2_ALERT", g."CDI3_ALERT",
             net."WORLD_HHI_ALERT", net."CENTRALITY_RISK_ALERT", net."CLUSTERING_W_ALERT",
             net."SPOF_ALERT",
-            sc.* EXCLUDE (freq, flow, indicators, time_period, reporter, product)
+            sc.* EXCLUDE (hs_vintage, freq, flow, indicators, time_period, reporter, product)
           FROM grid AS g
           LEFT JOIN net
-            ON net.classification = vintage_in_force(g.year)
+            ON net.classification = g.hs_vintage
            AND net.hs6 = substr(g.product, 1, 6)
            AND length(g.product) >= 6
            AND net.year = g.year
            AND net.flow = g.flow
           LEFT JOIN scores AS sc
-            ON sc.freq = g.freq AND sc.flow = g.flow AND sc.indicators = g.indicators
+            ON sc.hs_vintage = g.hs_vintage
+           AND sc.freq = g.freq AND sc.flow = g.flow AND sc.indicators = g.indicators
            AND sc.time_period = g.time_period AND sc.reporter = g.reporter
            AND sc.product = g.product
           LEFT JOIN product_labels AS pl ON pl.code = g.product
@@ -247,9 +259,11 @@ serving:
           FROM $diagnostics
         )
         SELECT
-          CASE WHEN CAST(d."product" AS VARCHAR) = 'ALL' THEN vintage_in_force(d._year)
-               ELSE classification_of(d."product", d._year) END AS classification,
-          vintage_in_force(d._year) AS hs_vintage,
+          CASE WHEN CAST(d."product" AS VARCHAR) = 'ALL' THEN CAST(d."hs_vintage" AS VARCHAR)
+               WHEN CAST(d."hs_vintage" AS VARCHAR) = vintage_in_force(d._year)
+               THEN classification_of(d."product", d._year)
+               ELSE CAST(d."hs_vintage" AS VARCHAR) END AS classification,
+          CAST(d."hs_vintage" AS VARCHAR) AS hs_vintage,
           d._year AS year,
           CAST(d."TIME_PERIOD" AS VARCHAR) AS time_period,
           CAST(d."freq" AS VARCHAR) AS freq,
@@ -276,9 +290,11 @@ serving:
           FROM $diagnostics
         )
         SELECT
-          CASE WHEN CAST(d."product" AS VARCHAR) = 'ALL' THEN vintage_in_force(d._year)
-               ELSE classification_of(d."product", d._year) END AS classification,
-          vintage_in_force(d._year) AS hs_vintage,
+          CASE WHEN CAST(d."product" AS VARCHAR) = 'ALL' THEN CAST(d."hs_vintage" AS VARCHAR)
+               WHEN CAST(d."hs_vintage" AS VARCHAR) = vintage_in_force(d._year)
+               THEN classification_of(d."product", d._year)
+               ELSE CAST(d."hs_vintage" AS VARCHAR) END AS classification,
+          CAST(d."hs_vintage" AS VARCHAR) AS hs_vintage,
           d._year AS year,
           CAST(d."TIME_PERIOD" AS VARCHAR) AS time_period,
           CAST(d."freq" AS VARCHAR) AS freq,

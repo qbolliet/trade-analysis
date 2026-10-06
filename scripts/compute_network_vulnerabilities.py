@@ -44,6 +44,11 @@ Le suivi d'exécution MLflow est piloté par le bloc
 et l'exécution est strictement inchangée. La relecture du résultat précédent,
 qui alimente les diagnostics de dérive, est faite ici — jamais par le module de
 calcul.
+
+Chaque ligne porte `in_force` : vrai quand le millésime de la ligne est celui en
+vigueur l'année de la ligne (`runtime.NOMENCLATURES.HS`). Les lignes d'un
+millésime ancien sur des années postérieures sont la version « historique » des
+métriques, jointe aux lignes partenaires historiques de même millésime.
 """
 # Importation des modules
 from __future__ import annotations
@@ -53,8 +58,12 @@ from datetime import datetime
 import logging
 import os
 from pathlib import Path
+from functools import partial
 from typing import Any, Dict, Iterator, List, Mapping, Optional, Sequence, Tuple
 import yaml
+
+# Modules de manipulation de données
+import narwhals as nw
 
 # Modules de chargement/sauvegarde JSON (local ou S3), même brique que le téléchargement
 from statflows.storage.json import Loader, Saver
@@ -87,6 +96,8 @@ from kedro_pipeline.io.freshness import (
 from scripts.process_baci_hs import baci_registry, pass_is_complete
 # Paramètres d'exécution partagés (forçage ponctuel)
 from scripts.download_comtrade import load_runtime_config
+# Millésime SH en vigueur une année donnée
+from kedro_pipeline.config import vintage_in_force
 
 # Module de suivi d'exécution (MLflow optionnel, objet nul par défaut)
 from macroforecast.tracking import CapturingTracker, get_tracker
@@ -129,6 +140,9 @@ _CONFIG_ROOT = "NETWORK_VULNERABILITIES"
 _BACKEND_KEY = "BACKEND"
 # Préfixe des métriques MLflow de l'étape (suivi du sens : network/import/...)
 _METRICS_FAMILY = "network"
+# Colonne du drapeau « millésime en vigueur l'année de la ligne » (fait de schéma,
+# lu par la couche de service)
+_IN_FORCE_COL = "in_force"
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -619,6 +633,39 @@ def plan_network_units(
 NODE = "compute_network_vulnerabilities"
 
 
+# Fonction d'ajout du drapeau « millésime en vigueur » aux scores de réseau
+def annotate_network_in_force(
+    result: nw.DataFrame,
+    *,
+    nomenclatures: Mapping[str, int],
+    config: NetworkVulnerabilityConfig,
+) -> nw.DataFrame:
+    """Add ``in_force``: whether the row's vintage is the one in force its year.
+
+    Args:
+        result: Network scores of one vintage (classification and year columns).
+        nomenclatures: Mapping vintage label -> entry-into-force year.
+        config: Column conventions (``classification_col``, ``period_col``).
+
+    Returns:
+        The scores with a boolean ``in_force`` column.
+
+    Examples:
+        >>> import pandas as pd
+        >>> frame = nw.from_native(pd.DataFrame({"classification": "HS2017", "year": [2019, 2023]}),
+        ...                        eager_only=True)
+        >>> annotate_network_in_force(frame, nomenclatures={"HS2017": 2017, "HS2022": 2022},
+        ...                           config=NetworkVulnerabilityConfig()).to_native()["in_force"].tolist()
+        [True, False]
+    """
+    years = result.get_column(config.period_col).cast(nw.Int64)
+    mapping = {year: vintage_in_force(year, nomenclatures) for year in years.unique().to_list()}
+    in_force_vintage = years.replace_strict(mapping, return_dtype=nw.String)
+    return result.with_columns(
+        (nw.col(config.classification_col) == in_force_vintage).alias(_IN_FORCE_COL)
+    )
+
+
 # Fonction principale de calcul des vulnérabilités de réseau
 def main() -> None:
     """CLI entry point for the incremental network-vulnerability computation.
@@ -789,6 +836,11 @@ def main() -> None:
                             log_artifacts=log_artifacts,
                             df_previous=df_previous,
                             write_options=compute_write_options(f"{NODE} {label}"),
+                            annotate=partial(
+                                annotate_network_in_force,
+                                nomenclatures=runtime_config["NOMENCLATURES"]["HS"],
+                                config=network_parameters,
+                            ),
                         )
 
                         # Envoi des métriques, préfixées par sens (le rapport

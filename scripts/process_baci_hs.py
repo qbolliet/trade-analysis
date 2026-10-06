@@ -24,7 +24,8 @@ configuration YAML, construction de la ``BaciConfig``, lecture des fichiers
 Excel CEPII, lecture de la table de faits COMTRADE et écriture des résultats —
 tandis que le package (``macroforecast.trade.processing``) ne contient que la
 méthodologie. Les tables de correspondance HS sont téléchargées via
-``UNSDClient`` puis mises en cache côté script (Parquet + registre JSON) :
+``UNSDClient`` puis mises en cache par ``kedro_pipeline.steps.baci.prepare_concordances``
+(Parquet + registre JSON, cache partagé avec l'étape partenaires) :
 elles sont invariantes une fois publiées, l'absence de fichier en cache est
 donc le seul déclencheur de téléchargement (pas de vérification de fraîcheur
 distante), sauf ``FORCE_REFRESH`` explicite en configuration.
@@ -68,7 +69,6 @@ et ``RUNTIME_CONFIG_PATH``.
 """
 # Importation des modules
 # Modules de base
-import hashlib
 import logging
 import os
 from dataclasses import fields, replace
@@ -77,7 +77,6 @@ from typing import Any, Dict, Iterable, Iterator, List, Mapping, Optional, Seque
 import yaml
 
 # Modules de manipulation de données
-from botocore.exceptions import ClientError
 import duckdb
 import pandas as pd
 
@@ -108,6 +107,8 @@ from kedro_pipeline.io.freshness import (
     upstream_is_newer,
 )
 from kedro_pipeline.steps.reference import publish_hs_reference
+# Cache des tables de correspondance UNSD (partagé avec l'étape partenaires)
+from kedro_pipeline.steps.baci import prepare_concordances
 # Planification des requêtes Comtrade : même liste que le téléchargement
 from scripts.download_comtrade import (
     fetch_dimension_codelists,
@@ -151,9 +152,6 @@ logger = logging.getLogger(__name__)
 
 # Clé YAML portant les conventions de schéma des sources (sous-section de PARAMETERS)
 _SCHEMA_KEY = "SCHEMA"
-
-# Nom du fichier de registre des téléchargements de tables de correspondance
-_REGISTRY_FILE = "unsd_correspondance_tables.json"
 
 # Clé racine du registre JSON des dates de dernier traitement BACI, lu par
 # scripts/compute_network_vulnerabilities.py pour ne recalculer que les
@@ -918,153 +916,6 @@ def completed_entry(
 
 
 # ──────────────────────────────────────────────────────────────────────
-# Cache des tables de correspondance HS (Parquet + registre JSON), logique
-# propre à ce script : le package ne fait que convertir (HsHarmonizer), ni le
-# téléchargement ni le cache n'y vivent.
-# ──────────────────────────────────────────────────────────────────────
-
-# Fonction de calcul d'une somme de contrôle du contenu d'une table
-def _checksum(df_table: pd.DataFrame) -> str:
-    """Compute a content hash of a table, to detect drift in a cached artefact.
-
-    Args:
-        df_table: Table to hash.
-
-    Returns:
-        Hex-encoded SHA-256 digest of the table's content.
-    """
-    hashed = pd.util.hash_pandas_object(df_table, index=False)
-    return hashlib.sha256(hashed.to_numpy().tobytes()).hexdigest()
-
-
-# Fonction de construction du chemin de cache d'une paire de millésimes
-def _cached_table_path(concordance_path: str, source: str, target: str) -> str:
-    """Build the Parquet cache path of a source/target vintage pair.
-
-    Args:
-        concordance_path: Root directory of the concordance cache.
-        source: Source classification (e.g. ``"HS2022"``).
-        target: Target classification (e.g. ``"HS2017"``).
-
-    Returns:
-        The Parquet cache path, e.g. ``"{concordance_path}/HS2022-HS2017.parquet"``.
-    """
-    return f"{concordance_path.rstrip('/')}/{source}-{target}.parquet"
-
-
-# Fonction de construction du chemin du registre des téléchargements
-def _registry_path(concordance_path: str) -> str:
-    """Build the JSON registry path of the concordance cache.
-
-    Args:
-        concordance_path: Root directory of the concordance cache.
-
-    Returns:
-        The registry path, e.g. ``"{concordance_path}/registry.json"``.
-    """
-    return f"{concordance_path.rstrip('/')}/{_REGISTRY_FILE}"
-
-
-# Fonction de lecture non bloquante d'une table mise en cache
-def _load_cached_table(
-    loader: TableLoader, path: str, bucket: Optional[str]
-) -> Optional[pd.DataFrame]:
-    """Read a cached Parquet table, or ``None`` when it is absent.
-
-    Args:
-        loader: Table loader (local or S3, dispatched on ``bucket``).
-        path: Cache path (local path or S3 key).
-        bucket: S3 bucket name, or ``None`` for a local cache.
-
-    Returns:
-        The cached table, or ``None`` when no cache file exists yet.
-    """
-    try:
-        return loader.load(path, bucket=bucket)
-    except (FileNotFoundError, ClientError):
-        return None
-
-
-# Fonction de chargement des tables de correspondance nécessaires, avec cache
-def _ensure_concordances(
-    pairs: Sequence[Tuple[str, str]],
-    client: UNSDClient,
-    loader: TableLoader,
-    saver: TableSaver,
-    concordance_path: str,
-    bucket: Optional[str],
-    force_refresh: bool = False,
-) -> Dict[Tuple[str, str], pd.DataFrame]:
-    """Load cached HS concordance tables, downloading only the missing ones.
-
-    The correspondence tables are invariant once UNSD publishes them: the
-    absence of a cached Parquet file is the only trigger for a download (no
-    remote freshness check), unless ``force_refresh`` is set. One normalised
-    table is cached per pair (``{concordance_path}/{source}-{target}.parquet``),
-    alongside a JSON registry (``{concordance_path}/registry.json``) recording
-    the download date, source URL, row count and content checksum of each pair
-    actually downloaded — same principle as ``LAST_DOWNLOAD_PATH`` in
-    ``download_comtrade.py``.
-
-    Args:
-        pairs: Distinct ``(source, target)`` vintage pairs to resolve (UNSD
-            identifiers, e.g. ``("HS2022", "HS2017")``).
-        client: UNSD correspondence-table client.
-        loader: Table loader (local or S3) used to read cached Parquet tables.
-        saver: Table saver (local or S3) used to write cached Parquet tables.
-        concordance_path: Root directory of the concordance cache.
-        bucket: S3 bucket name, or ``None`` for a local cache.
-        force_refresh: When ``True``, re-download every pair even if already
-            cached.
-
-    Returns:
-        Mapping ``(source, target) -> normalised concordance table``, one
-        entry per requested pair.
-    """
-    # Registre des téléchargements (date, URL, volumétrie, somme de contrôle)
-    registry_path = _registry_path(concordance_path)
-    # Instances réutilisables : la connexion S3 paresseuse est ainsi établie une
-    # seule fois et partagée par la lecture initiale et les écritures successives
-    json_saver = JsonSaver()
-    # Registre absent : premier téléchargement des tables de correspondance
-    registry = JsonLoader().load(registry_path, bucket=bucket, missing_ok=True) or {}
-
-    # Catalogue des tables déclarées (URL source de chaque paire)
-    df_catalogue = client.list_available_tables().set_index(
-        ["source_classification", "target_classification"]
-    )
-
-    concordances: Dict[Tuple[str, str], pd.DataFrame] = {}
-    for source, target in pairs:
-        key = f"{source}-{target}"
-        table_path = _cached_table_path(concordance_path, source, target)
-
-        # Cache existant : aucune vérification de fraîcheur distante
-        df_table = None if force_refresh else _load_cached_table(loader, table_path, bucket)
-
-        if df_table is None:
-            # Logging
-            logger.info("Téléchargement de la table de correspondance %s", key)
-            df_table = client.get_correspondence(source, target, kind="conversion")
-            saver.save(table_path, df_table, bucket=bucket, index=False)
-
-            # Mise à jour du registre uniquement pour les paires téléchargées
-            registry[key] = {
-                "downloaded_at": datetime.now(timezone.utc).isoformat(),
-                "source_url": str(df_catalogue.loc[(source, target), "url"]),
-                "n_rows": int(len(df_table)),
-                "checksum": _checksum(df_table),
-            }
-            json_saver.save(
-                registry_path, registry, bucket=bucket, indent=2, ensure_ascii=False
-            )
-
-        concordances[(source, target)] = df_table
-
-    return concordances
-
-
-# ──────────────────────────────────────────────────────────────────────
 # Orchestration
 # ──────────────────────────────────────────────────────────────────────
 
@@ -1257,20 +1108,17 @@ def main() -> None:
                 if source_label != label:
                     pairs.add((source_label, label))
 
-        # Résolution des tables de correspondance nécessaires (cache Parquet)
-        client = UNSDClient()
-        try:
-            concordances = _ensure_concordances(
-                sorted(pairs),
-                client=client,
-                loader=table_loader,
-                saver=table_saver,
-                concordance_path=concordance_path,
-                bucket=bucket,
-                force_refresh=force_refresh,
-            )
-        finally:
-            client.close()
+        # Résolution des tables de correspondance nécessaires (cache Parquet
+        # partagé avec l'étape partenaires, client UNSD créé à la demande)
+        concordances = prepare_concordances(
+            sorted(pairs),
+            client_factory=UNSDClient,
+            loader=table_loader,
+            saver=table_saver,
+            concordance_path=concordance_path,
+            bucket=bucket,
+            force_refresh=force_refresh,
+        )
 
         # Référentiels de nomenclature (tables de passage du cache UNSD, millésimes),
         # publiés dans le catalogue Comtrade (PS-28.4) ; non bloquant

@@ -70,6 +70,9 @@ logger = logging.getLogger(__name__)
 
 # Étapes dotées d'un registre de fraîcheur
 STEPS: Tuple[str, ...] = ("partners", "network", "baci", "synthesis", "coherence")
+# Empreinte des tables de passage des unités partenaires historiques (même nom
+# que dans scripts/compute_trade_vulnerabilities.py, importé paresseusement ici)
+_CONCORDANCE_FINGERPRINT = "concordance"
 
 # Dimensions des unités de chaque étape (contrôle des filtres de périmètre)
 STEP_DIMENSIONS: Mapping[str, FrozenSet[str]] = {
@@ -96,9 +99,11 @@ _LOG_UNITS = 20
 def step_names(step: str) -> Tuple[str, ...]:
     """Names whose fingerprint a step records.
 
-    Partner and network steps record one fingerprint per metric; BACI, the
-    synthesis and the coherence record a single fingerprint named after the
-    step.
+    Partner and network steps record one fingerprint per metric; the
+    historical partner units also record the fingerprint of the
+    correspondence tables they were converted with (``concordance``); BACI,
+    the synthesis and the coherence record a single fingerprint named after
+    the step.
 
     Args:
         step: Step name (one of :data:`STEPS`).
@@ -111,12 +116,12 @@ def step_names(step: str) -> Tuple[str, ...]:
 
     Examples:
         >>> step_names("partners")
-        ('HHI', 'CDI2', 'CDI3')
+        ('HHI', 'CDI2', 'CDI3', 'concordance')
         >>> step_names("baci")
         ('baci',)
     """
     if step == "partners":
-        return tuple(cls.name for cls in DEFAULT_METRIC_CLASSES)
+        return (*(cls.name for cls in DEFAULT_METRIC_CLASSES), _CONCORDANCE_FINGERPRINT)
     if step == "network":
         return tuple(cls.name for cls in DEFAULT_NETWORK_METRIC_CLASSES)
     if step in STEPS:

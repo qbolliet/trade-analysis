@@ -48,6 +48,8 @@ from scripts.compute_synthetic_scores import (
     synthesis_requested,
 )
 from scripts.compute_trade_vulnerabilities import (
+    historical_requested,
+    historical_units,
     partner_classification,
     partner_registry,
     partner_requested,
@@ -93,6 +95,57 @@ def _partner_pass(tmp_path: Path, units, requested, force=ForceSpec(), now=T0) -
     record_computed_units(registry, plans, units, requested, now)
     registry.save()
     return plans
+
+
+def _concordance(target_of_854142: str = "854140"):
+    """Table de passage HS2022 -> HS2017 : 854141 et 854142 fusionnés dans 854140."""
+    import pandas as pd
+
+    return {
+        ("HS2022", "HS2017"): pd.DataFrame(
+            {"source_code": ["854141", "854142"], "target_code": ["854140", target_of_854142]}
+        )
+    }
+
+
+def test_historical_unit_waits_for_a_source_never_downloaded(tmp_path: Path) -> None:
+    conversions = {"HS2022": {"854141": "854140", "854142": "854140"}}
+    # 854142 jamais téléchargé pour FR : l'unité attend, aucune somme partielle
+    waiting = historical_units({("FR", "854141"): T0}, conversions, "HS2017")
+    assert waiting.watermarks == {} and len(waiting.waiting) == 1
+    # Source téléchargée ensuite : l'unité existe, avec le watermark le plus récent
+    later = T0 + timedelta(days=1)
+    ready = historical_units({("FR", "854141"): T0, ("FR", "854142"): later}, conversions, "HS2017")
+    (unit, watermark), = ready.watermarks.items()
+    assert unit.key == "HS2017|FR|854140" and watermark == later
+    requested = historical_requested(partner_requested(VulnerabilityConfig()), _concordance(), "HS2017", "drop")
+    assert {plan.reason for plan in _partner_pass(tmp_path, ready.watermarks, requested).values()} == {"first"}
+    # Nouveau téléchargement d'une seule source : recalcul « new_data »
+    newer = historical_units(
+        {("FR", "854141"): later + timedelta(days=1), ("FR", "854142"): later}, conversions, "HS2017"
+    )
+    replanned = _partner_pass(tmp_path, newer.watermarks, requested, now=T0 + timedelta(days=3))
+    assert {plan.reason for plan in replanned.values()} == {"new_data"}
+
+
+def test_modified_correspondence_table_recomputes_historical_units(tmp_path: Path) -> None:
+    units = historical_units(
+        {("FR", "854141"): T0, ("FR", "854142"): T0},
+        {"HS2022": {"854141": "854140", "854142": "854140"}},
+        "HS2017",
+    ).watermarks
+    base = partner_requested(VulnerabilityConfig())
+    requested = historical_requested(base, _concordance(), "HS2017", "drop")
+    _partner_pass(tmp_path, units, requested)
+    # Même table : rien à recalculer
+    assert _partner_pass(tmp_path, units, requested, now=T0 + timedelta(hours=1)) == {}
+    # Table UNSD corrigée : empreinte « concordance » changée, recalcul complet
+    corrected = historical_requested(base, _concordance("854149"), "HS2017", "drop")
+    plans = _partner_pass(tmp_path, units, corrected, now=T0 + timedelta(hours=2))
+    assert {plan.reason for plan in plans.values()} == {"fingerprint"}
+    assert all("concordance" in plan.names for plan in plans.values())
+    # Fragment rangé sous le millésime historique
+    assert (tmp_path / "state" / "HS2017" / "FR.json").exists()
 
 
 @pytest.fixture

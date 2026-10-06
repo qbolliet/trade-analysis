@@ -21,6 +21,19 @@
 # (SYNTHESIS.FLOWS), une ancre ne traversant pas les fichiers.
 FLOWS: &flows ["import", "export"]
 
+# Millésimes SH historiques : les flux SH6 des années postérieures à un millésime
+# sont convertis vers lui (tables de passage UNSD de BACI, cache
+# CLASSIFICATIONS.CONCORDANCE_PATH de config/baci.yaml) et les métriques y sont
+# recalculées (lignes in_force = false), pour lire un produit sur une longue série
+# dans une nomenclature fixe. Les lignes en vigueur (codes tels que déclarés) sont
+# toujours calculées. "all" → tous les millésimes de runtime.NOMENCLATURES.HS sauf
+# le plus récent (jamais historique) ; liste → sous-ensemble ; [] → aucun.
+VINTAGES: "all"
+# Codes SH6 Comext absents d'une table de passage : "drop" (écartés, sans effet sur
+# les autres codes), "keep" (non convertis), "raise" (échec de la passe). Entre dans
+# l'empreinte des lignes historiques
+VINTAGES_ON_UNMAPPED: "drop"
+
 VULNERABILITIES:
   # Un catalogue DuckLake n'a qu'un DATA_PATH : les quatre blocs (partenaires, réseau, synthèse,
   # cohérence) doivent donc pointer vers le même préfixe ; les schémas les distinguent.
@@ -30,6 +43,9 @@ VULNERABILITIES:
   DS-045409:
     BUCKET: "qbollietdgddi"
     RESULT_SCHEMA: "indicators"
+    # Étiquette is_provisional des lignes écrites : vrai quand le profil restreint le
+    # périmètre de produits (résultats de démonstration, distincts de la production)
+    IS_PROVISIONAL: false
     PATHS:
       DATA_PATH: "trade/datasets/vulnerabilities/"
       # Registre v1 (fichier unique, sans empreintes) : n'est plus écrit, seulement

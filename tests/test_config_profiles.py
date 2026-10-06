@@ -227,3 +227,35 @@ def test_flows_are_the_same_for_partners_network_and_synthesis(folder: Path) -> 
     assert "EU27_2020" in synthesis["FILTERS"]["WHERE"]
     network_join = synthesis["SOURCES"][1]["JOIN"]["ON"]
     assert 'n."flow" = p."flow"' in network_join
+
+
+@pytest.mark.parametrize(("folder", "vintages", "provisional"), [
+    (CONFIG, "all", False),
+    (DEMO, ["HS2017"], True),
+])
+def test_nomenclature_vintages_and_provisional_flag(folder: Path, vintages, provisional) -> None:
+    """Millésimes historiques, drapeau provisoire et registre fragmenté par classification."""
+    from kedro_pipeline.config import requested_vintages
+
+    vulnerabilities = _load(folder / "vulnerabilities.yaml")
+    runtime = _load(folder / "runtime.yaml")["runtime"]
+    assert vulnerabilities["VINTAGES"] == vintages
+    # Valeur valide au regard du référentiel
+    assert requested_vintages(vulnerabilities["VINTAGES"], runtime["NOMENCLATURES"]["HS"])
+    assert vulnerabilities["VINTAGES_ON_UNMAPPED"] in ("raise", "drop", "keep")
+    block = vulnerabilities["VULNERABILITIES"]["DS-045409"]
+    assert block["IS_PROVISIONAL"] is provisional
+    assert "{classification}" in block["STATE"]["PATH_TEMPLATE"]
+
+
+@pytest.mark.parametrize("folder", [CONFIG, DEMO])
+def test_synthesis_joins_network_on_the_vintage_of_each_row(folder: Path) -> None:
+    """Plus de millésime en dur : jointure sur hs_vintage, contexte par millésime."""
+    synthesis = _load(folder / "synthesis.yaml")["SYNTHESIS"]
+    assert synthesis["VINTAGES"] == "in_force"
+    assert synthesis["PARAMETERS"]["context_columns"][0] == "hs_vintage"
+    join = synthesis["SOURCES"][1]["JOIN"]
+    assert 'n."classification" = p."hs_vintage"' in join["ON"]
+    assert "WHERE" not in join
+    for name in ("synthesis.yaml", "serving.yaml", "vulnerabilities.yaml"):
+        assert "HS2022" not in (folder / name).read_text(encoding="utf-8"), name

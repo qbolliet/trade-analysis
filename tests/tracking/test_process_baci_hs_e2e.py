@@ -108,7 +108,7 @@ def baci_world(ducklake_conn, synthetic_world, synthetic_reference, synthetic_se
     monkeypatch.setattr(script, "UNSDClient", lambda **kwargs: _Client())
     monkeypatch.setattr(script, "fetch_dimension_codelists", lambda *a, **k: pd.DataFrame({"code": PRODUCTS}))
     monkeypatch.setattr(script, "plan_queries", lambda *a, **k: queries)
-    monkeypatch.setattr(script, "_ensure_concordances", lambda *a, **k: {})
+    monkeypatch.setattr(script, "prepare_concordances", lambda *a, **k: {})
     monkeypatch.setattr(script, "publish_hs_reference", lambda *a, **k: {"rows": {}, "failures": {}})
     monkeypatch.setattr(script, "build_connector", lambda *a, **k: _FakeConnector(conn, alias))
     monkeypatch.setattr(script, "pg_credentials_from_env", lambda: None)

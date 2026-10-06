@@ -23,6 +23,13 @@ SYNTHESIS:
   # sens, "flow" doit figurer dans PARAMETERS.context_columns : import et export ne
   # sont jamais comparés entre eux (échec au chargement sinon).
   FLOWS: ["import", "export"]
+  # Nomenclatures synthétisées : "in_force" (lignes partenaires de la nomenclature
+  # en vigueur, codes tels que déclarés ; génère le prédicat p."in_force" = true
+  # ajouté à FILTERS.WHERE) ou "all" (aussi les lignes historiques, flux des années
+  # postérieures convertis vers un millésime SH antérieur). Les deux familles ne sont
+  # jamais comparées : "hs_vintage" figure dans PARAMETERS.context_columns (exigé
+  # avec "all", échec au chargement sinon).
+  VINTAGES: "in_force"
   # Bucket S3 où sont stockées les données de la table de faits « synthesis »
   BUCKET: "qbollietdgddi"
   # Schéma résultat des scores dans le catalogue « vulnerabilities »
@@ -57,24 +64,31 @@ SYNTHESIS:
       ALIAS: "n"                                 # alias de la source jointe
       COLUMNS: ["WORLD_HHI", "CENTRALITY_RISK", "CLUSTERING_W"]  # métriques réseau retenues
       JOIN:
-        # Conditions de correspondance grille -> réseau (CN8 -> HS6, période -> année).
+        # Conditions de correspondance grille -> réseau (code SH6 -> code SH6 du
+        # même millésime, période -> année). product_code (macro de session générée
+        # depuis runtime.NOMENCLATURES.HS) restitue le zéro initial des codes stockés
+        # en entiers ; seuls les codes d'au moins six chiffres (SH6, NC8) ont un
+        # code réseau.
         "ON":
-          # CAST + lpad : `product` peut être stocké en entier (zéro initial perdu pour les chapitres 01-09)
-          - 'substr(lpad(CAST(p."product" AS VARCHAR), 8, ''0''), 1, 6) = lpad(CAST(n."product" AS VARCHAR), 6, ''0'')'
+          - 'length(product_code(p."product")) >= 6'
+          - 'substr(product_code(p."product"), 1, 6) = lpad(CAST(n."product" AS VARCHAR), 6, ''0'')'
           - 'CAST(substr(CAST(p."TIME_PERIOD" AS VARCHAR), 1, 4) AS INTEGER) = n."year"'
+          # Millésime de la ligne partenaire : celui en vigueur à sa période pour une
+          # ligne en vigueur, le millésime cible pour une ligne historique. Chaque
+          # ligne est jointe au BACI de son propre millésime (une ligne 2019 en
+          # vigueur au BACI HS2017, jamais à un millésime postérieur)
+          - 'n."classification" = p."hs_vintage"'
           # Même sens : une ligne export reçoit les métriques du graphe transposé
           # (concentration de la demande mondiale), une ligne import celles de l'offre
           - 'n."flow" = p."flow"'
-        # Filtre sur la source jointe, placé dans le ON (jointure gauche) :
-        # un seul millésime de nomenclature réseau
-        WHERE: 'n."classification" = ''HS2022'''
 
   # Contextes retenus : prédicat SQL évalué sur la grille p.
   FILTERS:
     # Indicateur en valeur, fréquence annuelle (modalités à vérifier contre les
     # données réelles de DS-045409) ; le reporter agrégé EU27_2020 est exclu de la
     # synthèse (ses flux sont extra-UE par construction, CDI2 y vaut 1), pas des
-    # métriques. Le prédicat sur le flux est généré depuis FLOWS.
+    # métriques. Les prédicats sur le flux et sur in_force sont générés depuis FLOWS
+    # et VINTAGES.
     WHERE: 'p."indicators" = ''VALUE_IN_EUROS'' AND p."freq" = ''A'' AND p."reporter" <> ''EU27_2020'''
     # Nombre de dernières périodes conservées (sous-requête sur les TIME_PERIOD
     # distincts) ; null => toutes les périodes
@@ -95,8 +109,11 @@ SYNTHESIS:
   # SynthesisConfig surcharge le défaut correspondant (listes YAML -> tuples) ;
   # les clés inconnues sont ignorées avec un avertissement.
   PARAMETERS:
-    # Clés définissant un univers de comparaison ; deux contextes ne sont jamais comparés
-    context_columns: ["freq", "flow", "indicators", "TIME_PERIOD"]
+    # Clés définissant un univers de comparaison ; deux contextes ne sont jamais comparés.
+    # hs_vintage sépare les lignes en vigueur des lignes historiques d'une même
+    # période (et deux millésimes historiques entre eux) ; les codes NC8 et SH d'une
+    # même année en vigueur restent comparés ensemble (même hs_vintage)
+    context_columns: ["hs_vintage", "freq", "flow", "indicators", "TIME_PERIOD"]
     # Colonne du pays déclarant (cellule)
     reporter_col: "reporter"
     # Colonne du produit (cellule)

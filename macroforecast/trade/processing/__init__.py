@@ -42,6 +42,8 @@ from .classification import (
     HsHarmonizer,
     HsHarmonizationReport,
     build_conversion_map,
+    conversion_preimage,
+    harmonize_partner_flows,
     resolve_vintage,
 )
 # Orchestration
@@ -84,6 +86,8 @@ __all__ = [
     "HsHarmonizer",
     "HsHarmonizationReport",
     "build_conversion_map",
+    "conversion_preimage",
+    "harmonize_partner_flows",
     "resolve_vintage",
     # Orchestration
     "BaciReport",
