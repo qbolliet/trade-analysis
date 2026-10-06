@@ -88,7 +88,12 @@ def baci_world(ducklake_conn, synthetic_world, synthetic_reference, synthetic_se
     baci = yaml.safe_load((demo / "baci.yaml").read_text(encoding="utf-8"))
     baci["BUCKET"] = None
     baci["PATHS"]["LAST_PROCESSING_PATH"] = str(tmp_path / "last_processing.json")
+    # Registre de fraîcheur v2 dans le dossier temporaire : sinon un run réussi laisse
+    # un fragment dans le dépôt et le test suivant trouve le millésime à jour
+    baci["STATE"]["PATH_TEMPLATE"] = (tmp_path / "state" / "{vintage}.json").as_posix()
     baci["PARAMETERS"] = {"SCHEMA": {"distance_column": "distw"}, "min_mirror_flows": 5, "fas_countries": ["CAN"]}
+    # Fichiers de travail des passes dans le dossier temporaire (bucket nul : chemins locaux)
+    baci["PASSES"]["WORK_PATH"] = (tmp_path / "work").as_posix()
     paths = {}
     for name, content in (("comtrade", comtrade), ("baci", baci)):
         paths[name] = tmp_path / f"{name}.yaml"
@@ -128,7 +133,7 @@ def _runs(uri: str):
     return client, runs
 
 
-def test_main_publishes_the_baci_run_report(baci_world, monkeypatch, mlflow_uri) -> None:
+def test_main_publishes_the_baci_run_report(baci_world, monkeypatch, mlflow_uri, tmp_path) -> None:
     script, conn, alias = baci_world
     monkeypatch.setenv("MLFLOW_TRACKING_URI", mlflow_uri)
     monkeypatch.setenv("WORKFLOW_ID", "trade-pipeline-weekly-7k2qd")
@@ -140,13 +145,13 @@ def test_main_publishes_the_baci_run_report(baci_world, monkeypatch, mlflow_uri)
 
     # Le run fictif est trop court pour qu'un échantillon système soit journalisé : le
     # redressement est ralenti de quelques intervalles d'échantillonnage
-    real_run_baci = script.run_baci
+    real_run_baci_passes = script.run_baci_passes
 
-    def slow_run_baci(*args, **kwargs):
+    def slow_run_baci_passes(*args, **kwargs):
         time.sleep(2.5)
-        return real_run_baci(*args, **kwargs)
+        return real_run_baci_passes(*args, **kwargs)
 
-    monkeypatch.setattr(script, "run_baci", slow_run_baci)
+    monkeypatch.setattr(script, "run_baci_passes", slow_run_baci_passes)
     script.main()
 
     client, runs = _runs(mlflow_uri)
@@ -171,6 +176,12 @@ def test_main_publishes_the_baci_run_report(baci_world, monkeypatch, mlflow_uri)
     assert metrics["baci/flows"] > 0 and "baci/gravity/r_squared" in metrics and metrics["coverage/years_eligible"] == 3
     assert not any(name.startswith("baci.") for name in metrics)
     assert metrics["checks/n_failed"] == 0 and metrics["run/duration_seconds"] > 0
+    # Traitement par passes : durées par passe, lignes et pic mémoire par année ;
+    # fichiers de travail supprimés en fin de passe réussie (KEEP_WORK_FILES false)
+    assert {f"passes/{name}/seconds" for name in ("P0", "S1", "P1", "P2", "P3", "S2", "P4", "P5")} <= set(metrics)
+    assert "output/rows" in metrics and "memory/peak_mb" in metrics
+    assert [m.step for m in client.get_metric_history(run.info.run_id, "output/rows")] == [2019, 2020, 2021]
+    assert not any((tmp_path / "work").rglob("*.parquet"))
 
     # Artefacts : rapport HTML (une section par étape BACI), résumé, contrôles, tables
     files = {a.path for a in client.list_artifacts(run.info.run_id, "report")}
@@ -200,7 +211,7 @@ def test_a_failing_vintage_gets_its_failure_report_and_the_script_still_raises(
     def boom(*args, **kwargs):
         raise ValueError("gravité impossible")
 
-    monkeypatch.setattr(script, "run_baci", boom)
+    monkeypatch.setattr(script, "run_baci_passes", boom)
     with pytest.raises(RuntimeError, match="1 millésime"):
         script.main()
 

@@ -675,6 +675,7 @@ class HsHarmonizer:
         unmapped: List[Tuple[str, str]] = []
         converted: List[str] = []
         relationships: Counter = Counter()
+        codes_by_label: Dict[str, frozenset] = {}
 
         # Parcours des millésimes
         for label in self.vintages_present_:
@@ -688,6 +689,7 @@ class HsHarmonizer:
             codes_present = (
                 codes[df_data[self.classification_col] == label].dropna().unique()
             )
+            codes_by_label[label] = frozenset(str(code) for code in codes_present)
             for code in codes_present:
                 target_code = conversion_map.get(code)
                 if target_code is None:
@@ -703,6 +705,7 @@ class HsHarmonizer:
             )
 
         # Mise à jour des attributs ajustés
+        self.codes_present_ = codes_by_label
         self.mapping_ = mapping
         self.unmapped_codes_ = tuple(sorted(unmapped))
         self.report_ = HsHarmonizationReport(
@@ -801,6 +804,7 @@ class HsHarmonizer:
         # Part de valeur non appariée, mesurée avant application de la politique
         value_columns = [col for col in self.value_cols if col in df_out.columns]
         share_value_unmapped = float("nan")
+        total = 0.0
         if value_columns:
             values = pd.to_numeric(df_out[value_columns[0]], errors="coerce")
             total = values.sum()
@@ -859,6 +863,13 @@ class HsHarmonizer:
         # Restitution de l'ordre des colonnes d'entrée
         df_out = df_out[[col for col in df_data.columns if col in df_out.columns]]
 
+        # Totaux additifs de l'appel (fusion exacte des rapports de plusieurs tranches)
+        self.n_retained_rows_ = int(n_retained_rows)
+        self.value_total_ = float(total) if value_columns else float("nan")
+        self.value_unmapped_ = (
+            float(values[~is_mapped].sum()) if value_columns else float("nan")
+        )
+
         # Mise à jour des champs volumétriques du rapport
         self.report_.n_input_rows = n_input_rows
         self.report_.n_output_rows = len(df_out)
@@ -886,6 +897,94 @@ class HsHarmonizer:
             The harmonised table, as :meth:`transform` returns it.
         """
         return self.fit(df_data).transform(df_data)
+
+
+# Fonction de fusion exacte des rapports d'harmonisation de plusieurs tranches
+def merge_harmonization_reports(harmonizers: Sequence["HsHarmonizer"]) -> HsHarmonizationReport:
+    """Combine the reports of harmonisers fitted and applied chunk by chunk.
+
+    The harmonisation itself is exact on any partition holding whole periods
+    (the aggregation key includes the period); its report is not additive,
+    since several of its fields count **distinct** codes. This function rebuilds
+    the report of the whole data: row counts and value totals are summed,
+    distinct codes are united across chunks, and the relationship distribution
+    is recounted on the union of the source codes present per vintage.
+
+    Args:
+        harmonizers: Harmonisers, each fitted then applied once on its chunk,
+            sharing the same concordance tables and target vintage.
+
+    Returns:
+        The report the harmonisation of the concatenated chunks would produce.
+
+    Raises:
+        ValueError: If ``harmonizers`` is empty or mixes target vintages.
+
+    Examples:
+        >>> table = pd.DataFrame({"source_code": ["010121"], "target_code": ["010121"]})
+        >>> chunks = [pd.DataFrame({"classificationCode": ["H6", "H5"], "cmdCode": ["010121", "010121"],
+        ...                         "period": [year, year], "primaryValue": [1.0, 2.0]})
+        ...           for year in ("2023", "2024")]
+        >>> fitted = []
+        >>> for df in chunks:
+        ...     harmonizer = HsHarmonizer({("HS2022", "HS2017"): table})
+        ...     _ = harmonizer.fit_transform(df)
+        ...     fitted.append(harmonizer)
+        >>> report = merge_harmonization_reports(fitted)
+        >>> report.n_input_rows, report.n_output_rows, report.n_codes_mapped
+        (4, 2, 1)
+    """
+    if not harmonizers:
+        raise ValueError("No harmoniser to merge.")
+    targets = {harmonizer.target_vintage_ for harmonizer in harmonizers}
+    if len(targets) > 1:
+        raise ValueError(f"Harmonisers converge to different vintages: {sorted(targets)}")
+    first = harmonizers[0]
+    target = first.target_vintage_
+
+    # Codes distincts : union sur les tranches
+    mapped = set().union(*(harmonizer.mapping_.keys() for harmonizer in harmonizers))
+    unmapped = set().union(*(harmonizer.unmapped_codes_ for harmonizer in harmonizers))
+    converted = sorted(
+        set().union(*(harmonizer.report_.vintages_converted for harmonizer in harmonizers)),
+        key=resolve_vintage,
+    )
+
+    # Relations recomptées sur l'union des codes sources présents par millésime
+    indexed = _index_concordances(first.concordances)
+    relationships: Counter = Counter()
+    for label in converted:
+        codes = set().union(
+            *(harmonizer.codes_present_.get(label, frozenset()) for harmonizer in harmonizers)
+        )
+        relationships += first._relationship_counts(
+            indexed,
+            source_year=resolve_vintage(label),
+            target_year=resolve_vintage(target),
+            codes_present=sorted(codes),
+        )
+
+    # Totaux additifs
+    n_input = sum(harmonizer.report_.n_input_rows for harmonizer in harmonizers)
+    n_output = sum(harmonizer.report_.n_output_rows for harmonizer in harmonizers)
+    n_retained = sum(harmonizer.n_retained_rows_ for harmonizer in harmonizers)
+    value_total = sum(harmonizer.value_total_ for harmonizer in harmonizers)
+    value_unmapped = sum(harmonizer.value_unmapped_ for harmonizer in harmonizers)
+    return HsHarmonizationReport(
+        n_input_rows=int(n_input),
+        n_output_rows=int(n_output),
+        target_vintage=target,
+        vintages_converted=tuple(converted),
+        n_codes_mapped=len(mapped),
+        n_codes_unmapped=len(unmapped),
+        share_value_unmapped=(
+            float(value_unmapped / value_total) if value_total else float("nan")
+        ),
+        share_rows_collapsed=(
+            1.0 - n_output / n_retained if n_retained else float("nan")
+        ),
+        relationship_distribution=dict(relationships),
+    )
 
 
 # ──────────────────────────────────────────────────────────────────────

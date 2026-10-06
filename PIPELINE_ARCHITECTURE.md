@@ -40,6 +40,7 @@
 | 2026-10-05 | **Métriques réseau orientées** : constat que `CENTRALITY_RISK`, `EXPORT_HHI`, `SPOF`, `SPOF_DECILE` dépendent de l'orientation du graphe (lecture côté offre) ; à l'export, **miroirs par transposition** (valeur égale à celle de l'import sur le graphe transposé, sans nouvelle classe) ; **cadre commun du sens** pour toutes les métriques : hyperparamètre d'instance `flow` (convention sklearn), rôles `counterpart_col` / `exposed_col` côté réseau, `own` / `other` côté partenaires, distinct de l'**échelle** portée par la classe (pays / monde) ; `network_indicators` gagne la colonne `flow` (clé primaire) ; `EXPORT_HHI` renommée `WORLD_HHI` ; jointure de synthèse sur `flow` | C-12, PD-09, PD-20, PS-04.3, PS-15, PS-29, PR-11, PQ-06, K-06 |
 | 2026-10-05 (implémentation) | **Import / export implémentés** (partenaires, réseau, synthèse, service, Superset). Écarts à la spécification : pas de bloc `FLOW_CODES` (codes portés par les champs `import_flow` / `export_flow` des deux configurations, `NetworkVulnerabilityConfig` gagnant aussi `flow_col`) ; empreintes **modifiées à l'import** (clé `"<métrique>/<flux>"`, `flow` dans les paramètres) → **un recalcul complet des partenaires** au premier run, valeurs import identiques ; seuls les sens nommés par les plans de fraîcheur sont recalculés (union des unités planifiées) ; diagnostics, artefacts et métriques MLflow **par sens** (`partners/<flux>/…`, `network/<flux>/…`, artefacts `vulnerabilities/<flux>/…`) ; contrôle de l'agrégat extra-UE étendu à l'export ; `FORCE_METRICS=HHI` et `invalidate-freshness-script --metrics HHI` couvrent les deux sens (`HHI/export` pour un seul) ; migration du réseau en §12 | C-12, PD-09, PS-04.3, PS-10.2, PS-15, PS-29.2, §12 |
 | 2026-10-06 (K-06b) | **Millésimes de nomenclature implémentés** : `indicators` clé `(classification, freq, reporter, product, flow, indicators, TIME_PERIOD)`, colonnes `hs_vintage`, `in_force`, `is_provisional`, partition `classification` ; lignes historiques par conversion des flux SH6 Comext (`harmonize_partner_flows`, fondée sur `HsHarmonizer`, règle 1 → n = affectation intégrale au code désigné par la table UNSD) ; `prepare_concordances` extrait dans `kedro_pipeline/steps/baci.py` (cache partagé) ; unité historique `(V, reporter, code SH6)` avec préimage multi-millésimes, attente des sources jamais téléchargées, empreinte `concordance` ; synthèse : `VINTAGES`, contexte **`hs_vintage`** (écart assumé : NC8 et SH comparés ensemble), jointure réseau sur `p."hs_vintage"` et `product_code` (correction d'un bug SH6) ; service : colonnes réelles, repli dérivé par `DESCRIBE` ; `network_indicators.in_force` ; migration `tools/migrate_indicators_key.py` (§12). Volumétrie mesurée : ×3,63 en SH6, ×1,86 sur la table | C-11, C-25, PD-20, PS-04.3, PS-10.1, PS-28, PS-29.3, §12 |
+| 2026-10-06 (K-07) | **BACI par passes implémenté** : `macroforecast/trade/processing/streaming.py` (accumulateurs), `partial_fit`/`finalize` des trois estimateurs groupés, `run_baci_passes` + `BaciPassIO` / `InMemoryPassIO`, `kedro_pipeline/steps/baci.py` (`DuckDBPassIO`, `DuckLakeYearWriter`, porte de complétude, blocs de chapitres), script `process_baci_hs.py` sans lecture intégrale de Comtrade, `BACI_TARGETS`, bloc `PASSES` de `baci.yaml`. Écarts à la spécification : forme factorisée QR (et non `A = Σ w x xᵀ`) pour la gravité, imposée par la précision ; référence des indicatrices d'année = première année de l'échantillon ; quantiles des taux de fret calculés en SQL (passe S2) ; protocole d'E/S regroupant les rappels `chunks_factory` / `median_uv` / `writer` ; orchestration par millésime restée dans le script. Écarts numériques mesurés (PR-05b) ≤ 10⁻¹² | PS-14.2 à PS-14.5, PS-14.7, PR-05b, PQ-21, §12 |
 
 ## Sommaire
 
@@ -2319,80 +2320,147 @@ table.
 
 #### PS-14.2 Analyse : quelles estimations mettent en commun plusieurs années
 
-Lecture de `macroforecast/trade/processing/baci.py` (état au 2026-09-18), de la note
-LaTeX et de Gaulier & Zignago (2010) :
+Lecture de `macroforecast/trade/processing/baci.py` (état au 2026-09-18, confirmée à
+l'implémentation K-07 le 2026-10-06), de la note LaTeX et de Gaulier & Zignago (2010) :
 
 | Étape (`run_baci`) | Objet estimé | Portée dans le code | Portée dans la méthodologie | Décomposable par tranche ? |
 |---|---|---|---|---|
-| Régime de valorisation (`infer_import_valuation_regime`) | part CIF par importateur (× année) | `country_year` : annuel ; `country` : toutes années | idem (choix de configuration) | oui : sommes de `cifvalue` et `fobvalue` par (importateur[, année]) |
-| Conversion en tonnes (`TonnageConverter.fit`) | moyenne et écart-type des ratios par (produit, unité), filtres `n ≥ 10`, `σ < 2,5` | **toutes années** du millésime | « pour chaque produit », sans dimension temporelle | oui : `n`, `Σr`, `Σr²` par (produit, unité) |
-| Médiane mondiale `UV^k` (`world_median_unit_values`) | médiane des valeurs unitaires (deux côtés empilés) par produit | **toutes années** | `UV^k` sans indice temporel (éq. 1 du papier) | non additive, mais calculable **en SQL** hors mémoire pandas (`median() GROUP BY product` sur les Parquet de travail) |
-| Gravité (`CifGravityModel.fit`) | WLS `ln(UVm/UVx)` sur distance, contiguïté, enclavement, `ln UV^k`, **indicatrices d'année** ; retrait des observations influentes (Cook) puis second ajustement | **toutes années** (pooled) | « OLS on pooled data over the period » avec `time dummies` (papier §2.3.2) | oui : `X'WX`, `X'Wy`, `y'Wy`, `N` ; Cook en seconde passe |
-| Fobisation (`Fobizer.transform`) | par flux (règles FAS, plancher) | par flux | par flux | oui (ligne à ligne) |
-| Qualité (`ReportingQualityModel.fit`, `AbsorbingLS`) | ANOVA pondérée `RD ~ exportateur + importateur + année`, produit absorbé (within), erreurs-types **robustes** (défaut `cov_type="robust"` de `linearmodels`) | **toutes années** | éq. 5 du papier, `λ_t` effets d'année : pooled | oui : produits croisés globaux + sommes par produit ; « viande » robuste en seconde passe |
+| Régime de valorisation (`infer_import_valuation_regime`) | part CIF par importateur (× année) | `country_year` : annuel ; `country` : toutes années | idem (choix de configuration) | oui : `Σ cifvalue`, `Σ fobvalue`, `n` par (importateur, année), sur **toutes** les déclarations (avant le filtre temporel, comme le monobloc) ; la granularité est appliquée à la fin |
+| Conversion en tonnes (`TonnageConverter`) | moyenne et écart-type **d'échantillon** (`ddof = 1`) des ratios par (produit, unité), filtres `n ≥ 10`, `σ < 2,5` | **toutes années** du millésime | « pour chaque produit », sans dimension temporelle | oui : `(n, moyenne, M2)` par (produit, unité), fusionnés par la formule de Chan (Σr et Σr² bruts en seraient dérivables mais perdent en précision quand moyenne ≫ écart-type et pourraient faire basculer le filtre `σ < 2,5`) |
+| Médiane mondiale `UV^k` (`world_median_unit_values`) | médiane des valeurs unitaires **sur les quantités converties** (deux côtés empilés, filtre strict `v > 0` et `q_t > 0`) par produit | **toutes années** | `UV^k` sans indice temporel (éq. 1 du papier) | non additive, calculée **en SQL** (S1) sur les Parquet de travail ; exacte par plage de produits, donc exécutée chapitre par chapitre (mémoire DuckDB bornée) |
+| Gravité (`CifGravityModel`) | WLS `ln(UVm/UVx)` sur distance, contiguïté, enclavement, `ln UV^k`, **indicatrices d'année** ; retrait des observations influentes (Cook) puis second ajustement | **toutes années** (pooled) | « OLS on pooled data over the period » avec `time dummies` (papier §2.3.2) | oui : facteur `R` de `[√w X ∣ √w y]` (`RᵀR = [[A, b], [bᵀ, c]]`, PS-14.4) ; Cook en seconde passe |
+| Fobisation (`Fobizer.transform`) | par flux (règles FAS, plancher) | par flux | par flux | oui (ligne à ligne) ; le repli sur le régime modal du pays utilise la table de régimes globale (connue après P0) |
+| Qualité (`ReportingQualityModel`) | ANOVA pondérée `RD ~ exportateur + importateur + année`, produit absorbé (within), erreurs-types **robustes** (défaut `cov_type="robust"` de `linearmodels`) | **toutes années** | éq. 5 du papier, `λ_t` effets d'année : pooled | oui : produits croisés globaux + sommes par produit ; « viande » robuste en seconde passe |
 | Réconciliation (`MirrorReconciler`) | par flux, à `σ̂` donnés | par flux | par flux | oui |
-| NES (`AreaNesReallocator`) | par (exportateur, produit, année) | par groupe | par groupe (appendice du papier) | oui, par tranche annuelle |
-| Harmonisation HS (`HsHarmonizer`) | correspondance code → code, agrégation des mesures | ligne à ligne puis agrégation par clé (année incluse) | — | oui, par tranche annuelle |
+| NES (`AreaNesReallocator`) | par (exportateur, produit, année) | par groupe | par groupe (appendice du papier) | oui, sur toute tranche contenant des groupes entiers (année, ou bloc de produits entiers) |
+| Harmonisation HS (`HsHarmonizer`) | correspondance code → code, agrégation des mesures | ligne à ligne puis agrégation par clé (année incluse) | — | oui, par tranche annuelle ; son **rapport** compte des codes distincts : fusion exacte par union des codes (`merge_harmonization_reports`) |
+| Rapport de gravité (`GravityReport`) | moyenne, **p10, médiane, p90** des taux de fret τ̂ de **tous** les flux | toutes années | — (diagnostic) | moyenne et part sans prédiction : additives ; quantiles : non additifs → τ̂ écrit en Parquet de travail en P3, quantiles exacts en SQL (S2, `quantile_cont`, même interpolation linéaire que pandas) |
 
 Conclusion : **quatre** estimations sont groupées sur toutes les années (tonnage,
 médiane `UV^k`, gravité, qualité). Aucune n'exige les lignes en mémoire : toutes se
 réduisent à des **statistiques suffisantes additives** sur des partitions arbitraires
 des observations (la médiane, non additive, est déléguée à DuckDB). Un traitement par
-tranches est donc **exact** ; PQ-10 est tranchée : pas de fenêtres glissantes.
+tranches est donc **exact** ; PQ-10 est tranchée : pas de fenêtres glissantes. Les
+autres rapports (`TonnageReport`, `FobisationReport`, `MirrorReport`, `NesReport`,
+totaux de `BaciReport`) se réduisent à des compteurs et sommes additifs, y compris les
+branches « rien à réallouer » / « rien de réalloué » de `NesReport` (drapeaux combinés
+par « ou »).
+
+Précisions issues de l'implémentation (K-07) :
+
+1. **Forme factorisée.** Sur le design de gravité (`ln dist` et `(ln dist)²` quasi
+   colinéaires, cond(√w X) ≈ 5·10³), les équations normales `A β = b` s'écartent de
+   1,3·10⁻⁷ relatif de la solution SVD de statsmodels, et deux découpages différents
+   (monobloc / tranches) diffèrent eux-mêmes de 1,3·10⁻⁷. La QR incrémentale (TSQR)
+   reste à 4·10⁻¹² : on accumule `R`, `A`, `b`, `c` restant exposés en propriétés.
+   Pour l'ANOVA (indicatrices), la forme normale avec démoyennage par soustraction
+   reste à 10⁻¹⁰ de `AbsorbingLS` : la forme de la spécification est conservée.
+2. **Indicatrices d'année de la gravité.** La référence est la première année
+   **présente dans l'échantillon d'estimation** (flux complets à quantités > 0), avant
+   le retrait des lignes non finies (`get_dummies` précède `dropna`), et non la
+   première année de `scope[V]` ; une année dont toutes les lignes tombent au retrait
+   garde une colonne nulle, de coefficient 0 (solution de norme minimale). Toutes les
+   années de l'univers sont accumulées ; la sélection se fait à la résolution, de façon
+   exacte (re-triangularisation de `R[:, colonnes]`).
+3. **Indicatrices de l'ANOVA.** Référence = première modalité, en ordre lexicographique
+   de chaîne, présente dans l'échantillon **de la cible** (valeur et quantité ont des
+   échantillons différents : deux accumulateurs). Univers fixés à la construction (pays
+   = pays CEPII, années = périmètre), modalités absentes retirées à la résolution.
 
 #### PS-14.3 Passes
 
-Pour un millésime `V` et son périmètre `scope[V]`, `run_baci_vintage` enchaîne :
+Pour un millésime `V` et son périmètre `scope[V]`, `run_baci_passes` enchaîne
+(`ChunkKey(année, bloc)` désigne une tranche) :
 
 | Passe | Lecture | Travail par tranche | Accumulé | Résolution après la passe |
 |---|---|---|---|---|
-| **P0 préparation** | Comtrade, `WHERE year = y` (projection `required_columns` + classification) | harmonisation vers `V` ; `build_mirror_flows` ; écriture du Parquet de travail `WORK_PATH/<V>/mirror/year=<y>.parquet` (colonnes : clés, `v_x`, `v_m`, `q_x`, `q_m`, unités, `netwgt`, `cif/fob` par côté) ; flux NES écrits à part | régime : `Σ cif`, `Σ fob`, `n` par (importateur[, année]) ; tonnage : `n`, `Σr`, `Σr²` par (produit, unité source) | `df_regime` ; taux de conversion validés (`n ≥ min_mirror_flows`, `σ < max_conversion_std`, même estimateur d'écart-type que le code actuel) |
-| **S1 médianes** | Parquet de travail, **en SQL** | — | — | `UV^k` = `median(uv)` par produit sur l'empilement des deux côtés, quantités converties par jointure avec la table des taux (petite) ; DuckDB calcule la médiane exacte hors mémoire pandas |
-| **P1 gravité, 1er ajustement** | Parquet `year=y`, colonnes de l'échantillon | conversion en tonnes ; échantillon = flux miroirs complets à quantités > 0 ; design `x` (7 régresseurs + indicatrices d'année, colonnes fixées d'avance par `scope[V]`) ; `y = ln(UVm/UVx)` ; `w = min(Q)/max(Q)` ; lignes non finies retirées | `A = Σ w x xᵀ` (p×p), `b = Σ w x y`, `c = Σ w y²`, `N` | `β₁ = A⁻¹ b` ; `RSS₁ = c − βᵀ b` ; `s² = RSS₁/(N − p)` ; `A⁻¹` conservé |
-| **P2 gravité, Cook** | idem | par observation : résidu blanchi `ẽ = √w (y − xβ₁)`, levier `h = w xᵀ A⁻¹ x`, `D = ẽ² h / (p s² (1−h)²)` ; conservation si `D < cook_factor / N` | `A`, `b`, `c`, `N` sur les observations **conservées** ; `n_cook_dropped` | `β₂` = ajustement final ; `r²`, coefficients → `GravityReport` |
-| **P3 fobisation + qualité, 1er ajustement** | Parquet `year=y` | conversion en tonnes ; `τ̂ = exp(xβ₂) − 1` ; `Fobizer.transform` (règles FAS, plancher) ; pour `target ∈ {value, quantity}` : `RD = |ln(V_i/V_j)|`, poids `w = ln(v_x + v_m_fob)`, design `z` = indicatrices exportateur, importateur, année (référence retirée) ; groupe absorbé = produit | par cible : `G = Σ w z zᵀ`, `g = Σ w z RD`, `q = Σ w RD²`, `N` ; par produit `k` : `W_k = Σ w`, `s_k = Σ w z` (vecteur), `t_k = Σ w RD` | `G̃ = G − Σ_k s_k s_kᵀ / W_k`, `g̃ = g − Σ_k s_k t_k / W_k` ; `β_q = G̃⁻¹ g̃` ; moyennes de groupe `m_k = s_k / W_k`, `μ_k = t_k / W_k` conservées |
-| **P4 qualité, covariance robuste** | idem | recalcul des mêmes `z`, `RD`, `w` ; démoyennage `z̃ = z − m_k`, `R̃D = RD − μ_k` ; résidu `e = R̃D − z̃ β_q` | « viande » `M = Σ (w e)² z̃ z̃ᵀ` (ou la forme exacte de `linearmodels` pour `cov_type="robust"` avec poids : à reproduire à l'identique, test à l'appui) | `Cov = G̃⁻¹ M G̃⁻¹` ; effets recentrés somme-nulle et erreurs-types de contraste (`_absorbed_anova_effects`) ; `σ̂` (éq. 12-13), plancher (`_sigma_floor`) |
-| **P5 réconciliation + écriture** | Parquet `year=y` (+ NES de l'année) | conversion, fobisation (recalculées, déterministes), `MirrorReconciler.transform` avec `σ̂`, `AreaNesReallocator.transform`, nettoyage | compteurs des rapports (`MirrorReport`, `NesReport`, `FobisationReport`, sommes de `BaciReport`) | par année : transaction DuckLake `DELETE WHERE year = y` puis insertion (colonne `fit_id`) ; entrée de registre `years_written` mise à jour ; métriques MLflow avec `step = y` |
+| **P0 préparation** | Comtrade, `WHERE year = ?` [+ `chapitre ∈ bloc`] (projection `required_columns`, paramètres liés) ; harmonisation vers `V` par tranche | sommes de régime ; `build_mirror_flows` ; ratios de conversion ; écriture `mirror/` et `nes/` | `Σ cif`, `Σ fob`, `n` par (importateur, année) ; `(n, moyenne, M2)` par (produit, unité) ; compteurs miroirs ; `n_input` | état P0 écrit (`p0/`, marqueur `done` en dernier) ; taux validés ; `df_regime` |
+| **S1 médianes** | `mirror/` en SQL, chapitre par chapitre | — | — | `UV^k` (`world_median_unit_values_sql` : quantités converties par jointure avec la table des taux, `median()`) |
+| **P1 gravité, 1er ajustement** | `mirror/` (conversion en tonnes recalculée) | échantillon complet ; design `[1, 6 régresseurs, indicatrices de toutes les années]` par sous-blocs d'un million de lignes | facteur `R`, effectifs par année avant retrait, SCT pondérée de `y` | `β₁`, `R⁺`, `MSE₁ = RSS₁ / (N₁ − rang)` |
+| **P2 gravité, Cook** | idem | `D_i` (PS-14.4) ; conservation si `D_i < cook_factor / N₁` | `R` des observations conservées ; observations vues | `β₂` si `N₂ > k` et au moins un retrait, sinon `β₁` ; `GravityReport` (hors distribution des taux) |
+| **P3 fobisation + qualité, 1er ajustement** | idem | τ̂ = `exp(xβ) − 1` (écrit dans `freight/`) ; `Fobizer.transform` ; pour `target ∈ {value, quantity}` : `RD`, `w = ln(v_x + v_m_fob)` | par cible : `G`, `g`, `q`, `N`, par produit `W_k`, `s_k`, `t_k` ; compteurs de tonnage, de fobisation, des taux de fret ; flux réconciliables | `β_q = G̃⁻¹ g̃` ; échec explicite « No reconciled flow produced » **avant toute écriture** si aucun flux n'a de déclaration positive |
+| **S2 quantiles** | `freight/` en SQL | — | — | p10, médiane, p90 de τ̂ (`quantile_cont`) |
+| **P4 qualité, covariance robuste** | idem | résidus `e = (RD − μ_k) − (z − m_k)ᵀβ_q` | `M = Σ (w e)² z̃ z̃ᵀ`, développée par produit | `Cov = G̃⁻¹ M G̃⁻¹` ; effets somme-nulle et contrastes ; `σ̂` (éq. 12-13), plancher |
+| **P5 réconciliation + écriture** | `mirror/` + `nes/` de la tranche | conversion, fobisation, `MirrorReconciler`, `AreaNesReallocator`, nettoyage | compteurs NES, flux, valeur totale | une transaction DuckLake par **année** (tous ses blocs) : `DELETE WHERE year = y` puis upsert (colonnes `fit_id`, `is_provisional`) ; `years_written` mis à jour ; `timing/seconds`, `output/rows`, `memory/peak_mb` avec `step = y` |
 
-Six passes sur les Parquet de travail au lieu d'une sur un DataFrame géant ; chaque
-passe est bornée en mémoire par **une tranche** et lit avec projection de colonnes
-(DuckDB, `read_parquet`). Les passes P1/P2 et P3/P4 sont les deux lectures qu'exigent
-respectivement la distance de Cook et la covariance robuste : c'est le prix exact de la
-fidélité à l'implémentation actuelle.
+Cinq lectures des Parquet de travail (P1 à P5) et deux requêtes SQL (S1, S2) au lieu
+d'une lecture monobloc ; chaque passe est bornée en mémoire par **une tranche**. Les
+paires P1/P2 et P3/P4 sont les deux lectures qu'exigent respectivement la distance de
+Cook et la covariance robuste : c'est le prix exact de la fidélité à l'implémentation.
+Sur le jeu fictif des tests (5 ans, 24 pays, 36 produits, ≈ 64 000 déclarations,
+≈ 30 000 flux réconciliés), les passes en mémoire durent ≈ 1,2 s contre ≈ 0,5 s en
+monobloc (P0 0,35 s ; S1 0,05 ; P1 0,07 ; P2 0,07 ; P3 0,18 ; S2 0,002 ; P4 0,18 ;
+P5 0,30) ; écarts au monobloc ≤ 10⁻¹² sur toutes les métriques. Avec `DuckDBPassIO`
+(Parquet de travail locaux, 10 ans, ≈ 128 000 déclarations) : 9,5 s (P0 3,3 ; S1 0,2 ;
+P1 0,8 ; P2 0,7 ; P3 1,4 ; S2 0,04 ; P4 1,3 ; P5 1,7), le coût fixe par tranche dominant
+sur un si petit jeu. **Mémoire** (pic `tracemalloc`) : monobloc 30 Mio pour 5 ans et
+90 Mio pour 15 ans (proportionnel au nombre d'années) ; passes 13 Mio puis 16 Mio
+(quasi constant, de l'ordre d'une tranche annuelle : 6 Mio pour le redressement monobloc
+d'une seule année) — test `test_memory_of_the_passes_is_bounded_by_one_chunk`.
 
-#### PS-14.4 Formes des estimateurs (rappel, pour les tests d'équivalence)
+#### PS-14.4 Formes des estimateurs (formules exactes, lues dans le code installé)
 
-- **WLS** : `β = (X'WX)⁻¹ X'Wy` ; tous les termes sont des sommes sur les observations,
-  donc invariants par partition des observations en tranches.
-- **Distance de Cook** sur le modèle blanchi (`OLSInfluence(sm.OLS(√w y, √w X))`,
-  comme dans `CifGravityModel.fit`) : `D_i = ẽ_i² h_ii / (p · MSE · (1 − h_ii)²)` avec
-  `MSE = RSS/(N − p)` ; elle ne dépend de l'échantillon complet que par `A⁻¹` et `MSE`,
-  connus après P1.
-- **Within à un facteur pondéré** : pour un groupe absorbé `k`, démoyenner par la
-  moyenne pondérée du groupe, puis WLS sur les variables démoyennées ; les produits
-  croisés démoyennés s'écrivent `Σ w z zᵀ − Σ_k s_k s_kᵀ / W_k` : additifs par tranche
-  tant que `s_k` et `W_k` sont accumulés sur **toutes** les tranches (un produit s'étend
-  sur toutes les années).
-- **Dimensions** : gravité `p ≈ 7 + |scope[V]| − 1` (≤ 40) ; qualité `p ≈ 2 × ~230
-  pays + |scope[V]|` (≤ 500) → `G` dense de 500², `s_k` : 5 000 × 500 flottants
-  (20 Mo). Négligeable.
-- **Tolérance** attendue entre monobloc et passes : `1e-8` relatif sur les
-  coefficients, ensemble identique d'observations retirées par Cook, `σ̂` à `1e-8`.
+- **WLS** (statsmodels 0.14.6, `WLS(...).fit()`, méthode `pinv`) : `β = (X'WX)⁺ X'Wy`
+  (seuil relatif des valeurs singulières 10⁻¹⁵), `rang` = rang numérique,
+  `df_resid = N − rang`, `MSE = RSS / df_resid`, `bse = √diag(MSE · (X'WX)⁺)`,
+  `R² = 1 − RSS / Σ w (y − ȳ_w)²` (constante détectée). Calculés à partir de `R`
+  (`√W X = Q R`, `(X'WX)⁺ = R⁺R⁺ᵀ`, `RSS = ‖z − R_xx β‖² + r_yy²`) ; tous les termes
+  sont des sommes sur les observations, invariants par partition.
+- **Distance de Cook** (`OLSInfluence(sm.OLS(√w y, √w X).fit()).cooks_distance[0]`,
+  comme le monobloc d'origine) : `D_i = ẽ_i² h_ii / (k · MSE · (1 − h_ii)²)` avec
+  `ẽ = √w (y − xβ₁)`, `h_ii = x̃ᵀ (X̃ᵀX̃)⁺ x̃ = ‖R⁺ᵀ x̃‖²`, **`k` = nombre de colonnes
+  du design** (constante et colonnes nulles comprises, `k_vars`) et
+  `MSE = RSS / (N − rang)`. Seuil `cook_factor / N₁` ; une distance `NaN`
+  (`h = 1`) n'est pas conservée. Second ajustement seulement si plus de `k`
+  observations restent et qu'au moins une est retirée.
+- **Within à un facteur pondéré** (`linearmodels 7.0`, `AbsorbingLS`) : poids
+  normalisés par leur moyenne (facteur qui se simplifie partout) ; démoyennage par les
+  moyennes de groupe **pondérées** (LSMR sur les indicatrices produit `√w D`
+  préconditionnées : colonnes orthonormales, convergence exacte en une itération) ;
+  `β = lstsq(√w Z̃, √w R̃D)`. En flux : `G̃ = G − Σ_k s_k s_kᵀ / W_k`,
+  `g̃ = g − Σ_k s_k t_k / W_k`, additifs tant que `s_k` et `W_k` couvrent toutes les
+  tranches. Une colonne entièrement absorbée est refusée, comme dans `linearmodels`.
+- **Covariance robuste** (`fit(cov_type="robust", debiased=False)`, `kappa = 0`) :
+  `Cov = (Z̃ᵀWZ̃)⁻¹ [Σ w_i² e_i² z̃_i z̃_iᵀ] (Z̃ᵀWZ̃)⁻¹`, symétrisée ; **aucune**
+  correction de degrés de liberté, les effets absorbés n'entrant que dans `df_model`
+  (non utilisé).
+- **Tonnage** : écart-type d'échantillon (`ddof = 1`, celui de pandas) ; écart-type
+  indéfini → rejet.
+- **Dimensions** : gravité `p = 7 + |scope[V]|` (≤ 40) ; qualité `p = 2 × |pays| +
+  |scope[V]|` (≤ 500) → `G` dense de 500², `s_k` : 5 000 × 500 flottants (20 Mo) par
+  cible ; la « viande » est développée par produit, sans matrice dense par observation.
+- **Écarts mesurés** (PR-05b) : passes contre monobloc ≤ 10⁻¹² ; nouvelle
+  implémentation contre l'ancienne (statsmodels + `AbsorbingLS`) ≤ 5·10⁻¹³ sur toutes
+  les métriques du rapport et ≤ 7·10⁻¹⁴ sur les flux réconciliés ; ensemble identique
+  d'observations retirées par Cook. Tolérance des tests : `1e-8` relatif.
 
 #### PS-14.5 Tranches, mémoire et garde-fous
 
 - Tranche par défaut = **une année**. Ordre de grandeur : 10 à 13 millions de flux
   miroirs pour une année récente, ~15 colonnes numériques → 1,5 à 2,5 Go en pandas.
   `machine_type: baci-large` (PS-20) le couvre avec marge.
-- Si une année dépasse `MAX_ROWS_PER_CHUNK`, elle est **découpée par blocs de chapitres
-  SH2** (`product BETWEEN … AND …`) : toutes les accumulations sont invariantes par
-  partition, et les groupes de la réallocation NES (exportateur × produit × année)
-  restent entiers. Aucun échec « OOM » silencieux : dépassement → découpage, puis
-  échec explicite si un bloc d'un seul chapitre dépasse encore.
-- Les Parquet de travail sont écrits sous `WORK_PATH/<V>/<fit_id>/…` et supprimés à la
-  fin d'une passe réussie (paramètre `KEEP_WORK_FILES: false`) ; en cas d'échec, ils
-  sont réutilisés par la reprise si `fit_id` est identique (même périmètre, même
-  watermark), sinon régénérés.
+- Si une année dépasse `PASSES.MAX_ROWS_PER_CHUNK` **déclarations Comtrade** (défaut
+  15 millions), elle est **découpée par blocs de chapitres SH2** : les chapitres liés
+  par une conversion de nomenclature (un code source d'un chapitre converti vers un
+  autre chapitre) forment des composantes connexes jamais séparées, regroupées dans
+  l'ordre des chapitres sous la limite. Aucun produit cible, donc aucun groupe NES
+  (exportateur × produit × année), n'est à cheval sur deux blocs, et toutes les
+  accumulations sont invariantes par partition. Aucun échec « OOM » silencieux :
+  dépassement → découpage, puis échec explicite si une composante dépasse encore.
+- Les Parquet de travail sont écrits par DuckDB (`COPY … TO … (FORMAT PARQUET)`) sous
+  `PASSES.WORK_PATH/<V>/<fit_id>/{mirror,nes,freight}/year=<y>/block=<b>.parquet`
+  (préfixe S3 du bucket BACI, ou dossier local sans bucket) et relus par
+  `read_parquet` avec projection. L'état de P0 (`p0/regime_sums`, `p0/tonnage_stats`,
+  `p0/summary`) est écrit en fin de P0, le marqueur `p0/done.parquet` en dernier.
+- Fin de passe réussie : suppression du préfixe `<fit_id>/` sauf
+  `PASSES.KEEP_WORK_FILES: true`. Passe interrompue : les fichiers restent ; la reprise
+  de même `fit_id` (même périmètre, même watermark, même empreinte) **saute P0** et
+  repart de S1, puis réécrit **toutes** les années (DELETE + insertion, idempotent) ;
+  un autre `fit_id` régénère tout dans un nouveau préfixe (l'ancien, orphelin, est à
+  supprimer par la maintenance ou à la main).
+- `BACI_TARGETS` (variable d'environnement) ou `--targets` (ligne de commande)
+  restreint le script à certains millésimes : préparation du fan-out Argo (un pod par
+  millésime).
 
 #### PS-14.6 Fraîcheur et cadence du millésime
 
@@ -2413,20 +2481,39 @@ métriques réseau dépendent de toutes les années).
 #### PS-14.7 Organisation du code (`macroforecast/`, sans I/O)
 
 - `macroforecast/trade/processing/streaming.py` : accumulateurs réutilisables,
-  convention sklearn `partial_fit(chunk) → self`, `finalize() → self` :
-  `WelfordGroupStats` (tonnage, régimes), `WeightedLeastSquaresAccumulator` (`A`, `b`,
-  `c`, `N` ; `solve()`), `CookFilter` (P2, à partir d'un ajustement P1),
-  `AbsorbedWLSAccumulator` (P3/P4 : globaux + par groupe, `solve()`, `robust_cov(...)`).
-- `baci.py` : `TonnageConverter`, `CifGravityModel`, `ReportingQualityModel` gagnent
-  chacun un chemin `partial_fit`/`finalize` en plus de `fit` (qui reste et devient un
-  simple `partial_fit(df) ; finalize()` : **une seule implémentation**, la version
-  monobloc n'est que le cas d'une tranche unique). `run_baci` (monobloc) est conservé
-  tel quel pour les tests et les petits jeux ; `run_baci_passes(chunks: Iterable[…],
-  …)` orchestre les passes sur un itérateur de tranches fourni par l'appelant (aucune
-  lecture de fichier dans `macroforecast/`).
-- `kedro_pipeline/steps/baci.py` : fournit l'itérateur de tranches (requêtes DuckDB sur
-  Comtrade puis sur les Parquet de travail), la médiane SQL (S1), l'écriture par année
-  et le registre.
+  convention sklearn `partial_fit(…) → self`, `finalize() → self` / `solve()` :
+  `WelfordGroupStats` (tonnage), `WeightedLeastSquaresAccumulator` (facteur `R` ;
+  `A`, `b`, `c` en propriétés ; `solve(colonnes)` → `WlsSolution`), `CookFilter`
+  (`distance`, `keep_mask`), `AbsorbedWLSAccumulator` (design à blocs indicateurs
+  jamais matérialisé, `partial_fit`, `solve(colonnes)`, `robust_meat`,
+  `covariance`).
+- `baci.py` : `TonnageConverter`, `CifGravityModel` (phases `"fit"` puis `"cook"`,
+  `predict` par tranche, `cook_keep_mask`, `result_` = `GravityFit`) et
+  `ReportingQualityModel` (phases `"fit"` puis `"cov"` par cible, `results_`)
+  gagnent `partial_fit`/`finalize` ; `fit` est devenu `partial_fit ; finalize` :
+  **une seule implémentation**. `_absorbed_anova_effects` part de β et Cov ;
+  `AbsorbingLS` et `OLSInfluence` ne servent plus que d'oracles dans les tests.
+  `infer_import_valuation_regime` = `_regime_from_sums(_regime_sums(…))` ; compteurs
+  additifs internes (`_MirrorTally`, `_TonnageTally`, `_FreightTally`,
+  `_FobisationTally`, `_NesTally`) partagés par les deux chemins ;
+  `world_median_unit_values_sql` produit le texte SQL de S1 (oracle :
+  `world_median_unit_values`). `run_baci` (monobloc) est inchangé dans son contrat ;
+  `run_baci_passes(io, df_dist, df_geo, *, config, …) → (BaciReport, rows_by_year)`
+  orchestre P0 → P5 sur un objet `BaciPassIO` fourni par l'appelant (tranches
+  Comtrade, écriture et relecture des données intermédiaires, S1, S2, écriture par
+  année, état P0) ; `InMemoryPassIO` en est l'implémentation en mémoire (tests).
+- `classification.py` : `merge_harmonization_reports` (rapport exact de
+  l'harmonisation de plusieurs tranches).
+- `kedro_pipeline/steps/baci.py` : `completeness_by_year`, `eligible_years`,
+  `classifications_by_year` (`SELECT DISTINCT`), `concordance_pairs`,
+  `chapter_links`, `chapter_blocks`, `read_comtrade_year`, `rows_by_chapter`,
+  `work_root`, `peak_memory_mb`, `DuckDBPassIO` (implémentation DuckDB de
+  `BaciPassIO`), `DuckLakeYearWriter` (une transaction par année,
+  `DatabaseDeleter.delete_rows` + `DatabaseUpdater.update_database` en
+  `use_transaction=False` dans un `BEGIN … COMMIT`, message de commit), ainsi que
+  `prepare_concordances` (cache UNSD, écrivain unique). L'orchestration par millésime
+  (registre v2, `fit_id`, rapport de run) reste dans `scripts/process_baci_hs.py`
+  jusqu'à la migration Kedro.
 
 ### PS-15 — Paramètre `FLOWS`
 
@@ -3779,7 +3866,7 @@ ni le cluster.
 | PR-03 | Limites de l'API Eurostat (longueur d'URL, taille de réponse, bascule asynchrone SDMX 3.0) avec des lots de produits | Moyenne / moyen | Mesure dans K-01 : lots de 1, 10, 50 codes sur un reporter ; valeur retenue documentée |
 | PR-04 | Quotas de la clé Comtrade premium (appels/jour, enregistrements par appel) | Moyenne / fort | Rate limiter `statflows`, métriques `rate_limit/*`, budget `MAX_RUNTIME` ; découper plus finement si `max_records` est atteint |
 | PR-05 | BACI : une tranche annuelle récente dépasse la mémoire du pod | Faible / moyen | Découpage par chapitres SH2 (PS-14.5), `MAX_ROWS_PER_CHUNK`, `memory/peak_mb` suivi ; `baci-large` relevable jusqu'à 200 Gi |
-| PR-05b | BACI : écart numérique entre l'implémentation par passes et l'ancienne (covariance robuste de `linearmodels`, distance de Cook) | Moyenne / moyen | Tests d'équivalence à `1e-8` (PS-14.4) ; reproduction de la formule exacte de `linearmodels` lue dans son code ; en cas d'écart irréductible documenté, invalidation des empreintes BACI (§5.3) |
+| PR-05b | BACI : écart numérique entre l'implémentation par passes et l'ancienne (covariance robuste de `linearmodels`, distance de Cook) | ~~Moyenne~~ **Résolu (K-07, 2026-10-06)** / moyen | Formules exactes de `statsmodels` et `linearmodels` reproduites (PS-14.4), forme factorisée QR pour la gravité (les équations normales s'écartaient de 1,3·10⁻⁷). **Écart observé** sur le jeu fictif des tests : passes contre monobloc ≤ 10⁻¹² ; nouvelle implémentation contre l'ancienne ≤ 5·10⁻¹³ (rapport) et ≤ 7·10⁻¹⁴ (flux réconciliés), ensemble identique d'observations retirées par Cook ; tests d'équivalence à `1e-8` (`tests/test_baci_passes.py`, `tests/test_baci_streaming.py`). Écart nul au sens de la tolérance : **aucune invalidation d'empreinte BACI nécessaire** |
 | PR-05c | BACI : six passes sur les Parquet de travail → durée d'une passe hebdomadaire de plusieurs heures par millésime | Élevée / faible | Cadence hebdomadaire (PD-23), fan-out par millésime, projection de colonnes, `KEEP_WORK_FILES` pour la reprise ; durée mesurée en K-17 |
 | PR-06 | Quota **total** du namespace insuffisant pour 7 pods BACI simultanés (7 × 32 Gi) | Moyenne / moyen | `parallelism` du template ; machine types de PS-20 ; PQ-16 |
 | PR-07 | Service PostgreSQL Onyxia non persistant ou supprimé → perte des catalogues DuckLake | Faible / critique | Sauvegarde hebdomadaire `pg_dump` vers S3 (PD-16) ; données Parquet conservées sur S3 ; procédure de restauration à documenter (K-17) |
@@ -3825,6 +3912,7 @@ ni le cluster.
 | PQ-18 | Quelle **statistique de cohérence** et quelle **méthode de synthèse** afficher par défaut dans le tableau de bord (« indicateur synthétique le plus pertinent ») ? | `PRIMARY_METHOD: borda` (consensus) et corrélation de Spearman ; changeable en configuration `serving` |
 | PQ-19 | Sur le MLflow 3 déployé : le rapport HTML Plotly s'affiche-t-il dans *Artifacts* ? Quelle longueur maximale pour la description (tag) ? Les métriques système s'activent-elles par variable d'environnement sur les runs de kedro-mlflow ? La vue multi-expériences existe-t-elle ? | Oui pour tout ; limite de tag 8 000 caractères ; replis de PS-31.6 sinon. Vérifié en K-03d sur MLflow 3.15 local : **oui, oui (7 500 caractères acceptés ; limite de MLflow 3 : 8 000) et oui** (variable d'environnement suffisante sur un run `mlflow.start_run`) ; vue multi-expériences non vérifiée ; constats détaillés en PS-31.6 ; à refaire sur le MLflow d'Onyxia |
 | PQ-20 | À partir de quel seuil les **données réelles sont-elles « complètes »** pour retirer le demo (K-17b) ? | Toutes les requêtes Comext planifiées présentes au registre ; Comtrade : `COMPLETENESS.MIN_SHARE` (1,0) atteint sur toutes les années de `ANALYSIS_START_YEAR.comtrade` à l'année complète la plus récente ; au moins une exécution `daily` et une `weekly` de production réussies (PR-01 : plusieurs jours à semaines). K-17b mesure ces critères et **s'arrête** s'ils ne sont pas remplis |
+| PQ-21 | Que faire des déclarations Comtrade d'un millésime **antérieur** à la cible (déclarant en retard d'une révision, ex. `H3` en 2015 pour la cible `HS2012`) ? UNSD ne publie que les 21 tables **descendantes** (vérifié le 2026-10-06 dans `statflows/parameters/unsd.json` : toutes présentes jusqu'à HS1992) ; une conversion ascendante n'est pas fonctionnelle et `HsHarmonizer` la refuse, ce qui fait échouer le millésime cible concerné (comportement antérieur à K-07, inchangé). | Sans objet pour HS1992 (toutes les conversions sont descendantes). Pour les cibles récentes : à décider sur données réelles (écarter ces lignes et mesurer la valeur perdue, ou affecter selon la table descendante inverse) ; rien n'est fait en attendant |
 
 ---
 
@@ -3966,7 +4054,7 @@ les autres depuis le poste local.
 | Migration des registres v1 → v2 sur S3 (`adopt_legacy_fingerprints`) | après K-05 | un run de chaque étape avec `ADOPT_LEGACY_FINGERPRINTS=true` (variable d'environnement ou `STATE.ADOPT_LEGACY_FINGERPRINTS` / bloc `SYNTHESIS` / `COHERENCE`), puis retour à `false` ; pas d'outil dédié (choix K-05) | S3 réel : sauvegarder les registres v1 avant ; synthèse et cohérence réécrivent leur fichier en place |
 | Recréation de la table `indicators` avec la nouvelle clé (`classification`) | après K-06b, avant tout run partenaires | entre deux exécutions de l'étape : 1. sauvegarde des registres `trade/state/vulnerabilities/partners/` (et `trade/demo/…`) ; 2. `tools/migrate_indicators_key.py --dry-run` (profil par `VULNERABILITIES_CONFIG_PATH`, `SYNTHESIS_CONFIG_PATH`, `EUROSTAT_CONFIG_PATH`, `RUNTIME_CONFIG_PATH`) ; 3. `tools/migrate_indicators_key.py --drop-dependent --network` (recrée `indicators` avec `classification`, `hs_vintage`, `in_force = true`, `is_provisional` du profil, partition `classification` ; contrôle nombre de lignes / clés uniques, sauvegarde conservée en cas d'écart ou avec `--keep-backup` ; supprime `synthesis` et `synthesis_diagnostics` ; renseigne `network_indicators.in_force`) ; démo puis base ; 4. run partenaires : lignes en vigueur inchangées (empreintes intactes), lignes historiques calculées (`first`), tables de passage lues dans le cache UNSD de BACI ; 5. synthèse et cohérence (recalcul complet automatique : empreinte modifiée) puis `serving-script` | catalogue et Parquet réels ; suppressions irréversibles |
 | **Migration import / export du réseau** (colonne `flow` dans la clé primaire de `network_indicators`, `EXPORT_HHI` renommée `WORLD_HHI`) | au déploiement de l'implémentation import / export (2026-10-05), avant tout run réseau | 1. suppression de la table `network_indicators` et de `demo_network_indicators` (session DuckDB attachée au catalogue `vulnerabilities`, `DROP TABLE` du `fact_table` de chaque schéma) ; 2. réinitialisation des registres de fraîcheur réseau (suppression des fragments `trade/state/vulnerabilities/network/` et `trade/demo/state/vulnerabilities/network/`) ; 3. recalcul réseau forcé (`FORCE_STEPS=network`) ; 4. synthèse, cohérence, puis publication de service (`serving-script`), afin que `cell_scores` porte `WORLD_HHI` et la jointure par flux. Le premier run partenaires recalcule de lui-même tout le périmètre (empreintes `"<métrique>/<flux>"`), sans action manuelle. **Rien n'a été supprimé par le prompt d'implémentation** | suppressions irréversibles sur le catalogue et S3 réels ; réexporter ensuite les objets Superset si leur ID de jeu de données change |
-| Première passe BACI par millésime sur données réelles ; relevé de `memory/peak_mb` et de la durée | après K-07 | `argo submit --entrypoint weekly` | seul moyen d'avoir les vraies volumétries |
+| Première passe BACI par millésime sur données réelles ; relevé de `memory/peak_mb` (par année), de `passes/<P>/seconds` et de `timing/seconds` | après K-07 | un millésime court d'abord : pod `baci-hs-script` avec `BACI_TARGETS=HS2022` (puis `HS2017`, …, `HS1992`), machine `baci-large` ; ou `argo submit --from workflowtemplate/trade-pipeline --entrypoint weekly -p force-steps=baci -p force-vintages=HS2022` ; vérifier ensuite qu'aucun Parquet ne reste sous `trade/work/baci/<V>/` | seul moyen d'avoir les vraies volumétries ; ajuster `PASSES.MAX_ROWS_PER_CHUNK` ou `baci-large` si `memory/peak_mb` approche la limite du pod |
 | Déploiement des manifestes générés, bascule, recette, runbooks | K-17 | K-17 🔌 | `kubectl apply`, `argo` |
 | **Retrait des données de démonstration et fictives** : bases `demo_*`, schémas `demo_*`, préfixes S3 `trade/demo/`, registres du profil, expériences MLflow `demo-*`, objets Superset du demo, workflow de transition ; contrôle de non-contamination de la production | K-17b (après K-17, données réelles complètes — PQ-20) | K-17b 🔌, confirmation objet par objet | suppressions **irréversibles** sur PostgreSQL, S3, MLflow, Superset |
 | Suppression du code et des fichiers de démonstration (dépôt) | K-18 (après K-17b) | K-18 (local) | — |

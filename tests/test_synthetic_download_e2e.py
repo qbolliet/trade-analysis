@@ -92,7 +92,7 @@ def test_seed_then_baci_gate_and_reconciliation(
     # Porte de complétude de BACI : toutes les années sont complètes
     view = DownloadRegistryView(registry_path, bucket=None, dataflow="C_A_HS")
     shares = completeness_by_year(queries, view.batches_by_year())
-    assert eligible_years(shares, 1.0) == [2019, 2020, 2021]
+    assert list(eligible_years(view, queries, 1.0)) == [2019, 2020, 2021]
 
     # Lecture SQL de BACI puis redressement
     config = replace(BaciConfig(), min_mirror_flows=5, fas_countries=("CAN",))
@@ -162,4 +162,4 @@ def test_buffered_sharded_download_is_read_by_the_view(
     # La vue lit les fragments ; la porte de complétude voit toutes les années complètes
     batches = DownloadRegistryView(registry_path, bucket=None, dataflow="C_A_HS").batches_by_year()
     assert sorted(batches) == [2019, 2020, 2021] and all(len(year_batches) == 2 for year_batches in batches.values())
-    assert eligible_years(completeness_by_year(queries, batches), 1.0) == [2019, 2020, 2021]
+    assert list(eligible_years(batches, queries, 1.0)) == [2019, 2020, 2021]

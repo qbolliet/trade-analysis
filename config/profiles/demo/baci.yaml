@@ -62,6 +62,27 @@ COMPLETENESS:
   # profil demo), le résultat est étiqueté provisoire (colonne is_provisional)
   FULL_PRODUCT_REGEX: '^\d{6}$'
 
+# Traitement par passes sur des tranches annuelles (mémoire bornée à une tranche).
+# La table de faits Comtrade n'est jamais lue en entier : chaque année est lue,
+# harmonisée et convertie en flux miroirs, écrits en Parquet de travail, puis
+# relue par les passes suivantes. Les estimations mises en commun sur toutes les
+# années du millésime sont exprimées par des statistiques suffisantes : le
+# résultat est identique au traitement monobloc, ces paramètres ne changent que
+# la mémoire et les fichiers intermédiaires (aucun n'entre dans l'empreinte).
+PASSES:
+  # Racine des fichiers de travail (relative au bucket ci-dessus, ou au dossier
+  # courant sans bucket) : <WORK_PATH>/<millésime>/<fit_id>/{mirror,nes,freight,p0}/
+  WORK_PATH: "trade/demo/work/baci"
+  # Nombre maximal de déclarations Comtrade lues par tranche : au-delà, l'année
+  # est découpée en blocs de chapitres SH entiers (jamais un produit ni une
+  # conversion à cheval sur deux blocs). Échec explicite si un groupe de
+  # chapitres indissociables dépasse encore la limite. null : années entières
+  MAX_ROWS_PER_CHUNK: 15000000
+  # Conservation des fichiers de travail après une passe réussie (diagnostic).
+  # Une passe interrompue les conserve toujours : sa reprise (même fit_id)
+  # réutilise la passe de préparation
+  KEEP_WORK_FILES: false
+
 # Suivi d'exécution MLflow. Dépendance optionnelle : installer l'extra
 # « tracking » (uv sync --extra tracking) pour l'activer.
 MLFLOW:

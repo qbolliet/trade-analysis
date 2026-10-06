@@ -234,21 +234,39 @@ def _timing_section(metrics: Mapping[str, float]) -> Optional[Section]:
     Args:
         metrics: Metrics of the run.
 
+    The BACI pass-by-pass reconstruction adds its duration per pass
+    (``passes/<name>/seconds``) and the peak memory of the process
+    (``memory/peak_mb``, also logged per year with ``step = year``).
+
     Returns:
-        A section with the ``run/*`` metrics, ``None`` when none is present.
+        A section with the ``run/*`` metrics (and the pass durations and memory
+        peak when present), ``None`` when none is present.
 
     Examples:
         >>> _timing_section({}) is None
         True
         >>> _timing_section({"run/duration_seconds": 12.0}).tables["Ressources du run"].shape
         (1, 2)
+        >>> section = _timing_section({"run/duration_seconds": 12.0, "passes/P0/seconds": 3.0})
+        >>> section.tables["Durée par passe (s)"].shape
+        (1, 2)
     """
     run = _under(metrics, "run")
-    if not run:
+    passes = {
+        name.split("/")[0]: value
+        for name, value in _under(metrics, "passes").items()
+        if name.endswith("/seconds")
+    }
+    memory = _under(metrics, "memory")
+    if not run and not passes and not memory:
         return None
     return _section(
         "Temps et ressources",
-        tables={"Ressources du run": _kv_table(run)},
+        [_bar("Durée par passe (s)", list(passes), list(passes.values())) if passes else None],
+        tables={
+            "Ressources du run": _kv_table({**run, **{f"memory/{k}": v for k, v in memory.items()}}),
+            "Durée par passe (s)": _kv_table(passes, "seconds") if passes else pd.DataFrame(),
+        },
         notes=["Courbes CPU, mémoire, disque et réseau : onglet System metrics du run."],
     )
 

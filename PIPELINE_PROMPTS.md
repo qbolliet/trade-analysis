@@ -1547,7 +1547,7 @@ CRITÈRES D'ACCEPTATION
 
 ---
 
-## K-08 — Évolution de schéma (0.3.1) et synthèse/cohérence incrémentales à cadence hebdomadaire
+## K-08 — Évolution de schéma (0.4.0) et synthèse/cohérence incrémentales à cadence hebdomadaire
 
 - **Modèle** : Opus · **Mode plan** : Oui · **Phase** : 2 · **Dépend de** : K-05, K-06, K-06b
 - **Dépôt** : `trade-analysis`
@@ -1565,7 +1565,7 @@ CONVENTIONS DE RÉDACTION DU CODE (à appliquer à tout le code écrit ou modifi
   l'information utile (règle, motivation, valeurs attendues) à l'endroit où elle sert.
 
 Dépôt `trade-analysis`. Lis `CLAUDE.md`, puis dans `PIPELINE_ARCHITECTURE.md` : C-13
-(résolu par `dt-ducklake-manager 0.3.1`), PD-10, PD-11, PD-12, PD-20 (point 7), PD-23,
+(résolu par `dt-ducklake-manager 0.4.0`), PD-10, PD-11, PD-12, PD-20 (point 7), PD-23,
 PS-10, PS-16, PS-17. Lis `AGREGATION_ARCHITECTURE.md` (sections sur le schéma
 `synthesis`, les clés primaires S-2.4/S-2.6 et le consensus), puis
 `macroforecast/trade/aggregation/{runner,synthesis,methods,coherence}.py`,
@@ -1578,7 +1578,7 @@ PS-10, PS-16, PS-17. Lis `AGREGATION_ARCHITECTURE.md` (sections sur le schéma
 
 OBJECTIF
 (1) Ajouter une métrique de vulnérabilité (nouvelle colonne) sans casser l'upsert, en
-    s'appuyant sur l'API native 0.3.1 (pas d'`ALTER TABLE` maison).
+    s'appuyant sur l'API native 0.4.0 (pas d'`ALTER TABLE` maison).
 (2) Rendre la synthèse et la cohérence incrémentales PAR CONTEXTE et PAR MÉTHODE, pour
     qu'ajouter/corriger une méthode ne recalcule que ce qui est nécessaire sur tout
     l'historique, SANS approximation en régime nominal : ces étapes tournent à cadence

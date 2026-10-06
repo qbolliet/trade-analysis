@@ -49,31 +49,47 @@ précède toute écriture et sert de point de reprise ; l'entrée terminée n'es
 reste faible, aucun état en mémoire n'étant partagé. L'ancien registre
 ``PATHS.LAST_PROCESSING_PATH`` n'est plus qu'une source de migration.
 
-Périmètre borné avant tout calcul (PS-14.1, en attendant le traitement par
-passes de K-07) :
+Périmètre et exécution :
 
 - **porte de complétude** : le registre de téléchargement Comtrade
   (``LAST_DOWNLOAD_PATH``) est confronté à la liste des requêtes PLANIFIÉES,
   reconstruite par la même fonction que le script de téléchargement
   (``scripts.download_comtrade.plan_queries``) ; seules les années dont la part
   de lots téléchargés au moins une fois atteint ``COMPLETENESS.MIN_SHARE`` sont
-  redressées ;
-- **lecture poussée en SQL** : seules ces années, bornées par le plus petit
-  ``START_YEAR`` des cibles et ``PARAMETERS.period_end``, sont lues ;
+  redressées (``kedro_pipeline.steps.baci.eligible_years``) ;
+- **traitement par passes à mémoire bornée** : la table de faits Comtrade n'est
+  jamais lue en entier. Chaque millésime est redressé par
+  ``macroforecast.trade.processing.run_baci_passes`` sur des tranches annuelles
+  (découpées en blocs de chapitres SH au-delà de ``PASSES.MAX_ROWS_PER_CHUNK``),
+  les flux miroirs intermédiaires étant écrits en Parquet de travail sous
+  ``PASSES.WORK_PATH/<millésime>/<fit_id>/`` (supprimés en fin de passe réussie
+  sauf ``PASSES.KEEP_WORK_FILES``, réutilisés par la reprise d'une passe
+  interrompue de même ``fit_id``). Les estimations mises en commun sur toutes les
+  années du millésime (taux de conversion, médianes des valeurs unitaires,
+  gravité et distance de Cook, ANOVA de qualité et covariance robuste) sont
+  exprimées par des statistiques suffisantes : le résultat est identique au
+  traitement monobloc ;
+- **écriture année par année** : chaque année est réécrite dans une transaction
+  DuckLake (suppression de ses lignes puis insertion, colonne ``fit_id``), puis
+  ajoutée aux ``years_written`` du registre (point de reprise) ;
+- **restriction à certains millésimes** : ``BACI_TARGETS`` (variable
+  d'environnement) ou ``--targets HS2017,HS1992`` (ligne de commande) ne traite
+  que les millésimes listés — un pod par millésime en production ;
 - **étiquette ``is_provisional``** : vraie quand le périmètre produit planifié
-  n'est qu'un sous-ensemble strict du périmètre HS6 complet (profil ``demo``,
-  PD-06 point 3).
+  n'est qu'un sous-ensemble strict du périmètre HS6 complet (profil ``demo``).
 
 Fichiers de configuration lus : ``BACI_CONFIG_PATH``, ``COMTRADE_CONFIG_PATH``
 et ``RUNTIME_CONFIG_PATH``.
 """
 # Importation des modules
 # Modules de base
+import argparse
 import logging
 import os
+import sys
 from dataclasses import fields, replace
 from datetime import datetime, timedelta, timezone
-from typing import Any, Dict, Iterable, Iterator, List, Mapping, Optional, Sequence, Set, Tuple
+from typing import Any, Dict, Iterable, Iterator, List, Mapping, Optional, Sequence
 import yaml
 
 # Modules de manipulation de données
@@ -84,11 +100,10 @@ import pandas as pd
 from kedro_pipeline.io.ducklake import (
     DuckLakeLocation,
     build_connector,
-    compute_write_options,
     pg_credentials_from_env,
     s3_credentials_from_env,
 )
-from kedro_pipeline.io.registry_views import DownloadRegistryView, ProductsKey, period_year, products_key
+from kedro_pipeline.io.registry_views import DownloadRegistryView, ProductsKey
 # Registres de fraîcheur v2 (fragments, empreintes, forçage, cadence)
 from kedro_pipeline.io.freshness import (
     ForceSpec,
@@ -107,8 +122,20 @@ from kedro_pipeline.io.freshness import (
     upstream_is_newer,
 )
 from kedro_pipeline.steps.reference import publish_hs_reference
-# Cache des tables de correspondance UNSD (partagé avec l'étape partenaires)
-from kedro_pipeline.steps.baci import prepare_concordances
+# Étape BACI : cache des tables de correspondance UNSD (partagé avec l'étape
+# partenaires), porte de complétude, entrées / sorties du traitement par passes
+from kedro_pipeline.steps.baci import (
+    DuckDBPassIO,
+    DuckLakeYearWriter,
+    chapter_links,
+    classifications_by_year,
+    completeness_by_year,
+    concordance_pairs,
+    eligible_years,
+    peak_memory_mb,
+    prepare_concordances,
+    work_root,
+)
 # Planification des requêtes Comtrade : même liste que le téléchargement
 from scripts.download_comtrade import (
     fetch_dimension_codelists,
@@ -121,7 +148,7 @@ from statflows.core.factory import filter_codes
 # Modules de chargement/sauvegarde de données (xls/parquet, puis json)
 from macroforecast.storage import Loader as TableLoader, Saver as TableSaver
 # Helpers DuckLake partagés (création puis upsert de la table de faits)
-from statflows.storage.ducklake.tables import FACT_TABLE as _FACT_TABLE, write_dataframe
+from statflows.storage.ducklake.tables import FACT_TABLE as _FACT_TABLE
 from statflows.storage.json import Loader as JsonLoader, Saver as JsonSaver
 from statflows.core.download import _schema_name
 
@@ -129,11 +156,11 @@ from statflows.core.download import _schema_name
 from statflows import UNSDClient
 
 # Module d'implémentation du traitement BACI
-from macroforecast.trade.processing import required_columns, run_baci
+from macroforecast.trade.processing import run_baci_passes
 from macroforecast.trade.processing import BaciConfig, ComtradeSchema, DEFAULT_CONFIG, BaciReport
 from macroforecast.trade.processing import BACI_FINGERPRINT_EXCLUDED
 from macroforecast.trade.methodology import methodology_params
-from macroforecast.trade.processing import HsHarmonizer, resolve_vintage
+from macroforecast.trade.processing import HsHarmonizer
 # Module de suivi d'exécution (MLflow optionnel) et rapport de run
 from macroforecast.tracking import CapturingTracker, get_tracker, rekey_metrics
 from macroforecast.tracking.figures import key_figures_baci, sections_baci
@@ -220,6 +247,10 @@ def _read_comtrade_fact_table(
 ) -> pd.DataFrame:
     """Read selected columns of the COMTRADE fact table for some years, read-only.
 
+    No longer used by :func:`main` (the passes read one year at a time, see
+    ``kedro_pipeline.steps.baci.read_comtrade_year``); kept for ad-hoc reads of a
+    few years (tests, notebooks).
+
     Source and result live in two schemas of the same DuckLake catalog (cf.
     module docstring), so a plain schema-qualified ``SELECT`` on the shared
     connection is enough — no separate ``ATTACH`` is required. The year filter
@@ -266,69 +297,8 @@ def _read_comtrade_fact_table(
 # registre fictif ; seul main() lit le registre et appelle l'API
 # ──────────────────────────────────────────────────────────────────────
 
-# Fonction de calcul de la part des lots téléchargés par année
-def completeness_by_year(
-    planned: Iterable[Any],
-    batches: Mapping[int, Mapping[ProductsKey, Any]],
-) -> Dict[int, float]:
-    """Share, per year, of the planned product batches downloaded at least once.
-
-    A planned query (one period x one product batch) counts as downloaded when
-    the registry view holds, for its year, a batch with the same products and a
-    ``last_download`` date. Matching on the query parameters, rather than on the
-    registry key, keeps the gate independent of the physical registry layout.
-
-    Args:
-        planned: Planned ``ComtradeQueryRequest`` objects (``periods``,
-            ``products``), as built by ``plan_queries``.
-        batches: Downloaded batches by year, as returned by
-            :meth:`DownloadRegistryView.batches_by_year` (``year -> {products
-            key -> last_download}``).
-
-    Returns:
-        Mapping ``year -> share`` in ``[0, 1]``, for every planned year.
-
-    Examples:
-        >>> completeness_by_year(planned, view.batches_by_year())  # doctest: +SKIP
-        {2024: 1.0, 2023: 0.5}
-    """
-    # Décompte des lots planifiés et téléchargés, par année
-    totals: Dict[int, int] = {}
-    done: Dict[int, int] = {}
-    for query in planned:
-        year = period_year(query.periods)
-        totals[year] = totals.get(year, 0) + 1
-        if products_key(query.products) in batches.get(year, {}):
-            done[year] = done.get(year, 0) + 1
-
-    return {year: done.get(year, 0) / total for year, total in totals.items()}
-
-
-# Fonction de sélection des années éligibles
-def eligible_years(
-    shares: Mapping[int, float],
-    min_share: float,
-    period_end: Optional[int] = None,
-) -> List[int]:
-    """Years whose share of downloaded batches reaches ``min_share``.
-
-    Args:
-        shares: Mapping ``year -> share`` (:func:`completeness_by_year`).
-        min_share: Completeness threshold (``COMPLETENESS.MIN_SHARE``).
-        period_end: Last year kept (``PARAMETERS.period_end``), ``None`` for none.
-
-    Returns:
-        Sorted eligible years.
-
-    Examples:
-        >>> eligible_years({2022: 1.0, 2023: 0.5, 2024: 1.0}, 1.0, period_end=2023)
-        [2022]
-    """
-    return sorted(
-        year
-        for year, share in shares.items()
-        if share >= min_share and (period_end is None or year <= period_end)
-    )
+# Les fonctions de la porte de complétude (completeness_by_year, eligible_years)
+# vivent dans kedro_pipeline.steps.baci, importé ci-dessus
 
 
 # Fonction de résolution des premières années des millésimes cibles
@@ -915,24 +885,118 @@ def completed_entry(
     )
 
 
+# Variable d'environnement restreignant les millésimes traités
+TARGETS_ENV = "BACI_TARGETS"
+
+
+# Fonction de lecture des millésimes demandés (ligne de commande ou environnement)
+def requested_targets(
+    argv: Optional[Sequence[str]] = None,
+    environ: Optional[Mapping[str, str]] = None,
+) -> Optional[List[str]]:
+    """Read the vintages this run is restricted to, if any.
+
+    ``--targets HS2017,HS1992`` takes precedence over the ``BACI_TARGETS``
+    environment variable; both hold comma-separated labels. Unknown arguments
+    are ignored (the script also runs under test runners).
+
+    Args:
+        argv: Command-line arguments (``sys.argv[1:]`` when ``None``).
+        environ: Environment mapping (``os.environ`` when ``None``).
+
+    Returns:
+        The requested labels, or ``None`` when no restriction is given.
+
+    Examples:
+        >>> requested_targets(["--targets", "HS2017, HS1992"], {})
+        ['HS2017', 'HS1992']
+        >>> requested_targets([], {"BACI_TARGETS": "HS2022"})
+        ['HS2022']
+        >>> requested_targets([], {}) is None
+        True
+    """
+    parser = argparse.ArgumentParser(add_help=False)
+    parser.add_argument("--targets", default=None)
+    args, _ = parser.parse_known_args(list(sys.argv[1:] if argv is None else argv))
+    env = os.environ if environ is None else environ
+    raw = args.targets if args.targets is not None else env.get(TARGETS_ENV)
+    if raw is None or not str(raw).strip():
+        return None
+    return [label.strip() for label in str(raw).split(",") if label.strip()]
+
+
+# Fonction de restriction des cibles configurées aux millésimes demandés
+def select_targets(
+    targets: Mapping[str, Mapping[str, Any]],
+    requested: Optional[Sequence[str]],
+) -> Dict[str, Mapping[str, Any]]:
+    """Restrict the configured targets to the requested vintages.
+
+    Args:
+        targets: ``CLASSIFICATIONS.TARGETS`` of ``baci.yaml``.
+        requested: Requested labels (``None``: every target).
+
+    Returns:
+        The selected targets, in configuration order.
+
+    Raises:
+        ValueError: If a requested label is not a configured target.
+
+    Examples:
+        >>> select_targets({"HS2022": {}, "HS2017": {}}, ["HS2017"])
+        {'HS2017': {}}
+    """
+    if requested is None:
+        return dict(targets)
+    unknown = sorted(set(requested) - set(targets))
+    if unknown:
+        raise ValueError(f"Unknown BACI targets {unknown}; configured: {sorted(targets)}")
+    return {label: cfg for label, cfg in targets.items() if label in set(requested)}
+
+
+# Fonction d'ajout d'une année écrite à l'entrée d'une passe démarrée
+def with_year_written(entry: RegistryEntry, year: int) -> RegistryEntry:
+    """Return the entry of a started pass with one more year written.
+
+    Args:
+        entry: Entry of the vintage (started pass).
+        year: Year just written.
+
+    Returns:
+        A copy whose ``years_written`` includes ``year`` (sorted, distinct).
+
+    Examples:
+        >>> entry = RegistryEntry(baci_unit("HS2017"), extra={"years_written": [2018]})
+        >>> with_year_written(entry, 2017).extra["years_written"]
+        [2017, 2018]
+    """
+    written = sorted({int(y) for y in entry.extra.get("years_written") or []} | {int(year)})
+    return replace(entry, extra={**entry.extra, "years_written": written})
+
+
 # ──────────────────────────────────────────────────────────────────────
 # Orchestration
 # ──────────────────────────────────────────────────────────────────────
 
 # Fonction principale de redressement BACI multi-millésimes
-def main() -> None:
+def main(argv: Optional[Sequence[str]] = None) -> None:
     """CLI entry point for the multi-vintage BACI reconstruction script.
 
     Reads every parameter from the YAML configuration (``BACI_CONFIG_PATH`` or
     the default ``config/baci.yaml``), including the HS vintages to reconstruct
-    (``CLASSIFICATIONS.TARGETS``). Each target is processed independently: a
-    failure on one vintage is logged and does not prevent the others from
-    running, but the script exits with an error once every target has been
-    attempted if at least one failed.
+    (``CLASSIFICATIONS.TARGETS``, optionally restricted by ``--targets`` or
+    ``BACI_TARGETS``). Each target is processed independently, pass by pass on
+    yearly chunks (``run_baci_passes``): a failure on one vintage is logged and
+    does not prevent the others from running, but the script exits with an
+    error once every target has been attempted if at least one failed.
+
+    Args:
+        argv: Command-line arguments (``sys.argv[1:]`` when ``None``).
 
     Raises:
         RuntimeError: If at least one vintage failed, once every vintage has
             been attempted.
+        ValueError: If a requested target is not configured.
     """
     # Chargement des configurations (chemins, identifiants et paramètres méthodologiques)
     comtrade_config = load_comtrade_config()
@@ -955,12 +1019,18 @@ def main() -> None:
     mlflow_config = baci_config.get("MLFLOW") or {}
     log_artifacts = bool(mlflow_config.get("LOG_ARTIFACTS", True))
 
-    # Configuration des millésimes cibles et du cache de correspondance
+    # Configuration des millésimes cibles (restreints par --targets / BACI_TARGETS)
+    # et du cache de correspondance
     classifications_config = baci_config["CLASSIFICATIONS"]
-    targets_config: Dict[str, Dict] = classifications_config["TARGETS"]
+    targets_config = select_targets(classifications_config["TARGETS"], requested_targets(argv))
     concordance_path = classifications_config["CONCORDANCE_PATH"]
     force_refresh = classifications_config.get("FORCE_REFRESH", False)
     bucket = baci_config["BUCKET"]
+    # Traitement par passes : fichiers de travail et taille maximale d'une tranche
+    passes_config = baci_config.get("PASSES") or {}
+    work_path = passes_config.get("WORK_PATH", "trade/work/baci")
+    max_rows_per_chunk = passes_config.get("MAX_ROWS_PER_CHUNK")
+    keep_work_files = bool(passes_config.get("KEEP_WORK_FILES", False))
     # Premières années des millésimes cibles (START_YEAR nul → règle PD-08)
     start_years = resolve_target_start_years(targets_config, runtime_config)
     # Borne haute optionnelle du périmètre temporel
@@ -994,8 +1064,14 @@ def main() -> None:
     )
     batches = registry_view.batches_by_year()
     shares = completeness_by_year(planned, batches)
-    years_eligible = eligible_years(
-        shares, float(completeness_config.get("MIN_SHARE", 1.0)), period_end=period_end
+    years_eligible = list(
+        eligible_years(
+            batches,
+            planned,
+            float(completeness_config.get("MIN_SHARE", 1.0)),
+            int(runtime_config["ANALYSIS_START_YEAR"]["comtrade"]),
+            period_end=period_end,
+        )
     )
     # Étiquette provisoire : périmètre produit planifié restreint (profil demo)
     products_filters = comtrade_config["split_filters"][DATAFLOW]["products"]
@@ -1070,48 +1146,28 @@ def main() -> None:
         pg=pg_credentials_from_env(),
         s3=s3_credentials_from_env(),
     )
+    source_schema = _schema_name(DATAFLOW)
 
     # Etablissement d'une connexion
     conn = connector.connect()
     try:
-        # Lecture de la table de faits COMTRADE restreinte en SQL aux années
-        # éligibles, bornées par le plus petit START_YEAR des cibles et
-        # period_end : colonnes requises par run_baci plus la colonne de
-        # classification (absente de required_columns, indispensable à
-        # l'harmonisation des nomenclatures). Le monobloc reste en mémoire
-        # jusqu'au traitement par passes (K-07)
-        columns = list(
-            dict.fromkeys(required_columns(baci_parameters_config) + [schema.classification_col])
-        )
-        df_comtrade = _read_comtrade_fact_table(
-            conn=conn,
-            source_schema=_schema_name(DATAFLOW),
-            columns=columns,
+        # Nomenclatures présentes par année (SELECT DISTINCT, jamais la table
+        # entière) et paires de correspondance nécessaires aux millésimes planifiés
+        classifications = classifications_by_year(
+            conn,
+            source_schema,
+            years=sorted({y for label in targets_planned for y in scopes.get(label, [])}),
+            classification_col=schema.classification_col,
             period_col=schema.period_col,
-            years=years_eligible,
-            period_start=min(start_years[label] for label in targets_planned),
-            period_end=period_end,
         )
-        years = df_comtrade[schema.period_col].astype(str).str[:4].astype(int)
-
-        # Passe 1 : tranche temporelle par millésime cible et paires de
-        # correspondance nécessaires (millésimes présents dans chaque tranche,
-        # hors le millésime cible lui-même)
-        slices: Dict[str, pd.DataFrame] = {}
-        pairs: Set[Tuple[str, str]] = set()
-        for label, target_cfg in targets_planned.items():
-            df_slice = df_comtrade[years >= start_years[label]]
-            slices[label] = df_slice
-            codes_present = df_slice[schema.classification_col].dropna().unique()
-            for code in codes_present:
-                source_label = f"HS{resolve_vintage(code)}"
-                if source_label != label:
-                    pairs.add((source_label, label))
+        pairs = concordance_pairs(
+            classifications, {label: scopes.get(label, []) for label in targets_planned}
+        )
 
         # Résolution des tables de correspondance nécessaires (cache Parquet
         # partagé avec l'étape partenaires, client UNSD créé à la demande)
         concordances = prepare_concordances(
-            sorted(pairs),
+            pairs,
             client_factory=UNSDClient,
             loader=table_loader,
             saver=table_saver,
@@ -1133,21 +1189,20 @@ def main() -> None:
         )
         logger.info(f"Référentiels SH : {reference['rows']} ; échecs : {reference['failures']}")
 
-        # Passe 2 : harmonisation puis redressement BACI, par millésime cible.
-        # L'échec d'un millésime n'interrompt pas les autres.
+        # Redressement par passes, millésime par millésime. L'échec d'un
+        # millésime n'interrompt pas les autres.
         reports: Dict[str, BaciReport] = {}
         failures: Dict[str, Exception] = {}
         for label, target_cfg in targets_planned.items():
             # Millésime sans année complète (rattrapage année-majeur en cours) :
             # rien à redresser, ce n'est pas un échec
-            if slices[label].empty:
+            if not scopes.get(label):
                 logger.info(
                     "Millésime %s : aucune année éligible >= %d, ignoré",
                     label, start_years[label],
                 )
                 continue
-            # Un run par millésime : l'échec de l'un n'emporte pas les autres. Ouvert avant
-            # l'harmonisation pour qu'un échec de celle-ci porte lui aussi son rapport
+            # Un run par millésime : l'échec de l'un n'emporte pas les autres
             node = f"process_baci_{label}"
             tracker = CapturingTracker(
                 get_tracker(
@@ -1157,10 +1212,11 @@ def main() -> None:
                     tags={"vintage": label, "is_provisional": str(is_provisional)},
                 )
             )
-            scope = RunScope(node, step="harmonisation de la nomenclature")
+            scope = RunScope(node, step="préparation de la passe")
             # Plan du millésime et identifiant de la passe d'estimation
             unit, plan = baci_unit(label), plans_by_label[label]
             fit_id = compute_fit_id(label, scopes[label], watermarks[label], requested)
+            result_schema = _schema_name(target_cfg["RESULT_SCHEMA"])
             try:
                 with tracker, guarded_run(scope, tracker):
                     # Point de reprise : entrée « démarrée » (years_written vide)
@@ -1174,19 +1230,6 @@ def main() -> None:
                     if force.forces_step(STEP, requested):
                         tracker.set_tags({"forced": force.describe()})
 
-                    harmonizer = HsHarmonizer(
-                        concordances,
-                        target_vintage=label,
-                        classification_col=schema.classification_col,
-                        product_col=schema.product_col,
-                        period_col=schema.period_col,
-                        value_cols=(schema.value_col, schema.cif_value_col, schema.fob_value_col),
-                        weight_cols=(schema.netwgt_col,),
-                        qty_col=schema.qty_col,
-                        qty_unit_col=schema.qty_unit_col,
-                    )
-                    df_harmonised = harmonizer.fit_transform(slices[label])
-
                     # Couverture du millésime : années éligibles et part minimale
                     # de lots téléchargés sur ses années planifiées
                     n_years_eligible = sum(y >= start_years[label] for y in years_eligible)
@@ -1194,63 +1237,95 @@ def main() -> None:
                         coverage_metrics(years_eligible, shares, start_years[label], period_end)
                     )
 
-                    # Application de la méthodologie sur la tranche harmonisée
+                    # Harmonisation de chaque tranche vers le millésime cible
+                    def harmonizer_factory(label: str = label) -> HsHarmonizer:
+                        return HsHarmonizer(
+                            concordances,
+                            target_vintage=label,
+                            classification_col=schema.classification_col,
+                            product_col=schema.product_col,
+                            period_col=schema.period_col,
+                            value_cols=(schema.value_col, schema.cif_value_col, schema.fob_value_col),
+                            weight_cols=(schema.netwgt_col,),
+                            qty_col=schema.qty_col,
+                            qty_unit_col=schema.qty_unit_col,
+                        )
+
+                    # Point de reprise mis à jour après chaque année écrite
+                    def on_year_written(year: int, rows: int, unit: Unit = unit) -> None:
+                        registry.upsert(with_year_written(registry.get(unit), year))
+                        registry.save()
+
+                    writer = DuckLakeYearWriter(
+                        conn,
+                        catalog_alias=connector.catalog_alias,
+                        schema=result_schema,
+                        primary_keys=baci_parameters_config.primary_keys,
+                        columns={"fit_id": fit_id, "is_provisional": bool(is_provisional)},
+                        run_id=os.environ.get("WORKFLOW_ID") or None,
+                        commit_message=f"process_baci_hs {label}",
+                        on_year_written=on_year_written,
+                    )
+                    sources = sorted({c for y in scopes[label] for c in classifications.get(y, [])})
+                    io = DuckDBPassIO(
+                        conn,
+                        source_schema=source_schema,
+                        years=scopes[label],
+                        root=work_root(work_path, label, fit_id, bucket),
+                        writer=writer,
+                        period_col=schema.period_col,
+                        product_col=schema.product_col,
+                        harmonizer_factory=harmonizer_factory,
+                        links=chapter_links(concordances, sources, label),
+                        max_rows_per_chunk=max_rows_per_chunk,
+                    )
+
+                    # Redressement par passes, écriture année par année
                     scope.step = "redressement BACI"
-                    df_reconciled, report = run_baci(
-                        df_comtrade=df_harmonised,
-                        df_dist=df_dist,
-                        df_geo=df_geo,
+                    report, rows_by_year = run_baci_passes(
+                        io,
+                        df_dist,
+                        df_geo,
                         config=baci_parameters_config,
                         tracker=tracker,
                         log_artifacts=log_artifacts,
+                        memory_probe=peak_memory_mb,
                     )
-                    # Étiquette du périmètre (PD-06) : BACI sur un sous-ensemble
-                    # de produits, distinct du BACI complet
-                    df_reconciled["is_provisional"] = is_provisional
-
-                    # Écriture du résultat dans le schéma dédié au millésime
-                    scope.step = "écriture du résultat"
-                    report.created = write_dataframe(
-                        conn,
-                        df_reconciled,
-                        baci_parameters_config.primary_keys,
-                        catalog_alias=connector.catalog_alias,
-                        schema=_schema_name(target_cfg["RESULT_SCHEMA"]),
-                        label=label,
-                        **compute_write_options(f"process_baci_hs {label}"),
-                    )
+                    report.created = writer.created
                     reports[label] = report
+
                     # Registre du millésime : toutes les années du périmètre sont
-                    # écrites (écriture monobloc), entrée terminée écrite après
-                    # succès seulement — une date avancée à tort ferait sauter le
-                    # recalcul des vulnérabilités de réseau. Un fragment par
-                    # millésime : aucune course entre pods de millésimes différents
+                    # écrites, entrée terminée écrite après succès seulement — une
+                    # date avancée à tort ferait sauter le recalcul des
+                    # vulnérabilités de réseau. Un fragment par millésime : aucune
+                    # course entre pods de millésimes différents
+                    scope.step = "écriture du résultat"
                     registry.upsert(
                         completed_entry(
                             unit, plan, fit_id, scopes[label], processed_at,
                             watermarks[label], requested,
-                            result_schema=_schema_name(target_cfg["RESULT_SCHEMA"]),
-                            n_rows=int(len(df_reconciled)),
+                            result_schema=result_schema,
+                            n_rows=int(report.flows),
                             is_provisional=bool(is_provisional),
                         )
                     )
                     registry.save()
+                    # Fichiers de travail supprimés en fin de passe réussie
+                    if not keep_work_files:
+                        io.cleanup()
 
                     # Envoi des métriques du redressement et de l'harmonisation
                     # (noms séparés par « / » : l'interface MLflow les regroupe par section)
                     tracker.log_metrics(rekey_metrics(report.to_metrics()))
-                    tracker.log_metrics(rekey_metrics(harmonizer.report_.to_metrics()))
-                    tracker.set_tags(
-                        {
-                            "result_schema": _schema_name(target_cfg["RESULT_SCHEMA"]),
-                            "created": str(report.created),
-                        }
-                    )
+                    harmonization = io.harmonization_report()
+                    if harmonization is not None:
+                        tracker.log_metrics(rekey_metrics(harmonization.to_metrics()))
+                    tracker.set_tags({"result_schema": result_schema, "created": str(report.created)})
                     # Répartition des relations de nomenclature : mesure de la
                     # perte d'information à la conversion
-                    if log_artifacts:
+                    if log_artifacts and harmonization is not None:
                         tracker.log_dict(
-                            harmonizer.report_.relationship_distribution,
+                            harmonization.relationship_distribution,
                             "classification/relationship_distribution.json",
                         )
 
@@ -1258,11 +1333,6 @@ def main() -> None:
                     # Il est construit sur les métriques et tables déjà produites, sans
                     # relecture de données, et publié avant toute sortie en erreur
                     scope.step = "rapport de run"
-                    rows_by_year = (
-                        df_reconciled[schema.period_col].value_counts().sort_index()
-                        .rename_axis("year").rename("rows").reset_index()
-                        if schema.period_col in df_reconciled else pd.DataFrame()
-                    )
                     coefficients = tracker.dicts.get("gravity/coefficients.json", {})
                     gravity_table = pd.DataFrame(
                         {

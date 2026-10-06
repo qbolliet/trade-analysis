@@ -143,7 +143,7 @@ def test_demo_outputs_are_isolated() -> None:
                 continue
             if path[-1] in {
                 "LAST_DOWNLOAD_PATH", "LAST_COMPUTATION_PATH", "LAST_PROCESSING_PATH",
-                "DATA_PATH", "PATH_TEMPLATE",
+                "DATA_PATH", "PATH_TEMPLATE", "WORK_PATH",
             }:
                 assert str(value).startswith("trade/demo/"), (name, path, value)
             if path[-1] == "DBNAME" and name in {"comtrade.yaml", "eurostat.yaml"}:

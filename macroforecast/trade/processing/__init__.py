@@ -12,6 +12,7 @@ from .baci import (
     build_mirror_flows,
     infer_import_valuation_regime,
     world_median_unit_values,
+    world_median_unit_values_sql,
     required_columns,
 )
 # Étapes du redressement
@@ -21,6 +22,7 @@ from .baci import (
     Fobizer,
     ReportingQualityModel,
     QualityResult,
+    GravityFit,
     MirrorReconciler,
     AreaNesReallocator,
 )
@@ -44,12 +46,30 @@ from .classification import (
     build_conversion_map,
     conversion_preimage,
     harmonize_partner_flows,
+    merge_harmonization_reports,
     resolve_vintage,
 )
 # Orchestration
 from .baci import (
     BaciReport,
     run_baci,
+)
+# Orchestration par passes sur des tranches (mémoire bornée)
+from .baci import (
+    BaciPassIO,
+    BaciPassState,
+    ChunkKey,
+    FREIGHT_QUANTILES,
+    InMemoryPassIO,
+    run_baci_passes,
+)
+# Accumulateurs de statistiques suffisantes
+from .streaming import (
+    AbsorbedWLSAccumulator,
+    CookFilter,
+    WelfordGroupStats,
+    WeightedLeastSquaresAccumulator,
+    WlsSolution,
 )
 
 # Réexport des éléments d'intérêt du sous-module
@@ -64,6 +84,7 @@ __all__ = [
     "build_mirror_flows",
     "infer_import_valuation_regime",
     "world_median_unit_values",
+    "world_median_unit_values_sql",
     "required_columns",
     # Étapes du redressement
     "TonnageConverter",
@@ -71,6 +92,7 @@ __all__ = [
     "Fobizer",
     "ReportingQualityModel",
     "QualityResult",
+    "GravityFit",
     "MirrorReconciler",
     "AreaNesReallocator",
     # Rapports d'étape
@@ -88,8 +110,22 @@ __all__ = [
     "build_conversion_map",
     "conversion_preimage",
     "harmonize_partner_flows",
+    "merge_harmonization_reports",
     "resolve_vintage",
     # Orchestration
     "BaciReport",
     "run_baci",
+    # Orchestration par passes
+    "BaciPassIO",
+    "BaciPassState",
+    "ChunkKey",
+    "FREIGHT_QUANTILES",
+    "InMemoryPassIO",
+    "run_baci_passes",
+    # Accumulateurs de statistiques suffisantes
+    "AbsorbedWLSAccumulator",
+    "CookFilter",
+    "WelfordGroupStats",
+    "WeightedLeastSquaresAccumulator",
+    "WlsSolution",
 ]

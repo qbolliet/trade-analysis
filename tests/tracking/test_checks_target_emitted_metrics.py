@@ -207,6 +207,23 @@ def test_baci_and_network_checks_target_emitted_metrics(
     )
     assert "gravity/coefficients.json" in tracker.dicts
 
+    # Traitement par passes : mêmes métriques et mêmes artefacts que le monobloc
+    from macroforecast.trade.processing import ChunkKey, InMemoryPassIO, run_baci_passes
+
+    harmonised = HsHarmonizer({}, target_vintage="HS2017").fit_transform(declarations)
+    years = harmonised["period"].astype(str).str[:4].astype(int)
+    io = InMemoryPassIO(
+        [(ChunkKey(int(year)), harmonised[years == year].reset_index(drop=True)) for year in sorted(years.unique())]
+    )
+    passes_tracker = CapturingTracker()
+    passes_report, _ = run_baci_passes(io, dist, geo, config=config, tracker=passes_tracker, log_artifacts=True)
+    passes_emitted = {
+        **coverage_metrics([2019, 2020, 2021], {2019: 1.0, 2020: 1.0, 2021: 1.0}, 2019, None),
+        **rekey_metrics(passes_report.to_metrics()),
+    }
+    assert_checks_target_emitted(_nodes()["process_baci"], passes_emitted)
+    assert set(passes_tracker.tables) == set(tracker.tables) and set(passes_tracker.dicts) == set(tracker.dicts)
+
     # Vulnérabilités de réseau sur la table BACI écrite dans le catalogue
     from macroforecast.trade.vulnerabilities.base import NetworkVulnerabilityConfig
     from macroforecast.trade.vulnerabilities.runner import run_network_vulnerabilities

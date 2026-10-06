@@ -120,9 +120,11 @@ def test_completeness_by_year_on_sharded_registry(registry_path: Path, tmp_path:
     [(1.0, None, [2024]), (0.5, None, [2023, 2024]), (0.5, 2023, [2023]), (0.0, None, [2022, 2023, 2024])],
 )
 def test_eligible_years(registry_path: Path, min_share: float, period_end: Optional[int], expected: List[int]) -> None:
-    """Seuil de complétude et borne haute du périmètre."""
+    """Seuil de complétude et borne haute du périmètre (années éligibles et leur part)."""
     shares = completeness_by_year(_planned(), _batches(registry_path))
-    assert eligible_years(shares, min_share, period_end=period_end) == expected
+    eligible = eligible_years(_batches(registry_path), _planned(), min_share, period_end=period_end)
+    assert list(eligible) == expected
+    assert eligible == {year: shares[year] for year in expected}
 
 
 def test_share_min() -> None:
