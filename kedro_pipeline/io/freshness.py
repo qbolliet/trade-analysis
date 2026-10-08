@@ -126,7 +126,9 @@ _SCOPE_DIMENSIONS: Mapping[str, Tuple[str, ...]] = {
     "reporters": ("reporter",),
     "products": ("product",),
     "periods": ("period", "year", "TIME_PERIOD"),
-    "vintages": ("vintage", "classification"),
+    # Millésime d'un modèle BACI ou réseau, classification d'une unité partenaire,
+    # millésime SH de rattachement d'un contexte de synthèse
+    "vintages": ("vintage", "classification", "hs_vintage"),
 }
 
 # Clés réservées d'une entrée de fragment (le reste est rangé dans ``extra``)
@@ -1019,7 +1021,8 @@ class ForceSpec:
         reporters: Reporter codes (dimension ``reporter``).
         products: Product code prefixes (dimension ``product``).
         periods: Periods (dimensions ``period``, ``year``, ``TIME_PERIOD``).
-        vintages: Vintages (dimensions ``vintage``, ``classification``).
+        vintages: Vintages (dimensions ``vintage``, ``classification``,
+            ``hs_vintage``).
 
     Examples:
         >>> spec = ForceSpec(steps=frozenset({"partners"}), reporters=("FR",))

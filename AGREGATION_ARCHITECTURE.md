@@ -1058,8 +1058,8 @@ famille `methods` (S-2.5.b). `lomo=True` ré-ajuste les méthodes listées via
 
 | Script | Entrée console (`pyproject`) | Config | Registre | Amont |
 |---|---|---|---|---|
-| `scripts/compute_synthetic_scores.py` | `vulnerabilities-synthesis-script` | `config/synthesis.yaml`, bloc `SYNTHESIS` | `trade/vulnerabilities/synthesis/last_computation.json`, racine `SYNTHESIS` | `compute_trade_vulnerabilities.py`, `compute_network_vulnerabilities.py` |
-| `scripts/compute_synthesis_coherence.py` | `vulnerabilities-coherence-script` | même fichier, bloc `COHERENCE` | `trade/vulnerabilities/synthesis/last_coherence.json`, racine `COHERENCE` | `compute_synthetic_scores.py` |
+| `scripts/compute_synthetic_scores.py` | `vulnerabilities-synthesis-script` | `config/synthesis.yaml`, bloc `SYNTHESIS` | `trade/state/synthesis/{TIME_PERIOD}.json` (par contexte, K-08) | `compute_trade_vulnerabilities.py`, `compute_network_vulnerabilities.py` |
+| `scripts/compute_synthesis_coherence.py` | `vulnerabilities-coherence-script` | même fichier, bloc `COHERENCE` | `trade/state/coherence/{TIME_PERIOD}.json` (par contexte, K-08) | `compute_synthetic_scores.py` |
 
 Ordre Argo : `download → process_baci_hs → compute_trade_vulnerabilities ∥
 compute_network_vulnerabilities → compute_synthetic_scores → compute_synthesis_coherence`.
@@ -1072,6 +1072,18 @@ par `FILTERS`** sont recalculés ; sinon rien. Clé `FORCE: true` pour forcer. L
 écrite est capturée avant le calcul. Le script de cohérence applique la même règle contre
 le registre de synthèse. Amélioration v2 (non implémentée) : registre de synthèse indexé
 par contexte.
+
+> **Implémenté (K-08, 2026-10-06).** Les registres de la synthèse et de la cohérence
+> sont **par contexte** (`STATE.PATH_TEMPLATE`, un fichier par période ;
+> `PATHS.LAST_COMPUTATION_PATH` retiré). La synthèse tient une empreinte par méthode,
+> une pour le consensus et une pour la sélection des entrées : ajouter ou corriger une
+> méthode ne recalcule qu'elle et le consensus (nourri des scores en base des autres
+> méthodes, `run_synthesis(methods=…, df_existing_scores=…)`), sur tous les contextes.
+> Les règles de recalcul amont (changement complet, périodes récentes, pertinence par
+> millésime), le budget de rattrapage et la cadence sont décrits dans
+> `PIPELINE_ARCHITECTURE.md` (PD-12, PS-17). Les lignes d'un contexte sont remplacées,
+> et non fusionnées, pour les méthodes recalculées (scores et diagnostics `fit`) ; la
+> cohérence remplace de même ses familles `metrics` et `methods`.
 
 **Erreurs.** Comme `compute_network_vulnerabilities.py` : un contexte en échec n'arrête
 pas les autres ; échec global en fin de parcours ; seuls les contextes réussis sont écrits

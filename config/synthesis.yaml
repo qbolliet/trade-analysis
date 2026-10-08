@@ -37,16 +37,36 @@ SYNTHESIS:
   PATHS:
     # Emplacement des données de la table de faits « synthesis » (sous BUCKET)
     DATA_PATH: "trade/datasets/vulnerabilities/"
-    # Registre JSON des dates de dernier calcul de synthèse (racine « SYNTHESIS »),
-    # confronté aux registres amont (partenaires et réseau) pour décider du recalcul
-    LAST_COMPUTATION_PATH: "trade/vulnerabilities/synthesis/last_computation.json"
+  # Registre de fraîcheur par contexte (hs_vintage, freq, flow, indicators,
+  # TIME_PERIOD), un fichier JSON par période. Chaque entrée porte une empreinte
+  # par méthode, une pour le consensus et une pour la sélection des entrées
+  # (SOURCES, FILTERS, FLOWS, VINTAGES) : ajouter ou modifier une méthode ne
+  # recalcule qu'elle (et le consensus), sur tous les contextes
+  STATE:
+    # Champs du modèle : colonnes de contexte uniquement (vérifié au chargement)
+    PATH_TEMPLATE: "trade/state/synthesis/{TIME_PERIOD}.json"
   # Recalcul forcé de tous les contextes, quelle que soit la fraîcheur des amonts
   # (équivaut à runtime.FORCE_STEPS=synthesis, également pris en compte)
   FORCE: false
-  # LAST_COMPUTATION_PATH est un registre à fragment unique (format v2 ; un
-  # fichier v1 y est relu pour la migration). Migration : à true pour UN run au
-  # déploiement (cf. vulnerabilities.yaml), surchargeable par ADOPT_LEGACY_FINGERPRINTS
-  ADOPT_LEGACY_FINGERPRINTS: false
+  # Nombre de périodes les plus récentes recalculées quand les métriques
+  # partenaires ont de nouvelles données (le téléchargement incrémental ne rapporte
+  # que les dernières observations). null => N_LAST_OBSERVATIONS du téléchargement
+  # Eurostat. Un changement complet de l'amont (couple partenaire nouveau,
+  # méthodologie modifiée ou forcée, réseau recalculé) recalcule toutes les périodes
+  RECENT_PERIODS: null
+  # Budget de rattrapage : nombre maximal de contextes calculés par exécution, les
+  # périodes les plus récentes d'abord, le reste à l'exécution suivante. null en
+  # régime nominal (aucune approximation, cadence hebdomadaire)
+  MAX_CONTEXTS_PER_RUN: null
+  # Nombre de contextes lus, écrits et enregistrés ensemble (une transaction
+  # DuckLake par table et par lot ; le registre avance lot par lot)
+  WRITE_BATCH_CONTEXTS: 50
+  # Cadence : avec --cadence-check (ou CADENCE_CHECK=1), sortie immédiate si le
+  # dernier calcul date de moins de MIN_INTERVAL_DAYS jours et qu'aucun forçage
+  # n'est demandé (workflow de transition quotidien ; en production la cadence est
+  # portée par le CronWorkflow hebdomadaire)
+  CADENCE:
+    MIN_INTERVAL_DAYS: 6
 
   # Sources DuckLake combinées en une seule requête (S-2.3).
   # La première source est la GRILLE : elle fixe les cellules à scorer et toutes
@@ -91,8 +111,9 @@ SYNTHESIS:
     # et VINTAGES.
     WHERE: 'p."indicators" = ''VALUE_IN_EUROS'' AND p."freq" = ''A'' AND p."reporter" <> ''EU27_2020'''
     # Nombre de dernières périodes conservées (sous-requête sur les TIME_PERIOD
-    # distincts) ; null => toutes les périodes
-    LAST_N_PERIODS: 5
+    # distincts) ; null => toutes les périodes, dont seules les périmées sont
+    # recalculées (registre par contexte)
+    LAST_N_PERIODS: null
 
   # Suivi d'exécution MLflow : un seul run par exécution du script (D-14).
   MLFLOW:
@@ -200,14 +221,21 @@ COHERENCE:
   PATHS:
     # Emplacement des données de la table de faits « synthesis_diagnostics »
     DATA_PATH: "trade/datasets/vulnerabilities/"
-    # Registre JSON des dates de dernier calcul de cohérence (racine « COHERENCE »),
-    # confronté au registre de synthèse
-    LAST_COMPUTATION_PATH: "trade/vulnerabilities/synthesis/last_coherence.json"
+  # Registre de fraîcheur par contexte, un fichier JSON par période : un contexte
+  # est recalculé quand sa synthèse l'a été depuis, quand l'empreinte de la
+  # configuration de cohérence change (empreinte globale) ou en cas de forçage
+  STATE:
+    PATH_TEMPLATE: "trade/state/coherence/{TIME_PERIOD}.json"
   # Recalcul forcé, quelle que soit la fraîcheur du registre de synthèse
   # (équivaut à runtime.FORCE_STEPS=coherence, également pris en compte)
   FORCE: false
-  # Migration du registre v1 (cf. bloc SYNTHESIS)
-  ADOPT_LEGACY_FINGERPRINTS: false
+  # Budget de rattrapage (cf. bloc SYNTHESIS), null en régime nominal
+  MAX_CONTEXTS_PER_RUN: null
+  # Nombre de contextes lus, écrits et enregistrés ensemble
+  WRITE_BATCH_CONTEXTS: 50
+  # Cadence sous --cadence-check (cf. bloc SYNTHESIS)
+  CADENCE:
+    MIN_INTERVAL_DAYS: 6
   # Suivi d'exécution MLflow : un seul run par exécution du script de cohérence
   MLFLOW:
     TRACKING_URI: null

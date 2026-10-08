@@ -21,7 +21,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field, replace
 import logging
 import time
-from typing import Any, Dict, Iterator, List, Mapping, Optional, Sequence, Tuple
+from typing import Any, Collection, Dict, Iterator, List, Mapping, Optional, Sequence, Tuple
 import warnings
 import zlib
 # Modules de manipulation de données
@@ -725,6 +725,8 @@ def run_synthesis(
     df_metrics: pd.DataFrame,
     config: SynthesisConfig,
     *,
+    methods: Optional[Sequence[str]] = None,
+    df_existing_scores: Optional[pd.DataFrame] = None,
     tracker: RunTracker = NULL_TRACKER,
     log_artifacts: bool = True,
 ) -> Tuple[pd.DataFrame, pd.DataFrame, SynthesisReport]:
@@ -743,11 +745,31 @@ def run_synthesis(
     (``skipped_missing_dependency``) or when the dimension exceeds
     ``ot_dimension_limit`` (``skipped_dimension_limit``).
 
+    Incremental use. ``methods`` restricts the run to a subset of the
+    configured methods: the others are neither fitted nor scored, and emit no
+    row. The scores of a computed method do not depend on the subset (the
+    random draws of a group are seeded by the group identity only), so a
+    method computed alone equals the same method computed with all the others.
+    The consensus pseudo-methods, on the contrary, rank **every** configured
+    method: ``df_existing_scores`` provides the stored scores of the methods
+    left out, and the consensus is then identical to the one of a complete run.
+
     Args:
         df_metrics: Cells by metrics, already filtered on the contexts of
             interest; must carry the context columns, the reporter and product
             columns and the metric columns.
         config: Synthesis configuration.
+        methods: Names of the configured methods to fit and score; ``None``
+            (default) computes every method, an empty sequence computes the
+            consensus alone. The consensus pseudo-methods are always produced
+            when ``config.consensus`` is not empty.
+        df_existing_scores: Scores already computed for the configured methods
+            left out of ``methods``, in the long format of the score table
+            (context columns, reporter and product columns, ``method`` and
+            the ``score_<level>`` columns). Used by the consensus only. Rows of
+            computed methods, of consensus pseudo-methods or of methods absent
+            from the configuration are ignored. ``None`` ranks the computed
+            methods alone.
         tracker: Experiment tracker receiving the artifacts; the null tracker
             by default, so the runner stays side-effect free.
         log_artifacts: Whether to send the artifacts of S-2.7 to the tracker.
@@ -758,9 +780,11 @@ def run_synthesis(
         of S-2.6, and the :class:`SynthesisReport`.
 
     Raises:
-        KeyError: If a configured column is absent from ``df_metrics``.
-        ValueError: If a configured level or method is unknown, or if a
-            method asks for an unavailable normalisation.
+        KeyError: If a configured column is absent from ``df_metrics``, or a
+            required column is absent from ``df_existing_scores``.
+        ValueError: If a configured level or method is unknown, if ``methods``
+            names a method absent from the configuration, or if a method asks
+            for an unavailable normalisation.
 
     Examples:
         >>> df = pd.DataFrame({
@@ -777,6 +801,8 @@ def run_synthesis(
         >>> df_scores, df_fit, report = run_synthesis(df, config)
         >>> int(df_scores["n_global"].iloc[0]), report.n_contexts
         (4, 1)
+        >>> run_synthesis(df, config, methods=[])[0].empty
+        True
     """
     _check_columns(df_metrics, config)
     # Vérification immédiate des niveaux et des consensus : une faute de frappe
@@ -789,6 +815,11 @@ def run_synthesis(
             f"Unknown consensus rule(s) {unknown}. "
             f"Available: {sorted(_CONSENSUS_FUNCTIONS)}."
         )
+    # Méthodes effectivement ajustées (toutes par défaut) et scores déjà calculés
+    # des autres, réservés au consensus
+    specs = selected_methods(config, methods)
+    computed = {spec.name for spec in specs}
+    existing = _existing_scores_by_context(df_existing_scores, config, computed)
 
     report = SynthesisReport(n_cells=int(len(df_metrics)))
     report.levels = {level: LevelReport() for level in config.levels}
@@ -806,12 +837,16 @@ def run_synthesis(
         context = context_value if isinstance(context_value, tuple) else (context_value,)
         report.n_contexts += 1
         n_rows = len(df_context)
-        method_names = [spec.name for spec in config.methods] + [
+        method_names = [spec.name for spec in specs] + [
             f"{CONSENSUS_PREFIX}{rule}" for rule in config.consensus
         ]
         buffers = {name: _new_buffers(n_rows) for name in method_names}
         # Matrices brutes mises en cache par jeu de métriques (une par méthode au plus)
         matrices: Dict[Tuple[str, ...], np.ndarray] = {}
+        # Scores déjà calculés des méthodes non ajustées, alignés sur les lignes du contexte
+        existing_context = _align_existing_scores(
+            existing.get(_context_key(context)), df_context, config
+        )
 
         for level in config.levels:
             for group_value, positions in iter_groups(df_context, config, level):
@@ -826,7 +861,7 @@ def run_synthesis(
                 group_sizes[level].append(len(positions))
 
                 scores_of_group: Dict[str, np.ndarray] = {}
-                for spec in config.methods:
+                for spec in specs:
                     _score_method(
                         spec=spec,
                         config=config,
@@ -839,9 +874,16 @@ def run_synthesis(
                         level_report=report.levels[level],
                         warned_dependencies=warned_dependencies,
                     )
-                _score_consensus(config, group, buffers, scores_of_group)
+                _score_consensus(
+                    config,
+                    group,
+                    buffers,
+                    _consensus_inputs(config, group, scores_of_group, existing_context),
+                )
 
-        score_frames.append(_context_frame(df_context, config, context, buffers))
+        # Aucune méthode ni consensus : le contexte ne produit aucune ligne
+        if buffers:
+            score_frames.append(_context_frame(df_context, config, context, buffers))
         # Logging
         logger.debug(
             f"Contexte {context} synthétisé : {n_rows} cellules, "
@@ -883,6 +925,198 @@ def _check_columns(df_metrics: pd.DataFrame, config: SynthesisConfig) -> None:
             f"Column(s) {missing} are absent from the metric table. "
             f"Available columns: {list(df_metrics.columns)}."
         )
+
+
+# Fonction de sélection des méthodes ajustées d'une exécution
+def selected_methods(
+    config: SynthesisConfig, methods: Optional[Sequence[str]] = None
+) -> Tuple[MethodSpec, ...]:
+    """Return the configured methods a run fits, in configuration order.
+
+    Args:
+        config: Synthesis configuration.
+        methods: Names of the methods to fit; ``None`` selects every
+            configured method.
+
+    Returns:
+        The selected :class:`MethodSpec`, in the order of ``config.methods``
+        (the order the consensus ranks them in).
+
+    Raises:
+        ValueError: If ``methods`` names a method absent from the
+            configuration.
+
+    Examples:
+        >>> config = SynthesisConfig(methods=(MethodSpec(name="mpi", kind="mpi"),
+        ...                                   MethodSpec(name="rank_mean", kind="rank_mean")))
+        >>> [spec.name for spec in selected_methods(config, ["rank_mean"])]
+        ['rank_mean']
+        >>> len(selected_methods(config))
+        2
+    """
+    if methods is None:
+        return tuple(config.methods)
+    requested = set(methods)
+    configured = {spec.name for spec in config.methods}
+    unknown = sorted(requested - configured)
+    if unknown:
+        raise ValueError(
+            f"Method(s) {unknown} are not configured. Configured: {sorted(configured)}."
+        )
+    return tuple(spec for spec in config.methods if spec.name in requested)
+
+
+# Clé textuelle d'un contexte (indépendante du type des valeurs lues)
+def _context_key(context: Sequence[Any]) -> Tuple[str, ...]:
+    """Return the text form of a context tuple, used to match two tables.
+
+    Args:
+        context: Values of the context keys.
+
+    Returns:
+        The same values converted to text.
+    """
+    return tuple(str(value) for value in context)
+
+
+# Fonction de découpage par contexte des scores déjà calculés
+def _existing_scores_by_context(
+    df_existing_scores: Optional[pd.DataFrame],
+    config: SynthesisConfig,
+    computed: Collection[str],
+) -> Dict[Tuple[str, ...], pd.DataFrame]:
+    """Split the stored scores of the methods left out of the run, by context.
+
+    Only the configured methods that are not recomputed are kept: a computed
+    method brings its fresh scores, a consensus pseudo-method is never an
+    input of the consensus, and a method removed from the configuration must
+    no longer weigh on it.
+
+    Args:
+        df_existing_scores: Stored scores (long format of the score table), or
+            ``None``.
+        config: Synthesis configuration.
+        computed: Names of the methods fitted by the run.
+
+    Returns:
+        Mapping from the text key of a context to its stored scores.
+
+    Raises:
+        KeyError: If a required column is absent from ``df_existing_scores``.
+    """
+    if df_existing_scores is None or df_existing_scores.empty:
+        return {}
+    required = [
+        *config.context_columns,
+        config.reporter_col,
+        config.product_col,
+        "method",
+        *(f"score_{level}" for level in config.levels),
+    ]
+    missing = [column for column in required if column not in df_existing_scores.columns]
+    if missing:
+        raise KeyError(
+            f"Column(s) {missing} are absent from the existing scores. "
+            f"Available columns: {list(df_existing_scores.columns)}."
+        )
+    kept = {spec.name for spec in config.methods} - set(computed)
+    df_kept = df_existing_scores[df_existing_scores["method"].isin(kept)]
+    if df_kept.empty:
+        return {}
+    by_context: Dict[Tuple[str, ...], pd.DataFrame] = {}
+    for context_value, frame in df_kept.groupby(
+        list(config.context_columns), sort=False, observed=True
+    ):
+        context = context_value if isinstance(context_value, tuple) else (context_value,)
+        by_context[_context_key(context)] = frame
+    return by_context
+
+
+# Fonction d'alignement des scores déjà calculés sur les lignes d'un contexte
+def _align_existing_scores(
+    df_existing: Optional[pd.DataFrame],
+    df_context: pd.DataFrame,
+    config: SynthesisConfig,
+) -> Dict[str, Dict[str, np.ndarray]]:
+    """Align the stored scores of one context on the rows of ``df_context``.
+
+    The cells are matched on their text form, the stored table and the metric
+    table possibly typing the product code differently.
+
+    Args:
+        df_existing: Stored scores of the context, or ``None``.
+        df_context: Rows of the context being scored.
+        config: Synthesis configuration.
+
+    Returns:
+        Mapping ``method -> level -> scores``, each array aligned on the
+        positions of ``df_context`` (``NaN`` for a cell without stored score).
+    """
+    if df_existing is None or df_existing.empty:
+        return {}
+    cells = pd.MultiIndex.from_arrays(
+        [
+            df_context[config.reporter_col].astype(str).to_numpy(),
+            df_context[config.product_col].astype(str).to_numpy(),
+        ]
+    )
+    aligned: Dict[str, Dict[str, np.ndarray]] = {}
+    for method, frame in df_existing.groupby("method", sort=False):
+        indexed = frame.set_index(
+            [
+                frame[config.reporter_col].astype(str).to_numpy(),
+                frame[config.product_col].astype(str).to_numpy(),
+            ]
+        )
+        aligned[str(method)] = {
+            level: pd.to_numeric(indexed[f"score_{level}"], errors="coerce")
+            .reindex(cells)
+            .to_numpy(dtype=float)
+            for level in config.levels
+        }
+    return aligned
+
+
+# Fonction d'assemblage des scores d'un groupe soumis au consensus
+def _consensus_inputs(
+    config: SynthesisConfig,
+    group: _GroupContext,
+    scores_of_group: Mapping[str, np.ndarray],
+    existing_context: Mapping[str, Mapping[str, np.ndarray]],
+) -> Dict[str, np.ndarray]:
+    """Gather the score vectors the consensus of one group ranks.
+
+    The vectors follow the order of ``config.methods``, which is the order of
+    a complete run: a consensus rule broken on ties by position thus gives the
+    same ranking whether every method was computed in this run or not. A
+    stored method enters only when it scored at least one row of the group,
+    which is how a method actually scored (not skipped) shows in a complete
+    run.
+
+    Args:
+        config: Synthesis configuration.
+        group: Execution context of the group.
+        scores_of_group: Scores of the methods computed in this run.
+        existing_context: Stored scores of the other methods, aligned on the
+            context (see :func:`_align_existing_scores`).
+
+    Returns:
+        Score vectors aligned on the group positions, keyed by method name.
+    """
+    if not existing_context:
+        return dict(scores_of_group)
+    inputs: Dict[str, np.ndarray] = {}
+    for spec in config.methods:
+        if spec.name in scores_of_group:
+            inputs[spec.name] = scores_of_group[spec.name]
+            continue
+        stored = existing_context.get(spec.name, {}).get(group.level)
+        if stored is None:
+            continue
+        values = stored[group.positions]
+        if np.isfinite(values).any():
+            inputs[spec.name] = values
+    return inputs
 
 
 # Fonction de construction des champs identifiants d'une ligne de diagnostic

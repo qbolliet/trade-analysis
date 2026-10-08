@@ -30,8 +30,11 @@ Exemples::
     invalidate-freshness-script --step partners --metrics HHI/export
     # Étape BACI corrigée : réestimation du millésime HS2017
     invalidate-freshness-script --step baci --vintages HS2017
-    # Méthode de synthèse corrigée : recalcul de toute la synthèse
-    invalidate-freshness-script --step synthesis
+    # Méthode de synthèse corrigée : recalcul de cette méthode (et du consensus)
+    # sur tous les contextes
+    invalidate-freshness-script --step synthesis --metrics critic_sum
+    # Toute la synthèse, sur une seule période
+    invalidate-freshness-script --step synthesis --periods 2023
 
 Les registres sont lus et écrits avec la configuration de l'environnement
 (``VULNERABILITIES_CONFIG_PATH``, ``EUROSTAT_CONFIG_PATH``, ``BACI_CONFIG_PATH``,
@@ -73,14 +76,20 @@ STEPS: Tuple[str, ...] = ("partners", "network", "baci", "synthesis", "coherence
 # Empreinte des tables de passage des unités partenaires historiques (même nom
 # que dans scripts/compute_trade_vulnerabilities.py, importé paresseusement ici)
 _CONCORDANCE_FINGERPRINT = "concordance"
+# Empreinte des pseudo-méthodes de consensus de la synthèse (même nom que dans
+# scripts/compute_synthetic_scores.py)
+_CONSENSUS_FINGERPRINT = "consensus"
 
+# Dimensions des contextes de la synthèse et de la cohérence (clés de contexte de
+# config/synthesis.yaml : millésime SH, fréquence, flux, indicateur, période)
+_CONTEXT_DIMENSIONS = frozenset({"hs_vintage", "freq", "flow", "indicators", "TIME_PERIOD"})
 # Dimensions des unités de chaque étape (contrôle des filtres de périmètre)
 STEP_DIMENSIONS: Mapping[str, FrozenSet[str]] = {
     "partners": frozenset({"classification", "reporter", "product"}),
     "network": frozenset({"vintage"}),
     "baci": frozenset({"vintage"}),
-    "synthesis": frozenset({"scope"}),
-    "coherence": frozenset({"scope"}),
+    "synthesis": _CONTEXT_DIMENSIONS,
+    "coherence": _CONTEXT_DIMENSIONS,
 }
 
 # Dimensions auxquelles s'applique chaque filtre de périmètre
@@ -88,7 +97,7 @@ _FILTER_DIMENSIONS: Mapping[str, FrozenSet[str]] = {
     "reporters": frozenset({"reporter"}),
     "products": frozenset({"product"}),
     "periods": frozenset({"period", "year", "TIME_PERIOD"}),
-    "vintages": frozenset({"vintage", "classification"}),
+    "vintages": frozenset({"vintage", "classification", "hs_vintage"}),
 }
 
 # Nombre maximal d'unités énumérées dans le journal
@@ -96,17 +105,20 @@ _LOG_UNITS = 20
 
 
 # Fonction de listage des noms invalidables d'une étape
-def step_names(step: str) -> Tuple[str, ...]:
+def step_names(step: str, method_names: Sequence[str] = ()) -> Tuple[str, ...]:
     """Names whose fingerprint a step records.
 
     Partner and network steps record one fingerprint per metric; the
     historical partner units also record the fingerprint of the
-    correspondence tables they were converted with (``concordance``); BACI,
-    the synthesis and the coherence record a single fingerprint named after
-    the step.
+    correspondence tables they were converted with (``concordance``); BACI
+    and the coherence record a single fingerprint named after the step. The
+    synthesis records one fingerprint per configured method, one for the
+    consensus (``consensus``) and one for its input selection, named after
+    the step (``synthesis``: invalidating it recomputes every method).
 
     Args:
         step: Step name (one of :data:`STEPS`).
+        method_names: Configured synthesis methods (synthesis only).
 
     Returns:
         The names, in registry order.
@@ -119,18 +131,24 @@ def step_names(step: str) -> Tuple[str, ...]:
         ('HHI', 'CDI2', 'CDI3', 'concordance')
         >>> step_names("baci")
         ('baci',)
+        >>> step_names("synthesis", ["critic_sum"])
+        ('synthesis', 'consensus', 'critic_sum')
     """
     if step == "partners":
         return (*(cls.name for cls in DEFAULT_METRIC_CLASSES), _CONCORDANCE_FINGERPRINT)
     if step == "network":
         return tuple(cls.name for cls in DEFAULT_NETWORK_METRIC_CLASSES)
+    if step == "synthesis":
+        return (step, _CONSENSUS_FINGERPRINT, *method_names)
     if step in STEPS:
         return (step,)
     raise ValueError(f"Unknown step '{step}', expected one of {list(STEPS)}")
 
 
 # Fonction de validation des noms à invalider
-def resolve_names(step: str, names: Sequence[str]) -> Optional[FrozenSet[str]]:
+def resolve_names(
+    step: str, names: Sequence[str], method_names: Sequence[str] = ()
+) -> Optional[FrozenSet[str]]:
     """Validate the names to invalidate.
 
     A typo would otherwise silently invalidate nothing. The partner and network
@@ -141,6 +159,7 @@ def resolve_names(step: str, names: Sequence[str]) -> Optional[FrozenSet[str]]:
     Args:
         step: Step name.
         names: Requested names (empty: every fingerprint of the units).
+        method_names: Configured synthesis methods (synthesis only).
 
     Returns:
         The names, or ``None`` for every fingerprint.
@@ -162,12 +181,14 @@ def resolve_names(step: str, names: Sequence[str]) -> Optional[FrozenSet[str]]:
     # Nom connu de l'étape, éventuellement qualifié par un sens de flux connu
     def _known(name: str) -> bool:
         base, qualifier = split_qualified(name)
-        return base in step_names(step) and (qualifier is None or qualifier in FLOW_NAMES)
+        known = step_names(step, method_names)
+        return base in known and (qualifier is None or qualifier in FLOW_NAMES)
 
     unknown = sorted(name for name in set(names) if not _known(name))
     if unknown:
         raise ValueError(
-            f"Unknown name(s) {unknown} for step '{step}', expected among {list(step_names(step))}"
+            f"Unknown name(s) {unknown} for step '{step}', expected among "
+            f"{list(step_names(step, method_names))}"
         )
     return frozenset(names)
 
@@ -223,6 +244,22 @@ def build_scope(
     return ForceSpec(**values)
 
 
+# Fonction de lecture des méthodes de synthèse configurées
+def configured_methods() -> Tuple[str, ...]:
+    """Names of the synthesis methods configured in ``config/synthesis.yaml``.
+
+    Returns:
+        The method names, in configuration order.
+    """
+    from scripts.compute_synthetic_scores import (
+        load_synthesis_config,
+        synthesis_config_from_params,
+    )
+
+    parameters = load_synthesis_config()["SYNTHESIS"].get("PARAMETERS") or {}
+    return tuple(spec.name for spec in synthesis_config_from_params(parameters).methods)
+
+
 # Fonction de construction du registre de fraîcheur d'une étape
 def build_registry(step: str) -> FreshnessRegistry:
     """Build the freshness registry of a step from the environment configuration.
@@ -265,15 +302,19 @@ def build_registry(step: str) -> FreshnessRegistry:
 
         return baci_registry(load_baci_config())
     if step in {"synthesis", "coherence"}:
-        from scripts.compute_synthetic_scores import global_registry, load_synthesis_config
+        from scripts.compute_synthetic_scores import (
+            context_registry,
+            load_synthesis_config,
+            synthesis_config_from_params,
+        )
 
         synthesis_file = load_synthesis_config()
-        block = synthesis_file[step.upper()]
-        return global_registry(
-            block["PATHS"]["LAST_COMPUTATION_PATH"],
+        config = synthesis_config_from_params(synthesis_file["SYNTHESIS"].get("PARAMETERS") or {})
+        return context_registry(
+            synthesis_file[step.upper()],
             synthesis_file["SYNTHESIS"]["BUCKET"],
             step,
-            step.upper(),
+            config.context_columns,
         )
     raise ValueError(f"Unknown step '{step}', expected one of {list(STEPS)}")
 
@@ -326,8 +367,8 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     )
     parser.add_argument("--reporters", default="", help="Reporter codes (partners).")
     parser.add_argument("--products", default="", help="Product code prefixes (partners).")
-    parser.add_argument("--periods", default="", help="Periods (units carrying a period).")
-    parser.add_argument("--vintages", default="", help="Vintages or classifications.")
+    parser.add_argument("--periods", default="", help="Periods (units carrying a period: synthesis, coherence).")
+    parser.add_argument("--vintages", default="", help="Vintages, classifications or HS vintages of a context.")
     parser.add_argument("--dry-run", action="store_true", help="List the units without writing.")
     return parser.parse_args(argv)
 
@@ -349,7 +390,12 @@ def main(
     """
     args = parse_args(argv)
     try:
-        names = resolve_names(args.step, parse_force_list(args.metrics))
+        requested_names = parse_force_list(args.metrics)
+        # Méthodes de synthèse configurées : lues seulement si des noms sont demandés
+        method_names = (
+            configured_methods() if args.step == "synthesis" and requested_names else ()
+        )
+        names = resolve_names(args.step, requested_names, method_names)
         scope = build_scope(
             args.step,
             reporters=args.reporters,

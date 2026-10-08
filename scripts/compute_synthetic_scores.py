@@ -5,9 +5,9 @@ Combine les deux familles d'indicateurs déjà calculées — indices partenaire
 et indices de réseau (`vulnerabilities.network_indicators`, produits par
 `compute_network_vulnerabilities.py`) — en une table de scores synthétiques :
 une ligne par cellule `reporter x product` d'un contexte
-`(freq, flow, indicators, TIME_PERIOD)` et par méthode d'agrégation, avec trois
-paires `(score, rang)`, une par niveau de comparaison (`by_product`,
-`by_reporter`, `global`, cf. D-09). La méthodologie multicritère est portée par
+`(hs_vintage, freq, flow, indicators, TIME_PERIOD)` et par méthode d'agrégation,
+avec trois paires `(score, rang)`, une par niveau de comparaison (`by_product`,
+`by_reporter`, `global`). La méthodologie multicritère est portée par
 `macroforecast.trade.aggregation.run_synthesis`, fonction pure : ce script fait
 tout l'I/O (lecture DuckLake des sources, jointure SQL, écriture des schémas
 résultat, registre de fraîcheur, suivi MLflow).
@@ -20,23 +20,35 @@ catalogue `vulnerabilities` : `synthesis` pour les scores,
 `synthesis_diagnostics` pour les diagnostics d'ajustement de la famille `fit`
 (même table longue que le script de cohérence).
 
-Fraîcheur. Les registres amont des vulnérabilités partenaires et de
-réseau sont indexés par unité de travail sans période : on ne peut pas savoir
-quelles périodes ont bougé. L'unité de fraîcheur de la synthèse est donc unique
-(`global`) : tous les contextes sélectionnés par `FILTERS` sont recalculés, ou
-aucun. Ils le sont quand la synthèse n'a jamais tourné, quand un calcul amont est
-postérieur au watermark enregistré, quand l'empreinte globale (liste complète des
-méthodes, configuration, sources et filtres) change, ou en cas de forçage
-(`FORCE` historique du YAML ou `runtime.FORCE_STEPS=synthesis`). Le registre
-(fragment unique au chemin `PATHS.LAST_COMPUTATION_PATH`) consigne aussi les
-raisons des unités amont recalculées depuis (cascade). La date écrite est
-capturée avant le calcul, jamais après, pour ne pas rater une mise à jour
-concurrente.
+Fraîcheur, par contexte et par méthode. L'unité de fraîcheur est le contexte ;
+le registre (`STATE.PATH_TEMPLATE`, un fichier par période) porte pour chaque
+contexte une empreinte par méthode, une pour le consensus et une pour la
+sélection des entrées. Un contexte est recalculé :
+
+* entièrement, s'il n'a jamais été calculé, s'il entre dans le périmètre d'un
+  forçage (`FORCE` du YAML ou `runtime.FORCE_STEPS`), si un changement amont
+  touchant toutes ses périodes est survenu depuis (couple partenaire calculé pour
+  la première fois, méthodologie partenaire modifiée ou forcée, réseau de son
+  millésime recalculé), ou si les métriques partenaires ont de nouvelles données
+  et que sa période est l'une des `RECENT_PERIODS` plus récentes ;
+* pour les seules méthodes dont l'empreinte a changé ou a été invalidée, plus le
+  consensus, nourri des scores déjà en base des autres méthodes : ajouter ou
+  corriger une méthode ne recalcule qu'elle, sur tout l'historique.
+
+L'exécution enchaîne trois temps : planification (requête des contextes de la
+grille, sans lecture des métriques), calcul pur de chaque contexte, écriture par
+lots de `WRITE_BATCH_CONTEXTS` contextes (lignes des méthodes recalculées
+remplacées dans une transaction par table), le registre avançant lot par lot.
+Le budget `MAX_CONTEXTS_PER_RUN` (null en régime nominal) ne sert qu'au
+rattrapage. `--cadence-check` (ou `CADENCE_CHECK=1`) fait sortir le script sans
+rien calculer si la dernière exécution date de moins de
+`CADENCE.MIN_INTERVAL_DAYS` jours. La date écrite est capturée avant le calcul,
+jamais après, pour ne pas rater une mise à jour concurrente.
 
 Erreurs. Comme `compute_network_vulnerabilities.py` : l'échec d'un contexte
 n'interrompt pas les autres, chaque échec est capturé et journalisé, seuls les
-contextes réussis sont écrits, et le script ne sort en erreur qu'en fin de
-parcours.
+contextes réussis sont écrits et enregistrés, et le script ne sort en erreur
+qu'en fin de parcours.
 
 Le suivi d'exécution MLflow est piloté par le bloc `SYNTHESIS.MLFLOW` de
 `config/synthesis.yaml` : sans `TRACKING_URI` (ou sans serveur joignable),
@@ -46,13 +58,29 @@ seul run par exécution.
 # Importation des modules
 from __future__ import annotations
 # Modules de base
-from dataclasses import fields, replace
-from datetime import datetime
+from collections import Counter
+from dataclasses import dataclass, field, fields, replace
+from datetime import datetime, timedelta
 from contextlib import nullcontext
+import argparse
 import logging
+import numbers
 import os
 from pathlib import Path
-from typing import Any, Dict, Iterable, Iterator, List, Mapping, Optional, Sequence, Tuple
+import re
+from typing import (
+    Any,
+    Collection,
+    Dict,
+    FrozenSet,
+    Iterable,
+    Iterator,
+    List,
+    Mapping,
+    Optional,
+    Sequence,
+    Tuple,
+)
 import yaml
 
 # Modules de chargement/sauvegarde JSON (local ou S3), même brique que le téléchargement
@@ -60,10 +88,11 @@ from statflows.storage.json import Loader, Saver
 # Fabrique de connecteur DuckLake (seul point de lecture des identifiants)
 from kedro_pipeline.io.ducklake import (
     DuckLakeLocation,
+    DuckLakeTable,
     build_connector,
-    compute_write_options,
     pg_credentials_from_env,
     s3_credentials_from_env,
+    workflow_run_id,
 )
 # Module d'écriture des tables de faits DuckLake (upsert par clé primaire)
 from statflows.storage.ducklake.tables import FACT_TABLE, write_dataframe
@@ -78,7 +107,6 @@ from kedro_pipeline.io.freshness import (
     Unit,
     UnitPlan,
     UpstreamSummary,
-    adopt_legacy_flag,
     fingerprint,
     legacy_entry,
     plan_metrics,
@@ -95,10 +123,11 @@ from scripts.compute_trade_vulnerabilities import (
 from scripts.compute_network_vulnerabilities import network_registry
 # Paramètres d'exécution partagés (nomenclatures, forçage ponctuel)
 from scripts.download_comtrade import load_runtime_config
-# Macros SQL de nomenclature (référentiel des millésimes)
-from kedro_pipeline.config import nomenclature_macros_sql
+# Macros SQL de nomenclature et millésime en vigueur (référentiel des millésimes)
+from kedro_pipeline.config import nomenclature_macros_sql, vintage_in_force
 
-# Module de manipulation de données
+# Modules de manipulation de données
+import numpy as np
 import pandas as pd
 
 # Module de suivi d'exécution (MLflow optionnel, objet nul par défaut)
@@ -116,6 +145,15 @@ from macroforecast.trade.aggregation import (
     method_spec_from_mapping,
     run_synthesis,
 )
+from macroforecast.trade.aggregation.methods import (
+    DRAW_PARAMETERS,
+    SEED_PARAMETERS,
+    MethodSpec,
+    method_metrics,
+    registry_entry,
+    resolve_normalization,
+)
+from macroforecast.trade.aggregation.synthesis import CONSENSUS_PREFIX, FIT_FAMILY
 
 # Configuration de logging
 logging.basicConfig(
@@ -146,6 +184,15 @@ _IN_FORCE_COLUMN = "in_force"
 _VINTAGE_COLUMN = "hs_vintage"
 # Valeurs admises de `SYNTHESIS.VINTAGES`
 VINTAGE_MODES: Tuple[str, ...] = ("in_force", "all")
+# Colonne de la table des scores portant le nom de la méthode (ou pseudo-méthode)
+_METHOD_COLUMN = "method"
+# Colonnes de la table longue des diagnostics : famille et objet de la statistique
+_FAMILY_COLUMN = "family"
+_ITEM_A_COLUMN = "item_a"
+# Raisons de calcul d'une unité partenaire valant changement de toutes ses
+# périodes : couple jamais calculé (tout son historique arrive d'un coup),
+# changement de méthodologie, forçage
+_FULL_CHANGE_REASONS = frozenset({"first", "fingerprint", "forced"})
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -381,6 +428,8 @@ def build_source_query(
     catalog_alias: str,
     flow_codes: Optional[Sequence[int]] = None,
     vintages: Optional[str] = None,
+    contexts: Optional[Sequence[Sequence[Any]]] = None,
+    context_columns: Optional[Sequence[str]] = None,
 ) -> str:
     """Build the single DuckDB query reading and joining the source tables (S-2.3).
 
@@ -417,13 +466,20 @@ def build_source_query(
         vintages: ``"in_force"`` (rows in force only), ``"all"`` or ``None``
             (no predicate on the nomenclature; see
             :func:`load_synthesis_vintages`).
+        contexts: Context tuples the read is restricted to (a row-value
+            ``IN`` predicate on the grid, see :func:`context_in_predicate`),
+            so that an incremental run reads its contexts batch by batch;
+            ``None`` adds no predicate.
+        context_columns: Ordered context key columns, required with
+            ``contexts``.
 
     Returns:
         The SQL query as a string.
 
     Raises:
-        ValueError: If ``sources`` is empty or a joined source carries no
-            ``ON`` / ``WHERE`` condition.
+        ValueError: If ``sources`` is empty, if a joined source carries no
+            ``ON`` / ``WHERE`` condition, or if ``contexts`` is given without
+            ``context_columns``.
 
     Examples:
         >>> query = build_source_query(
@@ -441,6 +497,11 @@ def build_source_query(
         ...     [{"SCHEMA": "indicators", "ALIAS": "p"}], {}, "v", vintages="in_force"
         ... ).splitlines()[-1]
         'WHERE p."in_force" = true'
+        >>> build_source_query(
+        ...     [{"SCHEMA": "indicators", "ALIAS": "p"}], {}, "v",
+        ...     contexts=[("A",)], context_columns=["freq"],
+        ... ).splitlines()[-3:]
+        ['WHERE (p."freq") IN (', "    ('A')", '  )']
     """
     if not sources:
         raise ValueError("`SOURCES` doit contenir au moins la grille.")
@@ -479,30 +540,278 @@ def build_source_query(
         lines.extend(f'  AND {condition}' for condition in conditions[1:])
 
     # Clause WHERE : prédicat des FILTERS puis, optionnellement, restriction aux
-    # N dernières périodes distinctes de la grille
-    where_parts: List[str] = []
-    if filters.get("WHERE"):
-        where_parts.append(filters["WHERE"])
-    if flow_codes is not None:
-        codes = ", ".join(str(int(code)) for code in flow_codes)
-        where_parts.append(f'{grid["ALIAS"]}."{_FLOW_COLUMN}" IN ({codes})')
-    if vintages == "in_force":
-        where_parts.append(f'{grid["ALIAS"]}."{_IN_FORCE_COLUMN}" = true')
-    last_n_periods = filters.get("LAST_N_PERIODS")
-    if last_n_periods is not None:
-        where_parts.append(
-            f'{grid["ALIAS"]}."{_PERIOD_COLUMN}" IN (\n'
-            f'    SELECT DISTINCT "{_PERIOD_COLUMN}"\n'
-            f'    FROM {_table(grid["SCHEMA"])}\n'
-            f'    ORDER BY 1 DESC\n'
-            f'    LIMIT {int(last_n_periods)}\n'
-            f'  )'
-        )
+    # N dernières périodes distinctes de la grille et aux contextes demandés
+    where_parts = _grid_where_parts(grid, filters, catalog_alias, flow_codes, vintages)
+    if contexts is not None:
+        if context_columns is None:
+            raise ValueError("`contexts` requires `context_columns`.")
+        where_parts.append(context_in_predicate(context_columns, contexts, grid["ALIAS"]))
     if where_parts:
         lines.append(f'WHERE {where_parts[0]}')
         lines.extend(f'  AND {part}' for part in where_parts[1:])
 
     return "\n".join(lines)
+
+
+# Fonction de construction des prédicats de la grille (FILTERS, flux, nomenclature)
+def _grid_where_parts(
+    grid: Mapping[str, Any],
+    filters: Mapping[str, Any],
+    catalog_alias: str,
+    flow_codes: Optional[Sequence[int]],
+    vintages: Optional[str],
+) -> List[str]:
+    """Build the predicates on the grid shared by the source and context queries.
+
+    Args:
+        grid: First entry of ``SOURCES`` (``SCHEMA``, ``ALIAS``).
+        filters: The ``FILTERS`` mapping (``WHERE``, ``LAST_N_PERIODS``).
+        catalog_alias: DuckLake catalog alias.
+        flow_codes: Flow codes of the synthesised directions, or ``None``.
+        vintages: ``"in_force"``, ``"all"`` or ``None``.
+
+    Returns:
+        The predicates, in order: ``FILTERS.WHERE``, the flow list, the
+        in-force flag, the restriction to the last periods.
+    """
+    alias = grid["ALIAS"]
+    table = f'"{catalog_alias}"."{grid["SCHEMA"]}"."{FACT_TABLE}"'
+    where_parts: List[str] = []
+    if filters.get("WHERE"):
+        where_parts.append(filters["WHERE"])
+    if flow_codes is not None:
+        codes = ", ".join(str(int(code)) for code in flow_codes)
+        where_parts.append(f'{alias}."{_FLOW_COLUMN}" IN ({codes})')
+    if vintages == "in_force":
+        where_parts.append(f'{alias}."{_IN_FORCE_COLUMN}" = true')
+    last_n_periods = filters.get("LAST_N_PERIODS")
+    if last_n_periods is not None:
+        where_parts.append(
+            f'{alias}."{_PERIOD_COLUMN}" IN (\n'
+            f'    SELECT DISTINCT "{_PERIOD_COLUMN}"\n'
+            f'    FROM {table}\n'
+            f'    ORDER BY 1 DESC\n'
+            f'    LIMIT {int(last_n_periods)}\n'
+            f'  )'
+        )
+    return where_parts
+
+
+# Fonction de rendu d'un littéral SQL à partir d'une valeur scalaire
+def _sql_literal(value: Any) -> str:
+    """Render one scalar as a DuckDB SQL literal.
+
+    Strings are single-quoted with quote doubling; booleans become ``TRUE`` /
+    ``FALSE``; integers and floats are emitted verbatim; anything else falls
+    back to its quoted string form. ``numpy`` scalars are handled through the
+    ``numbers`` ABCs.
+
+    Args:
+        value: Scalar drawn from a context tuple.
+
+    Returns:
+        The SQL literal.
+
+    Examples:
+        >>> _sql_literal("VALUE_IN_EUROS")
+        "'VALUE_IN_EUROS'"
+        >>> _sql_literal(1)
+        '1'
+        >>> _sql_literal("d'Ivoire")
+        "'d''Ivoire'"
+    """
+    # Chaîne : guillemets simples, apostrophes doublées
+    if isinstance(value, str):
+        escaped = value.replace("'", "''")
+        return f"'{escaped}'"
+    # Booléen avant l'entier (bool est sous-classe de int)
+    if isinstance(value, (bool, np.bool_)):
+        return "TRUE" if value else "FALSE"
+    # Entier puis réel, via les ABC `numbers` (couvre les scalaires numpy)
+    if isinstance(value, numbers.Integral):
+        return str(int(value))
+    if isinstance(value, numbers.Real):
+        return repr(float(value))
+    # Repli : forme chaîne échappée
+    escaped = str(value).replace("'", "''")
+    return f"'{escaped}'"
+
+
+# Fonction de construction d'un prédicat d'appartenance à une liste de contextes
+def context_in_predicate(
+    context_columns: Sequence[str],
+    contexts: Sequence[Sequence[Any]],
+    alias: Optional[str] = None,
+) -> str:
+    """Build the row-value ``IN`` predicate selecting a list of contexts.
+
+    An empty list yields ``FALSE`` rather than no predicate, so that a query
+    restricted to no context never scans the whole table.
+
+    Args:
+        context_columns: Ordered context key columns.
+        contexts: Context tuples, each in the order of ``context_columns``.
+        alias: Table alias qualifying the columns, or ``None``.
+
+    Returns:
+        The SQL predicate.
+
+    Examples:
+        >>> print(context_in_predicate(["freq", "flow"], [("A", 1), ("A", 2)]))
+        ("freq", "flow") IN (
+            ('A', 1),
+            ('A', 2)
+          )
+        >>> context_in_predicate(["freq"], [], alias="p")
+        'FALSE'
+    """
+    if not contexts:
+        return "FALSE"
+    prefix = f"{alias}." if alias else ""
+    columns = ", ".join(f'{prefix}"{column}"' for column in context_columns)
+    tuples = ",\n    ".join(
+        "(" + ", ".join(_sql_literal(value) for value in context) + ")"
+        for context in contexts
+    )
+    return f"({columns}) IN (\n    {tuples}\n  )"
+
+
+# Fonction de construction de la requête des contextes de la grille
+def build_contexts_query(
+    sources: Sequence[Mapping[str, Any]],
+    filters: Mapping[str, Any],
+    catalog_alias: str,
+    context_columns: Sequence[str],
+    flow_codes: Optional[Sequence[int]] = None,
+    vintages: Optional[str] = None,
+) -> str:
+    """Build the query listing the distinct contexts of the filtered grid.
+
+    Same predicates as :func:`build_source_query` (``FILTERS``, flows, in-force
+    flag, last periods), on the grid alone: no join, no metric column is read.
+    ``FILTERS.WHERE`` is a predicate on the grid alias by contract.
+
+    Args:
+        sources: The ``SOURCES`` list; only the grid (first entry) is read.
+        filters: The ``FILTERS`` mapping.
+        catalog_alias: DuckLake catalog alias.
+        context_columns: Ordered context key columns.
+        flow_codes: Flow codes of the synthesised directions, or ``None``.
+        vintages: ``"in_force"``, ``"all"`` or ``None``.
+
+    Returns:
+        The SQL query, one row per distinct context.
+
+    Raises:
+        ValueError: If ``sources`` is empty.
+
+    Examples:
+        >>> print(build_contexts_query(
+        ...     [{"SCHEMA": "indicators", "ALIAS": "p"}], {}, "v", ["freq", "flow"],
+        ...     flow_codes=[1], vintages="in_force",
+        ... ))
+        SELECT DISTINCT p."freq", p."flow"
+        FROM "v"."indicators"."fact_table" AS p
+        WHERE p."flow" IN (1)
+          AND p."in_force" = true
+    """
+    if not sources:
+        raise ValueError("`SOURCES` doit contenir au moins la grille.")
+    grid = sources[0]
+    alias = grid["ALIAS"]
+    columns = ", ".join(f'{alias}."{column}"' for column in context_columns)
+    lines = [
+        f"SELECT DISTINCT {columns}",
+        f'FROM "{catalog_alias}"."{grid["SCHEMA"]}"."{FACT_TABLE}" AS {alias}',
+    ]
+    where_parts = _grid_where_parts(grid, filters, catalog_alias, flow_codes, vintages)
+    if where_parts:
+        lines.append(f"WHERE {where_parts[0]}")
+        lines.extend(f"  AND {part}" for part in where_parts[1:])
+    return "\n".join(lines)
+
+
+# Fonction de lecture des contextes de la grille
+def read_contexts(conn: Any, query: str) -> List[Tuple[Any, ...]]:
+    """Run the context query and return the typed context tuples.
+
+    Args:
+        conn: Open DuckLake / DuckDB connection.
+        query: Query built by :func:`build_contexts_query`.
+
+    Returns:
+        One tuple per distinct context, values typed as stored (they are
+        reused as SQL literals to read and replace the rows of the context).
+    """
+    return [tuple(row) for row in conn.execute(query).fetchall()]
+
+
+# Fonction de construction de la requête de lecture des scores
+def build_scores_query(
+    catalog_alias: str,
+    schema: str,
+    context_columns: Sequence[str],
+    contexts: Sequence[Sequence[Any]],
+    methods: Optional[Sequence[str]] = None,
+) -> str:
+    """Build the query reading the score table, restricted to ``contexts``.
+
+    Pure function, no database connection. The table is read whole
+    (``SELECT *``) — the runner projects the columns it needs — and filtered by
+    a row-value ``IN`` list on the context key, so a single query covers every
+    selected context. An empty ``contexts`` yields a ``WHERE FALSE`` guard
+    rather than an unfiltered scan.
+
+    Args:
+        catalog_alias: DuckLake catalog alias the fact table lives in.
+        schema: Result schema of the scores (``SYNTHESIS.RESULT_SCHEMA``).
+        context_columns: Ordered context key columns.
+        contexts: Context tuples to keep, each in the order of
+            ``context_columns``.
+        methods: Values of the ``method`` column to keep (the stored scores of
+            the methods a partial recomputation leaves out); ``None`` keeps
+            every method.
+
+    Returns:
+        The SQL query as a string.
+
+    Examples:
+        >>> print(build_scores_query(
+        ...     "vulnerabilities", "synthesis", ["freq", "flow"],
+        ...     [("A", 1), ("A", 2)],
+        ... ))
+        SELECT * FROM "vulnerabilities"."synthesis"."fact_table"
+        WHERE ("freq", "flow") IN (
+            ('A', 1),
+            ('A', 2)
+          )
+        >>> build_scores_query("v", "s", ["freq"], [("A",)], methods=["mpi"]).splitlines()[-1]
+        '  AND "method" IN (\\'mpi\\')'
+    """
+    table = f'"{catalog_alias}"."{schema}"."{FACT_TABLE}"'
+    base = f"SELECT * FROM {table}"
+    # Aucun contexte : garde-fou explicite plutôt qu'un balayage complet
+    if not contexts:
+        return f"{base}\nWHERE FALSE"
+    query = f"{base}\nWHERE {context_in_predicate(context_columns, contexts)}"
+    if methods is not None:
+        query += f'\n  AND "{_METHOD_COLUMN}" IN ({_sql_list(methods)})'
+    return query
+
+
+# Fonction de rendu d'une liste de littéraux SQL
+def _sql_list(values: Iterable[Any]) -> str:
+    """Render values as a comma-separated list of SQL literals (``FALSE``-safe).
+
+    Args:
+        values: Scalars to render.
+
+    Returns:
+        The literals joined by ``", "``; ``NULL`` for an empty list, which an
+        ``IN`` never matches.
+    """
+    rendered = [_sql_literal(value) for value in values]
+    return ", ".join(rendered) if rendered else "NULL"
 
 
 # Fonction de lecture de la table source combinée
@@ -978,6 +1287,832 @@ def global_entry(
 
 
 # ──────────────────────────────────────────────────────────────────────
+# Fraîcheur par contexte et par méthode : empreintes
+# ──────────────────────────────────────────────────────────────────────
+
+# Empreinte de la sélection des entrées (sources, filtres, sens, nomenclatures,
+# clés) : périmée, elle rend toutes les méthodes de tous les contextes périmées.
+# Elle porte le nom de l'étape, que l'invalidation `--metrics synthesis` désigne
+INPUTS_FINGERPRINT = STEP
+# Empreinte des pseudo-méthodes de consensus (règles et liste des méthodes classées)
+CONSENSUS_FINGERPRINT = "consensus"
+
+
+# Fonction de description des paramètres méthodologiques d'une méthode
+def method_fingerprint_params(spec: MethodSpec, config: SynthesisConfig) -> Dict[str, Any]:
+    """Parameters digested into the fingerprint of one synthesis method.
+
+    The fingerprint of a method changes, and the method alone (plus the
+    consensus) is recomputed on every context, when one of these parameters
+    changes:
+
+    * the entry of the YAML ``methods`` list: ``kind``, ``params``, and the
+      **resolved** ``metrics`` (``None`` resolves to every configured metric),
+      ``levels`` (restricted to the configured levels), ``normalization`` (the
+      method override, else the configuration default when the ``kind``
+      admits it, else the default of the ``kind``) and ``min_group_size`` (the
+      method override, else the larger of the ``kind`` default and the
+      configuration floor);
+    * the configuration fields every method depends on: ``winsorize_quantile``,
+      ``rank_ties`` and the polarities of the method's own metrics;
+    * ``random_state``, for the methods drawing at random (``smaa``,
+      ``cone_quantile``, ``kantorovich``) and for those bootstrapped;
+    * ``smaa_n_draws`` for ``smaa`` and ``cone_quantile`` (shared draws),
+      ``smaa_k`` for ``smaa``, ``ot_dimension_limit`` for ``kantorovich``;
+    * ``bootstrap_n``, ``bootstrap_ci`` and ``bootstrap_levels`` when the
+      method is listed in ``bootstrap_methods``.
+
+    The name of the method is the key of the fingerprint, not a parameter. A
+    corrected implementation is signalled by invalidating the fingerprint
+    (``invalidate-freshness-script --step synthesis --metrics <method>``), the
+    code itself never being digested.
+
+    Args:
+        spec: Configured method.
+        config: Synthesis configuration.
+
+    Returns:
+        JSON-ready mapping of the parameters.
+
+    Raises:
+        ValueError: If the ``kind`` is unknown or a requested metric or
+            normalisation is not available.
+
+    Examples:
+        >>> params = method_fingerprint_params(
+        ...     MethodSpec(name="mpi", kind="mpi"), SynthesisConfig(metric_columns=("HHI",)))
+        >>> params["metrics"], params["normalization"], "random_state" in params
+        (['HHI'], 'minmax', False)
+    """
+    entry = registry_entry(spec.kind)
+    metrics = method_metrics(spec, config)
+    params = methodology_params(spec, excluded={"name"})
+    params.update(
+        {
+            "metrics": list(metrics),
+            "levels": [
+                level for level in config.levels
+                if spec.levels is None or level in spec.levels
+            ],
+            "normalization": resolve_normalization(spec, config),
+            "min_group_size": (
+                spec.min_group_size
+                if spec.min_group_size is not None
+                else max(entry.min_group_size, config.min_group_size)
+            ),
+            "winsorize_quantile": config.winsorize_quantile,
+            "rank_ties": config.rank_ties,
+            "polarities": {
+                name: sign for name, sign in config.polarities if name in metrics
+            },
+        }
+    )
+    bootstrapped = spec.name in config.bootstrap_methods
+    if spec.kind in SEED_PARAMETERS or bootstrapped:
+        params["random_state"] = config.random_state
+    if spec.kind in DRAW_PARAMETERS:
+        params["smaa_n_draws"] = config.smaa_n_draws
+    if spec.kind == "smaa":
+        params["smaa_k"] = config.smaa_k
+    if spec.kind == "kantorovich":
+        params["ot_dimension_limit"] = config.ot_dimension_limit
+    if bootstrapped:
+        params["bootstrap"] = {
+            "n": config.bootstrap_n,
+            "ci": config.bootstrap_ci,
+            "levels": list(config.bootstrap_levels),
+        }
+    return params
+
+
+# Fonction de calcul des empreintes de la synthèse par contexte
+def synthesis_context_requested(
+    config: SynthesisConfig,
+    sources: Optional[Sequence[Mapping[str, Any]]] = None,
+    filters: Optional[Mapping[str, Any]] = None,
+    flows: Optional[Sequence[str]] = None,
+    vintages: Optional[str] = None,
+) -> Dict[str, str]:
+    """Current fingerprints of a synthesis context: one per method, plus two.
+
+    * ``<method name>``: :func:`method_fingerprint_params` of the method;
+    * ``consensus``: the consensus rules, ``consensus_top_n``, ``rank_ties``,
+      the levels and the sorted list of the configured method names (adding
+      or removing a method changes the consensus); absent when no consensus
+      is configured;
+    * ``synthesis``: the input selection (``SOURCES``, ``FILTERS``, ``FLOWS``,
+      ``VINTAGES``, context, reporter and product columns); when it changes,
+      every method of every context is recomputed.
+
+    Args:
+        config: Synthesis configuration.
+        sources: ``SYNTHESIS.SOURCES`` block.
+        filters: ``SYNTHESIS.FILTERS`` block.
+        flows: ``SYNTHESIS.FLOWS`` directions.
+        vintages: ``SYNTHESIS.VINTAGES``.
+
+    Returns:
+        Mapping fingerprint name -> fingerprint.
+
+    Raises:
+        ValueError: If two configured methods share a name, or a name collides
+            with ``consensus`` or ``synthesis``.
+
+    Examples:
+        >>> sorted(synthesis_context_requested(SynthesisConfig(
+        ...     metric_columns=("HHI",), methods=(MethodSpec(name="mpi", kind="mpi"),))))
+        ['consensus', 'mpi', 'synthesis']
+    """
+    names = [spec.name for spec in config.methods]
+    reserved = {INPUTS_FINGERPRINT, CONSENSUS_FINGERPRINT}
+    if len(set(names)) != len(names) or reserved & set(names):
+        raise ValueError(
+            f"Method names must be unique and differ from {sorted(reserved)}: {names}"
+        )
+    requested = {spec.name: fingerprint(spec.name, method_fingerprint_params(spec, config))
+                 for spec in config.methods}
+    if config.consensus:
+        requested[CONSENSUS_FINGERPRINT] = fingerprint(
+            CONSENSUS_FINGERPRINT,
+            {
+                "rules": list(config.consensus),
+                "top_n": config.consensus_top_n,
+                "rank_ties": config.rank_ties,
+                "levels": list(config.levels),
+                "methods": sorted(names),
+            },
+        )
+    requested[INPUTS_FINGERPRINT] = fingerprint(
+        INPUTS_FINGERPRINT,
+        {
+            "sources": list(sources or []),
+            "filters": dict(filters or {}),
+            "flows": list(flows) if flows is not None else None,
+            "vintages": vintages,
+            "context_columns": list(config.context_columns),
+            "reporter_col": config.reporter_col,
+            "product_col": config.product_col,
+        },
+    )
+    return requested
+
+
+# Fonction d'extension des noms périmés d'un contexte
+def expand_synthesis_names(
+    names: Collection[str], requested: Mapping[str, str], method_names: Sequence[str]
+) -> FrozenSet[str]:
+    """Complete the stale names of a context with the names they make stale.
+
+    A stale input selection makes every name stale; a recomputed method makes
+    the consensus stale, since the consensus ranks every method.
+
+    Args:
+        names: Stale fingerprint names of the context.
+        requested: Current fingerprints.
+        method_names: Configured method names.
+
+    Returns:
+        The names to recompute.
+
+    Examples:
+        >>> requested = {"mpi": "a", "bod": "b", "consensus": "c", "synthesis": "d"}
+        >>> sorted(expand_synthesis_names({"mpi"}, requested, ["mpi", "bod"]))
+        ['consensus', 'mpi']
+        >>> len(expand_synthesis_names({"synthesis"}, requested, ["mpi", "bod"]))
+        4
+    """
+    expanded = set(names)
+    if INPUTS_FINGERPRINT in expanded:
+        return frozenset(requested)
+    if expanded & set(method_names) and CONSENSUS_FINGERPRINT in requested:
+        expanded.add(CONSENSUS_FINGERPRINT)
+    return frozenset(expanded)
+
+
+# Fonction de sélection des méthodes à ajuster pour un plan
+def plan_methods(
+    names: Collection[str], method_names: Sequence[str]
+) -> Optional[Tuple[str, ...]]:
+    """Return the methods a context plan fits, ``None`` meaning all of them.
+
+    Args:
+        names: Names of the plan (see :func:`expand_synthesis_names`).
+        method_names: Configured method names, in configuration order.
+
+    Returns:
+        ``None`` when every configured method is stale, else the stale
+        methods in configuration order (possibly empty: consensus alone).
+
+    Examples:
+        >>> plan_methods({"mpi", "bod", "consensus"}, ["mpi", "bod"]) is None
+        True
+        >>> plan_methods({"consensus"}, ["mpi", "bod"])
+        ()
+    """
+    if set(method_names) <= set(names):
+        return None
+    return tuple(name for name in method_names if name in names)
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Fraîcheur par contexte : registre, réglages, amont
+# ──────────────────────────────────────────────────────────────────────
+
+# Réglages de l'exécution incrémentale d'une étape par contexte
+@dataclass(frozen=True)
+class IncrementalSettings:
+    """Run settings of a per-context step (synthesis or coherence).
+
+    Attributes:
+        recent_periods: Number of most recent periods recomputed when the
+            partner metrics have new data (the incremental download only
+            brings back the last observations); ``None`` treats every period
+            as recent.
+        max_contexts: Catch-up budget: maximum number of contexts computed in
+            one run, the most recent periods first, the others left to the
+            next runs; ``None`` (nominal regime) computes every stale context.
+        write_batch_contexts: Number of contexts read, written and recorded
+            together.
+        min_interval_days: Minimum interval between two runs under
+            ``--cadence-check``.
+        period_column: Context column holding the period.
+
+    Examples:
+        >>> IncrementalSettings().max_contexts is None
+        True
+    """
+    recent_periods: Optional[int] = None
+    max_contexts: Optional[int] = None
+    write_batch_contexts: int = 50
+    min_interval_days: float = 6.0
+    period_column: str = _PERIOD_COLUMN
+
+
+# Fonction de lecture de la profondeur de l'incrémental Eurostat
+def default_recent_periods(eurostat_config: Optional[Mapping[str, Any]]) -> Optional[int]:
+    """Number of periods the incremental partner download brings back.
+
+    Args:
+        eurostat_config: Parsed Eurostat download configuration, or ``None``.
+
+    Returns:
+        The largest ``N_LAST_OBSERVATIONS`` found in it, or ``None`` when none
+        is set (every period then counts as recent, the conservative choice).
+
+    Examples:
+        >>> default_recent_periods({"DOWNLOADS": {"DS": {"N_LAST_OBSERVATIONS": 10}}})
+        10
+        >>> default_recent_periods(None) is None
+        True
+    """
+    found: List[int] = []
+
+    # Parcours récursif : la clé vit sous le bloc de chaque dataflow
+    def walk(node: Any) -> None:
+        if isinstance(node, Mapping):
+            for key, value in node.items():
+                if key == "N_LAST_OBSERVATIONS" and value is not None:
+                    found.append(int(value))
+                else:
+                    walk(value)
+
+    walk(eurostat_config or {})
+    return max(found) if found else None
+
+
+# Fonction de lecture des réglages incrémentaux d'un bloc de configuration
+def incremental_settings(
+    block: Mapping[str, Any], eurostat_config: Optional[Mapping[str, Any]] = None
+) -> IncrementalSettings:
+    """Read the incremental settings of a ``SYNTHESIS`` or ``COHERENCE`` block.
+
+    Args:
+        block: Configuration block (keys ``RECENT_PERIODS``,
+            ``MAX_CONTEXTS_PER_RUN``, ``WRITE_BATCH_CONTEXTS``,
+            ``CADENCE.MIN_INTERVAL_DAYS``).
+        eurostat_config: Eurostat download configuration, the default of
+            ``RECENT_PERIODS``.
+
+    Returns:
+        The settings.
+
+    Raises:
+        ValueError: If a count is not a positive integer.
+
+    Examples:
+        >>> incremental_settings({"MAX_CONTEXTS_PER_RUN": 2, "RECENT_PERIODS": 3}).max_contexts
+        2
+    """
+    recent = block.get("RECENT_PERIODS")
+    if recent is None:
+        recent = default_recent_periods(eurostat_config)
+    budget = block.get("MAX_CONTEXTS_PER_RUN")
+    batch = block.get("WRITE_BATCH_CONTEXTS") or IncrementalSettings.write_batch_contexts
+    interval = (block.get("CADENCE") or {}).get("MIN_INTERVAL_DAYS")
+    for name, value in (("RECENT_PERIODS", recent), ("MAX_CONTEXTS_PER_RUN", budget),
+                        ("WRITE_BATCH_CONTEXTS", batch)):
+        if value is not None and int(value) < 1:
+            raise ValueError(f"{name} must be a positive integer, got {value!r}")
+    return IncrementalSettings(
+        recent_periods=int(recent) if recent is not None else None,
+        max_contexts=int(budget) if budget is not None else None,
+        write_batch_contexts=int(batch),
+        min_interval_days=(
+            float(interval) if interval is not None else IncrementalSettings.min_interval_days
+        ),
+    )
+
+
+# Fonction de construction de l'unité de fraîcheur d'un contexte
+def context_unit(context_columns: Sequence[str], values: Any) -> Unit:
+    """Return the freshness unit of a context.
+
+    Args:
+        context_columns: Ordered context key columns.
+        values: Context values (a tuple, or a scalar for a single column).
+
+    Returns:
+        The unit, one dimension per context column, values as text.
+
+    Examples:
+        >>> context_unit(["freq", "flow"], ("A", 1)).key
+        'A|1'
+    """
+    values = values if isinstance(values, tuple) else (values,)
+    return Unit.from_mapping(dict(zip(context_columns, values)))
+
+
+# Fonction de construction du registre par contexte d'une étape
+def context_registry(
+    block: Mapping[str, Any],
+    bucket: Optional[str],
+    step: str,
+    context_columns: Sequence[str],
+    *,
+    loader: Optional[Loader] = None,
+    saver: Optional[Saver] = None,
+) -> FreshnessRegistry:
+    """Build the per-context freshness registry of the synthesis or the coherence.
+
+    One entry per context; the fragment is set by ``STATE.PATH_TEMPLATE``,
+    whose fields must be context columns (one file per period, e.g.
+    ``trade/state/synthesis/{TIME_PERIOD}.json``).
+
+    Args:
+        block: ``SYNTHESIS`` or ``COHERENCE`` block (``STATE.PATH_TEMPLATE``).
+        bucket: S3 bucket, or ``None`` for local storage.
+        step: Step name.
+        context_columns: Ordered context key columns.
+        loader: JSON loader (a fresh one by default).
+        saver: JSON saver (a fresh one by default).
+
+    Returns:
+        The registry.
+
+    Raises:
+        KeyError: If the block has no ``STATE.PATH_TEMPLATE``.
+        ValueError: If the template names a field that is not a context column.
+    """
+    template = str(block["STATE"]["PATH_TEMPLATE"])
+    fields_named = re.findall(r"\{([^{}]*)\}", template)
+    unknown = sorted(set(fields_named) - set(context_columns))
+    if unknown:
+        raise ValueError(
+            f"STATE.PATH_TEMPLATE of step '{step}' names {unknown}, which are not "
+            f"context columns {list(context_columns)}"
+        )
+
+    # Libellé de fragment : valeurs des champs du modèle (la période par défaut)
+    def shard_of(unit: Unit) -> str:
+        return "|".join(str(unit.get(name)) for name in fields_named) or unit.key
+
+    return FreshnessRegistry(
+        template, bucket, step, shard_of=shard_of, loader=loader, saver=saver
+    )
+
+
+# Marques amont d'une étape par contexte, par pertinence de millésime
+@dataclass(frozen=True)
+class UpstreamMarks:
+    """Most recent upstream computations, by the contexts they concern.
+
+    A context of the synthesis reads the partner rows of its HS vintage
+    (``hs_vintage``) and period, joined to the network rows of the same
+    vintage. A partner unit in force (classification = label of the in-force
+    units) concerns the contexts in force; a historical partner unit of
+    vintage ``V`` concerns the historical contexts of ``V``; a network unit of
+    vintage ``V`` concerns every context of ``V``. A context is in force when
+    its ``hs_vintage`` is the vintage in force in its year.
+
+    Two families of marks, each the most recent ``last_computed`` per
+    relevance key:
+
+    * ``full``: changes that may alter **every period** of the contexts
+      concerned — a partner unit computed for the first time (a reporter x
+      product pair newly downloaded brings its whole history), recomputed
+      after a change of methodology or forced, and any network unit (a BACI
+      re-estimation rewrites every year of its vintage);
+    * ``partner``: any partner computation, including ``new_data``, which
+      only alters the most recent periods (the incremental download brings
+      back the last observations only).
+
+    Attributes:
+        watermark: Most recent upstream computation, recorded on the context
+            entries.
+        full: Relevance key -> most recent complete change.
+        partner: Relevance key -> most recent partner computation.
+        nomenclatures: HS vintage -> entry year, to tell a context in force
+            from a historical one; ``None`` makes every key relevant.
+        vintage_column: Context column holding the HS vintage.
+        period_column: Context column holding the period.
+
+    Examples:
+        >>> from kedro_pipeline.io.freshness import parse_instant
+        >>> t = parse_instant("2026-01-01")
+        >>> marks = UpstreamMarks.from_entries(
+        ...     [], [RegistryEntry(Unit.of(vintage="HS2017"), t, reason="new_data")],
+        ...     partner_label="HS2022", nomenclatures={"HS2017": 2017, "HS2022": 2022})
+        >>> marks.full_mark(Unit.of(hs_vintage="HS2017", TIME_PERIOD="2019")) == t
+        True
+        >>> marks.full_mark(Unit.of(hs_vintage="HS2022", TIME_PERIOD="2023")) is None
+        True
+    """
+    watermark: Optional[datetime]
+    full: Mapping[Tuple[str, str], datetime]
+    partner: Mapping[Tuple[str, str], datetime]
+    nomenclatures: Optional[Mapping[str, int]] = None
+    vintage_column: str = _VINTAGE_COLUMN
+    period_column: str = _PERIOD_COLUMN
+
+    # Construction à partir des entrées des registres amont
+    @classmethod
+    def from_entries(
+        cls,
+        partner_entries: Iterable[RegistryEntry],
+        network_entries: Iterable[RegistryEntry],
+        *,
+        partner_label: Optional[str],
+        nomenclatures: Optional[Mapping[str, int]],
+        vintage_column: str = _VINTAGE_COLUMN,
+        period_column: str = _PERIOD_COLUMN,
+    ) -> "UpstreamMarks":
+        """Summarise the partner and network registries into relevance marks.
+
+        Args:
+            partner_entries: Entries of the partner registries.
+            network_entries: Entries of the network registry.
+            partner_label: Classification of the partner units in force (the
+                most recent vintage label); ``None`` treats every partner
+                unit as in force.
+            nomenclatures: HS vintage -> entry year.
+            vintage_column: Context column holding the HS vintage.
+            period_column: Context column holding the period.
+
+        Returns:
+            The marks.
+        """
+        full: Dict[Tuple[str, str], datetime] = {}
+        partner: Dict[Tuple[str, str], datetime] = {}
+        watermark: Optional[datetime] = None
+
+        # Conservation du maximum par clé
+        def keep(marks: Dict[Tuple[str, str], datetime], key: Tuple[str, str], when: datetime) -> None:
+            if key not in marks or when > marks[key]:
+                marks[key] = when
+
+        for entry in partner_entries:
+            if entry.last_computed is None:
+                continue
+            classification = entry.unit.get("classification")
+            in_force = partner_label is None or classification in (None, partner_label)
+            key = ("partners", "in_force" if in_force else str(classification))
+            keep(partner, key, entry.last_computed)
+            if entry.reason in _FULL_CHANGE_REASONS:
+                keep(full, key, entry.last_computed)
+            watermark = entry.last_computed if watermark is None else max(watermark, entry.last_computed)
+        for entry in network_entries:
+            if entry.last_computed is None:
+                continue
+            keep(full, ("network", str(entry.unit.get("vintage"))), entry.last_computed)
+            watermark = entry.last_computed if watermark is None else max(watermark, entry.last_computed)
+        return cls(watermark, full, partner, nomenclatures, vintage_column, period_column)
+
+    # Clés de pertinence d'un contexte
+    def relevance_keys(self, unit: Unit) -> Optional[Tuple[Tuple[str, str], ...]]:
+        """Relevance keys of a context; ``None`` when every key is relevant.
+
+        Args:
+            unit: Context unit.
+
+        Returns:
+            The partner key (in force or historical vintage) and the network
+            key of its vintage, or ``None`` when the context carries no HS
+            vintage or its period cannot be placed in the nomenclatures.
+        """
+        vintage = unit.get(self.vintage_column)
+        period = unit.get(self.period_column)
+        if vintage is None or period is None or not self.nomenclatures:
+            return None
+        try:
+            in_force = vintage == vintage_in_force(int(str(period)[:4]), self.nomenclatures)
+        except ValueError:
+            return None
+        partner_key = ("partners", "in_force" if in_force else vintage)
+        return (partner_key, ("network", vintage))
+
+    # Maximum des marques pertinentes d'une famille
+    def _mark(self, marks: Mapping[Tuple[str, str], datetime], unit: Unit) -> Optional[datetime]:
+        keys = self.relevance_keys(unit)
+        values = list(marks.values()) if keys is None else [marks[k] for k in keys if k in marks]
+        return max(values) if values else None
+
+    # Dernier changement complet pertinent pour un contexte
+    def full_mark(self, unit: Unit) -> Optional[datetime]:
+        """Most recent upstream change altering every period of the context."""
+        return self._mark(self.full, unit)
+
+    # Dernier calcul partenaire pertinent pour un contexte
+    def partner_mark(self, unit: Unit) -> Optional[datetime]:
+        """Most recent partner computation concerning the context."""
+        return self._mark(self.partner, unit)
+
+
+# Fonction de lecture des registres amont, par famille
+def upstream_registry_groups(
+    vulnerability_config: Mapping[str, Any],
+    classification: str,
+) -> Tuple[List[FreshnessRegistry], List[FreshnessRegistry]]:
+    """Freshness registries of the partner and network steps, read only, by family.
+
+    Args:
+        vulnerability_config: Parsed ``config/vulnerabilities.yaml``.
+        classification: Classification label of the partner units in force.
+
+    Returns:
+        ``(partner_registries, network_registries)``.
+    """
+    partners: List[FreshnessRegistry] = []
+    for block in (vulnerability_config.get(_PARTNERS_ROOT) or {}).values():
+        if isinstance(block, Mapping) and (block.get("STATE") or {}).get("PATH_TEMPLATE"):
+            partners.append(partner_registry(block, classification))
+    network = vulnerability_config.get(_NETWORK_ROOT) or {}
+    networks = [network_registry(network)] if (network.get("STATE") or {}).get("PATH_TEMPLATE") else []
+    return partners, networks
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Fraîcheur par contexte : planification (fonctions pures)
+# ──────────────────────────────────────────────────────────────────────
+
+# Fonction de sélection des périodes récentes de la grille
+def recent_period_values(
+    units: Iterable[Unit], period_column: str, recent_periods: Optional[int]
+) -> Optional[FrozenSet[str]]:
+    """Return the ``recent_periods`` most recent periods among the contexts.
+
+    Args:
+        units: Planned context units.
+        period_column: Context column holding the period.
+        recent_periods: Number of periods; ``None`` means every period.
+
+    Returns:
+        The recent periods, or ``None`` when every period is recent.
+
+    Examples:
+        >>> units = [Unit.of(TIME_PERIOD=p) for p in ("2021", "2023", "2022")]
+        >>> sorted(recent_period_values(units, "TIME_PERIOD", 2))
+        ['2022', '2023']
+    """
+    if recent_periods is None:
+        return None
+    periods = sorted({str(unit.get(period_column)) for unit in units}, reverse=True)
+    return frozenset(periods[: int(recent_periods)])
+
+
+# Fonction de décision des contextes de synthèse à (re)calculer
+def plan_synthesis_contexts(
+    units: Sequence[Unit],
+    registry: FreshnessRegistry,
+    requested: Mapping[str, str],
+    marks: UpstreamMarks,
+    force: ForceSpec,
+    *,
+    method_names: Sequence[str],
+    recent_periods: Optional[int],
+    period_column: str = _PERIOD_COLUMN,
+    adopt_legacy_fingerprints: bool = False,
+) -> Dict[Unit, UnitPlan]:
+    """Decide, per context, why it is recomputed and which methods.
+
+    A context gets a single plan, the first matching reason winning:
+
+    * ``first``: never computed → every method and the consensus;
+    * ``forced``: within the forcing scope → the forced methods (and the
+      consensus), or all of them;
+    * ``new_data``: a relevant upstream change altering every period happened
+      since the context was computed (see :class:`UpstreamMarks`), or the
+      partner metrics changed and the context is one of the
+      ``recent_periods`` most recent periods → every method;
+    * ``fingerprint``: the methods whose fingerprint differs or is missing
+      (added, modified or invalidated), plus the consensus; a stale input
+      selection makes every method stale.
+
+    Args:
+        units: Contexts of the filtered grid.
+        registry: Per-context registry of the synthesis.
+        requested: Current fingerprints (:func:`synthesis_context_requested`).
+        marks: Upstream marks.
+        force: One-off forcing.
+        method_names: Configured method names.
+        recent_periods: Number of recent periods recomputed on partner new
+            data (``None``: every period).
+        period_column: Context column holding the period.
+        adopt_legacy_fingerprints: Deployment migration flag.
+
+    Returns:
+        Mapping ``unit -> UnitPlan`` of the stale contexts.
+    """
+    recent = recent_period_values(units, period_column, recent_periods)
+
+    # Règle « nouvelles données » : changement complet pertinent, ou données
+    # partenaires nouvelles sur une période récente
+    def is_new_data(unit: Unit, entry: RegistryEntry, _watermark: Optional[datetime]) -> bool:
+        since = entry.upstream_watermark
+        full = marks.full_mark(unit)
+        if full is not None and (since is None or full > since):
+            return True
+        partner = marks.partner_mark(unit)
+        if partner is not None and (since is None or partner > since):
+            return recent is None or str(unit.get(period_column)) in recent
+        return False
+
+    plans = units_to_compute(
+        units, registry, {}, requested, force, step=STEP,
+        is_new_data=is_new_data, adopt_legacy_fingerprints=adopt_legacy_fingerprints,
+    )
+    return {
+        unit: UnitPlan(plan.reason, expand_synthesis_names(plan.names, requested, method_names))
+        for unit, plan in plans.items()
+    }
+
+
+# Fonction d'ordonnancement et de troncature des contextes planifiés
+def select_contexts(
+    plans: Mapping[Unit, UnitPlan],
+    order: Sequence[Unit],
+    period_column: str,
+    max_contexts: Optional[int],
+) -> Tuple[List[Unit], int]:
+    """Order the stale contexts by decreasing period and apply the budget.
+
+    Args:
+        plans: Plans of the stale contexts.
+        order: Every context, in grid order (ties keep this order).
+        period_column: Context column holding the period.
+        max_contexts: Budget; ``None`` keeps every stale context.
+
+    Returns:
+        ``(selected, backlog)``: the contexts computed in this run, most
+        recent periods first, and the number left to the next runs.
+
+    Examples:
+        >>> units = [Unit.of(TIME_PERIOD=p) for p in ("2021", "2023", "2022")]
+        >>> plans = {unit: UnitPlan("first", frozenset()) for unit in units}
+        >>> selected, backlog = select_contexts(plans, units, "TIME_PERIOD", 2)
+        >>> [unit.key for unit in selected], backlog
+        (['2023', '2022'], 1)
+    """
+    stale = [unit for unit in order if unit in plans]
+    stale.sort(key=lambda unit: str(unit.get(period_column) or ""), reverse=True)
+    if max_contexts is None:
+        return stale, 0
+    return stale[: int(max_contexts)], max(0, len(stale) - int(max_contexts))
+
+
+# Fonction de lecture de l'instant du dernier calcul d'une étape
+def last_computation(registry: FreshnessRegistry) -> Optional[datetime]:
+    """Most recent ``last_computed`` of a registry (``None`` when empty).
+
+    Args:
+        registry: Registry of the step.
+
+    Returns:
+        The instant.
+    """
+    instants = [entry.last_computed for entry in registry.iter_entries() if entry.last_computed]
+    return max(instants) if instants else None
+
+
+# Fonction de lecture de la demande de contrôle de cadence
+def cadence_check_requested(flag: bool = False, environ: Optional[Mapping[str, str]] = None) -> bool:
+    """Tell whether the run must honour the minimum interval between two runs.
+
+    Args:
+        flag: The ``--cadence-check`` command-line flag.
+        environ: Environment (``os.environ`` by default); ``CADENCE_CHECK``
+            set to ``1`` / ``true`` / ``yes`` / ``on`` requests the check.
+
+    Returns:
+        Whether the cadence is checked.
+
+    Examples:
+        >>> cadence_check_requested(False, {"CADENCE_CHECK": "1"})
+        True
+        >>> cadence_check_requested(False, {})
+        False
+    """
+    environ = os.environ if environ is None else environ
+    value = (environ.get("CADENCE_CHECK") or "").strip().lower()
+    return bool(flag) or value in {"1", "true", "yes", "on"}
+
+
+# Fonction de décision de saut par cadence
+def skipped_by_cadence(
+    last_computed: Optional[datetime],
+    now: datetime,
+    min_interval_days: float,
+    forced: bool,
+) -> bool:
+    """Tell whether a run is skipped because the previous one is too recent.
+
+    Useful while a daily workflow still calls the weekly steps: the run exits
+    at once when the step ran less than ``min_interval_days`` ago, unless a
+    recomputation is forced. In production, the weekly ``CronWorkflow``
+    carries the cadence and the check is not requested.
+
+    Args:
+        last_computed: Most recent computation of the step (``None``: never).
+        now: Current instant.
+        min_interval_days: Minimum interval, in days.
+        forced: Whether a recomputation of the step is forced.
+
+    Returns:
+        Whether the run is skipped.
+
+    Examples:
+        >>> from kedro_pipeline.io.freshness import parse_instant
+        >>> now = parse_instant("2026-10-06")
+        >>> skipped_by_cadence(parse_instant("2026-10-03"), now, 6, False)
+        True
+        >>> skipped_by_cadence(parse_instant("2026-10-03"), now, 6, True)
+        False
+        >>> skipped_by_cadence(None, now, 6, False)
+        False
+    """
+    if forced or last_computed is None:
+        return False
+    return now - last_computed < timedelta(days=float(min_interval_days))
+
+
+# Fonction de découpage d'une séquence en lots
+def chunks(items: Sequence[Any], size: int) -> Iterator[List[Any]]:
+    """Split a sequence into consecutive batches of at most ``size`` items.
+
+    Args:
+        items: Items to split.
+        size: Batch size (at least 1).
+
+    Yields:
+        The batches.
+
+    Examples:
+        >>> list(chunks([1, 2, 3], 2))
+        [[1, 2], [3]]
+    """
+    size = max(1, int(size))
+    for start in range(0, len(items), size):
+        yield list(items[start:start + size])
+
+
+# Fonction de construction des tags de fraîcheur d'une exécution par contexte
+def context_freshness_tags(
+    plans: Mapping[Unit, UnitPlan], force: ForceSpec, requested: Collection[str], step: str
+) -> Dict[str, str]:
+    """Run tags of a per-context freshness decision.
+
+    Args:
+        plans: Plans of the stale contexts.
+        force: One-off forcing.
+        requested: Current fingerprint names.
+        step: Step name.
+
+    Returns:
+        ``freshness_reasons`` (count per reason), plus ``forced`` when the
+        step is forced.
+
+    Examples:
+        >>> context_freshness_tags({Unit.of(p="1"): UnitPlan("first", frozenset())},
+        ...                        ForceSpec(), ["x"], "synthesis")
+        {'freshness_reasons': 'first=1'}
+    """
+    counts = Counter(plan.reason for plan in plans.values())
+    tags = {"freshness_reasons": ";".join(f"{reason}={counts[reason]}" for reason in sorted(counts))}
+    if force.forces_step(step, requested):
+        tags["forced"] = force.describe() or f"steps={step}"
+    return tags
+
+
+# ──────────────────────────────────────────────────────────────────────
 # Agrégation des rapports (un rapport par contexte -> un rapport d'exécution)
 # ──────────────────────────────────────────────────────────────────────
 
@@ -1047,7 +2182,222 @@ def _result_connector(
 
 
 # ──────────────────────────────────────────────────────────────────────
-# Orchestration lecture -> run_synthesis -> écriture (S-2.3, S-2.4, S-2.6)
+# Calcul d'un contexte (fonction pure) et écriture par lots
+# ──────────────────────────────────────────────────────────────────────
+
+# Résultat du calcul d'un contexte, prêt à être écrit
+@dataclass
+class ContextResult:
+    """Outcome of the synthesis of one context, before any write.
+
+    Attributes:
+        unit: Freshness unit of the context.
+        context: Typed context values (SQL literals of the replacement).
+        methods: Methods fitted, ``None`` meaning every configured method.
+        scores: Score rows of the fitted methods and of the consensus
+            (one row per cell and per method, with a (score, rank) pair per level).
+        fit: ``fit``-family diagnostics of the fitted methods (long
+            diagnostic table).
+        report: Synthesis report of the context.
+    """
+    unit: Unit
+    context: Tuple[Any, ...]
+    methods: Optional[Tuple[str, ...]]
+    scores: pd.DataFrame
+    fit: pd.DataFrame
+    report: SynthesisReport
+
+
+# Fonction de calcul d'un contexte (aucune lecture ni écriture)
+def compute_synthesis_context(
+    df_context: pd.DataFrame,
+    config: SynthesisConfig,
+    *,
+    methods: Optional[Sequence[str]] = None,
+    df_existing_scores: Optional[pd.DataFrame] = None,
+    tracker: Any = None,
+    log_artifacts: bool = False,
+) -> Tuple[pd.DataFrame, pd.DataFrame, SynthesisReport]:
+    """Synthesise one context: pure computation, no read, no write.
+
+    The middle step of an incremental run (planning → computation of each
+    context → batched writes): it depends on its arguments only, so the
+    contexts of a run can be computed in separate processes, the parent
+    process remaining the only writer.
+
+    Args:
+        df_context: Metric rows of a single context.
+        config: Synthesis configuration.
+        methods: Methods to fit (``None``: all; empty: consensus alone).
+        df_existing_scores: Stored scores of the methods left out, fed to the
+            consensus (see :func:`~macroforecast.trade.aggregation.run_synthesis`).
+        tracker: Experiment tracker receiving the artifacts (null by default).
+        log_artifacts: Whether to log the artifacts.
+
+    Returns:
+        ``(df_scores, df_fit, report)`` of the context.
+    """
+    from macroforecast.tracking import NULL_TRACKER
+
+    return run_synthesis(
+        df_context,
+        config,
+        methods=methods,
+        df_existing_scores=df_existing_scores,
+        tracker=tracker if tracker is not None else NULL_TRACKER,
+        log_artifacts=log_artifacts,
+    )
+
+
+# Fonction de construction du prédicat de remplacement d'une table longue
+def replacement_predicate(
+    context_columns: Sequence[str],
+    groups: Mapping[Tuple[str, ...], Sequence[Sequence[Any]]],
+    column: str,
+    restriction: Optional[str] = None,
+) -> Optional[str]:
+    """Build the condition selecting the long-table rows a batch replaces.
+
+    The rows of a context are replaced for the names it recomputed only (the
+    stored rows of the other methods stay); contexts recomputing the same
+    names are grouped into one row-value ``IN`` list.
+
+    Args:
+        context_columns: Ordered context key columns.
+        groups: Recomputed names -> contexts recomputing exactly them.
+        column: Column holding the name (``method`` or ``item_a``).
+        restriction: Extra predicate (``"family" = 'fit'``), or ``None``.
+
+    Returns:
+        The SQL condition, or ``None`` when no row is to be replaced.
+
+    Examples:
+        >>> print(replacement_predicate(["freq"], {("mpi",): [("A",)]}, "method"))
+        (("freq") IN (
+            ('A')
+          ) AND "method" IN ('mpi'))
+    """
+    parts = [
+        f'({context_in_predicate(context_columns, contexts)} AND "{column}" IN ({_sql_list(names)}))'
+        for names, contexts in groups.items()
+        if names and contexts
+    ]
+    if not parts:
+        return None
+    predicate = " OR ".join(parts)
+    return f"{restriction} AND ({predicate})" if restriction else predicate
+
+
+# Fonction d'écriture d'un lot de contextes calculés
+def write_synthesis_batch(
+    results: Sequence[ContextResult],
+    config: SynthesisConfig,
+    *,
+    scores_table: DuckLakeTable,
+    diagnostics_table: DuckLakeTable,
+    run_id: Optional[str] = None,
+    commit_message: Optional[str] = None,
+) -> bool:
+    """Write the scores and fit diagnostics of a batch of contexts.
+
+    Each table is written in one transaction: the stored rows of the
+    recomputed methods (and of the consensus) of every context of the batch
+    are deleted, then the new rows are upserted. The rows are thus
+    **replaced**, not merged: a diagnostic emitted by the previous fit and not
+    by this one (a method skipped then, scored now) disappears. The rows of
+    the methods not recomputed are left untouched.
+
+    Args:
+        results: Computed contexts.
+        config: Synthesis configuration.
+        scores_table: Handle of the score table.
+        diagnostics_table: Handle of the long diagnostic table.
+        run_id: Run identifier recorded on the snapshots.
+        commit_message: Commit message recorded on the snapshots.
+
+    Returns:
+        Whether one of the two tables was created by this write.
+    """
+    if not results:
+        return False
+    context_columns = list(config.context_columns)
+    scores_keys = [*context_columns, config.reporter_col, config.product_col, _METHOD_COLUMN]
+    diagnostics_keys = [
+        *context_columns, "level", config.reporter_col, config.product_col,
+        _FAMILY_COLUMN, "statistic", _ITEM_A_COLUMN, "item_b",
+    ]
+    all_methods = tuple(spec.name for spec in config.methods)
+    consensus = tuple(f"{CONSENSUS_PREFIX}{rule}" for rule in config.consensus)
+
+    # Contextes regroupés par ensemble de noms recalculés
+    score_groups: Dict[Tuple[str, ...], List[Tuple[Any, ...]]] = {}
+    fit_groups: Dict[Tuple[str, ...], List[Tuple[Any, ...]]] = {}
+    for result in results:
+        methods = all_methods if result.methods is None else tuple(result.methods)
+        score_groups.setdefault(methods + consensus, []).append(result.context)
+        fit_groups.setdefault(methods, []).append(result.context)
+
+    df_scores = pd.concat([result.scores for result in results], ignore_index=True)
+    created = scores_table.upsert_many(
+        [df_scores], scores_keys,
+        delete_where=replacement_predicate(context_columns, score_groups, _METHOD_COLUMN),
+        run_id=run_id, commit_message=commit_message,
+    )
+    fits = [result.fit for result in results if not result.fit.empty]
+    fit_where = replacement_predicate(
+        context_columns, fit_groups, _ITEM_A_COLUMN,
+        restriction=f'"{_FAMILY_COLUMN}" = {_sql_literal(FIT_FAMILY)}',
+    )
+    if fits or (fit_where is not None and diagnostics_table.exists()):
+        created_fit = diagnostics_table.upsert_many(
+            [pd.concat(fits, ignore_index=True)] if fits else [], diagnostics_keys,
+            delete_where=fit_where, run_id=run_id, commit_message=commit_message,
+        )
+        created = created or created_fit
+    return created
+
+
+# Fonction de construction de l'entrée de registre d'un contexte calculé
+def context_entry(
+    unit: Unit,
+    plan: UnitPlan,
+    computed_at: datetime,
+    watermark: Optional[datetime],
+    requested: Mapping[str, str],
+    previous: Optional[RegistryEntry],
+    **counters: Any,
+) -> RegistryEntry:
+    """Registry entry of a context once its plan was computed and written.
+
+    The fingerprints of the recomputed names are set to their current value;
+    those of the names left untouched keep their recorded value.
+
+    Args:
+        unit: Context unit.
+        plan: Plan computed (its reason cascades to the coherence).
+        computed_at: Instant captured before the run started.
+        watermark: Upstream instant taken into account.
+        requested: Current fingerprints.
+        previous: Previous entry of the context, or ``None``.
+        **counters: Extra fields (``n_cells``, ``methods``…).
+
+    Returns:
+        The entry.
+    """
+    fingerprints = dict(previous.fingerprints) if previous is not None else {}
+    fingerprints.update({name: requested[name] for name in plan.names if name in requested})
+    return RegistryEntry(
+        unit=unit,
+        last_computed=computed_at,
+        upstream_watermark=watermark,
+        fingerprints=fingerprints,
+        reason=plan.reason,
+        extra=dict(counters),
+    )
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Orchestration lecture -> run_synthesis -> écriture (scores et diagnostics)
 # ──────────────────────────────────────────────────────────────────────
 
 # Fonction d'exécution de la partie « lecture -> run_synthesis -> écriture »
@@ -1068,12 +2418,13 @@ def run_from_connections(
 ) -> Tuple[List[SynthesisReport], Dict[str, Exception], bool, int]:
     """Read the source query, run the synthesis per context, and write both schemas.
 
-    Isolates the DB-bound core of :func:`main` — the S-2.3 read, the
-    context-by-context call to ``run_synthesis`` and the S-2.4 / S-2.6 writes —
-    from connection setup (``kedro_pipeline.io.ducklake.build_connector``, environment
-    variables) and freshness bookkeeping, so it is callable on any pair of
-    already-open connections, tests included. As in :func:`main`, the failure
-    of one context does not interrupt the others.
+    Complete (non incremental) synthesis of every context of ``query``, with
+    every configured method; the incremental runs go through
+    :func:`run_incremental_synthesis`. Isolates the DB-bound core from
+    connection setup and freshness bookkeeping, so it is callable on any pair
+    of already-open connections, tests included. The failure of one context
+    does not interrupt the others. Each context is written as soon as it is
+    computed, its rows replacing the stored rows of its methods.
 
     Args:
         scores_conn: Open connection positioned to read the source tables and
@@ -1086,7 +2437,8 @@ def run_from_connections(
         result_schema: Target schema of the scores.
         diagnostics_schema: Target schema of the fit diagnostics.
         tracker: Experiment tracker; the null tracker by default.
-        log_artifacts: Whether to log the S-2.7 artifacts to the tracker.
+        log_artifacts: Whether to log the synthesis artifacts (top cells,
+            weights, automatic selections, transport reports) to the tracker.
         scope: Run-report scope. When given, the run report (checks, key figures,
             sections) is built and published inside the tracker's run, after the
             metrics and before returning, and an uncaught exception publishes the
@@ -1111,19 +2463,8 @@ def run_from_connections(
     tracker = CapturingTracker(tracker)
 
     context_columns = list(config.context_columns)
-    scores_keys = [
-        *context_columns, config.reporter_col, config.product_col, "method"
-    ]
-    diagnostics_keys = [
-        *context_columns,
-        "level",
-        config.reporter_col,
-        config.product_col,
-        "family",
-        "statistic",
-        "item_a",
-        "item_b",
-    ]
+    scores_table = DuckLakeTable(scores_conn, catalog_alias, result_schema)
+    diagnostics_table = DuckLakeTable(diagnostics_conn, catalog_alias, diagnostics_schema)
 
     reports: List[SynthesisReport] = []
     failures: Dict[str, Exception] = {}
@@ -1157,38 +2498,24 @@ def run_from_connections(
             )
             try:
                 # Calcul pur des scores et des diagnostics d'ajustement
-                df_scores, df_fit, report = run_synthesis(
-                    df_context,
+                df_scores, df_fit, report = compute_synthesis_context(
+                    df_context, config, tracker=tracker, log_artifacts=log_artifacts,
+                )
+                # Écriture : les lignes du contexte remplacent celles de ses méthodes
+                created = write_synthesis_batch(
+                    [ContextResult(
+                        unit=context_unit(context_columns, context), context=context,
+                        methods=None, scores=df_scores, fit=df_fit, report=report,
+                    )],
                     config,
-                    tracker=tracker,
-                    log_artifacts=log_artifacts,
+                    scores_table=scores_table,
+                    diagnostics_table=diagnostics_table,
+                    run_id=workflow_run_id(),
+                    commit_message=(
+                        f"compute_synthetic_scores {'/'.join(str(value) for value in context)}"
+                    ),
                 )
-
-                # Options d'écriture communes aux deux schémas : unité = contexte
-                write_options = compute_write_options(
-                    f"compute_synthetic_scores {'/'.join(str(value) for value in context)}"
-                )
-
-                # Écriture des scores (schéma « synthesis »)
-                created_scores = write_dataframe(
-                    scores_conn,
-                    df_scores,
-                    scores_keys,
-                    catalog_alias=catalog_alias,
-                    schema=result_schema,
-                    **write_options,
-                )
-                # Écriture des diagnostics « fit » (schéma « synthesis_diagnostics »,
-                # même table longue que le script de cohérence)
-                created_diag = write_dataframe(
-                    diagnostics_conn,
-                    df_fit,
-                    diagnostics_keys,
-                    catalog_alias=catalog_alias,
-                    schema=diagnostics_schema,
-                    **write_options,
-                )
-                created_any = created_any or created_scores or created_diag
+                created_any = created_any or created
                 reports.append(report)
 
                 # Logging
@@ -1203,42 +2530,370 @@ def run_from_connections(
                 )
                 failures[str(context)] = exc
 
-        # Métriques et tags de l'exécution : un rapport agrégé sur tous
-        # les contextes réussis
-        aggregate = _aggregate_reports(reports)
-        aggregate.created = created_any
-        tracker.log_metrics(rekey_metrics(aggregate.to_metrics()))
-        tracker.set_tags(
-            {
-                "result_schema": result_schema,
-                "n_contexts": str(len(reports)),
-                "created": str(created_any),
-            }
+        _publish_run(
+            tracker, scope, reports, failures, created_any, n_contexts,
+            result_schema=result_schema,
         )
 
-        # Rapport de run : contrôles, chiffres clés, sections, publiés avant toute sortie
-        # en erreur (les contextes en échec sont listés, ils ne l'interrompent pas)
-        if scope is not None:
-            scope.step = "rapport de run"
-            scope.publish(
-                tracker,
-                scope.build(
-                    metrics=tracker.metrics,
-                    units=Units(
-                        planned=n_contexts,
-                        succeeded=len(reports),
-                        failed=len(failures),
-                        planned_label=f"{n_contexts} contextes",
-                    ),
-                    failures={
-                        unit: f"{type(exc).__name__}: {exc}" for unit, exc in failures.items()
-                    },
-                    key_figures=key_figures_synthesis,
-                    sections=lambda m: sections_synthesis(m, tracker.tables),
+    return reports, failures, created_any, n_contexts
+
+
+# Fonction de publication des métriques et du rapport d'une exécution
+def _publish_run(
+    tracker: Any,
+    scope: Optional[RunScope],
+    reports: Sequence[SynthesisReport],
+    failures: Mapping[str, Exception],
+    created_any: bool,
+    n_contexts: int,
+    *,
+    result_schema: str,
+) -> None:
+    """Log the aggregated metrics and tags of a run, then publish its report.
+
+    Args:
+        tracker: Capturing tracker of the run.
+        scope: Run-report scope, or ``None``.
+        reports: One report per synthesised context.
+        failures: Per-context exceptions.
+        created_any: Whether a schema was created.
+        n_contexts: Number of contexts attempted.
+        result_schema: Target schema of the scores.
+    """
+    # Métriques et tags de l'exécution : un rapport agrégé sur tous les contextes réussis
+    aggregate = _aggregate_reports(reports)
+    aggregate.created = created_any
+    tracker.log_metrics(rekey_metrics(aggregate.to_metrics()))
+    tracker.set_tags(
+        {
+            "result_schema": result_schema,
+            "n_contexts": str(len(reports)),
+            "created": str(created_any),
+        }
+    )
+
+    # Rapport de run : contrôles, chiffres clés, sections, publiés avant toute sortie
+    # en erreur (les contextes en échec sont listés, ils ne l'interrompent pas)
+    if scope is not None:
+        scope.step = "rapport de run"
+        scope.publish(
+            tracker,
+            scope.build(
+                metrics=tracker.metrics,
+                units=Units(
+                    planned=n_contexts,
+                    succeeded=len(reports),
+                    failed=len(failures),
+                    planned_label=f"{n_contexts} contextes",
                 ),
+                failures={
+                    unit: f"{type(exc).__name__}: {exc}" for unit, exc in failures.items()
+                },
+                key_figures=key_figures_synthesis,
+                sections=lambda m: sections_synthesis(m, tracker.tables),
+            ),
+        )
+
+
+# Résultat d'une exécution incrémentale
+@dataclass
+class IncrementalOutcome:
+    """Outcome of an incremental run (synthesis or coherence).
+
+    Attributes:
+        reports: One report per context computed and written.
+        failures: Per-context exceptions, keyed by context key.
+        created_any: Whether a result schema was created.
+        plans: Plans of every stale context (computed or left to the budget).
+        computed: Contexts computed and written, in order.
+        backlog: Stale contexts left to the next runs by the budget.
+    """
+    reports: List[Any] = field(default_factory=list)
+    failures: Dict[str, Exception] = field(default_factory=dict)
+    created_any: bool = False
+    plans: Dict[Unit, UnitPlan] = field(default_factory=dict)
+    computed: List[Unit] = field(default_factory=list)
+    backlog: int = 0
+
+
+# Fonction d'exécution incrémentale de la synthèse (planification, calcul, écriture)
+def run_incremental_synthesis(
+    scores_conn: Any,
+    diagnostics_conn: Any,
+    config: SynthesisConfig,
+    *,
+    sources: Sequence[Mapping[str, Any]],
+    filters: Mapping[str, Any],
+    catalog_alias: str,
+    result_schema: str,
+    diagnostics_schema: str,
+    registry: FreshnessRegistry,
+    requested: Mapping[str, str],
+    marks: UpstreamMarks,
+    force: ForceSpec,
+    settings: IncrementalSettings,
+    flow_codes: Optional[Sequence[int]] = None,
+    vintages: Optional[str] = None,
+    adopt_legacy_fingerprints: bool = False,
+    computed_at: Optional[datetime] = None,
+    run_id: Optional[str] = None,
+    tracker: Any = None,
+    log_artifacts: bool = True,
+    scope: Optional[RunScope] = None,
+) -> IncrementalOutcome:
+    """Synthesise the stale contexts, by context and by method.
+
+    Three separate steps, so that the middle one can be parallelised:
+
+    1. **planning**: the distinct contexts of the filtered grid (one SQL
+       query, no metric read), the plan of each one
+       (:func:`plan_synthesis_contexts`), the order (most recent periods
+       first) and the catch-up budget;
+    2. **computation** of each context (:func:`compute_synthesis_context`),
+       restricted to the methods of its plan, the consensus being fed with the
+       stored scores of the other methods;
+    3. **writes** by batches of ``settings.write_batch_contexts`` contexts
+       (:func:`write_synthesis_batch`), then the registry entries of the batch
+       (the registry advances batch by batch: an interrupted run keeps what it
+       wrote).
+
+    The metric rows are read batch by batch (``IN`` list of the contexts),
+    never as a whole. The failure of one context does not interrupt the
+    others; a failed write fails the contexts of its batch.
+
+    Args:
+        scores_conn: Open connection reading the sources and writing the scores.
+        diagnostics_conn: Open connection writing the fit diagnostics.
+        config: Synthesis configuration.
+        sources: ``SYNTHESIS.SOURCES`` block.
+        filters: ``SYNTHESIS.FILTERS`` block.
+        catalog_alias: DuckLake catalog alias.
+        result_schema: Target schema of the scores.
+        diagnostics_schema: Target schema of the fit diagnostics.
+        registry: Per-context registry of the synthesis.
+        requested: Current fingerprints (:func:`synthesis_context_requested`).
+        marks: Upstream marks.
+        force: One-off forcing.
+        settings: Incremental settings.
+        flow_codes: Flow codes of the synthesised directions.
+        vintages: ``SYNTHESIS.VINTAGES``.
+        adopt_legacy_fingerprints: Deployment migration flag.
+        computed_at: Instant recorded as ``last_computed`` (captured before the
+            run by default).
+        run_id: Run identifier recorded on the snapshots.
+        tracker: Experiment tracker; the null tracker by default.
+        log_artifacts: Whether to log the synthesis artifacts.
+        scope: Run-report scope, or ``None``.
+
+    Returns:
+        The outcome of the run.
+    """
+    if tracker is None:
+        from macroforecast.tracking import NULL_TRACKER
+
+        tracker = NULL_TRACKER
+    tracker = CapturingTracker(tracker)
+    computed_at = computed_at or _now()
+    context_columns = list(config.context_columns)
+    method_names = [spec.name for spec in config.methods]
+    scores_table = DuckLakeTable(scores_conn, catalog_alias, result_schema)
+    diagnostics_table = DuckLakeTable(diagnostics_conn, catalog_alias, diagnostics_schema)
+    outcome = IncrementalOutcome()
+
+    with tracker, (guarded_run(scope, tracker) if scope is not None else nullcontext()):
+        # 1. Planification : contextes de la grille, plans, ordre et budget
+        contexts = read_contexts(
+            scores_conn,
+            build_contexts_query(sources, filters, catalog_alias, context_columns, flow_codes, vintages),
+        )
+        typed = {context_unit(context_columns, context): context for context in contexts}
+        units = list(typed)
+        outcome.plans = plan_synthesis_contexts(
+            units, registry, requested, marks, force,
+            method_names=method_names,
+            recent_periods=settings.recent_periods,
+            period_column=settings.period_column,
+            adopt_legacy_fingerprints=adopt_legacy_fingerprints,
+        )
+        selected, outcome.backlog = select_contexts(
+            outcome.plans, units, settings.period_column, settings.max_contexts
+        )
+        tracker.log_metrics(
+            {
+                **plan_metrics(outcome.plans, n_candidates=len(units)),
+                "freshness/skipped_by_cadence": 0.0,
+                f"{STEP}/contexts_planned": float(len(outcome.plans)),
+                f"{STEP}/contexts_run": float(len(selected)),
+                f"{STEP}/contexts_budget_left": float(outcome.backlog),
+            }
+        )
+        tracker.set_tags(context_freshness_tags(outcome.plans, force, requested, STEP))
+        # Logging
+        logger.info(
+            f"{len(units)} contexte(s) dans la grille, {len(outcome.plans)} périmé(s), "
+            f"{len(selected)} calculé(s) dans cette exécution, {outcome.backlog} reporté(s)."
+        )
+
+        for batch in chunks(selected, settings.write_batch_contexts):
+            _synthesise_batch(
+                batch, outcome,
+                scores_conn=scores_conn, config=config, typed=typed,
+                sources=sources, filters=filters, catalog_alias=catalog_alias,
+                flow_codes=flow_codes, vintages=vintages, result_schema=result_schema,
+                scores_table=scores_table, diagnostics_table=diagnostics_table,
+                registry=registry, requested=requested, marks=marks,
+                computed_at=computed_at, run_id=run_id,
+                tracker=tracker, log_artifacts=log_artifacts,
             )
 
-    return reports, failures, created_any, n_contexts
+        # Rapport de run seulement si un contexte était périmé : une exécution
+        # sans rien à recalculer ne doit pas lever le contrôle « contextes calculés »
+        if outcome.plans:
+            _publish_run(
+                tracker, scope, outcome.reports, outcome.failures, outcome.created_any,
+                len(selected), result_schema=result_schema,
+            )
+    # Entrées de registre déjà écrites lot par lot ; écriture de garde des fragments
+    # restés modifiés
+    registry.save()
+    return outcome
+
+
+# Fonction de calcul et d'écriture d'un lot de contextes
+def _synthesise_batch(
+    batch: Sequence[Unit],
+    outcome: IncrementalOutcome,
+    *,
+    scores_conn: Any,
+    config: SynthesisConfig,
+    typed: Mapping[Unit, Tuple[Any, ...]],
+    sources: Sequence[Mapping[str, Any]],
+    filters: Mapping[str, Any],
+    catalog_alias: str,
+    flow_codes: Optional[Sequence[int]],
+    vintages: Optional[str],
+    result_schema: str,
+    scores_table: DuckLakeTable,
+    diagnostics_table: DuckLakeTable,
+    registry: FreshnessRegistry,
+    requested: Mapping[str, str],
+    marks: UpstreamMarks,
+    computed_at: datetime,
+    run_id: Optional[str],
+    tracker: Any,
+    log_artifacts: bool,
+) -> None:
+    """Read, compute, write and record one batch of contexts (updates ``outcome``).
+
+    Args:
+        batch: Contexts of the batch.
+        outcome: Outcome of the run, updated in place.
+        scores_conn: Open connection reading the sources and the scores.
+        config: Synthesis configuration.
+        typed: Typed context values, by unit.
+        sources: ``SYNTHESIS.SOURCES`` block.
+        filters: ``SYNTHESIS.FILTERS`` block.
+        catalog_alias: DuckLake catalog alias.
+        flow_codes: Flow codes of the synthesised directions.
+        vintages: ``SYNTHESIS.VINTAGES``.
+        result_schema: Schema of the scores.
+        scores_table: Handle of the score table.
+        diagnostics_table: Handle of the diagnostic table.
+        registry: Per-context registry of the synthesis.
+        requested: Current fingerprints.
+        marks: Upstream marks.
+        computed_at: Instant recorded as ``last_computed``.
+        run_id: Run identifier recorded on the snapshots.
+        tracker: Experiment tracker.
+        log_artifacts: Whether to log the artifacts.
+    """
+    context_columns = list(config.context_columns)
+    cell_columns = (config.reporter_col, config.product_col)
+    method_names = [spec.name for spec in config.methods]
+    plans = outcome.plans
+    methods_of = {unit: plan_methods(plans[unit].names, method_names) for unit in batch}
+
+    # Lecture des métriques du lot (liste IN des contextes)
+    df_source = read_source_metrics(
+        scores_conn,
+        build_source_query(
+            sources, filters, catalog_alias, flow_codes, vintages,
+            contexts=[typed[unit] for unit in batch], context_columns=context_columns,
+        ),
+        cell_columns,
+    )
+    frames = {
+        context_unit(context_columns, key): frame
+        for key, frame in df_source.groupby(context_columns, sort=False, observed=True)
+    }
+    # Scores déjà calculés des méthodes non recalculées (contextes à plan partiel)
+    partial = [unit for unit in batch if methods_of[unit] is not None]
+    df_existing: Optional[pd.DataFrame] = None
+    if partial and scores_table.exists():
+        kept = sorted({name for unit in partial for name in method_names
+                       if name not in (methods_of[unit] or ())})
+        if kept:
+            df_existing = read_source_metrics(
+                scores_conn,
+                build_scores_query(
+                    catalog_alias, result_schema, context_columns,
+                    [typed[unit] for unit in partial], methods=kept,
+                ),
+                cell_columns,
+            )
+
+    # Calcul de chaque contexte : l'échec de l'un n'emporte pas les autres
+    results: List[ContextResult] = []
+    for unit in batch:
+        df_context = frames.get(unit)
+        if df_context is None:
+            # Contexte disparu de la grille entre la planification et la lecture
+            logger.warning(f"Contexte {unit} absent de la lecture des métriques, ignoré.")
+            continue
+        try:
+            df_scores, df_fit, report = compute_synthesis_context(
+                df_context, config, methods=methods_of[unit], df_existing_scores=df_existing,
+                tracker=tracker, log_artifacts=log_artifacts,
+            )
+            results.append(ContextResult(
+                unit=unit, context=typed[unit], methods=methods_of[unit],
+                scores=df_scores, fit=df_fit, report=report,
+            ))
+        except Exception as exc:
+            logger.exception(f"Échec de la synthèse pour le contexte {unit}")
+            outcome.failures[unit.key] = exc
+    if not results:
+        return
+
+    # Écriture du lot, puis avancement du registre (jamais avant l'écriture)
+    try:
+        created = write_synthesis_batch(
+            results, config,
+            scores_table=scores_table, diagnostics_table=diagnostics_table,
+            run_id=run_id,
+            commit_message=f"{NODE} {len(results)} contexte(s) "
+                           f"{results[0].unit.key} .. {results[-1].unit.key}",
+        )
+    except Exception as exc:
+        logger.exception(f"Échec de l'écriture d'un lot de {len(results)} contexte(s)")
+        for result in results:
+            outcome.failures[result.unit.key] = exc
+        return
+    outcome.created_any = outcome.created_any or created
+    for result in results:
+        registry.upsert(
+            context_entry(
+                result.unit, plans[result.unit], computed_at, marks.watermark, requested,
+                registry.get(result.unit),
+                n_cells=int(result.report.n_cells),
+                methods=list(result.methods) if result.methods is not None else "all",
+            )
+        )
+        outcome.reports.append(result.report)
+        outcome.computed.append(result.unit)
+    registry.save()
+    # Logging
+    logger.info(f"Lot de {len(results)} contexte(s) écrit et enregistré.")
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -1249,14 +2904,75 @@ def run_from_connections(
 NODE = "compute_synthetic_scores"
 
 
+# Fonction de lecture des arguments de la ligne de commande
+def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
+    """Parse the command line of the per-context steps (synthesis, coherence).
+
+    Args:
+        argv: Arguments (``sys.argv[1:]`` when ``None``).
+
+    Returns:
+        Namespace with ``cadence_check``.
+
+    Examples:
+        >>> parse_args(["--cadence-check"]).cadence_check
+        True
+    """
+    parser = argparse.ArgumentParser(
+        description="Incremental per-context step of the synthesis (scores or coherence)."
+    )
+    parser.add_argument(
+        "--cadence-check", action="store_true",
+        help="exit at once (code 0) when the step ran less than "
+             "CADENCE.MIN_INTERVAL_DAYS ago and no recomputation is forced "
+             "(also requested by CADENCE_CHECK=1)",
+    )
+    return parser.parse_args(argv)
+
+
+# Fonction de lecture optionnelle de la configuration de téléchargement Eurostat
+def _optional_eurostat_config() -> Optional[Mapping[str, Any]]:
+    """Read the Eurostat download configuration, ``None`` when absent.
+
+    It only provides the default of ``RECENT_PERIODS`` (depth of the
+    incremental download).
+    """
+    from scripts.compute_trade_vulnerabilities import load_eurostat_config
+
+    try:
+        return load_eurostat_config()
+    except FileNotFoundError:
+        return None
+
+
+# Fonction de journalisation d'une exécution sautée par cadence
+def log_cadence_skip(tracker: Any, step: str, last: Optional[datetime]) -> None:
+    """Log the metric and tag of a run skipped by the cadence check.
+
+    Args:
+        tracker: Experiment tracker of the run.
+        step: Step name.
+        last: Most recent computation of the step.
+    """
+    with tracker:
+        tracker.log_metrics({"freshness/skipped_by_cadence": 1.0})
+        tracker.set_tags({"freshness_reasons": "cadence"})
+    # Logging
+    logger.info(f"Étape '{step}' calculée le {last} : exécution sautée (cadence).")
+
+
 # Fonction principale de calcul des scores synthétiques
-def main() -> None:
+def main(argv: Optional[Sequence[str]] = None) -> None:
     """CLI entry point for the incremental synthetic-score computation.
+
+    Args:
+        argv: Command-line arguments (``sys.argv[1:]`` when ``None``).
 
     Raises:
         RuntimeError: If at least one context failed, once every context has
             been attempted.
     """
+    args = parse_args(argv)
     # Chargement des configurations : synthèse (méthodologie, sources, filtres)
     # et vulnérabilités (identité du catalogue, registres amont)
     synthesis_file = load_synthesis_config()
@@ -1272,6 +2988,9 @@ def main() -> None:
     flows, flow_codes = load_synthesis_flows(synthesis_config, vulnerability_config, config)
     # Nomenclatures synthétisées (en vigueur seulement, ou aussi les historiques)
     vintages = load_synthesis_vintages(synthesis_config, config)
+    sources = synthesis_config["SOURCES"]
+    filters = synthesis_config.get("FILTERS") or {}
+    settings = incremental_settings(synthesis_config, _optional_eurostat_config())
 
     # Options de suivi d'exécution (un seul run par exécution, D-14)
     mlflow_config = synthesis_config.get("MLFLOW") or {}
@@ -1289,64 +3008,42 @@ def main() -> None:
     result_schema = _schema_name(synthesis_config["RESULT_SCHEMA"])
     diagnostics_schema = _schema_name(coherence_config["RESULT_SCHEMA"])
 
-    # Fraîcheur : registre à fragment unique (le registre v1 au même chemin est
-    # relu pour la migration), empreinte globale des méthodes et des sources
+    # Fraîcheur : registre par contexte (fragment = période), empreintes par
+    # méthode, forçage (FORCE historique du YAML équivalent à FORCE_STEPS)
     runtime_config = load_runtime_config()
-    registry = global_registry(
-        synthesis_config["PATHS"]["LAST_COMPUTATION_PATH"],
-        synthesis_config["BUCKET"],
-        STEP,
-        _REGISTRY_ROOT,
+    nomenclatures = runtime_config["NOMENCLATURES"]["HS"]
+    registry = context_registry(
+        synthesis_config, synthesis_config["BUCKET"], STEP, config.context_columns
     )
-    requested = synthesis_requested(
-        config, synthesis_config["SOURCES"], synthesis_config.get("FILTERS") or {}, flows,
-        vintages,
-    )
+    requested = synthesis_context_requested(config, sources, filters, flows, vintages)
     force = ForceSpec.from_runtime(runtime_config)
-    # Amont : registres partenaires et réseau, résumés depuis le dernier calcul
-    # (watermark et raisons des unités recalculées depuis, pour la cascade)
-    previous = registry.get(GLOBAL_UNIT)
-    summary = summarize_registries(
-        upstream_registries(
-            vulnerability_config,
-            partner_classification(runtime_config["NOMENCLATURES"]["HS"]),
-        ),
-        previous.upstream_watermark if previous is not None else None,
-    )
-    plans = plan_global_unit(
-        registry, summary.watermark, requested, force,
-        step=STEP,
-        yaml_force=bool(synthesis_config.get("FORCE", False)),
-        adopt_legacy_fingerprints=adopt_legacy_flag(synthesis_config),
-    )
+    if synthesis_config.get("FORCE", False):
+        force = replace(force, steps=force.steps | {STEP})
 
-    # Sortie anticipée : amont inchangé, empreinte inchangée, aucun forçage
-    if not plans:
-        registry.save()
-        logger.info(
-            "Synthèse à jour (amont : "
-            f"{summary.to_json()}), rien à recalculer."
-        )
-        return
-    plan = plans[GLOBAL_UNIT]
-    # Logging
-    logger.info(f"Synthèse à recalculer ({plan.reason}) ; amont : {summary.to_json()}")
+    # Cadence : sortie immédiate si la dernière exécution est trop récente
+    if cadence_check_requested(args.cadence_check):
+        last = last_computation(registry)
+        if skipped_by_cadence(last, _now(), settings.min_interval_days,
+                              force.forces_step(STEP, requested)):
+            log_cadence_skip(tracker, STEP, last)
+            return
+
+    # Amont : marques des registres partenaires et réseau, par millésime
+    classification = partner_classification(nomenclatures)
+    partner_registries, network_registries = upstream_registry_groups(
+        vulnerability_config, classification
+    )
+    marks = UpstreamMarks.from_entries(
+        (entry for registry_ in partner_registries for entry in registry_.iter_entries()),
+        (entry for registry_ in network_registries for entry in registry_.iter_entries()),
+        partner_label=classification,
+        nomenclatures=nomenclatures,
+    )
 
     # Instant de référence capturé avant le calcul : la date enregistrée
     # correspond au début du traitement, jamais après, pour ne pas rater une
     # mise à jour survenue pendant le calcul
     computed_at = _now()
-
-    # Requête source : combinaison SQL des familles partenaires et réseau (S-2.3)
-    query = build_source_query(
-        synthesis_config["SOURCES"],
-        synthesis_config.get("FILTERS") or {},
-        catalog_alias,
-        flow_codes,
-        vintages,
-    )
-    # Logging
-    logger.info(f"Requête source :\n{query}")
 
     # Connecteurs DuckLake : un par schéma résultat (chemins de données distincts),
     # tous deux sur le catalogue partagé « vulnerabilities »
@@ -1363,55 +3060,48 @@ def main() -> None:
         schema=diagnostics_schema,
     )
 
-    # Ouverture des connexions : leur cycle de vie appartient au script, le
-    # runner ne les ouvre ni ne les ferme (`run_from_connections` orchestre
-    # lecture / calcul / écriture sur des connexions déjà ouvertes)
+    # Ouverture des connexions : leur cycle de vie appartient au script
     scores_conn = scores_connector.connect()
     try:
         # Macros de nomenclature de la session (product_code des conditions de
         # jointure : zéro initial des codes stockés en entiers)
-        for statement in nomenclature_macros_sql(runtime_config["NOMENCLATURES"]["HS"]):
+        for statement in nomenclature_macros_sql(nomenclatures):
             scores_conn.execute(statement)
         diagnostics_conn = diagnostics_connector.connect()
         try:
-            reports, failures, created_any, n_contexts = run_from_connections(
+            outcome = run_incremental_synthesis(
                 scores_conn,
                 diagnostics_conn,
-                query,
                 config,
+                sources=sources,
+                filters=filters,
                 catalog_alias=catalog_alias,
                 result_schema=result_schema,
                 diagnostics_schema=diagnostics_schema,
+                registry=registry,
+                requested=requested,
+                marks=marks,
+                force=force,
+                settings=settings,
+                flow_codes=flow_codes,
+                vintages=vintages,
+                computed_at=computed_at,
+                run_id=workflow_run_id(),
                 tracker=tracker,
                 log_artifacts=log_artifacts,
                 scope=scope,
-                freshness_metrics=plan_metrics(plans, n_candidates=1),
-                freshness_tags=freshness_tags(plan, force, requested, STEP),
             )
         finally:
             diagnostics_conn.close()
     finally:
         scores_conn.close()
 
-    # Mise à jour du registre de synthèse, uniquement si au moins un contexte a
-    # réussi (cohérence : jamais de date avancée à tort)
-    if reports:
-        registry.upsert(
-            global_entry(
-                plan, computed_at, summary, requested,
-                n_cells=int(sum(report.n_cells for report in reports)),
-                n_contexts=int(len(reports)),
-                methods=[spec.name for spec in config.methods],
-            )
-        )
-        registry.save()
-
     # Échec global si au moins un contexte a échoué, une fois tous tentés
-    if failures:
+    if outcome.failures:
         raise RuntimeError(
-            f"{len(failures)} contexte(s) en échec sur {n_contexts} : "
-            f"{sorted(failures)}"
-        ) from next(iter(failures.values()))
+            f"{len(outcome.failures)} contexte(s) en échec sur {len(outcome.computed) + len(outcome.failures)} : "
+            f"{sorted(outcome.failures)}"
+        ) from next(iter(outcome.failures.values()))
 
 
 # Exécution du script principal

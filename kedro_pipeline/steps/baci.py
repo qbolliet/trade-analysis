@@ -971,9 +971,10 @@ class DuckLakeYearWriter:
     (``DatabaseUpdater.update_database``, no compaction; a constant column missing
     from an existing table — e.g. ``fit_id`` — is added with its metadata row);
     commit message (``run_id``, ``commit_message``); ``COMMIT``. A failure rolls
-    the year back entirely. The very first write of a schema creates it
-    (``statflows.write_dataframe``). The rewrite of a year is idempotent, which
-    makes the resumption of an interrupted pass safe.
+    the year back entirely. The very first write of a schema creates it. Both
+    paths go through :class:`kedro_pipeline.io.ducklake.DuckLakeTable`. The
+    rewrite of a year is idempotent, which makes the resumption of an
+    interrupted pass safe.
 
     Args:
         conn: Open DuckLake connection.
@@ -1030,77 +1031,41 @@ class DuckLakeYearWriter:
         return df
 
     def __call__(self, year: int, blocks: Iterator[pd.DataFrame]) -> None:
-        """Write the blocks of one year in a single transaction."""
-        from dt_ducklake_manager import DatabaseUpdater
-        from dt_ducklake_manager.operations.deleter import DatabaseDeleter
-        from statflows.storage.ducklake.tables import fact_table_exists, write_dataframe
+        """Write the blocks of one year in a single transaction.
 
-        message = f"{self.commit_message or 'baci'} year={int(year)}"
-        iterator = iter(blocks)
+        Delegates to :meth:`kedro_pipeline.io.ducklake.DuckLakeTable.upsert_many`:
+        the rows of the year are deleted, then every block is upserted, in one
+        transaction (the schema is created by the first block on the very
+        first write). The blocks are consumed one at a time, so the memory stays
+        bounded by a block.
+
+        Args:
+            year: Year written.
+            blocks: Reconciled flows of the year, block by block.
+        """
+        from kedro_pipeline.io.ducklake import DuckLakeTable
+
         rows = 0
-        # Première écriture du schéma : création (transaction propre), puis upsert
-        # des blocs restants de l'année
-        if not fact_table_exists(self.conn, self.catalog_alias, self.schema):
-            first = next(iterator, None)
-            if first is None:
-                return
-            first = self._decorate(first)
-            self.created = write_dataframe(
-                self.conn, first, self.primary_keys, catalog_alias=self.catalog_alias,
-                schema=self.schema, run_id=self.run_id, commit_message=message,
-            )
-            rows += len(first)
-            for block in iterator:
+
+        # Lots décorés des colonnes constantes, comptés au fil de l'écriture
+        def decorated() -> Iterator[pd.DataFrame]:
+            nonlocal rows
+            for block in blocks:
                 block = self._decorate(block)
-                write_dataframe(
-                    self.conn, block, self.primary_keys, catalog_alias=self.catalog_alias,
-                    schema=self.schema, run_id=self.run_id, commit_message=message,
-                    update_options={"allow_new_columns": True, "compact_after_update": False},
-                )
                 rows += len(block)
-        else:
-            deleter = DatabaseDeleter(connection=self.conn, catalog_alias=self.catalog_alias, schema=self.schema)
-            updater = DatabaseUpdater(
-                connection=self.conn, categorical_threshold=None,
-                catalog_alias=self.catalog_alias, schema=self.schema,
-            )
-            self.conn.begin()
-            try:
-                report = deleter.delete_rows(
-                    f'"{self.year_col}" = {int(year)}', use_transaction=False,
-                    perform_cleanup=False, compact_after_update=False,
-                )
-                if any("failed" in str(warning).lower() for warning in report.warnings):
-                    raise RuntimeError(f"Deletion of year {year} failed: {report.warnings}")
-                for block in iterator:
-                    block = self._decorate(block)
-                    if block.empty:
-                        continue
-                    ok = updater.update_database(
-                        block, use_transaction=False, compact_after_update=False, allow_new_columns=True,
-                    )
-                    if not ok:
-                        raise RuntimeError(f"Upsert of year {year} into '{self.schema}' failed")
-                    rows += len(block)
-                self._commit_message(message, year)
-                self.conn.commit()
-            except BaseException:
-                self.conn.rollback()
-                raise
+                yield block
+
+        table = DuckLakeTable(self.conn, self.catalog_alias, self.schema)
+        created = table.upsert_many(
+            decorated(),
+            self.primary_keys,
+            delete_where=f'"{self.year_col}" = {int(year)}',
+            run_id=self.run_id,
+            commit_message=f"{self.commit_message or 'baci'} year={int(year)}",
+            commit_info={"operation": "baci_year", "schema": self.schema, "year": int(year)},
+        )
+        self.created = self.created or created
         # Logging
         logger.info("Année %s écrite dans '%s' : %d lignes", year, self.schema, rows)
         if self.on_year_written is not None:
             self.on_year_written(int(year), rows)
-
-    # Message de commit de la transaction de l'année
-    def _commit_message(self, message: str, year: int) -> None:
-        """Record ``run_id`` and the message on the snapshot (never fails the write)."""
-        import json
-
-        try:
-            self.conn.execute(
-                f"CALL ducklake_set_commit_message('{self.catalog_alias}', ?, ?, extra_info := ?)",
-                [self.run_id, message, json.dumps({"operation": "baci_year", "schema": self.schema, "year": int(year)})],
-            )
-        except Exception as exc:  # pragma: no cover - traçabilité seulement
-            logger.debug("Message de commit non enregistré : %s", exc)

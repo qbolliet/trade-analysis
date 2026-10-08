@@ -70,10 +70,11 @@ from statflows.storage.json import Loader, Saver
 # Fabrique de connecteur DuckLake (seul point de lecture des identifiants)
 from kedro_pipeline.io.ducklake import (
     DuckLakeLocation,
+    DuckLakeTable,
     build_connector,
-    compute_write_options,
     pg_credentials_from_env,
     s3_credentials_from_env,
+    workflow_run_id,
 )
 # Module d'utilitaires de téléchargement
 from statflows.core.download import _now, _parse_iso, _schema_name
@@ -835,7 +836,10 @@ def main() -> None:
                             tracker=tracker,
                             log_artifacts=log_artifacts,
                             df_previous=df_previous,
-                            write_options=compute_write_options(f"{NODE} {label}"),
+                            writer=DuckLakeTable(
+                                result_conn, result_connector.catalog_alias, result_schema,
+                                label=label,
+                            ).writer(run_id=workflow_run_id(), commit_message=f"{NODE} {label}"),
                             annotate=partial(
                                 annotate_network_in_force,
                                 nomenclatures=runtime_config["NOMENCLATURES"]["HS"],

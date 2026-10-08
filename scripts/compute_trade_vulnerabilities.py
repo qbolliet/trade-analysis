@@ -75,10 +75,11 @@ from statflows.storage.json import Loader, Saver
 # Fabrique de connecteur DuckLake (seul point de lecture des identifiants)
 from kedro_pipeline.io.ducklake import (
     DuckLakeLocation,
+    DuckLakeTable,
     build_connector,
-    compute_write_options,
     pg_credentials_from_env,
     s3_credentials_from_env,
+    workflow_run_id,
 )
 # Vue du registre de téléchargement (lecture indépendante de son format physique)
 from kedro_pipeline.io.registry_views import DownloadRegistryView
@@ -1184,7 +1185,8 @@ def compute_partner_units(
     tracker: Any = NULL_TRACKER,
     log_artifacts: bool = True,
     measure_drift: bool = True,
-    write_options: Optional[Mapping[str, Any]] = None,
+    run_id: Optional[str] = None,
+    commit_message: Optional[str] = None,
     now: Optional[datetime] = None,
 ) -> PartnerStepResult:
     """Compute the planned units of one pass, write them, then record them.
@@ -1233,8 +1235,13 @@ def compute_partner_units(
         log_artifacts: Whether to log the business artifacts.
         measure_drift: Whether to re-read the previous result of the pass for
             the drift diagnostics.
-        write_options: Options forwarded to the table write; the table is
-            partitioned by classification at its creation.
+        run_id: Run identifier recorded on the DuckLake snapshot of the write
+            (Argo workflow id), ``None`` outside Argo.
+        commit_message: Commit message recorded on the snapshot. The write
+            goes through :class:`kedro_pipeline.io.ducklake.DuckLakeTable`:
+            the columns of a new metric are added on the fly, the compaction
+            is left to the maintenance pass and the table is partitioned by
+            classification at its creation.
         now: Computation instant (current UTC instant by default).
 
     Returns:
@@ -1318,12 +1325,13 @@ def compute_partner_units(
         if measure_drift
         else None
     )
-    # Partition de la table par classification, posée à sa création
-    options: Dict[str, Any] = dict(write_options or {})
-    options["build_options"] = {
-        **dict(options.get("build_options") or {}),
-        "partition_by": [CLASSIFICATION_COL],
-    }
+    # Écrivain de la table résultat : évolution de schéma native, partition par
+    # classification posée à la création, traçabilité du snapshot
+    writer = DuckLakeTable(result_conn, result_catalog_alias, result_schema).writer(
+        build_options={"partition_by": [CLASSIFICATION_COL]},
+        run_id=run_id,
+        commit_message=commit_message,
+    )
     report = run_vulnerabilities_on_frame(
         df_flows,
         result_conn=result_conn,
@@ -1337,7 +1345,7 @@ def compute_partner_units(
         tracker=tracker,
         log_artifacts=log_artifacts,
         df_previous=df_previous,
-        write_options=options,
+        writer=writer,
         annotate=partial(
             annotate_nomenclature,
             target_vintage=target_vintage,
@@ -1657,9 +1665,8 @@ def _run_partner_pass(
             sources=partner_pass.sources,
             n_waiting=partner_pass.n_waiting,
             tracker=tracker,
-            write_options=compute_write_options(
-                f"{NODE} {partner_pass.label} {len(plans)} unités"
-            ),
+            run_id=workflow_run_id(),
+            commit_message=f"{NODE} {partner_pass.label} {len(plans)} unités",
             **compute_kwargs,
         )
         report = result.report

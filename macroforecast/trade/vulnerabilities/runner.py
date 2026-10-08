@@ -94,6 +94,50 @@ logger = logging.getLogger(__name__)
 # Métrique de l'une ou l'autre famille (helpers communs aux deux runners)
 _Metric = TypeVar("_Metric", VulnerabilityMetric, NetworkVulnerabilityMetric)
 
+# Écrivain d'une table résultat : (jeu de données, clé primaire) -> table créée
+TableWriter = Callable[[Any, Sequence[str]], bool]
+
+
+# Fonction d'écriture du résultat d'un runner
+def _write_result(
+    result: Any,
+    primary_keys: Sequence[str],
+    *,
+    writer: Optional[TableWriter],
+    conn: Any,
+    catalog_alias: str,
+    schema: str,
+    write_options: Optional[Mapping[str, Any]],
+) -> bool:
+    """Write a runner result through the injected writer, or ``write_dataframe``.
+
+    The methodology runners know neither the pipeline's write handle nor its
+    options: the calling step injects a writer bound to them. Without writer,
+    the historical path (``write_dataframe`` and its options) is kept.
+
+    Args:
+        result: Scores to write (any ``IntoDataFrame``).
+        primary_keys: Primary-key columns of the result table.
+        writer: Injected writer, or ``None``.
+        conn: Open connection on the result catalog (``write_dataframe`` path).
+        catalog_alias: Alias of the result catalog (``write_dataframe`` path).
+        schema: Result schema (``write_dataframe`` path).
+        write_options: Extra keyword arguments of ``write_dataframe``.
+
+    Returns:
+        Whether the result table was created by this write.
+    """
+    if writer is not None:
+        return bool(writer(result, list(primary_keys)))
+    return write_dataframe(
+        conn,
+        result,
+        list(primary_keys),
+        catalog_alias=catalog_alias,
+        schema=schema,
+        **(write_options or {}),
+    )
+
 
 # ──────────────────────────────────────────────────────────────────────
 # Sens des flux : sélection des instances et vérifications communes
@@ -612,6 +656,7 @@ def run_vulnerabilities(
     log_artifacts: bool = True,
     df_previous: Optional[nw.DataFrame] = None,
     write_options: Optional[Mapping[str, Any]] = None,
+    writer: Optional[TableWriter] = None,
 ) -> VulnerabilityReport:
     """Compute trade-vulnerability metrics and write them to a result schema.
 
@@ -668,6 +713,11 @@ def run_vulnerabilities(
             :func:`~statflows.storage.ducklake.tables.write_dataframe`
             (``update_options``, ``run_id``, ``commit_message``). ``None``
             keeps the library defaults.
+        writer: Writer of the result table, ``(frame, primary_keys) -> created``
+            (e.g. ``kedro_pipeline.io.ducklake.DuckLakeTable.writer``), which
+            then carries the write options itself; ``write_options`` is
+            ignored. ``None`` writes through
+            :func:`~statflows.storage.ducklake.tables.write_dataframe`.
 
     Returns:
         A :class:`VulnerabilityReport` summarising the run, with one
@@ -736,6 +786,7 @@ def run_vulnerabilities(
         log_artifacts=log_artifacts,
         df_previous=df_previous,
         write_options=write_options,
+        writer=writer,
         params={
             "source_schema": source_schema,
             "n_reporter_product_pairs": (
@@ -761,6 +812,7 @@ def run_vulnerabilities_on_frame(
     log_artifacts: bool = True,
     df_previous: Optional[nw.DataFrame] = None,
     write_options: Optional[Mapping[str, Any]] = None,
+    writer: Optional[TableWriter] = None,
     annotate: Optional[Callable[[nw.DataFrame], nw.DataFrame]] = None,
     params: Optional[Mapping[str, Any]] = None,
 ) -> VulnerabilityReport:
@@ -796,6 +848,11 @@ def run_vulnerabilities_on_frame(
             :func:`~statflows.storage.ducklake.tables.write_dataframe`
             (``update_options``, ``build_options``, ``run_id``,
             ``commit_message``).
+        writer: Writer of the result table, ``(frame, primary_keys) -> created``
+            (e.g. ``kedro_pipeline.io.ducklake.DuckLakeTable.writer``), which
+            then carries the write options itself; ``write_options`` is
+            ignored. ``None`` writes through
+            :func:`~statflows.storage.ducklake.tables.write_dataframe`.
         annotate: Function adding descriptive columns to the scores before
             the write (columns derived from the keys, outside the primary
             key). ``None`` writes the scores as computed.
@@ -863,13 +920,14 @@ def run_vulnerabilities_on_frame(
     # Écriture dans le schéma résultat : le frame narwhals est passé tel quel,
     # builder/updater de dt_ducklake_manager acceptant IntoDataFrame (aucune
     # reconversion pandas nécessaire).
-    report.created = write_dataframe(
-        result_conn,
+    report.created = _write_result(
         result,
         config.key_columns,
+        writer=writer,
+        conn=result_conn,
         catalog_alias=result_catalog_alias,
         schema=result_schema,
-        **(write_options or {}),
+        write_options=write_options,
     )
     # Issue de l'écriture reportée sur les rapports par sens
     for sub in report.flows.values():
@@ -1161,6 +1219,7 @@ def run_network_vulnerabilities(
     log_artifacts: bool = True,
     df_previous: Optional[nw.DataFrame] = None,
     write_options: Optional[Mapping[str, Any]] = None,
+    writer: Optional[TableWriter] = None,
     annotate: Optional[Callable[[nw.DataFrame], nw.DataFrame]] = None,
 ) -> NetworkVulnerabilityReport:
     """Compute the network vulnerability metrics of one HS vintage and persist them.
@@ -1222,6 +1281,11 @@ def run_network_vulnerabilities(
             :func:`~statflows.storage.ducklake.tables.write_dataframe`
             (``update_options``, ``run_id``, ``commit_message``). ``None``
             keeps the library defaults.
+        writer: Writer of the result table, ``(frame, primary_keys) -> created``
+            (e.g. ``kedro_pipeline.io.ducklake.DuckLakeTable.writer``), which
+            then carries the write options itself; ``write_options`` is
+            ignored. ``None`` writes through
+            :func:`~statflows.storage.ducklake.tables.write_dataframe`.
         annotate: Function adding descriptive columns to the scores before
             the write (e.g. whether the vintage is the one in force each
             year). ``None`` writes the scores as computed.
@@ -1311,14 +1375,14 @@ def run_network_vulnerabilities(
     # Écriture dans le schéma résultat : le frame narwhals est passé tel quel,
     # builder/updater de dt_ducklake_manager acceptant IntoDataFrame. Le flux
     # entre dans la clé primaire (une ligne par sens et par cellule)
-    report.created = write_dataframe(
-        result_conn,
+    report.created = _write_result(
         result,
         (*config.key_columns, config.flow_col),
+        writer=writer,
+        conn=result_conn,
         catalog_alias=result_catalog_alias,
         schema=result_schema,
-        label=classification,
-        **(write_options or {}),
+        write_options={"label": classification, **(write_options or {})},
     )
     # Millésime et issue de l'écriture reportés sur les rapports par sens
     for sub in report.flows.values():

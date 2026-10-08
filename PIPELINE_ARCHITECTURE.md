@@ -40,6 +40,7 @@
 | 2026-10-05 | **Métriques réseau orientées** : constat que `CENTRALITY_RISK`, `EXPORT_HHI`, `SPOF`, `SPOF_DECILE` dépendent de l'orientation du graphe (lecture côté offre) ; à l'export, **miroirs par transposition** (valeur égale à celle de l'import sur le graphe transposé, sans nouvelle classe) ; **cadre commun du sens** pour toutes les métriques : hyperparamètre d'instance `flow` (convention sklearn), rôles `counterpart_col` / `exposed_col` côté réseau, `own` / `other` côté partenaires, distinct de l'**échelle** portée par la classe (pays / monde) ; `network_indicators` gagne la colonne `flow` (clé primaire) ; `EXPORT_HHI` renommée `WORLD_HHI` ; jointure de synthèse sur `flow` | C-12, PD-09, PD-20, PS-04.3, PS-15, PS-29, PR-11, PQ-06, K-06 |
 | 2026-10-05 (implémentation) | **Import / export implémentés** (partenaires, réseau, synthèse, service, Superset). Écarts à la spécification : pas de bloc `FLOW_CODES` (codes portés par les champs `import_flow` / `export_flow` des deux configurations, `NetworkVulnerabilityConfig` gagnant aussi `flow_col`) ; empreintes **modifiées à l'import** (clé `"<métrique>/<flux>"`, `flow` dans les paramètres) → **un recalcul complet des partenaires** au premier run, valeurs import identiques ; seuls les sens nommés par les plans de fraîcheur sont recalculés (union des unités planifiées) ; diagnostics, artefacts et métriques MLflow **par sens** (`partners/<flux>/…`, `network/<flux>/…`, artefacts `vulnerabilities/<flux>/…`) ; contrôle de l'agrégat extra-UE étendu à l'export ; `FORCE_METRICS=HHI` et `invalidate-freshness-script --metrics HHI` couvrent les deux sens (`HHI/export` pour un seul) ; migration du réseau en §12 | C-12, PD-09, PS-04.3, PS-10.2, PS-15, PS-29.2, §12 |
 | 2026-10-06 (K-06b) | **Millésimes de nomenclature implémentés** : `indicators` clé `(classification, freq, reporter, product, flow, indicators, TIME_PERIOD)`, colonnes `hs_vintage`, `in_force`, `is_provisional`, partition `classification` ; lignes historiques par conversion des flux SH6 Comext (`harmonize_partner_flows`, fondée sur `HsHarmonizer`, règle 1 → n = affectation intégrale au code désigné par la table UNSD) ; `prepare_concordances` extrait dans `kedro_pipeline/steps/baci.py` (cache partagé) ; unité historique `(V, reporter, code SH6)` avec préimage multi-millésimes, attente des sources jamais téléchargées, empreinte `concordance` ; synthèse : `VINTAGES`, contexte **`hs_vintage`** (écart assumé : NC8 et SH comparés ensemble), jointure réseau sur `p."hs_vintage"` et `product_code` (correction d'un bug SH6) ; service : colonnes réelles, repli dérivé par `DESCRIBE` ; `network_indicators.in_force` ; migration `tools/migrate_indicators_key.py` (§12). Volumétrie mesurée : ×3,63 en SH6, ×1,86 sur la table | C-11, C-25, PD-20, PS-04.3, PS-10.1, PS-28, PS-29.3, §12 |
+| 2026-10-06 (K-08) | **Évolution de schéma et synthèse incrémentale implémentées** : poignée `kedro_pipeline.io.ducklake.DuckLakeTable` (`upsert`, `upsert_many(delete_where=…)` = remplacement transactionnel d'une tranche, `add_columns`, `writer`) utilisée par partenaires (écrivain injecté dans le runner `macroforecast`), réseau, BACI (`DuckLakeYearWriter`), synthèse et cohérence ; constat empirique : un upsert portant un sous-ensemble des colonnes **préserve** les colonnes absentes (aucune complétion). `run_synthesis(methods=…, df_existing_scores=…)` (équivalence calcul complet / deux temps testée, consensus compris) ; registres **par contexte** (`STATE.PATH_TEMPLATE`, fragment = période) de la synthèse et de la cohérence ; empreintes par méthode + `consensus` + `synthesis` (sélection des entrées) ; planification pure (`plan_synthesis_contexts`, `UpstreamMarks` par millésime), calcul pur par contexte, écriture par lots ; budget, `--cadence-check`, métriques `synthesis/contexts_*`. Écarts : un couple partenaire `first` vaut **changement complet** (choix utilisateur, exactitude) ; pertinence des changements amont par millésime SH ; lignes longues **remplacées** (et non fusionnées) ; pas de migration des registres globaux (première passe `first` partout). **`dt-ducklake-manager 0.4.0` non retenu** : son constructeur stocke `'None'` (texte) dans les champs nuls de `metadata` quand l'entrée est un DataFrame pandas, ce qui fait échouer tout `update_database` ultérieur (`Binder Error … column named "None"`, 26 tests) ; dépendance laissée en 0.3.1, API utilisée identique | C-13, PD-11, PD-12, PS-10, PS-16, PS-17 |
 | 2026-10-06 (K-07) | **BACI par passes implémenté** : `macroforecast/trade/processing/streaming.py` (accumulateurs), `partial_fit`/`finalize` des trois estimateurs groupés, `run_baci_passes` + `BaciPassIO` / `InMemoryPassIO`, `kedro_pipeline/steps/baci.py` (`DuckDBPassIO`, `DuckLakeYearWriter`, porte de complétude, blocs de chapitres), script `process_baci_hs.py` sans lecture intégrale de Comtrade, `BACI_TARGETS`, bloc `PASSES` de `baci.yaml`. Écarts à la spécification : forme factorisée QR (et non `A = Σ w x xᵀ`) pour la gravité, imposée par la précision ; référence des indicatrices d'année = première année de l'échantillon ; quantiles des taux de fret calculés en SQL (passe S2) ; protocole d'E/S regroupant les rappels `chunks_factory` / `median_uv` / `writer` ; orchestration par millésime restée dans le script. Écarts numériques mesurés (PR-05b) ≤ 10⁻¹² | PS-14.2 à PS-14.5, PS-14.7, PR-05b, PQ-21, §12 |
 
 ## Sommaire
@@ -123,7 +124,7 @@ gravité pour la mise en production (🔴 bloquant, 🟠 à traiter avant le ré
 | C-10 | 🟠 | Les règles de fraîcheur ignorent les **changements de méthodologie** : corriger une formule ou ajouter une métrique ne déclenche aucun recalcul. Seuls `SYNTHESIS.FORCE` et `COHERENCE.FORCE` existent ; les étapes partenaires, réseau et BACI n'ont pas de forçage. | `scripts/compute_*.py` |
 | C-11 | 🟠 | La synthèse filtre en dur le flux import (`p."flow" = 1`) et les 5 dernières périodes. La jointure réseau ne retient que `HS2022`, y compris pour les années antérieures à 2022, dont les codes Comext sont pourtant déclarés dans un millésime plus ancien : la jointure `substr(product,1,6)` est alors **fausse pour tout code redéfini entre les millésimes** (PD-20). *(Traité en K-06b, 2026-10-06 : jointure `n."classification" = p."hs_vintage"`, flux généré depuis `FLOWS`.)* | `config/synthesis.yaml:55-64` |
 | C-12 | 🟡 | Côté partenaires, `HHI` est calculé pour les deux flux ; `CDI2` et `CDI3` ne sont définis que pour l'import (valeur nulle ailleurs). Aucune métrique d'export dédiée n'existe. Les métriques de réseau portent sur le graphe mondial d'un produit (une valeur par produit, aucune par pays) mais **ne sont pas toutes indépendantes de l'orientation** : `CENTRALITY_RISK` (degré sortant pondéré), `EXPORT_HHI` (parts des exportateurs), `SPOF` et `SPOF_DECILE` mesurent la concentration de l'**offre** mondiale (lecture « import ») et changent quand on transpose le graphe ; seuls `CLUSTERING_W` et `DIAMETER` sont invariants, parce que le graphe est symétrisé (`w_ij + w_ji`). Les joindre tels quels aux lignes export appliquerait une lecture côté offre à un exportateur. *(Révisions : définitions d'export partenaires retenues, PD-09 ; miroirs réseau par transposition, PD-09, 2026-10-05 ; implémenté le 2026-10-05.)* | `macroforecast/trade/vulnerabilities/metrics.py` |
-| C-13 | ✅ | ~~L'upsert de `dt_ducklake_manager` ne sait pas ajouter une colonne~~ **Résolu par `dt-ducklake-manager 0.3.1`** : `DatabaseUpdater.update_database(..., allow_new_columns=True)` ajoute les colonnes absentes (`ALTER TABLE … ADD COLUMN … DEFAULT NULL` + ligne de métadonnées) avant l'upsert, et `add_columns(df)` diffuse une nouvelle colonne sur les lignes existantes par clé primaire en une seule mise à jour. Reste à faire : `statflows.write_dataframe` ne transmet ni `allow_new_columns` ni `compact_after_update` (PS-27, PD-11). | `dt_ducklake_manager/operations/updater.py:176-372`, `statflows/storage/ducklake/tables.py:165-175` |
+| C-13 | ✅ | ~~L'upsert de `dt_ducklake_manager` ne sait pas ajouter une colonne~~ **Résolu par `dt-ducklake-manager 0.3.1`** : `DatabaseUpdater.update_database(..., allow_new_columns=True)` ajoute les colonnes absentes (`ALTER TABLE … ADD COLUMN … DEFAULT NULL` + ligne de métadonnées) avant l'upsert, et `add_columns(df)` diffuse une nouvelle colonne sur les lignes existantes par clé primaire en une seule mise à jour. Reste à faire : `statflows.write_dataframe` ne transmet ni `allow_new_columns` ni `compact_after_update` (PS-27, PD-11). *(K-08, 2026-10-06 : `statflows 0.1.1` transmet ces options ; toutes les étapes de calcul écrivent par la poignée `DuckLakeTable`. La version 0.4.0 n'est pas retenue (champs nuls de `metadata` écrits `'None'` depuis une entrée pandas, upserts ultérieurs en échec) : 0.3.1 conservée, même API.)* | `dt_ducklake_manager/operations/updater.py:176-372`, `statflows/storage/ducklake/tables.py:165-175` |
 | C-14 | 🔴 | Le `Dockerfile` part de `python:3.12-slim` alors que `requires-python = ">=3.13"`, copie un dossier `parameters/` inexistant, n'installe aucun extra (`tracking`, `optimal-transport`) et utilise `uv:latest` (non reproductible). | `docker/Dockerfile` |
 | C-15 | 🔴 | `kubernetes/workflow.yaml` déclare `kind: Workflow` avec des champs de `CronWorkflow` (`schedule`, `concurrencyPolicy`…), invalides pour ce type ; il référence un script `trade-script` inexistant et un secret `comtrade-credentials` qui ne correspond pas aux secrets créés (`comtrade-api-credentials`, `trade-s3-credentials`). À traiter comme un exemple, pas comme une base. | `kubernetes/workflow.yaml` |
 | C-16 | 🟡 | `config/base/catalog.yaml` et `config/base/parameters.yaml` existent mais sont vides : amorce d'une arborescence Kedro. | `config/base/` |
@@ -797,10 +798,45 @@ n'est nécessaire.
 (table `metadata`, drapeau catégoriel) et divergerait. `statflows.write_dataframe` doit
 seulement **transmettre** ces options (PS-27, point 4).
 
-**À vérifier dans K-08** (test empirique sur catalogue fichier) : le comportement de
-`update_database` quand `df` ne contient qu'un **sous-ensemble** des colonnes de la
-table (colonnes absentes préservées, mises à `NULL`, ou erreur) ; selon le résultat,
-compléter `df` par relecture des colonnes manquantes des lignes ciblées avant l'upsert.
+**Vérifié en K-08** (test empirique sur catalogue fichier,
+`tests/test_ducklake_table.py`) : quand `df` ne contient qu'un **sous-ensemble** des
+colonnes de la table, `update_database` met à jour les seules colonnes de `df`
+(`UPDATE … SET <colonnes du lot>`) : les colonnes absentes **conservent** leurs
+valeurs sur les lignes mises à jour et valent `NULL` sur les lignes insérées. Aucune
+complétion par relecture n'est donc nécessaire.
+
+**Implémentation (K-08).** `kedro_pipeline/io/ducklake.py::DuckLakeTable` :
+- `upsert(df, primary_keys, *, allow_new_columns=True, compact_after_update=False,
+  run_id, commit_message, conn, build_options, delete_where)` : création par
+  `statflows.write_dataframe` (`DuckLakeTablesBuilder`), mise à jour par
+  `DatabaseUpdater.update_database` ;
+- `upsert_many(frames, primary_keys, *, delete_where, commit_info, …)` : **une**
+  transaction (`DatabaseDeleter.delete_rows(delete_where, perform_cleanup=False)`
+  puis upsert de chaque lot, message de commit, `COMMIT`, `ROLLBACK` sur échec),
+  lots parcourus paresseusement (mémoire bornée à un lot) ; c'est le remplacement
+  exact d'une tranche, utilisé par BACI (une année) et par les tables longues de
+  la synthèse et de la cohérence (les lignes d'un contexte pour les méthodes
+  recalculées) ;
+- `add_columns(df, overwrite=False, …)` pour les migrations (runbook §5.3) ;
+- `writer(build_options, run_id, commit_message)` : écrivain injecté dans les
+  runners de `macroforecast` (paramètre `writer` de `run_vulnerabilities*` et
+  `run_network_vulnerabilities`), qui ne connaissent ni DuckLake ni `kedro_pipeline`.
+
+`perform_cleanup=False` est indispensable : par défaut, `delete_rows` supprime les
+colonnes devenues entièrement nulles, ce qui ferait disparaître une métrique d'une
+tranche juste avant sa réécriture.
+
+**Version de `dt-ducklake-manager`.** 0.4.0 testée et **écartée** en K-08 : son
+`DuckLakeTablesBuilder` écrit la chaîne `'None'` (au lieu de `NULL`) dans les champs
+de `metadata` (`label_for`, `parent_name`, `unit`…) quand l'entrée est un DataFrame
+**pandas** (entrée `pyarrow` correcte) ; tout `update_database` ultérieur échoue
+alors (`Binder Error: Table "f" does not have a column named "None"`, contrôle des
+dépendances code/libellé). Cela touche aussi les téléchargements (`statflows`
+écrit des DataFrames pandas). La dépendance reste en `v0.3.1` ; l'API utilisée
+(`update_database(allow_new_columns, compact_after_update, run_id,
+commit_message, use_transaction)`, `add_columns`, `delete_rows`) est identique en
+0.4.0 : la montée de version se réduira au changement d'étiquette une fois le
+correctif publié.
 
 ### PD-12 — Synthèse et cohérence incrémentales, par contexte et par méthode
 
@@ -835,6 +871,21 @@ une empreinte par méthode.
   (watermark par contexte), si l'empreinte de la configuration de cohérence a changé, ou
   en cas de forçage. L'empreinte de cohérence est globale : pas de granularité par
   statistique.
+
+**Implémentation (K-08)** : voir PS-17 pour l'algorithme et ses écarts. Deux révisions
+de la décision ci-dessus :
+- *Amont partenaires* : une unité partenaire calculée pour la **première** fois
+  (`first`, couple reporter × produit nouvellement téléchargé, dont tout l'historique
+  arrive d'un coup) vaut changement **complet**, comme `fingerprint` et `forced` (choix
+  utilisateur : la règle « périodes récentes » laisserait les anciennes périodes sans
+  les nouvelles cellules, donc approximées). Pendant le rattrapage du téléchargement,
+  chaque passe hebdomadaire est donc complète ; le budget est l'outil prévu pour cela.
+- *Pertinence par millésime* : un changement amont ne périme que les contextes qu'il
+  concerne. Une unité partenaire en vigueur concerne les contextes en vigueur (le
+  `hs_vintage` du contexte est le millésime en vigueur de son année) ; une unité
+  historique de `V`, les contextes historiques de `V` ; une unité réseau de `V`, tous
+  les contextes de `V`. Sans `hs_vintage` parmi les colonnes de contexte, tout
+  changement concerne tous les contextes.
 
 **Justification.** Sur toute la période, avec 15 méthodes (SMAA 2 000 tirages, bootstrap,
 Kantorovitch), une synthèse complète ne tient pas dans 24 h ; plutôt que d'approximer
@@ -2107,6 +2158,12 @@ Maille et fragment par étape :
 | Cohérence | contexte | période | `last_computed` synthèse du contexte |
 | Publication de service | table de service (× année en mode `by_year`) | table | max `last_computed` des étapes sources de la table |
 
+> **État après K-08.** Synthèse et cohérence : unité = contexte
+> `(hs_vintage, freq, flow, indicators, TIME_PERIOD)` (colonnes de contexte de la
+> configuration), fragment = période (`STATE.PATH_TEMPLATE`), empreintes par méthode
+> plus `consensus` et `synthesis` pour la synthèse, empreinte globale `coherence` pour
+> la cohérence ; aucune entrée héritée des registres globaux (première passe `first`).
+>
 > **État après K-06b.** Partenaires : deux familles d'unités dans le même registre.
 > Unité en vigueur : couple téléchargé (reporter, produit), toutes périodes,
 > `classification` = millésime SH le plus récent (inchangé depuis K-05, aucune
@@ -2567,7 +2624,16 @@ métriques réseau dépendent de toutes les années).
   les contrôles de `config/tracking.yaml` visent `partners/<flux>/cells/n_total` et
   `network/<flux>/cells/n_total`.
 
-### PS-16 — Évolution de schéma (délégation à `dt-ducklake-manager 0.3.1`)
+### PS-16 — Évolution de schéma (délégation à `dt-ducklake-manager`)
+
+> **Implémenté en K-08** (`kedro_pipeline/io/ducklake.py::DuckLakeTable`, test
+> `tests/test_ducklake_table.py`, scénario ci-dessous complet) : la poignée gagne
+> `upsert_many(frames, keys, delete_where=…)` (suppression d'une tranche et upsert
+> dans une seule transaction) et `writer(...)` (écrivain injecté dans les runners de
+> `macroforecast`). La branche « table existante » appelle `DatabaseUpdater`
+> directement (aucune dépendance aux options de `statflows`). Constat : les colonnes
+> absentes du DataFrame sont **préservées** (PD-11). Version : 0.3.1 (0.4.0 écartée,
+> PD-11).
 
 ```python
 class DuckLakeTable:
@@ -2624,6 +2690,63 @@ Le worker **n'écrit jamais** et ouvre sa propre connexion de lecture (les conne
 DuckDB ne se partagent pas entre processus). `run_synthesis` doit accepter un
 sous-ensemble de méthodes (paramètre `methods: Sequence[str] | None`), ce qui ne change
 pas les résultats des méthodes calculées : un test d'équivalence le vérifie.
+
+> **Implémentation (K-08).** `scripts/compute_synthetic_scores.py` et
+> `scripts/compute_synthesis_coherence.py` (tests : `tests/test_synthesis_planning.py`,
+> `tests/test_scripts_synthesis_incremental_e2e.py`,
+> `tests/aggregation/test_synthesis_incremental.py`). Étape 5 séquentielle (K-09),
+> mais le code est découpé en planification (`plan_synthesis_contexts`,
+> `select_contexts`), calcul pur d'un contexte (`compute_synthesis_context`) et
+> écriture par lots (`write_synthesis_batch`) : K-09 n'aura qu'à paralléliser le
+> deuxième temps. Précisions et écarts :
+> - **Contextes planifiés** : `build_contexts_query` (`SELECT DISTINCT` des colonnes de
+>   contexte sur la grille seule, mêmes prédicats `FILTERS`, `flow IN`,
+>   `p."in_force" = true`, `LAST_N_PERIODS`) ; `FILTERS.WHERE` ne doit porter que sur
+>   l'alias de la grille (contrat déjà documenté dans la configuration).
+> - **Empreintes** : une par méthode (paramètres de l'entrée `methods` **résolus** —
+>   métriques, niveaux, normalisation, taille minimale — plus winsorisation,
+>   `rank_ties`, polarités des métriques de la méthode, graine et tirages pour les
+>   méthodes aléatoires, paramètres du bootstrap pour les méthodes bootstrappées),
+>   `consensus` (règles, `consensus_top_n`, niveaux, liste triée des méthodes : retirer
+>   une méthode recalcule le consensus seul) et `synthesis` (sélection des entrées :
+>   `SOURCES`, `FILTERS`, `FLOWS`, `VINTAGES`, colonnes de contexte et de cellule ;
+>   périmée, elle périme toutes les méthodes). `invalidate-freshness-script --step
+>   synthesis --metrics <méthode>` invalide une méthode ; les filtres `--periods` et
+>   `--vintages` (`hs_vintage`) s'appliquent aux contextes.
+> - **Étape 2** remplacée par des **marques par pertinence** (`UpstreamMarks`) :
+>   `changement_amont_complet(c)` = dernière unité partenaire pertinente `first`,
+>   `fingerprint` ou `forced`, ou dernière unité réseau pertinente, postérieure au
+>   `upstream_watermark` du contexte (PD-12, révisions K-08) ; `P a changé` = dernière
+>   unité partenaire pertinente postérieure ; le watermark enregistré est le maximum
+>   amont lu à la planification.
+> - **Consensus** : `run_synthesis(methods=…, df_existing_scores=…)` ; les scores en
+>   base des méthodes non recalculées (lus par `build_scores_query(…, methods=…)`) sont
+>   réinjectés dans l'ordre de la configuration ; une méthode stockée n'entre que si
+>   elle a au moins un score fini dans le groupe (ce qui distingue une méthode notée
+>   d'une méthode sautée). Équivalence calcul complet / deux temps testée.
+> - **Écriture** : les lignes d'un contexte sont **remplacées** pour les noms recalculés
+>   (`upsert_many(delete_where=…)`), scores comme diagnostics `fit` ; un diagnostic émis
+>   par l'ajustement précédent et plus par le nouveau disparaît. Les lignes d'une
+>   méthode retirée de la configuration ne sont jamais supprimées (runbook §5.3). La
+>   cohérence remplace de même les familles `metrics` et `methods` d'un contexte.
+> - **Registre** : une entrée par contexte (`STATE.PATH_TEMPLATE`, fragment = période),
+>   avancée lot par lot après l'écriture ; empreintes des noms recalculés mises à jour,
+>   celles des autres conservées. Pas de migration du registre global
+>   (`PATHS.LAST_COMPUTATION_PATH`, retiré de la configuration) : la première passe est
+>   `first` partout, ce qui coïncide avec `LAST_N_PERIODS: null`.
+> - **Cadence** : `--cadence-check` (ou `CADENCE_CHECK=1`) sort avec le code 0 et la
+>   métrique `freshness/skipped_by_cadence = 1` si le `last_computed` le plus récent du
+>   registre date de moins de `CADENCE.MIN_INTERVAL_DAYS` (6) jours, sauf forçage de
+>   l'étape ; mêmes réglages pour la cohérence (bloc `COHERENCE`).
+> - **MLflow** : `freshness/units_<raison>`, `freshness/units_planned`,
+>   `freshness/units_candidates`, `synthesis/contexts_planned`, `synthesis/contexts_run`,
+>   `synthesis/contexts_budget_left` (contextes périmés reportés par le budget, 0 sans
+>   budget) ; tag `freshness_reasons` (décompte par raison). Cohérence : mêmes noms sous
+>   `coherence/`, plus `freshness/units_waiting_synthesis`. Sans aucun contexte périmé,
+>   seules ces métriques sont journalisées, sans rapport de run (comme l'ancienne sortie
+>   anticipée), pour ne pas lever le contrôle « contextes calculés > 0 ».
+> - **Cohérence** : candidats = contextes de la grille déjà synthétisés ; watermark =
+>   `last_computed` de l'entrée de synthèse du contexte ; empreinte globale.
 
 ### PS-18 — Contrat du parallélisme intra-pod
 

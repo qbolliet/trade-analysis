@@ -120,3 +120,48 @@ def test_build_registry_from_demo_configuration(step: str, monkeypatch: pytest.M
     registry = build_registry(step)
     assert registry.step == step
     assert registry.path_template.startswith("trade/demo/")
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Synthèse : empreintes par méthode et registre par contexte
+# ──────────────────────────────────────────────────────────────────────
+
+
+def _synthesis_registry(tmp_path: Path) -> FreshnessRegistry:
+    """Registre de synthèse par contexte (un fichier par période)."""
+    from scripts.compute_synthetic_scores import context_registry
+
+    return context_registry(
+        {"STATE": {"PATH_TEMPLATE": f"{tmp_path.as_posix()}/synthesis/{{TIME_PERIOD}}.json"}},
+        None, "synthesis", ("hs_vintage", "freq", "flow", "indicators", "TIME_PERIOD"),
+    )
+
+
+def test_synthesis_method_names_are_invalidable(tmp_path: Path) -> None:
+    """Une méthode configurée s'invalide seule, sur les contextes du périmètre."""
+    from scripts.invalidate_freshness import configured_methods
+
+    method = configured_methods()[0]
+    assert step_names("synthesis", [method]) == ("synthesis", "consensus", method)
+    assert resolve_names("synthesis", [method], [method]) == {method}
+    with pytest.raises(ValueError):
+        resolve_names("synthesis", ["not_a_method"], [method])
+
+    # Deux contextes, deux périodes ; invalidation de la méthode sur 2023 seulement
+    fingerprints = {method: "m", "consensus": "c", "synthesis": "s"}
+    contexts = [
+        Unit.of(hs_vintage="HS2022", freq="A", flow="1", indicators="V", TIME_PERIOD=period)
+        for period in ("2022", "2023")
+    ]
+    registry = _synthesis_registry(tmp_path)
+    for unit in contexts:
+        registry.upsert(RegistryEntry(unit, T0, T0, dict(fingerprints), "first"))
+    registry.save()
+
+    argv = ["--step", "synthesis", "--metrics", method, "--periods", "2023"]
+    assert main(argv, lambda step: _synthesis_registry(tmp_path)) == 0
+    reread = _synthesis_registry(tmp_path)
+    assert set(reread.get(contexts[1]).fingerprints) == {"consensus", "synthesis"}
+    assert reread.get(contexts[0]).fingerprints == fingerprints
+    # Nom inconnu : refusé, rien n'est écrit
+    assert main(["--step", "synthesis", "--metrics", "typo"], lambda step: _synthesis_registry(tmp_path)) == 2

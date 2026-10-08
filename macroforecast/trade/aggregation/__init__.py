@@ -122,6 +122,7 @@ from .synthesis import (
     log_synthesis_artifacts,
     run_synthesis,
     score_columns,
+    selected_methods,
 )
 # Cohérence des métriques et des synthèses (contexte x niveau x groupe)
 from .coherence import (
@@ -247,6 +248,7 @@ __all__ = [
     "log_synthesis_artifacts",
     "run_synthesis",
     "score_columns",
+    "selected_methods",
     # Cohérence
     "COHERENCE_FAMILIES",
     "CoherenceConfig",
