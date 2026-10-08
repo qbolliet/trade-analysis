@@ -1313,6 +1313,7 @@ source = { editable = "." }
 dependencies = [
     { name = "boto3" },
     { name = "duckdb" },
+    { name = "joblib" },
     { name = "linearmodels" },
     { name = "narwhals" },
     { name = "openpyxl" },
@@ -1324,6 +1325,7 @@ dependencies = [
     { name = "scipy" },
     { name = "statflows", extra = ["ducklake", "s3"] },
     { name = "statsmodels" },
+    { name = "threadpoolctl" },
     { name = "tqdm" },
     { name = "xlrd" },
 ]
@@ -1355,6 +1357,7 @@ requires-dist = [
     { name = "boto3", specifier = ">=1.43.34" },
     { name = "duckdb", specifier = ">=1.4" },
     { name = "jax", marker = "extra == 'optimal-transport'", specifier = ">=0.4.30" },
+    { name = "joblib", specifier = ">=1.4" },
     { name = "linearmodels", specifier = ">=7.0" },
     { name = "mlflow", marker = "extra == 'tracking'", specifier = ">=2.16" },
     { name = "narwhals", specifier = ">=2.22.1" },
@@ -1370,6 +1373,7 @@ requires-dist = [
     { name = "scipy", specifier = ">=1.18.0" },
     { name = "statflows", extras = ["s3", "ducklake"], git = "https://github.com/qbolliet/statflows?branch=main" },
     { name = "statsmodels", specifier = ">=0.14.6" },
+    { name = "threadpoolctl", specifier = ">=3.1" },
     { name = "tqdm", specifier = ">=4.67" },
     { name = "xlrd", specifier = ">=2.0.2" },
 ]

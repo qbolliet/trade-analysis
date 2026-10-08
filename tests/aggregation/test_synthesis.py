@@ -275,3 +275,58 @@ def test_runner_is_pure(df_synthesis_toy: pd.DataFrame, _config: SynthesisConfig
     pd.testing.assert_frame_equal(df_synthesis_toy, before)
     second, _, _ = run_synthesis(df_synthesis_toy, _config, log_artifacts=False)
     pd.testing.assert_frame_equal(first, second)
+
+
+def _sorted_scores(frame: pd.DataFrame) -> pd.DataFrame:
+    """Scores triés sur la clé primaire, pour comparer deux exécutions."""
+    return frame.sort_values(PRIMARY_KEY).reset_index(drop=True)
+
+
+def test_group_seed_depends_on_random_state_and_group_only() -> None:
+    """La graine d'un groupe dérive de ``random_state`` et de sa clé, jamais de l'exécution."""
+    import pickle
+
+    from macroforecast.trade.aggregation.synthesis import _group_seed
+
+    config = SynthesisConfig(random_state=7)
+    seed = _group_seed(config, ("A", 1), "by_product", "85411000")
+    assert seed == _group_seed(config, ("A", 1), "by_product", "85411000")
+    # Aller-retour pickle de la configuration et du contexte (envoi à un worker)
+    sent_config, sent_context = pickle.loads(pickle.dumps((config, ("A", 1))))
+    assert seed == _group_seed(sent_config, sent_context, "by_product", "85411000")
+    # Une autre graine, un autre groupe ou un autre contexte donnent une autre graine
+    assert seed != _group_seed(SynthesisConfig(random_state=8), ("A", 1), "by_product", "85411000")
+    assert seed != _group_seed(config, ("A", 1), "by_product", "85411001")
+    assert seed != _group_seed(config, ("A", 2), "by_product", "85411000")
+
+
+def test_random_methods_do_not_depend_on_the_order_of_the_contexts(
+    df_synthesis_toy: pd.DataFrame, _config: SynthesisConfig
+) -> None:
+    """Contextes calculés ensemble, en ordre inverse ou un par un : mêmes scores."""
+    context_columns = list(_config.context_columns)
+    frames = [frame for _, frame in df_synthesis_toy.groupby(context_columns, sort=False)]
+    together, _, _ = run_synthesis(df_synthesis_toy, _config, log_artifacts=False)
+
+    reversed_run, _, _ = run_synthesis(
+        pd.concat(frames[::-1], ignore_index=True), _config, log_artifacts=False
+    )
+    alone = pd.concat(
+        [run_synthesis(frame, _config, log_artifacts=False)[0] for frame in frames[::-1]],
+        ignore_index=True,
+    )
+    pd.testing.assert_frame_equal(_sorted_scores(together), _sorted_scores(reversed_run))
+    pd.testing.assert_frame_equal(_sorted_scores(together), _sorted_scores(alone))
+
+
+def test_group_seed_does_not_depend_on_the_type_of_the_key_values() -> None:
+    """Un même groupe lu en int32, int64, float ou texte reçoit la même graine."""
+    from macroforecast.trade.aggregation.synthesis import _group_seed
+
+    config = SynthesisConfig(random_state=7)
+    seeds = {
+        _group_seed(config, ("A", flow, "V", period), "global", "ALL")
+        for flow in (1, np.int32(1), np.int64(1), 1.0, np.float64(1.0))
+        for period in (2022, np.int64(2022), 2022.0)
+    }
+    assert len(seeds) == 1

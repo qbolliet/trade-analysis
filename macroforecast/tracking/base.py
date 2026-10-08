@@ -278,6 +278,164 @@ class CapturingTracker:
 
 
 # ──────────────────────────────────────────────────────────────────────
+# Enregistrement rejouable — suivi depuis un processus worker
+# ──────────────────────────────────────────────────────────────────────
+
+# Tracker sans effet propre qui garde les appels pour les rejouer plus tard
+class RecordingTracker:
+    """Tracker recording every call so that another process can replay them.
+
+    A worker process cannot share the run of its parent. It logs into a
+    ``RecordingTracker`` instead; the (picklable) recording travels back with the
+    result and the parent replays it on the real tracker, which stays the only
+    process talking to the tracking server.
+
+    Attributes:
+        calls: Recorded calls, in order, as ``(method_name, args, kwargs)``.
+
+    Examples:
+        >>> recorder = RecordingTracker()
+        >>> recorder.log_metrics({"a": 1.0})
+        >>> replayed = CapturingTracker()
+        >>> recorder.replay(replayed)
+        >>> replayed.metrics
+        {'a': 1.0}
+    """
+
+    # Initialisation  
+    def __init__(self) -> None:
+        self.calls: list = []
+
+    def _record(self, name: str, *args: Any, **kwargs: Any) -> None:
+        self.calls.append((name, args, kwargs))
+
+    def log_params(self, params: Mapping[str, Any]) -> None:
+        """Record the parameters.
+
+        Args:
+            params: Parameters to log.
+        """
+        self._record("log_params", dict(params))
+
+    def log_metrics(self, metrics: Mapping[str, float], step: Optional[int] = None) -> None:
+        """Record the metrics.
+
+        Args:
+            metrics: Mapping of metric names to values.
+            step: Optional step.
+        """
+        self._record("log_metrics", dict(metrics), step=step)
+
+    def log_dict(self, obj: Mapping[str, Any], artifact_file: str) -> None:
+        """Record a mapping artifact.
+
+        Args:
+            obj: Mapping to log.
+            artifact_file: Artifact path.
+        """
+        self._record("log_dict", dict(obj), artifact_file)
+
+    def log_table(self, df_table: pd.DataFrame, artifact_file: str) -> None:
+        """Record a table artifact.
+
+        Args:
+            df_table: Table to log.
+            artifact_file: Artifact path.
+        """
+        self._record("log_table", df_table, artifact_file)
+
+    def log_text(self, text: str, artifact_file: str) -> None:
+        """Record a text artifact.
+
+        Args:
+            text: Text to log.
+            artifact_file: Artifact path.
+        """
+        self._record("log_text", text, artifact_file)
+
+    def set_tags(self, tags: Mapping[str, str]) -> None:
+        """Record the tags.
+
+        Args:
+            tags: Mapping of tag names to values.
+        """
+        self._record("set_tags", dict(tags))
+
+    def __enter__(self) -> "RecordingTracker":
+        """Return the recorder (there is no run to open)."""
+        return self
+
+    def __exit__(self, *exc: Any) -> None:
+        """Do nothing."""
+
+    def replay(self, target: "RunTracker", *, only_last_per_artifact: bool = False) -> None:
+        """Replay the recorded calls on another tracker.
+
+        Args:
+            target: Tracker receiving the calls.
+            only_last_per_artifact: Skip the artifact calls whose path is logged
+                again later in this recording.
+        """
+        last: Dict[str, int] = {}
+        if only_last_per_artifact:
+            for index, (name, args, _) in enumerate(self.calls):
+                if name in ("log_dict", "log_table", "log_text"):
+                    last[args[1]] = index
+        for index, (name, args, kwargs) in enumerate(self.calls):
+            if name in ("log_dict", "log_table", "log_text") and only_last_per_artifact:
+                if last[args[1]] != index:
+                    continue
+            getattr(target, name)(*args, **kwargs)
+
+
+# Collecteur d'artefacts de workers, indépendant de l'ordre d'arrivée
+class ArtifactCollector:
+    """Keep, per artifact path, the artifact of the highest-ranked recording.
+
+    Sequentially, a later context overwrites the artifact of an earlier one
+    under the same path. Workers finish in any order, so the parent gives each
+    recording the rank its context has in the plan and keeps the highest: the
+    replayed artifacts are the ones a sequential run would leave.
+
+    Examples:
+        >>> collector = ArtifactCollector()
+        >>> for rank, value in ((1, 20), (0, 10)):
+        ...     recorder = RecordingTracker()
+        ...     recorder.log_dict({"v": value}, "a.json")
+        ...     collector.add(rank, recorder)
+        >>> replayed = CapturingTracker()
+        >>> collector.replay(replayed)
+    """
+
+    def __init__(self) -> None:
+        self._kept: Dict[str, tuple] = {}
+
+    def add(self, rank: int, recorder: "RecordingTracker") -> None:
+        """Take the artifact calls of a recording.
+
+        Args:
+            rank: Rank of the context in the plan.
+            recorder: Recording returned by the worker.
+        """
+        for name, args, kwargs in recorder.calls:
+            if name not in ("log_dict", "log_table", "log_text"):
+                continue
+            path = args[1]
+            if path not in self._kept or self._kept[path][0] <= rank:
+                self._kept[path] = (rank, name, args, kwargs)
+
+    def replay(self, target: "RunTracker") -> None:
+        """Send the kept artifacts to a tracker, in path order.
+
+        Args:
+            target: Tracker receiving the artifacts.
+        """
+        for path in sorted(self._kept):
+            _, name, args, kwargs = self._kept[path]
+            getattr(target, name)(*args, **kwargs)
+
+
+# ──────────────────────────────────────────────────────────────────────
 # Mise en forme des rapports structurés
 # ──────────────────────────────────────────────────────────────────────
 

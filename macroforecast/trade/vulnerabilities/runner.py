@@ -1200,6 +1200,175 @@ def read_previous_network_result(
 # Métriques de réseau — orchestration de bout en bout
 # ──────────────────────────────────────────────────────────────────────
 
+# Fonction de calcul d'un millésime, sans écriture
+def compute_network_vintage(
+    source_conn: duckdb.DuckDBPyConnection,
+    *,
+    source_catalog_alias: str,
+    source_schema: str,
+    classification: str,
+    result_schema: str,
+    metrics: Optional[Sequence[NetworkVulnerabilityMetric]] = None,
+    config: NetworkVulnerabilityConfig = DEFAULT_NETWORK_CONFIG,
+    flows: Sequence[str] = ("import",),
+    flow_codes: Optional[Mapping[str, int]] = None,
+    backend: str = "pandas",
+    tracker: RunTracker = NULL_TRACKER,
+    log_artifacts: bool = True,
+    df_previous: Optional[nw.DataFrame] = None,
+    annotate: Optional[Callable[[nw.DataFrame], nw.DataFrame]] = None,
+) -> Tuple[nw.DataFrame, NetworkVulnerabilityReport]:
+    """Compute the network vulnerability metrics of one HS vintage, without writing.
+
+    Everything :func:`run_network_vulnerabilities` does before the write: reads
+    the BACI reconciled flows of the vintage, stamps the vintage onto every row,
+    applies the metrics in each requested direction, sends the run parameters
+    and the business artifacts to the tracker and annotates the scores. Having
+    no write side effect, it can run in a worker process while the parent
+    process remains the only writer.
+
+    Args:
+        source_conn: Open DuckLake connection on the source (BACI) catalog,
+            owned by the caller.
+        source_catalog_alias: Alias under which the source catalog is attached.
+        source_schema: Schema holding the vintage's reconciled ``fact_table``.
+        classification: HS vintage label stamped onto the result.
+        result_schema: Schema the scores will be written into (logged as a
+            run parameter only).
+        metrics: Metric instances to apply (see
+            :func:`run_network_vulnerabilities`).
+        config: Column conventions and thresholds.
+        flows: Directions to compute.
+        flow_codes: Flow code of each direction.
+        backend: Native eager backend for narwhals computation.
+        tracker: Experiment tracker receiving the parameters and artifacts.
+        log_artifacts: Whether to build and send the business artifacts.
+        df_previous: Previous result of the vintage, enabling the drift
+            diagnostics.
+        annotate: Function adding descriptive columns to the scores.
+
+    Returns:
+        Tuple ``(result, report)``: the scores, ready to be written, and the
+        :class:`NetworkVulnerabilityReport` (``created`` left ``False``).
+
+    Raises:
+        ValueError: If ``flows`` is empty or unknown, or if the source frame
+            is missing a column required by one of the metrics.
+    """
+    # Initialisation de la liste des métriques, restreinte aux sens demandés
+    metric_list = _metrics_for_flows(
+        list(metrics) if metrics is not None else default_network_metrics(config, flows),
+        flows,
+    )
+    codes = dict(flow_codes) if flow_codes is not None else flow_code_map(config)
+
+    # Paramètres de l'exécution : configuration aplatie et contexte
+    tracker.log_params(
+        run_params(
+            config,
+            {
+                "source_schema": source_schema,
+                "result_schema": result_schema,
+                "classification": classification,
+                "backend": backend,
+                "metrics": [metric.name for metric in _unique_by_name(metric_list)],
+                "flows": list(flows),
+            },
+        )
+    )
+
+    # Colonnes à lire : clés de la grille hors millésime (estampillé ici, absent
+    # de la table BACI) plus les deux extrémités et le poids des arêtes
+    required = list(
+        dict.fromkeys(
+            [key for key in config.key_columns if key != config.classification_col]
+            + [config.exporter_col, config.importer_col, config.value_col]
+        )
+    )
+
+    # Lecture de la table de faits BACI du millésime (intégrale : une métrique de
+    # graphe a besoin de tous les pays d'un produit, aucun périmètre partiel
+    # n'aurait de sens)
+    source_pdf = _read_source_fact_table(
+        source_conn, source_catalog_alias, source_schema, required
+    )
+
+    # Calcul des métriques via narwhals (agnostique du backend), millésime
+    # estampillé sur chaque ligne pour devenir clé primaire du résultat
+    data = nw.from_native(_to_native(source_pdf, backend), eager_only=True).with_columns(
+        nw.lit(classification).alias(config.classification_col)
+    )
+    result, report = compute_network_vulnerabilities(
+        data, metric_list, config, flows=flows, flow_codes=codes, df_previous=df_previous
+    )
+    report.classification = classification
+
+    # Artefacts de synthèse, un dossier par sens
+    if log_artifacts:
+        for flow, sub in report.flows.items():
+            log_network_vulnerability_artifacts(
+                tracker,
+                df_result=result.filter(nw.col(config.flow_col) == codes[flow]),
+                report=sub,
+                metrics=[metric for metric in metric_list if metric.flow == flow],
+                config=config,
+                flow=flow,
+            )
+
+    # Colonnes descriptives dérivées des clés, ajoutées hors clé primaire
+    if annotate is not None:
+        result = annotate(result)
+
+    return result, report
+
+
+# Fonction d'écriture du résultat d'un millésime
+def write_network_vintage(
+    result: nw.DataFrame,
+    report: NetworkVulnerabilityReport,
+    *,
+    classification: str,
+    config: NetworkVulnerabilityConfig,
+    result_conn: Optional[duckdb.DuckDBPyConnection],
+    result_catalog_alias: Optional[str],
+    result_schema: str,
+    write_options: Optional[Mapping[str, Any]] = None,
+    writer: Optional[TableWriter] = None,
+) -> None:
+    """Upsert the scores of a vintage and record the outcome on its reports.
+
+    Args:
+        result: Scores returned by :func:`compute_network_vintage`.
+        report: Report returned by :func:`compute_network_vintage`, updated in
+            place (``created`` and the vintage of each direction).
+        classification: HS vintage label (write label).
+        config: Column conventions (primary key).
+        result_conn: Open connection on the result catalog (unused when
+            ``writer`` is given).
+        result_catalog_alias: Alias of the result catalog.
+        result_schema: Schema to create or upsert the scores into.
+        write_options: Extra keyword arguments of the library writer.
+        writer: Writer of the result table, ``(frame, primary_keys) ->
+            created``; ``write_options`` is ignored when it is given.
+    """
+    # Écriture dans le schéma résultat : le frame narwhals est passé tel quel,
+    # builder/updater de dt_ducklake_manager acceptant IntoDataFrame. Le flux
+    # entre dans la clé primaire (une ligne par sens et par cellule)
+    report.created = _write_result(
+        result,
+        (*config.key_columns, config.flow_col),
+        writer=writer,
+        conn=result_conn,
+        catalog_alias=result_catalog_alias,
+        schema=result_schema,
+        write_options={"label": classification, **(write_options or {})},
+    )
+    # Millésime et issue de l'écriture reportés sur les rapports par sens
+    for sub in report.flows.values():
+        sub.classification = classification
+        sub.created = report.created
+
+
 # Fonction d'orchestration : flux BACI d'un millésime → métriques → schéma résultat
 def run_network_vulnerabilities(
     source_conn: duckdb.DuckDBPyConnection,
@@ -1299,13 +1468,8 @@ def run_network_vulnerabilities(
             ``result_catalog_alias``, if ``flows`` is empty or unknown, or if the
             source frame is missing a column required by one of the metrics.
     """
-    # Initialisation de la liste des métriques, restreinte aux sens demandés
-    metric_list = _metrics_for_flows(
-        list(metrics) if metrics is not None else default_network_metrics(config, flows),
-        flows,
-    )
+    # Liste des métriques et codes de flux : validés avant toute lecture
     codes = dict(flow_codes) if flow_codes is not None else flow_code_map(config)
-
     # Catalogue résultat : partagé avec la source par défaut. Une connexion
     # distincte impose de nommer son alias, qui n'est pas déductible.
     if result_conn is not None and result_catalog_alias is None:
@@ -1315,78 +1479,34 @@ def run_network_vulnerabilities(
     result_conn = result_conn if result_conn is not None else source_conn
     result_catalog_alias = result_catalog_alias or source_catalog_alias
 
-    # Paramètres de l'exécution : configuration aplatie et contexte
-    tracker.log_params(
-        run_params(
-            config,
-            {
-                "source_schema": source_schema,
-                "result_schema": result_schema,
-                "classification": classification,
-                "backend": backend,
-                "metrics": [metric.name for metric in _unique_by_name(metric_list)],
-                "flows": list(flows),
-            },
-        )
+    # Calcul du millésime (lecture, métriques, artefacts, annotation)
+    result, report = compute_network_vintage(
+        source_conn,
+        source_catalog_alias=source_catalog_alias,
+        source_schema=source_schema,
+        classification=classification,
+        result_schema=result_schema,
+        metrics=metrics,
+        config=config,
+        flows=flows,
+        flow_codes=codes,
+        backend=backend,
+        tracker=tracker,
+        log_artifacts=log_artifacts,
+        df_previous=df_previous,
+        annotate=annotate,
     )
 
-    # Colonnes à lire : clés de la grille hors millésime (estampillé ici, absent
-    # de la table BACI) plus les deux extrémités et le poids des arêtes
-    required = list(
-        dict.fromkeys(
-            [key for key in config.key_columns if key != config.classification_col]
-            + [config.exporter_col, config.importer_col, config.value_col]
-        )
-    )
-
-    # Lecture de la table de faits BACI du millésime (intégrale : une métrique de
-    # graphe a besoin de tous les pays d'un produit, aucun périmètre partiel
-    # n'aurait de sens)
-    source_pdf = _read_source_fact_table(
-        source_conn, source_catalog_alias, source_schema, required
-    )
-
-    # Calcul des métriques via narwhals (agnostique du backend), millésime
-    # estampillé sur chaque ligne pour devenir clé primaire du résultat
-    data = nw.from_native(_to_native(source_pdf, backend), eager_only=True).with_columns(
-        nw.lit(classification).alias(config.classification_col)
-    )
-    result, report = compute_network_vulnerabilities(
-        data, metric_list, config, flows=flows, flow_codes=codes, df_previous=df_previous
-    )
-    report.classification = classification
-
-    # Artefacts de synthèse, un dossier par sens
-    if log_artifacts:
-        for flow, sub in report.flows.items():
-            log_network_vulnerability_artifacts(
-                tracker,
-                df_result=result.filter(nw.col(config.flow_col) == codes[flow]),
-                report=sub,
-                metrics=[metric for metric in metric_list if metric.flow == flow],
-                config=config,
-                flow=flow,
-            )
-
-    # Colonnes descriptives dérivées des clés, ajoutées hors clé primaire
-    if annotate is not None:
-        result = annotate(result)
-
-    # Écriture dans le schéma résultat : le frame narwhals est passé tel quel,
-    # builder/updater de dt_ducklake_manager acceptant IntoDataFrame. Le flux
-    # entre dans la clé primaire (une ligne par sens et par cellule)
-    report.created = _write_result(
+    # Écriture dans le schéma résultat
+    write_network_vintage(
         result,
-        (*config.key_columns, config.flow_col),
+        report,
+        classification=classification,
+        config=config,
+        result_conn=result_conn,
+        result_catalog_alias=result_catalog_alias,
+        result_schema=result_schema,
+        write_options=write_options,
         writer=writer,
-        conn=result_conn,
-        catalog_alias=result_catalog_alias,
-        schema=result_schema,
-        write_options={"label": classification, **(write_options or {})},
     )
-    # Millésime et issue de l'écriture reportés sur les rapports par sens
-    for sub in report.flows.values():
-        sub.classification = classification
-        sub.created = report.created
-
     return report

@@ -68,6 +68,8 @@ import numbers
 import os
 from pathlib import Path
 import re
+import time
+from functools import partial
 from typing import (
     Any,
     Collection,
@@ -87,6 +89,8 @@ import yaml
 from statflows.storage.json import Loader, Saver
 # Fabrique de connecteur DuckLake (seul point de lecture des identifiants)
 from kedro_pipeline.io.ducklake import (
+    BorrowedReader,
+    ConnectionReader,
     DuckLakeLocation,
     DuckLakeTable,
     build_connector,
@@ -131,7 +135,15 @@ import numpy as np
 import pandas as pd
 
 # Module de suivi d'exécution (MLflow optionnel, objet nul par défaut)
-from macroforecast.tracking import CapturingTracker, get_tracker, rekey_metrics
+from macroforecast.tracking import (
+    ArtifactCollector,
+    CapturingTracker,
+    RecordingTracker,
+    get_tracker,
+    rekey_metrics,
+)
+# Parallélisme intra-pod (résolution de n_jobs, carte parallèle, erreurs transmissibles)
+from kedro_pipeline.parallel import parallel_map, resolve_n_jobs, serialisable_exception
 from macroforecast.tracking.figures import key_figures_synthesis, sections_synthesis
 from macroforecast.tracking.report import Units
 from scripts._run_report import RunScope, guarded_run, run_name
@@ -1536,6 +1548,10 @@ class IncrementalSettings:
         min_interval_days: Minimum interval between two runs under
             ``--cadence-check``.
         period_column: Context column holding the period.
+        n_jobs: Number of worker processes computing the contexts.
+        sequential_methods: Methods computed in the parent process once the
+            parallel phase is over (memory-hungry ones such as the optimal
+            transport score), for the same contexts.
 
     Examples:
         >>> IncrementalSettings().max_contexts is None
@@ -1546,6 +1562,8 @@ class IncrementalSettings:
     write_batch_contexts: int = 50
     min_interval_days: float = 6.0
     period_column: str = _PERIOD_COLUMN
+    n_jobs: int = 1
+    sequential_methods: Tuple[str, ...] = ()
 
 
 # Fonction de lecture de la profondeur de l'incrémental Eurostat
@@ -1589,7 +1607,9 @@ def incremental_settings(
     Args:
         block: Configuration block (keys ``RECENT_PERIODS``,
             ``MAX_CONTEXTS_PER_RUN``, ``WRITE_BATCH_CONTEXTS``,
-            ``CADENCE.MIN_INTERVAL_DAYS``).
+            ``CADENCE.MIN_INTERVAL_DAYS``, ``N_JOBS`` and
+            ``SEQUENTIAL_METHODS``). ``N_JOBS`` null resolves to the CPU of the
+            pod (see :func:`~kedro_pipeline.parallel.resolve_n_jobs`).
         eurostat_config: Eurostat download configuration, the default of
             ``RECENT_PERIODS``.
 
@@ -1620,6 +1640,8 @@ def incremental_settings(
         min_interval_days=(
             float(interval) if interval is not None else IncrementalSettings.min_interval_days
         ),
+        n_jobs=resolve_n_jobs(block.get("N_JOBS")),
+        sequential_methods=tuple(block.get("SEQUENTIAL_METHODS") or ()),
     )
 
 
@@ -2199,6 +2221,9 @@ class ContextResult:
         fit: ``fit``-family diagnostics of the fitted methods (long
             diagnostic table).
         report: Synthesis report of the context.
+        with_consensus: Whether the rows of the consensus pseudo-methods are
+            part of ``scores`` (``False`` for the parallel phase of a context
+            whose consensus waits for its sequential methods).
     """
     unit: Unit
     context: Tuple[Any, ...]
@@ -2206,6 +2231,7 @@ class ContextResult:
     scores: pd.DataFrame
     fit: pd.DataFrame
     report: SynthesisReport
+    with_consensus: bool = True
 
 
 # Fonction de calcul d'un contexte (aucune lecture ni écriture)
@@ -2334,7 +2360,8 @@ def write_synthesis_batch(
     fit_groups: Dict[Tuple[str, ...], List[Tuple[Any, ...]]] = {}
     for result in results:
         methods = all_methods if result.methods is None else tuple(result.methods)
-        score_groups.setdefault(methods + consensus, []).append(result.context)
+        names = methods + consensus if result.with_consensus else methods
+        score_groups.setdefault(names, []).append(result.context)
         fit_groups.setdefault(methods, []).append(result.context)
 
     df_scores = pd.concat([result.scores for result in results], ignore_index=True)
@@ -2640,6 +2667,7 @@ def run_incremental_synthesis(
     tracker: Any = None,
     log_artifacts: bool = True,
     scope: Optional[RunScope] = None,
+    reader: Any = None,
 ) -> IncrementalOutcome:
     """Synthesise the stale contexts, by context and by method.
 
@@ -2649,16 +2677,18 @@ def run_incremental_synthesis(
        query, no metric read), the plan of each one
        (:func:`plan_synthesis_contexts`), the order (most recent periods
        first) and the catch-up budget;
-    2. **computation** of each context (:func:`compute_synthesis_context`),
-       restricted to the methods of its plan, the consensus being fed with the
-       stored scores of the other methods;
+    2. **computation** of each context (:func:`compute_context_task`), in
+       ``settings.n_jobs`` worker processes, each with a read connection of
+       its own, restricted to the methods of its plan, the consensus being fed
+       with the stored scores of the other methods; the methods of
+       ``settings.sequential_methods`` are computed afterwards in this
+       process, for the same contexts, the consensus coming last;
     3. **writes** by batches of ``settings.write_batch_contexts`` contexts
        (:func:`write_synthesis_batch`), then the registry entries of the batch
        (the registry advances batch by batch: an interrupted run keeps what it
        wrote).
 
-    The metric rows are read batch by batch (``IN`` list of the contexts),
-    never as a whole. The failure of one context does not interrupt the
+    The metric rows are read context by context, never as a whole. The failure of one context does not interrupt the
     others; a failed write fails the contexts of its batch.
 
     Args:
@@ -2684,9 +2714,15 @@ def run_incremental_synthesis(
         tracker: Experiment tracker; the null tracker by default.
         log_artifacts: Whether to log the synthesis artifacts.
         scope: Run-report scope, or ``None``.
+        reader: Opens the read connection of a worker (a
+            :class:`~kedro_pipeline.io.ducklake.ConnectionReader`). ``None``
+            lends ``scores_conn``, which only works with one process.
 
     Returns:
         The outcome of the run.
+
+    Raises:
+        ValueError: If several processes are requested without a ``reader``.
     """
     if tracker is None:
         from macroforecast.tracking import NULL_TRACKER
@@ -2694,6 +2730,10 @@ def run_incremental_synthesis(
         tracker = NULL_TRACKER
     tracker = CapturingTracker(tracker)
     computed_at = computed_at or _now()
+    if reader is None:
+        if settings.n_jobs > 1:
+            raise ValueError("n_jobs > 1 requires a `reader` (connector factory), not a shared connection.")
+        reader = BorrowedReader(scores_conn)
     context_columns = list(config.context_columns)
     method_names = [spec.name for spec in config.methods]
     scores_table = DuckLakeTable(scores_conn, catalog_alias, result_schema)
@@ -2734,17 +2774,28 @@ def run_incremental_synthesis(
             f"{len(selected)} calculé(s) dans cette exécution, {outcome.backlog} reporté(s)."
         )
 
-        for batch in chunks(selected, settings.write_batch_contexts):
-            _synthesise_batch(
-                batch, outcome,
-                scores_conn=scores_conn, config=config, typed=typed,
-                sources=sources, filters=filters, catalog_alias=catalog_alias,
-                flow_codes=flow_codes, vintages=vintages, result_schema=result_schema,
-                scores_table=scores_table, diagnostics_table=diagnostics_table,
-                registry=registry, requested=requested, marks=marks,
-                computed_at=computed_at, run_id=run_id,
-                tracker=tracker, log_artifacts=log_artifacts,
-            )
+        # 2-3. Calcul dans les workers, écriture par lots dans ce processus
+        artifacts = ArtifactCollector()
+        wall_started = time.perf_counter()
+        cpu_seconds = _synthesise_contexts(
+            selected, outcome,
+            scores_conn=scores_conn, reader=reader, config=config, typed=typed,
+            sources=sources, filters=filters, catalog_alias=catalog_alias,
+            flow_codes=flow_codes, vintages=vintages, result_schema=result_schema,
+            scores_table=scores_table, diagnostics_table=diagnostics_table,
+            registry=registry, requested=requested, marks=marks,
+            computed_at=computed_at, run_id=run_id, settings=settings,
+            log_artifacts=log_artifacts, artifacts=artifacts,
+        )
+        # Artefacts des workers rejoués dans le run, comme un calcul séquentiel
+        artifacts.replay(tracker)
+        tracker.log_metrics(
+            {
+                "timing/wall_seconds": time.perf_counter() - wall_started,
+                "timing/cpu_seconds_sum": cpu_seconds,
+                "parallel/n_jobs": float(settings.n_jobs),
+            }
+        )
 
         # Rapport de run seulement si un contexte était périmé : une exécution
         # sans rien à recalculer ne doit pas lever le contrôle « contextes calculés »
@@ -2759,12 +2810,170 @@ def run_incremental_synthesis(
     return outcome
 
 
-# Fonction de calcul et d'écriture d'un lot de contextes
-def _synthesise_batch(
-    batch: Sequence[Unit],
+# Tâche de calcul d'un contexte, envoyée à un worker
+@dataclass(frozen=True)
+class SynthesisTask:
+    """Everything a worker needs to synthesise one context.
+
+    The task carries no connection: the worker opens its own through
+    ``reader``, reads the rows of its context, computes and returns the result.
+    It never writes.
+
+    Attributes:
+        rank: Position of the context in the run plan.
+        unit: Freshness unit of the context.
+        context: Typed context values.
+        config: Synthesis configuration (without consensus when
+            ``with_consensus`` is false).
+        methods: Methods to fit (``None``: all; empty: consensus alone).
+        with_consensus: Whether the consensus is computed by this task.
+        kept_methods: Stored methods whose scores feed the consensus; empty
+            when the consensus is not computed or every method is fitted.
+        reader: Opens the read connection (see
+            :class:`~kedro_pipeline.io.ducklake.ConnectionReader`).
+        sources: ``SYNTHESIS.SOURCES`` block.
+        filters: ``SYNTHESIS.FILTERS`` block.
+        catalog_alias: DuckLake catalog alias.
+        result_schema: Schema of the scores.
+        flow_codes: Flow codes of the synthesised directions.
+        vintages: ``SYNTHESIS.VINTAGES``.
+        log_artifacts: Whether the artifacts are recorded for the parent.
+    """
+    rank: int
+    unit: Unit
+    context: Tuple[Any, ...]
+    config: SynthesisConfig
+    methods: Optional[Tuple[str, ...]]
+    with_consensus: bool
+    kept_methods: Tuple[str, ...]
+    reader: Any
+    sources: Sequence[Mapping[str, Any]]
+    filters: Mapping[str, Any]
+    catalog_alias: str
+    result_schema: str
+    flow_codes: Optional[Sequence[int]]
+    vintages: Optional[str]
+    log_artifacts: bool
+
+
+# Résultat d'une tâche de calcul, renvoyé au processus parent
+@dataclass
+class TaskOutcome:
+    """Outcome of one :class:`SynthesisTask`, picklable.
+
+    Attributes:
+        task_rank: Rank of the context in the plan.
+        unit: Freshness unit of the context.
+        result: Computed context, ``None`` on failure or when the context
+            vanished from the grid.
+        recorded: Tracker calls recorded by the worker.
+        cpu_seconds: CPU time spent by the task.
+        error: Serialisable exception of a failed context.
+        missing: Whether the context was absent from the read.
+    """
+    task_rank: int
+    unit: Unit
+    result: Optional[ContextResult] = None
+    recorded: Optional[RecordingTracker] = None
+    cpu_seconds: float = 0.0
+    error: Optional[BaseException] = None
+    missing: bool = False
+
+
+# Fonction de calcul d'un contexte dans un worker (lecture, calcul, aucune écriture)
+def compute_context_task(task: SynthesisTask) -> TaskOutcome:
+    """Read and synthesise one context with a connection of its own.
+
+    Module-level function so that it can be sent to a worker process. Errors
+    are returned, never raised: the failure of a context must not stop the
+    others.
+
+    Args:
+        task: Context to compute.
+
+    Returns:
+        The outcome of the task.
+    """
+    started = time.process_time()
+    outcome = TaskOutcome(task_rank=task.rank, unit=task.unit)
+    context_columns = list(task.config.context_columns)
+    cell_columns = (task.config.reporter_col, task.config.product_col)
+    try:
+        with task.reader() as conn:
+            df_context = read_source_metrics(
+                conn,
+                build_source_query(
+                    task.sources, task.filters, task.catalog_alias, task.flow_codes,
+                    task.vintages, contexts=[task.context], context_columns=context_columns,
+                ),
+                cell_columns,
+            )
+            if df_context.empty:
+                # Contexte disparu de la grille entre la planification et la lecture
+                outcome.missing = True
+                return outcome
+            # Scores stockés des méthodes non recalculées, pour le seul consensus
+            df_existing: Optional[pd.DataFrame] = None
+            if task.kept_methods and DuckLakeTable(
+                conn, task.catalog_alias, task.result_schema
+            ).exists():
+                df_existing = read_source_metrics(
+                    conn,
+                    build_scores_query(
+                        task.catalog_alias, task.result_schema, context_columns,
+                        [task.context], methods=task.kept_methods,
+                    ),
+                    cell_columns,
+                )
+        recorder = RecordingTracker() if task.log_artifacts else None
+        df_scores, df_fit, report = compute_synthesis_context(
+            df_context, task.config, methods=task.methods, df_existing_scores=df_existing,
+            tracker=recorder, log_artifacts=task.log_artifacts,
+        )
+        outcome.result = ContextResult(
+            unit=task.unit, context=task.context, methods=task.methods,
+            scores=df_scores, fit=df_fit, report=report, with_consensus=task.with_consensus,
+        )
+        outcome.recorded = recorder
+    except Exception as exc:
+        # Journalisation côté worker ; l'exception transmissible part au parent
+        logger.exception(f"Échec de la synthèse pour le contexte {task.unit}")
+        outcome.error = serialisable_exception(exc)
+    outcome.cpu_seconds = time.process_time() - started
+    return outcome
+
+
+# Fonction de fusion des rapports des deux phases d'un même contexte
+def _merge_phase_reports(first: SynthesisReport, second: SynthesisReport) -> SynthesisReport:
+    """Merge the reports of the parallel and the sequential phase of a context.
+
+    The context and its cells are counted once (by the first phase); the
+    cells scored, the skipped methods and the timings of the second phase are
+    added.
+
+    Args:
+        first: Report of the parallel phase.
+        second: Report of the sequential phase.
+
+    Returns:
+        The merged report (``first``, updated in place).
+    """
+    for level, level_report in second.levels.items():
+        merged = first.levels.setdefault(level, LevelReport())
+        merged.n_cells_scored += level_report.n_cells_scored
+        merged.n_methods_skipped += level_report.n_methods_skipped
+        for name, seconds in level_report.seconds.items():
+            merged.seconds[name] = merged.seconds.get(name, 0.0) + seconds
+    return first
+
+
+# Fonction de calcul parallèle puis d'écriture des contextes sélectionnés
+def _synthesise_contexts(
+    selected: Sequence[Unit],
     outcome: IncrementalOutcome,
     *,
     scores_conn: Any,
+    reader: Any,
     config: SynthesisConfig,
     typed: Mapping[Unit, Tuple[Any, ...]],
     sources: Sequence[Mapping[str, Any]],
@@ -2780,15 +2989,29 @@ def _synthesise_batch(
     marks: UpstreamMarks,
     computed_at: datetime,
     run_id: Optional[str],
-    tracker: Any,
+    settings: IncrementalSettings,
     log_artifacts: bool,
-) -> None:
-    """Read, compute, write and record one batch of contexts (updates ``outcome``).
+    artifacts: ArtifactCollector,
+) -> float:
+    """Compute the selected contexts in worker processes and write them.
+
+    The workers read and compute; this (parent) process is the only writer. The
+    results are written by batches of ``settings.write_batch_contexts``
+    contexts, in arrival order, the registry advancing batch by batch.
+
+    A context whose plan contains a sequential method is handled in two
+    phases. The parallel phase fits its other methods and writes them without
+    consensus; the registry does not advance. Once every context went through
+    the parallel phase, the parent fits the sequential methods of those
+    contexts, one at a time, with the stored scores of the other methods: the
+    consensus is thus computed last, once all the methods are available, and
+    written once.
 
     Args:
-        batch: Contexts of the batch.
+        selected: Contexts to compute, in plan order.
         outcome: Outcome of the run, updated in place.
-        scores_conn: Open connection reading the sources and the scores.
+        scores_conn: Parent connection (sequential phase).
+        reader: Reader opening the connection of a worker.
         config: Synthesis configuration.
         typed: Typed context values, by unit.
         sources: ``SYNTHESIS.SOURCES`` block.
@@ -2804,96 +3027,139 @@ def _synthesise_batch(
         marks: Upstream marks.
         computed_at: Instant recorded as ``last_computed``.
         run_id: Run identifier recorded on the snapshots.
-        tracker: Experiment tracker.
-        log_artifacts: Whether to log the artifacts.
+        settings: Incremental settings (``n_jobs``, ``sequential_methods``,
+            batch size).
+        log_artifacts: Whether the artifacts are recorded.
+        artifacts: Collector of the artifacts recorded by the workers.
+
+    Returns:
+        The CPU seconds spent by the tasks (workers and sequential phase).
+
+    Raises:
+        ValueError: If ``sequential_methods`` names an unconfigured method.
     """
-    context_columns = list(config.context_columns)
-    cell_columns = (config.reporter_col, config.product_col)
     method_names = [spec.name for spec in config.methods]
+    sequential = set(settings.sequential_methods)
+    unknown = sequential - set(method_names)
+    if unknown:
+        raise ValueError(
+            f"SEQUENTIAL_METHODS names method(s) {sorted(unknown)} absent from the configuration."
+        )
     plans = outcome.plans
-    methods_of = {unit: plan_methods(plans[unit].names, method_names) for unit in batch}
+    methods_of = {unit: plan_methods(plans[unit].names, method_names) for unit in selected}
+    no_consensus = replace(config, consensus=())
+    cpu_seconds = 0.0
 
-    # Lecture des métriques du lot (liste IN des contextes)
-    df_source = read_source_metrics(
-        scores_conn,
-        build_source_query(
-            sources, filters, catalog_alias, flow_codes, vintages,
-            contexts=[typed[unit] for unit in batch], context_columns=context_columns,
-        ),
-        cell_columns,
-    )
-    frames = {
-        context_unit(context_columns, key): frame
-        for key, frame in df_source.groupby(context_columns, sort=False, observed=True)
-    }
-    # Scores déjà calculés des méthodes non recalculées (contextes à plan partiel)
-    partial = [unit for unit in batch if methods_of[unit] is not None]
-    df_existing: Optional[pd.DataFrame] = None
-    if partial and scores_table.exists():
-        kept = sorted({name for unit in partial for name in method_names
-                       if name not in (methods_of[unit] or ())})
-        if kept:
-            df_existing = read_source_metrics(
-                scores_conn,
-                build_scores_query(
-                    catalog_alias, result_schema, context_columns,
-                    [typed[unit] for unit in partial], methods=kept,
-                ),
-                cell_columns,
-            )
+    # Construction de la tâche d'un contexte pour une phase donnée
+    def make_task(rank: int, unit: Unit, methods: Optional[Tuple[str, ...]],
+                  with_consensus: bool, task_reader: Any) -> SynthesisTask:
+        fitted = set(method_names if methods is None else methods)
+        # Scores stockés des méthodes laissées de côté : seul le consensus les lit
+        kept = tuple(name for name in method_names if name not in fitted) if with_consensus else ()
+        return SynthesisTask(
+            rank=rank, unit=unit, context=typed[unit],
+            config=config if with_consensus else no_consensus,
+            methods=methods, with_consensus=with_consensus, kept_methods=kept,
+            reader=task_reader, sources=sources, filters=filters, catalog_alias=catalog_alias,
+            result_schema=result_schema, flow_codes=flow_codes, vintages=vintages,
+            log_artifacts=log_artifacts,
+        )
 
-    # Calcul de chaque contexte : l'échec de l'un n'emporte pas les autres
-    results: List[ContextResult] = []
-    for unit in batch:
-        df_context = frames.get(unit)
-        if df_context is None:
-            # Contexte disparu de la grille entre la planification et la lecture
-            logger.warning(f"Contexte {unit} absent de la lecture des métriques, ignoré.")
+    # Phase parallèle : méthodes du plan hors méthodes séquentielles
+    tasks: List[SynthesisTask] = []
+    deferred: Dict[Unit, Tuple[int, Tuple[str, ...]]] = {}
+    for rank, unit in enumerate(selected):
+        planned = tuple(method_names) if methods_of[unit] is None else methods_of[unit]
+        sequential_part = tuple(name for name in planned if name in sequential)
+        if not sequential_part:
+            tasks.append(make_task(rank, unit, methods_of[unit], True, reader))
             continue
-        try:
-            df_scores, df_fit, report = compute_synthesis_context(
-                df_context, config, methods=methods_of[unit], df_existing_scores=df_existing,
-                tracker=tracker, log_artifacts=log_artifacts,
-            )
-            results.append(ContextResult(
-                unit=unit, context=typed[unit], methods=methods_of[unit],
-                scores=df_scores, fit=df_fit, report=report,
-            ))
-        except Exception as exc:
-            logger.exception(f"Échec de la synthèse pour le contexte {unit}")
-            outcome.failures[unit.key] = exc
-    if not results:
-        return
+        deferred[unit] = (rank, sequential_part)
+        parallel_part = tuple(name for name in planned if name not in sequential)
+        if parallel_part:
+            tasks.append(make_task(rank, unit, parallel_part, False, reader))
 
-    # Écriture du lot, puis avancement du registre (jamais avant l'écriture)
-    try:
-        created = write_synthesis_batch(
-            results, config,
-            scores_table=scores_table, diagnostics_table=diagnostics_table,
-            run_id=run_id,
-            commit_message=f"{NODE} {len(results)} contexte(s) "
-                           f"{results[0].unit.key} .. {results[-1].unit.key}",
-        )
-    except Exception as exc:
-        logger.exception(f"Échec de l'écriture d'un lot de {len(results)} contexte(s)")
-        for result in results:
-            outcome.failures[result.unit.key] = exc
-        return
-    outcome.created_any = outcome.created_any or created
-    for result in results:
-        registry.upsert(
-            context_entry(
-                result.unit, plans[result.unit], computed_at, marks.watermark, requested,
-                registry.get(result.unit),
-                n_cells=int(result.report.n_cells),
-                methods=list(result.methods) if result.methods is not None else "all",
+    first_phase_reports: Dict[Unit, SynthesisReport] = {}
+
+    # Écriture d'un lot de résultats, puis avancement du registre des contextes terminés
+    def flush(results: List[ContextResult], final: bool) -> None:
+        if not results:
+            return
+        try:
+            created = write_synthesis_batch(
+                results, config,
+                scores_table=scores_table, diagnostics_table=diagnostics_table,
+                run_id=run_id,
+                commit_message=f"{NODE} {len(results)} contexte(s) "
+                               f"{results[0].unit.key} .. {results[-1].unit.key}",
             )
+        except Exception as exc:
+            logger.exception(f"Échec de l'écriture d'un lot de {len(results)} contexte(s)")
+            for result in results:
+                outcome.failures[result.unit.key] = exc
+                deferred.pop(result.unit, None)
+            return
+        outcome.created_any = outcome.created_any or created
+        for result in results:
+            report = result.report
+            if not final and result.unit in deferred:
+                # Phase parallèle d'un contexte à méthode séquentielle : pas terminé
+                first_phase_reports[result.unit] = report
+                continue
+            if result.unit in first_phase_reports:
+                report = _merge_phase_reports(first_phase_reports.pop(result.unit), report)
+            planned = methods_of[result.unit]
+            registry.upsert(
+                context_entry(
+                    result.unit, plans[result.unit], computed_at, marks.watermark, requested,
+                    registry.get(result.unit),
+                    n_cells=int(report.n_cells),
+                    methods=list(planned) if planned is not None else "all",
+                )
+            )
+            outcome.reports.append(report)
+            outcome.computed.append(result.unit)
+        registry.save()
+        # Logging
+        logger.info(f"Lot de {len(results)} contexte(s) écrit et enregistré.")
+
+    # Calcul d'une phase, écriture par lots dans l'ordre d'arrivée
+    def run_phase(phase_tasks: Sequence[SynthesisTask], n_jobs: int, final: bool) -> None:
+        nonlocal cpu_seconds
+        pending: List[ContextResult] = []
+        for _, task_outcome in parallel_map(compute_context_task, phase_tasks, n_jobs):
+            cpu_seconds += task_outcome.cpu_seconds
+            unit = task_outcome.unit
+            if task_outcome.error is not None:
+                outcome.failures[unit.key] = task_outcome.error
+                deferred.pop(unit, None)
+                continue
+            if task_outcome.missing:
+                logger.warning(f"Contexte {unit} absent de la lecture des métriques, ignoré.")
+                deferred.pop(unit, None)
+                continue
+            if task_outcome.recorded is not None:
+                artifacts.add(task_outcome.task_rank, task_outcome.recorded)
+            pending.append(task_outcome.result)
+            if len(pending) >= settings.write_batch_contexts:
+                flush(pending, final)
+                pending = []
+        flush(pending, final)
+
+    run_phase(tasks, settings.n_jobs, final=False)
+
+    # Phase séquentielle : méthodes séquentielles puis consensus, dans le parent
+    remaining = sorted(
+        ((rank, unit, part) for unit, (rank, part) in deferred.items()),
+        key=lambda item: item[0],
+    )
+    if remaining:
+        borrowed = BorrowedReader(scores_conn)
+        run_phase(
+            [make_task(rank, unit, part, True, borrowed) for rank, unit, part in remaining],
+            1, final=True,
         )
-        outcome.reports.append(result.report)
-        outcome.computed.append(result.unit)
-    registry.save()
-    # Logging
-    logger.info(f"Lot de {len(results)} contexte(s) écrit et enregistré.")
+    return cpu_seconds
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -3060,12 +3326,24 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
         schema=diagnostics_schema,
     )
 
+    # Macros de nomenclature de la session (product_code des conditions de
+    # jointure : zéro initial des codes stockés en entiers)
+    macros = nomenclature_macros_sql(nomenclatures)
+    # Lecteur des workers : chacun ouvre sa propre connexion (jamais partagée)
+    reader = ConnectionReader(
+        partial(
+            _result_connector, vulnerability_config,
+            bucket=synthesis_config["BUCKET"],
+            data_path=synthesis_config["PATHS"]["DATA_PATH"],
+            schema=result_schema,
+        ),
+        macros,
+    )
+
     # Ouverture des connexions : leur cycle de vie appartient au script
     scores_conn = scores_connector.connect()
     try:
-        # Macros de nomenclature de la session (product_code des conditions de
-        # jointure : zéro initial des codes stockés en entiers)
-        for statement in nomenclature_macros_sql(nomenclatures):
+        for statement in macros:
             scores_conn.execute(statement)
         diagnostics_conn = diagnostics_connector.connect()
         try:
@@ -3090,6 +3368,7 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
                 tracker=tracker,
                 log_artifacts=log_artifacts,
                 scope=scope,
+                reader=reader,
             )
         finally:
             diagnostics_conn.close()

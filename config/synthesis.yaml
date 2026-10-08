@@ -61,6 +61,15 @@ SYNTHESIS:
   # Nombre de contextes lus, écrits et enregistrés ensemble (une transaction
   # DuckLake par table et par lot ; le registre avance lot par lot)
   WRITE_BATCH_CONTEXTS: 50
+  # Nombre de processus calculant les contextes en parallèle (chacun ouvre sa
+  # propre connexion de lecture ; le processus parent reste l'unique écrivain).
+  # null => variable d'environnement NUM_CPU (CPU du pod), à défaut nombre de CPU
+  # de la machine. Le résultat ne dépend pas de ce nombre
+  N_JOBS: null
+  # Méthodes calculées dans le processus parent, après la phase parallèle, pour
+  # les mêmes contextes (coût mémoire de JAX / transport optimal). Le consensus
+  # est calculé en dernier, une fois toutes les méthodes disponibles
+  SEQUENTIAL_METHODS: ["kantorovich"]
   # Cadence : avec --cadence-check (ou CADENCE_CHECK=1), sortie immédiate si le
   # dernier calcul date de moins de MIN_INTERVAL_DAYS jours et qu'aucun forçage
   # n'est demandé (workflow de transition quotidien ; en production la cadence est
@@ -233,6 +242,8 @@ COHERENCE:
   MAX_CONTEXTS_PER_RUN: null
   # Nombre de contextes lus, écrits et enregistrés ensemble
   WRITE_BATCH_CONTEXTS: 50
+  # Nombre de processus calculant les contextes en parallèle (cf. bloc SYNTHESIS)
+  N_JOBS: null
   # Cadence sous --cadence-check (cf. bloc SYNTHESIS)
   CADENCE:
     MIN_INTERVAL_DAYS: 6

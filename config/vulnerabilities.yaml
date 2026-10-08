@@ -127,6 +127,10 @@ NETWORK_VULNERABILITIES:
     PATH_TEMPLATE: "trade/state/vulnerabilities/network/{vintage}.json"
     # Migration des entrées v1 (cf. bloc partenaires)
     ADOPT_LEGACY_FINGERPRINTS: false
+  # Nombre de processus calculant les millésimes en parallèle (un millésime par
+  # tâche ; le processus parent reste l'unique écrivain). null => variable
+  # d'environnement NUM_CPU (CPU du pod), à défaut nombre de CPU de la machine
+  N_JOBS: null
   # Suivi d'exécution MLflow, un run par millésime recalculé.
   MLFLOW:
     TRACKING_URI: null

@@ -173,6 +173,96 @@ def s3_credentials_from_env(
     }
 
 
+# Lecteur de connexion ouvrant sa propre connexion à chaque usage
+class ConnectionReader:
+    """Picklable reader opening, then closing, its own DuckLake connection.
+
+    Worker processes cannot share a DuckDB connection: each task enters the
+    reader to get a connection of its own. The reader holds a *factory* of
+    unconnected connectors (never a connection), so it can be sent to a process.
+
+    Attributes:
+        connector_factory: Picklable callable returning an unconnected connector
+            (an object whose ``connect()`` returns the connection).
+        setup_statements: SQL statements run on each new connection (session
+            macros).
+
+    Examples:
+        >>> class _Conn:
+        ...     def execute(self, sql): pass
+        ...     def close(self): pass
+        >>> class _Connector:
+        ...     def connect(self): return _Conn()
+        >>> with ConnectionReader(_Connector) as conn:
+        ...     conn.execute("SELECT 1")
+    """
+
+    def __init__(
+        self, connector_factory: Callable[[], Any], setup_statements: Sequence[str] = ()
+    ) -> None:
+        self.connector_factory = connector_factory
+        self.setup_statements = tuple(setup_statements)
+        self._connection: Any = None
+
+    def __call__(self) -> "ConnectionReader":
+        """Return a fresh, unopened reader sharing the same factory."""
+        return ConnectionReader(self.connector_factory, self.setup_statements)
+
+    def __enter__(self) -> Any:
+        self._connection = self.connector_factory().connect()
+        try:
+            for statement in self.setup_statements:
+                self._connection.execute(statement)
+        except Exception:
+            self._connection.close()
+            raise
+        return self._connection
+
+    def __exit__(self, *exc: Any) -> None:
+        if self._connection is not None:
+            self._connection.close()
+            self._connection = None
+
+    def __getstate__(self) -> Dict[str, Any]:
+        return {"connector_factory": self.connector_factory,
+                "setup_statements": self.setup_statements, "_connection": None}
+
+
+# Lecteur d'une connexion déjà ouverte (exécution dans le processus appelant)
+class BorrowedReader:
+    """Reader lending an already open connection, which it never closes.
+
+    Only usable in the calling process (a connection cannot be pickled).
+
+    Attributes:
+        connection: Open connection of the caller.
+
+    Examples:
+        >>> with BorrowedReader("conn") as conn:
+        ...     conn
+        'conn'
+    """
+
+    def __init__(self, connection: Any) -> None:
+        self.connection = connection
+
+    def __call__(self) -> "BorrowedReader":
+        """Return the reader itself."""
+        return self
+
+    def __enter__(self) -> Any:
+        return self.connection
+
+    def __exit__(self, *exc: Any) -> None:
+        return None
+
+    def __getstate__(self) -> Dict[str, Any]:
+        raise TypeError(
+            "A borrowed connection cannot be sent to another process: "
+            "give a ConnectionReader (connector factory) when n_jobs > 1."
+        )
+
+
 # Fonction de construction du connecteur DuckLake
 def build_connector(
     location: DuckLakeLocation,

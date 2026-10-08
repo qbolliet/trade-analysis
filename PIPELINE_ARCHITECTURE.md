@@ -2694,11 +2694,12 @@ pas les résultats des méthodes calculées : un test d'équivalence le vérifie
 > **Implémentation (K-08).** `scripts/compute_synthetic_scores.py` et
 > `scripts/compute_synthesis_coherence.py` (tests : `tests/test_synthesis_planning.py`,
 > `tests/test_scripts_synthesis_incremental_e2e.py`,
-> `tests/aggregation/test_synthesis_incremental.py`). Étape 5 séquentielle (K-09),
-> mais le code est découpé en planification (`plan_synthesis_contexts`,
-> `select_contexts`), calcul pur d'un contexte (`compute_synthesis_context`) et
-> écriture par lots (`write_synthesis_batch`) : K-09 n'aura qu'à paralléliser le
-> deuxième temps. Précisions et écarts :
+> `tests/aggregation/test_synthesis_incremental.py`). Le code est découpé en
+> planification (`plan_synthesis_contexts`, `select_contexts`), calcul pur d'un
+> contexte (`compute_synthesis_context`) et écriture par lots
+> (`write_synthesis_batch`). L'étape 5 est parallélisée en K-09 (voir PS-18 :
+> `compute_context_task` / `compute_coherence_task`, un contexte par tâche, lecture
+> par connexion propre au worker, écriture par le seul parent). Précisions et écarts :
 > - **Contextes planifiés** : `build_contexts_query` (`SELECT DISTINCT` des colonnes de
 >   contexte sur la grille seule, mêmes prédicats `FILTERS`, `flow IN`,
 >   `p."in_force" = true`, `LAST_N_PERIODS`) ; `FILTERS.WHERE` ne doit porter que sur
@@ -2760,6 +2761,36 @@ pas les résultats des méthodes calculées : un test d'équivalence le vérifie
 - **un seul écrivain** par table (le processus parent) ;
 - déterminisme : graine par unité dérivée de `random_state` et de la clé d'unité (pas de
   l'ordre d'exécution) ; un test vérifie l'égalité `n_jobs=1` / `n_jobs=2`.
+
+> **Implémentation (K-09).** `kedro_pipeline/parallel.py` (`resolve_n_jobs`,
+> `parallel_map`, `ContextFailure`), `kedro_pipeline/io/ducklake.py` (`ConnectionReader`,
+> `BorrowedReader`), `macroforecast/tracking` (`RecordingTracker`, `ArtifactCollector`).
+> Tests : `tests/test_parallel.py`, `tests/test_scripts_synthesis_parallel_e2e.py`,
+> `tests/test_scripts_network_parallel_e2e.py` (catalogue local SQLite, `tests/sqlite_catalog.py`).
+> - **Un seul chemin de code** : `n_jobs=1` passe par la même enveloppe que `n_jobs>1`
+>   (BLAS limité à un fil par `threadpoolctl`), faute de quoi les sommes flottantes
+>   différeraient d'un nombre de processus à l'autre. Le mode `n_jobs=1` n'a donc plus le
+>   BLAS multi-fil. `n_jobs>1` exige un `reader` (fabrique de connecteur) : une connexion
+>   DuckDB ne se partage pas entre processus.
+> - **Résolution** : `N_JOBS` du bloc (`SYNTHESIS`, `COHERENCE`, `NETWORK_VULNERABILITIES`) →
+>   `NUM_CPU` → `os.cpu_count()`, dans `incremental_settings` / `main` des scripts.
+> - **Méthodes séquentielles** (`SYNTHESIS.SEQUENTIAL_METHODS`) : pour un contexte dont le plan
+>   en contient, la phase parallèle ajuste les autres méthodes et les écrit sans consensus
+>   (le registre n'avance pas) ; le parent ajuste ensuite les méthodes séquentielles avec
+>   les scores stockés des autres, ce qui écrit le consensus une seule fois, en dernier,
+>   puis avance le registre. Une interruption entre les deux phases laisse le contexte périmé.
+> - **Réseau** : parallélisé par millésime (≤ 7), non par (millésime, année) : les rapports
+>   (graphe, couverture, distributions, quantiles, dérive) portent sur tout le millésime et
+>   ne se fusionnent pas année par année sans changer la méthodologie. Le calcul
+>   (`compute_network_vintage`) est séparé de l'écriture (`write_network_vintage`) ;
+>   `run_network_vulnerabilities` enchaîne les deux, inchangé.
+> - **Suivi** : les workers journalisent dans un `RecordingTracker` rejoué par le parent ;
+>   artefacts rejoués dans l'ordre du plan (même contenu qu'en séquentiel). Métriques
+>   `timing/wall_seconds`, `timing/cpu_seconds_sum`, `parallel/n_jobs`.
+> - **Graines** : `_group_seed` dérive de `random_state` et de la clé du groupe, via le texte
+>   canonique des valeurs (`1`, `1.0`, `np.int32(1)` donnent la même graine), donc indépendante
+>   du type lu et de l'ordre d'exécution. Ce changement a modifié les tirages des méthodes
+>   aléatoires par rapport aux versions antérieures (aucun résultat de production n'existait).
 
 ### PS-19 — Journalisation MLflow
 

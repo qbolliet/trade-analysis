@@ -52,12 +52,22 @@ from datetime import datetime
 from contextlib import nullcontext
 import logging
 from pathlib import Path
+import time
+from dataclasses import dataclass
+from functools import partial
 from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
 
 # Modules de chargement/sauvegarde JSON (local ou S3), même brique que le téléchargement
 from statflows.storage.json import Loader, Saver
 # Poignée d'écriture des tables DuckLake (remplacement transactionnel, traçabilité)
-from kedro_pipeline.io.ducklake import DuckLakeTable, workflow_run_id
+from kedro_pipeline.io.ducklake import (
+    BorrowedReader,
+    ConnectionReader,
+    DuckLakeTable,
+    workflow_run_id,
+)
+# Parallélisme intra-pod (carte parallèle, erreurs transmissibles)
+from kedro_pipeline.parallel import parallel_map, serialisable_exception
 # Module d'utilitaires de téléchargement (instants, parsing ISO, noms de schéma)
 from statflows.core.download import _now, _parse_iso, _schema_name
 
@@ -65,7 +75,13 @@ from statflows.core.download import _now, _parse_iso, _schema_name
 import pandas as pd
 
 # Module de suivi d'exécution (MLflow optionnel, objet nul par défaut)
-from macroforecast.tracking import CapturingTracker, get_tracker, rekey_metrics
+from macroforecast.tracking import (
+    ArtifactCollector,
+    CapturingTracker,
+    RecordingTracker,
+    get_tracker,
+    rekey_metrics,
+)
 from macroforecast.tracking.figures import key_figures_coherence, sections_coherence
 from macroforecast.tracking.report import Units
 from scripts._run_report import RunScope, guarded_run, run_name
@@ -89,7 +105,6 @@ from scripts.compute_synthetic_scores import (
     build_scores_query,
     build_source_query,
     cadence_check_requested,
-    chunks,
     context_freshness_tags,
     context_registry,
     context_unit,
@@ -428,6 +443,118 @@ def write_coherence_batch(
     )
 
 
+# Tâche de calcul de la cohérence d'un contexte, envoyée à un worker
+@dataclass(frozen=True)
+class CoherenceTask:
+    """Everything a worker needs to analyse the coherence of one context.
+
+    Attributes:
+        rank: Position of the context in the run plan.
+        unit: Freshness unit of the context.
+        context: Typed context values.
+        synthesis_config: Configuration the scores were produced with.
+        coherence_config: Coherence configuration.
+        reader: Opens the read connection of the worker.
+        sources: ``SYNTHESIS.SOURCES`` block.
+        filters: ``SYNTHESIS.FILTERS`` block.
+        catalog_alias: DuckLake catalog alias.
+        scores_schema: Schema of the scores.
+        flow_codes: Flow codes of the synthesised directions.
+        vintages: ``SYNTHESIS.VINTAGES``.
+        log_artifacts: Whether the artifacts are recorded for the parent.
+    """
+    rank: int
+    unit: Unit
+    context: Tuple[Any, ...]
+    synthesis_config: SynthesisConfig
+    coherence_config: CoherenceConfig
+    reader: Any
+    sources: Sequence[Mapping[str, Any]]
+    filters: Mapping[str, Any]
+    catalog_alias: str
+    scores_schema: str
+    flow_codes: Optional[Sequence[int]]
+    vintages: Optional[str]
+    log_artifacts: bool
+
+
+# Résultat d'une tâche de cohérence, renvoyé au processus parent
+@dataclass
+class CoherenceOutcome:
+    """Outcome of one :class:`CoherenceTask`, picklable.
+
+    Attributes:
+        rank: Rank of the context in the plan.
+        unit: Freshness unit of the context.
+        diagnostics: Diagnostic rows of the context (``None`` on failure).
+        report: Coherence report of the context.
+        recorded: Tracker calls recorded by the worker.
+        cpu_seconds: CPU time spent by the task.
+        error: Serialisable exception of a failed context.
+        missing: Whether the context was absent from the read.
+    """
+    rank: int
+    unit: Unit
+    diagnostics: Optional[pd.DataFrame] = None
+    report: Optional[CoherenceRunReport] = None
+    recorded: Optional[RecordingTracker] = None
+    cpu_seconds: float = 0.0
+    error: Optional[BaseException] = None
+    missing: bool = False
+
+
+# Fonction de calcul de la cohérence d'un contexte dans un worker
+def compute_coherence_task(task: CoherenceTask) -> CoherenceOutcome:
+    """Read the metrics and scores of one context and analyse their coherence.
+
+    Module-level function so that it can be sent to a worker process; the
+    worker opens a read connection of its own and never writes. Errors are
+    returned, not raised.
+
+    Args:
+        task: Context to analyse.
+
+    Returns:
+        The outcome of the task.
+    """
+    started = time.process_time()
+    outcome = CoherenceOutcome(rank=task.rank, unit=task.unit)
+    context_columns = list(task.synthesis_config.context_columns)
+    cell_columns = (task.synthesis_config.reporter_col, task.synthesis_config.product_col)
+    try:
+        with task.reader() as conn:
+            df_metrics = read_source_metrics(
+                conn,
+                build_source_query(
+                    task.sources, task.filters, task.catalog_alias, task.flow_codes,
+                    task.vintages, contexts=[task.context], context_columns=context_columns,
+                ),
+                cell_columns,
+            )
+            df_scores = read_source_metrics(
+                conn,
+                build_scores_query(
+                    task.catalog_alias, task.scores_schema, context_columns, [task.context]
+                ),
+                cell_columns,
+            )
+        if df_metrics.empty:
+            # Contexte disparu de la grille entre la planification et la lecture
+            outcome.missing = True
+            return outcome
+        recorder = RecordingTracker() if task.log_artifacts else None
+        outcome.diagnostics, outcome.report = compute_coherence_context(
+            df_metrics, df_scores, task.synthesis_config, task.coherence_config,
+            tracker=recorder, log_artifacts=task.log_artifacts,
+        )
+        outcome.recorded = recorder
+    except Exception as exc:
+        logger.exception(f"Échec de la cohérence pour le contexte {task.unit}")
+        outcome.error = serialisable_exception(exc)
+    outcome.cpu_seconds = time.process_time() - started
+    return outcome
+
+
 # ──────────────────────────────────────────────────────────────────────
 # Fraîcheur par contexte : planification
 # ──────────────────────────────────────────────────────────────────────
@@ -737,13 +864,15 @@ def run_incremental_coherence(
     tracker: Any = None,
     log_artifacts: bool = True,
     scope: Optional[RunScope] = None,
+    reader: Any = None,
 ) -> IncrementalOutcome:
     """Analyse the stale contexts, batch by batch.
 
     Same model as the synthesis: planning (contexts of the filtered grid
     already synthesised, :func:`plan_coherence_contexts`, most recent periods
     first, catch-up budget), pure computation of each context
-    (:func:`compute_coherence_context`), then batched writes
+    (:func:`compute_coherence_task`, in ``settings.n_jobs`` worker processes
+    each reading with a connection of its own), then batched writes
     (:func:`write_coherence_batch`) and registry entries. The watermark of a
     context is the ``last_computed`` of its synthesis entry.
 
@@ -770,9 +899,15 @@ def run_incremental_coherence(
         tracker: Experiment tracker; the null tracker by default.
         log_artifacts: Whether to log the artifacts.
         scope: Run-report scope, or ``None``.
+        reader: Opens the read connection of a worker (a
+            :class:`~kedro_pipeline.io.ducklake.ConnectionReader`). ``None``
+            lends ``read_conn``, which only works with one process.
 
     Returns:
         The outcome of the run.
+
+    Raises:
+        ValueError: If several processes are requested without a ``reader``.
     """
     if tracker is None:
         from macroforecast.tracking import NULL_TRACKER
@@ -780,6 +915,10 @@ def run_incremental_coherence(
         tracker = NULL_TRACKER
     tracker = CapturingTracker(tracker)
     computed_at = computed_at or _now()
+    if reader is None:
+        if settings.n_jobs > 1:
+            raise ValueError("n_jobs > 1 requires a `reader` (connector factory), not a shared connection.")
+        reader = BorrowedReader(read_conn)
     context_columns = list(synthesis_config.context_columns)
     cell_columns = (synthesis_config.reporter_col, synthesis_config.product_col)
     table = DuckLakeTable(diagnostics_conn, catalog_alias, diagnostics_schema)
@@ -818,84 +957,80 @@ def run_incremental_coherence(
             f"exécution, {outcome.backlog} reporté(s)."
         )
 
-        for batch in chunks(selected, settings.write_batch_contexts):
-            batch_contexts = [typed[unit] for unit in batch]
-            # Lecture des métriques et des scores du lot (listes IN des contextes)
-            df_metrics = read_source_metrics(
-                read_conn,
-                build_source_query(
-                    sources, filters, catalog_alias, flow_codes, vintages,
-                    contexts=batch_contexts, context_columns=context_columns,
-                ),
-                cell_columns,
+        # 2-3. Calcul dans les workers, écriture par lots dans ce processus
+        tasks = [
+            CoherenceTask(
+                rank=rank, unit=unit, context=typed[unit],
+                synthesis_config=synthesis_config, coherence_config=coherence_config,
+                reader=reader, sources=sources, filters=filters, catalog_alias=catalog_alias,
+                scores_schema=scores_schema, flow_codes=flow_codes, vintages=vintages,
+                log_artifacts=log_artifacts,
             )
-            df_scores = read_source_metrics(
-                read_conn,
-                build_scores_query(catalog_alias, scores_schema, context_columns, batch_contexts),
-                cell_columns,
-            )
-            metric_frames = {
-                context_unit(context_columns, key): frame
-                for key, frame in df_metrics.groupby(context_columns, sort=False, observed=True)
-            }
-            score_frames = {
-                context_unit(context_columns, key): frame
-                for key, frame in df_scores.groupby(context_columns, sort=False, observed=True)
-            }
+            for rank, unit in enumerate(selected)
+        ]
+        artifacts = ArtifactCollector()
+        cpu_seconds = 0.0
+        wall_started = time.perf_counter()
 
-            # Calcul de chaque contexte : l'échec de l'un n'emporte pas les autres
-            done: List[Tuple[Unit, pd.DataFrame, CoherenceRunReport]] = []
-            for unit in batch:
-                df_context = metric_frames.get(unit)
-                if df_context is None:
-                    logger.warning(f"Contexte {unit} absent de la lecture des métriques, ignoré.")
-                    continue
-                try:
-                    df_diagnostics, report = compute_coherence_context(
-                        df_context,
-                        score_frames.get(unit, df_scores.iloc[0:0]),
-                        synthesis_config,
-                        coherence_config,
-                        tracker=tracker,
-                        log_artifacts=log_artifacts,
-                    )
-                    done.append((unit, df_diagnostics, report))
-                except Exception as exc:
-                    logger.exception(f"Échec de la cohérence pour le contexte {unit}")
-                    outcome.failures[unit.key] = exc
+        # Écriture d'un lot, puis avancement du registre (jamais avant l'écriture)
+        def flush(done: List[CoherenceOutcome]) -> None:
             if not done:
-                continue
-
-            # Écriture du lot, puis avancement du registre (jamais avant l'écriture)
+                return
             try:
                 created = write_coherence_batch(
-                    [frame for _, frame, _ in done], [typed[unit] for unit, _, _ in done],
+                    [item.diagnostics for item in done], [typed[item.unit] for item in done],
                     synthesis_config,
                     table=table,
                     run_id=run_id,
                     commit_message=f"{NODE} {len(done)} contexte(s) "
-                                   f"{done[0][0].key} .. {done[-1][0].key}",
+                                   f"{done[0].unit.key} .. {done[-1].unit.key}",
                 )
             except Exception as exc:
                 logger.exception(f"Échec de l'écriture d'un lot de {len(done)} contexte(s)")
-                for unit, _, _ in done:
-                    outcome.failures[unit.key] = exc
-                continue
+                for item in done:
+                    outcome.failures[item.unit.key] = exc
+                return
             outcome.created_any = outcome.created_any or created
-            for unit, _, report in done:
+            for item in done:
                 registry.upsert(
                     RegistryEntry(
-                        unit=unit,
+                        unit=item.unit,
                         last_computed=computed_at,
-                        upstream_watermark=watermarks[unit],
+                        upstream_watermark=watermarks[item.unit],
                         fingerprints=dict(requested),
-                        reason=outcome.plans[unit].reason,
-                        extra={"n_groups": int(report.n_groups)},
+                        reason=outcome.plans[item.unit].reason,
+                        extra={"n_groups": int(item.report.n_groups)},
                     )
                 )
-                outcome.reports.append(report)
-                outcome.computed.append(unit)
+                outcome.reports.append(item.report)
+                outcome.computed.append(item.unit)
             registry.save()
+
+        pending: List[CoherenceOutcome] = []
+        for _, result in parallel_map(compute_coherence_task, tasks, settings.n_jobs):
+            cpu_seconds += result.cpu_seconds
+            if result.error is not None:
+                outcome.failures[result.unit.key] = result.error
+                continue
+            if result.missing:
+                logger.warning(f"Contexte {result.unit} absent de la lecture des métriques, ignoré.")
+                continue
+            if result.recorded is not None:
+                artifacts.add(result.rank, result.recorded)
+            pending.append(result)
+            if len(pending) >= settings.write_batch_contexts:
+                flush(pending)
+                pending = []
+        flush(pending)
+        # Artefacts des workers rejoués dans le run, comme un calcul séquentiel
+        artifacts.replay(tracker)
+        tracker.log_metrics(
+            {
+                "timing/wall_seconds": time.perf_counter() - wall_started,
+                "timing/cpu_seconds_sum": cpu_seconds,
+                "parallel/n_jobs": float(settings.n_jobs),
+            }
+        )
 
         # Rapport de run seulement si un contexte était périmé : une exécution
         # sans rien à recalculer ne doit pas lever le contrôle « contextes calculés »
@@ -1012,11 +1147,23 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
         schema=diagnostics_schema,
     )
 
+    # Macros de nomenclature de la session (conditions de jointure de la requête)
+    macros = nomenclature_macros_sql(runtime_config["NOMENCLATURES"]["HS"])
+    # Lecteur des workers : chacun ouvre sa propre connexion (jamais partagée)
+    reader = ConnectionReader(
+        partial(
+            _result_connector, vulnerability_config,
+            bucket=bucket,
+            data_path=synthesis_config_block["PATHS"]["DATA_PATH"],
+            schema=scores_schema,
+        ),
+        macros,
+    )
+
     # Ouverture des connexions : leur cycle de vie appartient au script
     read_conn = read_connector.connect()
     try:
-        # Macros de nomenclature de la session (conditions de jointure de la requête)
-        for statement in nomenclature_macros_sql(runtime_config["NOMENCLATURES"]["HS"]):
+        for statement in macros:
             read_conn.execute(statement)
         diagnostics_conn = diagnostics_connector.connect()
         try:
@@ -1042,6 +1189,7 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
                 tracker=tracker,
                 log_artifacts=log_artifacts,
                 scope=scope,
+                reader=reader,
             )
         finally:
             diagnostics_conn.close()

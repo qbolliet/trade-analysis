@@ -458,7 +458,9 @@ def _group_seed(
     two methods share it, and therefore share their draws (A-01) — and the
     bootstrap resampling. Deriving it from the group identity rather than
     reusing ``config.random_state`` everywhere keeps the runs reproducible
-    while leaving the draws of two groups independent.
+    while leaving the draws of two groups independent. The key values enter
+    through their canonical text, so the seed does not depend on the type they
+    were read with (``int32``, ``int64``, ``float``).
 
     Args:
         config: Synthesis configuration carrying ``random_state``.
@@ -474,8 +476,30 @@ def _group_seed(
         >>> seed == _group_seed(SynthesisConfig(), ("A", 1), "by_product", "85411000")
         True
     """
-    payload = repr((config.random_state, context, level, group)).encode("utf-8")
-    return int(zlib.crc32(payload))
+    # Texte canonique des valeurs : le type lu (int32, int64, float, str) ne doit
+    # pas changer la graine d'un même groupe
+    parts = [str(config.random_state), *map(_canonical_text, context), level, _canonical_text(group)]
+    return int(zlib.crc32("".join(parts).encode("utf-8")))
+
+
+# Fonction de mise en forme canonique d'une valeur de clé
+def _canonical_text(value: Any) -> str:
+    """Render a key value as text independently of the type it was read with.
+
+    Args:
+        value: Context or group key value (``str``, Python or numpy number…).
+
+    Returns:
+        ``str(value)``, with integral floats rendered as integers (``1.0`` and
+        ``1`` give ``"1"``).
+
+    Examples:
+        >>> _canonical_text(np.int32(1)) == _canonical_text(1.0) == _canonical_text("1")
+        True
+    """
+    if isinstance(value, (float, np.floating)) and float(value).is_integer():
+        return str(int(value))
+    return str(value)
 
 
 # Fonction d'injection de l'aléa et des tailles de tirage d'un groupe

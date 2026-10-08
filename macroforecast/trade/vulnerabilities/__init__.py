@@ -73,7 +73,9 @@ from .runner import (
     run_vulnerabilities,
     compute_network_vulnerabilities,
     read_previous_network_result,
+    compute_network_vintage,
     run_network_vulnerabilities,
+    write_network_vintage,
 )
 
 # Réexport des éléments d'intérêt du sous-module
@@ -141,5 +143,7 @@ __all__ = [
     "run_vulnerabilities",
     "compute_network_vulnerabilities",
     "read_previous_network_result",
+    "compute_network_vintage",
     "run_network_vulnerabilities",
+    "write_network_vintage",
 ]

@@ -53,10 +53,11 @@ métriques, jointe aux lignes partenaires historiques de même millésime.
 # Importation des modules
 from __future__ import annotations
 # Modules de base
-from dataclasses import fields, replace
+from dataclasses import dataclass, fields, replace
 from datetime import datetime
 import logging
 import os
+import time
 from pathlib import Path
 from functools import partial
 from typing import Any, Dict, Iterator, List, Mapping, Optional, Sequence, Tuple
@@ -69,6 +70,7 @@ import narwhals as nw
 from statflows.storage.json import Loader, Saver
 # Fabrique de connecteur DuckLake (seul point de lecture des identifiants)
 from kedro_pipeline.io.ducklake import (
+    ConnectionReader,
     DuckLakeLocation,
     DuckLakeTable,
     build_connector,
@@ -76,6 +78,8 @@ from kedro_pipeline.io.ducklake import (
     s3_credentials_from_env,
     workflow_run_id,
 )
+# Parallélisme intra-pod (résolution de n_jobs, carte parallèle, erreurs transmissibles)
+from kedro_pipeline.parallel import parallel_map, resolve_n_jobs, serialisable_exception
 # Module d'utilitaires de téléchargement
 from statflows.core.download import _now, _parse_iso, _schema_name
 # Registres de fraîcheur v2 (fragments, empreintes, forçage)
@@ -101,7 +105,7 @@ from scripts.download_comtrade import load_runtime_config
 from kedro_pipeline.config import vintage_in_force
 
 # Module de suivi d'exécution (MLflow optionnel, objet nul par défaut)
-from macroforecast.tracking import CapturingTracker, get_tracker
+from macroforecast.tracking import CapturingTracker, RecordingTracker, get_tracker
 from macroforecast.tracking.figures import (
     key_figures_network_vulnerabilities,
     sections_network_vulnerabilities,
@@ -117,8 +121,9 @@ from macroforecast.trade.vulnerabilities import (
     NetworkVulnerabilityConfig,
 )
 from macroforecast.trade.vulnerabilities.runner import (
+    compute_network_vintage,
     read_previous_network_result,
-    run_network_vulnerabilities,
+    write_network_vintage,
 )
 
 # Configuration de logging
@@ -626,6 +631,127 @@ def plan_network_units(
 
 
 # ──────────────────────────────────────────────────────────────────────
+# Calcul d'un millésime dans un worker
+# ──────────────────────────────────────────────────────────────────────
+
+# Tâche de calcul d'un millésime, envoyée à un worker
+@dataclass(frozen=True)
+class VintageTask:
+    """Everything a worker needs to score one HS vintage.
+
+    The worker opens the connections of its own through the readers and never
+    writes: the parent process is the only writer.
+
+    Attributes:
+        label: HS vintage label (``"HS2017"``).
+        source_schema: BACI schema holding the reconciled flows of the vintage.
+        source_catalog_alias: Alias of the BACI catalog.
+        source_reader: Opens the connection on the BACI catalog.
+        result_reader: Opens the connection on the result catalog (previous
+            result read for the drift); ``None`` when the drift is not measured.
+        result_catalog_alias: Alias of the result catalog.
+        result_schema: Schema of the network scores.
+        config: Network methodological configuration.
+        flows: Directions to recompute.
+        backend: Narwhals native backend.
+        log_artifacts: Whether the artifacts are recorded for the parent.
+        nomenclatures: Vintage label -> entry-into-force year (``in_force`` flag).
+    """
+    label: str
+    source_schema: str
+    source_catalog_alias: str
+    source_reader: Any
+    result_reader: Any
+    result_catalog_alias: str
+    result_schema: str
+    config: NetworkVulnerabilityConfig
+    flows: Tuple[str, ...]
+    backend: str
+    log_artifacts: bool
+    nomenclatures: Mapping[str, int]
+
+
+# Résultat du calcul d'un millésime, renvoyé au processus parent
+@dataclass
+class VintageOutcome:
+    """Outcome of one :class:`VintageTask`, picklable.
+
+    Attributes:
+        label: HS vintage label.
+        result: Scores as a native frame (``None`` on failure).
+        report: Network report of the vintage.
+        recorded: Tracker calls recorded by the worker.
+        cpu_seconds: CPU time spent by the task.
+        wall_seconds: Elapsed time of the task.
+        error: Serialisable exception of a failed vintage.
+    """
+    label: str
+    result: Any = None
+    report: Any = None
+    recorded: Optional[RecordingTracker] = None
+    cpu_seconds: float = 0.0
+    wall_seconds: float = 0.0
+    error: Optional[BaseException] = None
+
+
+# Fonction de calcul d'un millésime dans un worker (lecture et calcul, aucune écriture)
+def compute_vintage_task(task: VintageTask) -> VintageOutcome:
+    """Read, score and annotate one vintage with connections of its own.
+
+    Module-level function so that it can be sent to a worker process. The
+    failure is returned, not raised: one vintage must not stop the others.
+
+    Args:
+        task: Vintage to compute.
+
+    Returns:
+        The outcome of the task.
+    """
+    started_cpu, started_wall = time.process_time(), time.perf_counter()
+    outcome = VintageOutcome(label=task.label)
+    try:
+        recorder = RecordingTracker()
+        with task.source_reader() as source_conn:
+            # Résultat précédent du millésime pour la dérive : son absence ou la
+            # désactivation de la mesure la neutralise
+            df_previous = None
+            if task.result_reader is not None:
+                with task.result_reader() as result_conn:
+                    df_previous = read_previous_network_result(
+                        result_conn, task.result_catalog_alias, task.result_schema,
+                        classification=task.label, config=task.config,
+                    )
+            result, report = compute_network_vintage(
+                source_conn,
+                source_catalog_alias=task.source_catalog_alias,
+                source_schema=task.source_schema,
+                classification=task.label,
+                result_schema=task.result_schema,
+                config=task.config,
+                flows=task.flows,
+                backend=task.backend,
+                tracker=recorder,
+                log_artifacts=task.log_artifacts,
+                df_previous=df_previous,
+                annotate=partial(
+                    annotate_network_in_force, nomenclatures=task.nomenclatures,
+                    config=task.config,
+                ),
+            )
+        outcome.result = result.to_native()
+        outcome.report = report
+        outcome.recorded = recorder
+    except Exception as exc:
+        logger.exception(
+            f"Échec du calcul des vulnérabilités de réseau pour le millésime {task.label}"
+        )
+        outcome.error = serialisable_exception(exc)
+    outcome.cpu_seconds = time.process_time() - started_cpu
+    outcome.wall_seconds = time.perf_counter() - started_wall
+    return outcome
+
+
+# ──────────────────────────────────────────────────────────────────────
 # Point d'entrée
 # ──────────────────────────────────────────────────────────────────────
 
@@ -770,145 +896,166 @@ def main() -> None:
         s3=s3_credentials,
     )
 
-    # Ouverture des connexions : leur cycle de vie appartient au script, le
-    # runner ne les ouvre ni ne les ferme (cf. `run_network_vulnerabilities`)
-    source_conn = source_connector.connect()
+    # Lecteurs des workers : chacun ouvre ses propres connexions (jamais partagées)
+    n_jobs = resolve_n_jobs(network_config.get("N_JOBS"))
+    source_location = DuckLakeLocation(
+        dbname=comtrade_config["DOWNLOADS"]["DBNAME"],
+        catalog_alias=comtrade_config["DOWNLOADS"]["CATALOG_ALIAS"],
+        schema=targets[stale[0][0]],
+        bucket=comtrade_config["DOWNLOADS"][DATAFLOW]["BUCKET"],
+        data_path=comtrade_config["DOWNLOADS"][DATAFLOW]["PATHS"]["DATA_PATH"],
+    )
+    result_location = DuckLakeLocation(
+        dbname=vulnerability_config["VULNERABILITIES"]["DBNAME"],
+        catalog_alias=vulnerability_config["VULNERABILITIES"]["CATALOG_ALIAS"],
+        schema=result_schema,
+        bucket=network_config["BUCKET"],
+        data_path=network_config["PATHS"]["DATA_PATH"],
+    )
+    source_reader = ConnectionReader(
+        partial(build_connector, source_location, pg=pg_credentials, s3=s3_credentials)
+    )
+    result_reader = ConnectionReader(
+        partial(build_connector, result_location, pg=pg_credentials, s3=s3_credentials)
+    )
+    tasks = [
+        VintageTask(
+            label=label, source_schema=source_schema,
+            source_catalog_alias=source_connector.catalog_alias,
+            source_reader=source_reader,
+            result_reader=result_reader if measure_drift else None,
+            result_catalog_alias=result_connector.catalog_alias,
+            result_schema=result_schema, config=network_parameters,
+            flows=tuple(qualifiers_to_compute({Unit.of(vintage=label): plans[Unit.of(vintage=label)]}, flows)),
+            backend=backend, log_artifacts=log_artifacts,
+            nomenclatures=runtime_config["NOMENCLATURES"]["HS"],
+        )
+        for label, source_schema in stale
+    ]
+    schemas = dict(stale)
+
+    # Ouverture de la connexion d'écriture : son cycle de vie appartient au script
+    # (le runner ne l'ouvre ni ne la ferme), le parent est le seul écrivain
     failures: Dict[str, Exception] = {}
+    result_conn = result_connector.connect()
     try:
-        result_conn = result_connector.connect()
-        try:
-            # Un millésime après l'autre : l'échec de l'un n'emporte pas les autres
-            for label, source_schema in stale:
-                try:
-                    # Un run par millésime, taggé, comme dans process_baci_hs.py
-                    node = f"{NODE}_{label}"
-                    tracker = CapturingTracker(
-                        get_tracker(
-                            tracking_uri=mlflow_config.get("TRACKING_URI"),
-                            experiment=mlflow_config.get(
-                                "EXPERIMENT", "trade-03-vulnerabilities"
-                            ),
-                            run_name=run_name(
-                                f"network-vulnerabilities-{label}-{datetime.now():%Y%m%d-%H%M}", node
-                            ),
-                            tags={"vintage": label},
-                        )
+        # Un millésime après l'autre à l'arrivée : l'échec de l'un n'emporte pas les autres
+        for _, result in parallel_map(compute_vintage_task, tasks, n_jobs):
+            label = result.label
+            try:
+                # Un run par millésime, taggé, comme dans process_baci_hs.py
+                node = f"{NODE}_{label}"
+                tracker = CapturingTracker(
+                    get_tracker(
+                        tracking_uri=mlflow_config.get("TRACKING_URI"),
+                        experiment=mlflow_config.get(
+                            "EXPERIMENT", "trade-03-vulnerabilities"
+                        ),
+                        run_name=run_name(
+                            f"network-vulnerabilities-{label}-{datetime.now():%Y%m%d-%H%M}", node
+                        ),
+                        tags={"vintage": label},
                     )
-                    scope = RunScope(node)
-                    unit = Unit.of(vintage=label)
-                    plan = plans[unit]
-                    # Sens à recalculer pour ce millésime : ceux que nomme le plan
-                    computed_flows = qualifiers_to_compute({unit: plan}, flows)
-                    with tracker, guarded_run(scope, tracker):
-                        # Fraîcheur : décision du millésime et tag de forçage
-                        tracker.log_metrics(plan_metrics({unit: plan}, n_candidates=len(units)))
-                        tracker.set_tags({"freshness_reason": plan.reason})
-                        if force.forces_step(STEP, requested):
-                            tracker.set_tags({"forced": force.describe()})
+                )
+                scope = RunScope(node)
+                unit = Unit.of(vintage=label)
+                plan = plans[unit]
+                source_schema = schemas[label]
+                with tracker, guarded_run(scope, tracker):
+                    # Échec du worker : relevé dans le run du millésime puis propagé
+                    if result.error is not None:
+                        raise result.error
+                    # Fraîcheur : décision du millésime et tag de forçage
+                    tracker.log_metrics(plan_metrics({unit: plan}, n_candidates=len(units)))
+                    tracker.set_tags({"freshness_reason": plan.reason})
+                    if force.forces_step(STEP, requested):
+                        tracker.set_tags({"forced": force.describe()})
+                    # Paramètres et artefacts enregistrés par le worker
+                    result.recorded.replay(tracker)
 
-                        # Résultat de l'exécution précédente sur ce millésime :
-                        # la lecture appartient au script (principe P4), et son
-                        # absence désactive simplement la mesure de dérive
-                        df_previous = (
-                            read_previous_network_result(
-                                result_conn,
-                                result_connector.catalog_alias,
-                                result_schema,
-                                classification=label,
-                                config=network_parameters,
-                            )
-                            if measure_drift
-                            else None
-                        )
-
-                        # Calcul du millésime et upsert dans le schéma résultat
-                        report = run_network_vulnerabilities(
-                            source_conn,
-                            source_catalog_alias=source_connector.catalog_alias,
-                            source_schema=source_schema,
-                            classification=label,
-                            result_schema=result_schema,
-                            result_conn=result_conn,
-                            result_catalog_alias=result_connector.catalog_alias,
-                            config=network_parameters,
-                            flows=computed_flows,
-                            backend=backend,
-                            tracker=tracker,
-                            log_artifacts=log_artifacts,
-                            df_previous=df_previous,
-                            writer=DuckLakeTable(
-                                result_conn, result_connector.catalog_alias, result_schema,
-                                label=label,
-                            ).writer(run_id=workflow_run_id(), commit_message=f"{NODE} {label}"),
-                            annotate=partial(
-                                annotate_network_in_force,
-                                nomenclatures=runtime_config["NOMENCLATURES"]["HS"],
-                                config=network_parameters,
-                            ),
-                        )
-
-                        # Envoi des métriques, préfixées par sens (le rapport
-                        # connaît sa mise en forme, le préfixe appartient à
-                        # l'appelant). Les paramètres sont journalisés par le
-                        # runner lui-même ; seuls les tags propres au script restent ici.
-                        tracker.log_metrics(flow_run_metrics(report, _METRICS_FAMILY))
-                        tracker.set_tags(
-                            {
-                                "dataflow": DATAFLOW,
-                                "source_schema": source_schema,
-                                "result_schema": result_schema,
-                                "created": str(report.created),
-                                "n_cells": str(report.cells),
-                                "flows": ",".join(report.flows),
-                            }
-                        )
-
-                        # Rapport de run du millésime : contrôles, chiffres clés, sections,
-                        # publiés avant toute sortie en erreur
-                        scope.step = "rapport de run"
-                        run_report = scope.build(
-                            metrics=tracker.metrics,
-                            units=Units(planned=1, succeeded=1, planned_label=f"1 millésime ({label})"),
-                            key_figures=key_figures_network_vulnerabilities,
-                            sections=lambda m: sections_network_vulnerabilities(m, tracker.tables),
-                        )
-                        scope.publish(tracker, run_report)
-
-                    # Entrée de registre du millésime calculé, écrite après succès
-                    # du calcul et de l'écriture seulement (jamais de date avancée
-                    # à tort) ; un fragment par millésime. La raison est conservée
-                    # pour la cascade vers la synthèse
-                    registry.upsert(
-                        RegistryEntry(
-                            unit=unit,
-                            last_computed=computed_at,
-                            upstream_watermark=units[unit],
-                            fingerprints=dict(requested),
-                            reason=plan.reason,
-                            extra={
-                                "source_schema": source_schema,
-                                "result_schema": result_schema,
-                                "n_cells": int(report.cells),
-                            },
-                        )
+                    # Écriture du millésime et de l'issue sur ses rapports
+                    report = result.report
+                    write_network_vintage(
+                        nw.from_native(result.result, eager_only=True),
+                        report,
+                        classification=label,
+                        config=network_parameters,
+                        result_conn=result_conn,
+                        result_catalog_alias=result_connector.catalog_alias,
+                        result_schema=result_schema,
+                        writer=DuckLakeTable(
+                            result_conn, result_connector.catalog_alias, result_schema,
+                            label=label,
+                        ).writer(run_id=workflow_run_id(), commit_message=f"{NODE} {label}"),
                     )
-                    registry.save()
 
-                    # Logging
-                    logger.info(
-                        f"Vulnérabilités de réseau calculées pour {label} : {report}"
+                    # Envoi des métriques, préfixées par sens (le rapport
+                    # connaît sa mise en forme, le préfixe appartient à
+                    # l'appelant). Les paramètres sont journalisés par le
+                    # runner lui-même ; seuls les tags propres au script restent ici.
+                    tracker.log_metrics(flow_run_metrics(report, _METRICS_FAMILY))
+                    tracker.log_metrics(
+                        {
+                            "timing/wall_seconds": result.wall_seconds,
+                            "timing/cpu_seconds_sum": result.cpu_seconds,
+                            "parallel/n_jobs": float(n_jobs),
+                        }
                     )
-                except Exception as exc:
-                    # Journalisation de l'échec, poursuite avec les autres millésimes
-                    logger.exception(
-                        f"Échec du calcul des vulnérabilités de réseau pour "
-                        f"le millésime {label}"
+                    tracker.set_tags(
+                        {
+                            "dataflow": DATAFLOW,
+                            "source_schema": source_schema,
+                            "result_schema": result_schema,
+                            "created": str(report.created),
+                            "n_cells": str(report.cells),
+                            "flows": ",".join(report.flows),
+                        }
                     )
-                    failures[label] = exc
-        finally:
-            result_conn.close()
+
+                    # Rapport de run du millésime : contrôles, chiffres clés, sections,
+                    # publiés avant toute sortie en erreur
+                    scope.step = "rapport de run"
+                    run_report = scope.build(
+                        metrics=tracker.metrics,
+                        units=Units(planned=1, succeeded=1, planned_label=f"1 millésime ({label})"),
+                        key_figures=key_figures_network_vulnerabilities,
+                        sections=lambda m: sections_network_vulnerabilities(m, tracker.tables),
+                    )
+                    scope.publish(tracker, run_report)
+
+                # Entrée de registre du millésime calculé, écrite après succès
+                # du calcul et de l'écriture seulement (jamais de date avancée
+                # à tort) ; un fragment par millésime. La raison est conservée
+                # pour la cascade vers la synthèse
+                registry.upsert(
+                    RegistryEntry(
+                        unit=unit,
+                        last_computed=computed_at,
+                        upstream_watermark=units[unit],
+                        fingerprints=dict(requested),
+                        reason=plan.reason,
+                        extra={
+                            "source_schema": source_schema,
+                            "result_schema": result_schema,
+                            "n_cells": int(report.cells),
+                        },
+                    )
+                )
+                registry.save()
+
+                # Logging
+                logger.info(
+                    f"Vulnérabilités de réseau calculées pour {label} : {report}"
+                )
+            except Exception as exc:
+                # Journalisation de l'échec, poursuite avec les autres millésimes
+                logger.exception(
+                    f"Échec du calcul des vulnérabilités de réseau pour "
+                    f"le millésime {label}"
+                )
+                failures[label] = exc
     finally:
-        source_conn.close()
+        result_conn.close()
 
     # Échec global si au moins un millésime a échoué, une fois tous tentés
     if failures:
