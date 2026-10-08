@@ -1,0 +1,50 @@
+# Maintenance quotidienne des catalogues DuckLake, sans intervention humaine (clé racine
+# unique : le chargeur Kedro fusionne tous les fichiers parameters* dans un seul
+# dictionnaire et refuse les clés dupliquées). Lu par le nœud de maintenance lancé en fin
+# de workflow, que le workflow ait réussi ou non.
+maintenance:
+  # Catalogues maintenus. `serving` porte les deux schémas de restitution (dashboard et
+  # demo_dashboard) : chaque publication complète recrée ses tables, les fichiers
+  # remplacés deviennent orphelins d'un snapshot à l'autre, d'où l'expiration des
+  # snapshots et le nettoyage quotidiens sur ce catalogue
+  CATALOGS:
+    - {dbname: eurostat,        catalog_alias: eurostat,        bucket: qbollietdgddi, data_path: trade/datasets/comext}
+    - {dbname: comtrade,        catalog_alias: comtrade,        bucket: qbollietdgddi, data_path: trade/datasets/comtrade}
+    - {dbname: vulnerabilities, catalog_alias: vulnerabilities, bucket: qbollietdgddi, data_path: trade/datasets/vulnerabilities/}
+    - {dbname: serving,         catalog_alias: serving,         bucket: qbollietdgddi, data_path: trade/datasets/serving/}
+  # Seules les tables écrites dans les N dernières heures sont compactées
+  ONLY_TABLES_WRITTEN_WITHIN_HOURS: 24
+  # Part de lignes supprimées au-delà de laquelle les fichiers d'une table sont réécrits
+  DELETE_RATIO_THRESHOLD: 0.1
+  # Jour des opérations hebdomadaires (0 = lundi … 6 = dimanche, heure de Paris)
+  WEEKLY_DAY: 6
+  # Durée de conservation des snapshots (jours) avant expiration
+  SNAPSHOT_RETENTION_DAYS: 7
+  # Âge minimal (jours) des fichiers orphelins supprimés par le nettoyage
+  CLEANUP_OLDER_THAN_DAYS: 7
+  # Nombre de fichiers par table au-delà duquel un avertissement est émis
+  MAX_FILES_PER_TABLE: 2000
+  # Seuil d'inlining des petites écritures dans le catalogue ; null → désactivé
+  DATA_INLINING_ROW_LIMIT: 1000
+  # Colonnes de partitionnement par table (les jokers `*` sont acceptés). Les tables du
+  # catalogue `serving` sont partitionnées par la publication elle-même, à leur création
+  PARTITIONS:
+    comtrade.C_A_HS: ["refYear"]
+    comtrade.baci_hs*: ["year"]
+    eurostat.DS_045409: ["reporter"]
+    vulnerabilities.indicators: ["classification"]
+    vulnerabilities.network_indicators: ["classification"]
+    vulnerabilities.synthesis: ["TIME_PERIOD"]
+  # Clôture des runs MLflow orphelins du workflow (pod tué avant d'avoir pu fermer
+  # son run, resté RUNNING)
+  STALE_RUNS:
+    ENABLED: true
+    # Âge minimal (minutes) : marge pour ne pas clore un run en cours de fermeture
+    MIN_AGE_MINUTES: 10
+  # Sauvegarde hebdomadaire des bases de métadonnées PostgreSQL des catalogues
+  BACKUP:
+    ENABLED: true
+    WEEKLY_DAY: 6
+    PATH_TEMPLATE: "trade/backups/postgres/{dbname}/{date}.sql.gz"
+    # Nombre de sauvegardes conservées par base
+    RETENTION: 4

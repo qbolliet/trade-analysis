@@ -1,0 +1,29 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# ENVIRONNEMENT DEMO — PÉRIMÈTRE PROVISOIRE (sélection de produits à confirmer) :
+# produits dont le code commence par 2805, 2846, 8105, 8112, 2844, 3004, 8541, 8542,
+# 8507 (≈ 100 codes SH6), Comtrade ≥ 2015, BACI HS2017 seul. Le demo ne diffère de la
+# production QUE par le périmètre et par l'isolement de ses sorties (catalogues et
+# schémas préfixés demo_, chemins trade/demo/…, expériences MLflow demo-) : même ordre
+# de téléchargement, pas de plafond de requêtes. Ce fichier ne contient que les
+# SURCHARGES du bloc comtrade de base (fusion récursive des mappings, remplacement des
+# listes) ; sélection par KEDRO_ENV=demo ou `--env demo`.
+# ─────────────────────────────────────────────────────────────────────────────
+comtrade:
+  split_filters:
+    C_A_HS: &demo_c_hs
+      periods:
+        # Années récentes seulement
+        start: 2015
+      products:
+        # HS6 des produits retenus
+        include_regex: '^(2805|2846|8105|8112|2844|3004|8541|8542|8507)\d{2}$'
+    # Données mensuelles : mêmes filtres que les annuelles (comme en base)
+    C_M_HS: *demo_c_hs
+  DOWNLOADS:
+    # Catalogue brut isolé (le schéma est imposé par le dataflow)
+    DBNAME: "demo_comtrade"
+    C_A_HS:
+      PATHS:
+        DATA_PATH: "trade/demo/datasets/comtrade"
+        STRUCTURES_PATH: "trade/demo/datasets/structures/comtrade.json"
+        LAST_DOWNLOAD_PATH: "trade/demo/datasets/last_downloads/comtrade.json"

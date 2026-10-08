@@ -1,7 +1,7 @@
 """Script de calcul/mise à jour des indicateurs de vulnérabilité commerciale.
 
 Recalcule les indicateurs (HHI, CDI2, CDI3 — cf. `macroforecast.trade.vulnerabilities`)
-pour chaque sens de flux de `FLOWS` (racine de `config/vulnerabilities.yaml` :
+pour chaque sens de flux de `FLOWS` (racine du bloc de paramètres `vulnerabilities` :
 `import`, `export`) et les écrit dans une table unique dont la clé porte la
 nomenclature (`classification`). Deux familles de lignes y coexistent :
 
@@ -64,7 +64,6 @@ import logging
 import os
 from pathlib import Path
 from typing import Any, Dict, FrozenSet, Iterator, List, Mapping, Optional, Sequence, Set, Tuple
-import yaml
 
 # Modules de manipulation de données
 import narwhals as nw
@@ -102,9 +101,12 @@ from kedro_pipeline.io.freshness import (
 # Référentiel des millésimes SH (fonctions pures et macros SQL équivalentes)
 from kedro_pipeline.config import (
     classification_of,
+    experiment_name,
     first_historical_year,
+    load_parameters,
     nomenclature_macros_sql,
     product_code,
+    read_config_file,
     requested_vintages,
     vintage_in_force,
 )
@@ -191,49 +193,40 @@ CONCORDANCE_FINGERPRINT = "concordance"
 # Configuration
 # ──────────────────────────────────────────────────────────────────────
 
-# Fonction de chargement de la configuration (fichier dédié à eurostat)
+# Fonction de chargement de la configuration (bloc dédié à eurostat)
 def load_eurostat_config(config_path: Optional[os.PathLike] = None) -> dict:
-    """Load configuration from file.
-    
+    """Load the Eurostat Comext download configuration (source of the metrics).
+
     Args:
-        config_path: Path to config file. If None, uses default location
-                     or CONFIG_PATH environment variable.
-    
+        config_path: Explicit YAML file (``eurostat`` root key or historical
+            format without it). If None, the ``eurostat`` block of the Kedro
+            parameters of the ``KEDRO_ENV`` environment.
+
     Returns:
         dict: Configuration dictionary
     """
-    # Détermination du chemin de configuration
     if config_path is None:
-        # Priorité 1 : variable d'environnement (pour flexibilité Kubernetes)
-        config_path = os.environ.get('EUROSTAT_CONFIG_PATH', 'config/datasets/eurostat.yaml')
-    
-    # Chargement du fichier
-    with open(config_path, "r", encoding="utf-8") as file:
-        return yaml.safe_load(file)
+        return load_parameters()["eurostat"]
+    return read_config_file(config_path, "eurostat")
 
 
-# Fonction de chargement de la configuration (fichier dédié au calcul des vulnérabilités)
+# Fonction de chargement de la configuration (bloc dédié au calcul des vulnérabilités)
 def load_vulnerability_config(config_path: Optional[os.PathLike] = None) -> dict:
-    """Load the vulnerability-computation configuration from file.
+    """Load the vulnerability-computation configuration.
 
-    Deliberately a separate config file from the download step's
-    ``eurostat.yaml`` (own env var, own default path).
+    Deliberately a separate block from the download step's ``eurostat`` block.
 
     Args:
-        config_path: Path to config file. If None, uses default location
-                     or VULNERABILITIES_CONFIG_PATH environment variable.
+        config_path: Explicit YAML file (``vulnerabilities`` root key or
+            historical format without it). If None, the ``vulnerabilities``
+            block of the Kedro parameters of the ``KEDRO_ENV`` environment.
 
     Returns:
         dict: Configuration dictionary.
     """
-    # Détermination du chemin de configuration
     if config_path is None:
-        config_path = os.environ.get(
-            "VULNERABILITIES_CONFIG_PATH", "config/vulnerabilities.yaml"
-        )
-    # Chargement du fichier
-    with open(config_path, "r", encoding="utf-8") as file:
-        return yaml.safe_load(file)
+        return load_parameters()["vulnerabilities"]
+    return read_config_file(config_path, "vulnerabilities")
 
 
 # Fonction de construction de la configuration méthodologique des vulnérabilités
@@ -248,7 +241,7 @@ def vulnerability_config_from_params(params: Optional[Dict]) -> VulnerabilityCon
     methodology.
 
     Args:
-        params: The ``PARAMETERS`` mapping of ``config/vulnerabilities.yaml``
+        params: The ``PARAMETERS`` mapping of the ``vulnerabilities`` parameters
             (or ``None``, meaning the default Comext conventions).
 
     Returns:
@@ -286,7 +279,7 @@ def load_flows(block: Optional[Mapping[str, Any]]) -> Tuple[str, ...]:
 
     Args:
         block: Mapping holding a ``FLOWS`` key (the root of
-            ``config/vulnerabilities.yaml``, or its ``NETWORK_VULNERABILITIES``
+            the ``vulnerabilities`` parameters, or its ``NETWORK_VULNERABILITIES``
             block). An absent key keeps the import direction alone, the
             behaviour of the metrics before the export directions existed.
 
@@ -323,7 +316,7 @@ def load_last_download_dates(
 
     Args:
         last_download_path: Path to the ``LAST_DOWNLOAD_PATH`` registry
-            (cf. ``eurostat.yaml`` / ``SDMXDownloader``).
+            (cf. the ``eurostat`` parameters / ``SDMXDownloader``).
         loader: ``Loader`` instance. Kept for compatibility: the view reads the
             registry with its own loader.
         bucket: S3 bucket holding the registry, or ``None`` for a local path.
@@ -600,7 +593,7 @@ def partner_registry(
 
     Args:
         block: Dataflow block of ``VULNERABILITIES`` in
-            ``config/vulnerabilities.yaml`` (``BUCKET``, ``PATHS``, ``STATE``).
+            the ``vulnerabilities`` parameters (``BUCKET``, ``PATHS``, ``STATE``).
         classification: Classification label of the units.
         loader: JSON loader (a fresh one by default).
         saver: JSON saver (a fresh one by default).
@@ -1094,17 +1087,16 @@ def load_baci_config(config_path: Optional[os.PathLike] = None) -> dict:
     """Load the BACI configuration, which locates the correspondence-table cache.
 
     Args:
-        config_path: Path to config file. If None, uses the
-            ``BACI_CONFIG_PATH`` environment variable, then
-            ``config/baci.yaml``.
+        config_path: Explicit YAML file (``baci`` root key or historical format
+            without it). If None, the ``baci`` block of the Kedro parameters of
+            the ``KEDRO_ENV`` environment.
 
     Returns:
         dict: Configuration dictionary.
     """
     if config_path is None:
-        config_path = os.environ.get("BACI_CONFIG_PATH", "config/baci.yaml")
-    with open(config_path, "r", encoding="utf-8") as file:
-        return yaml.safe_load(file)
+        return load_parameters()["baci"]
+    return read_config_file(config_path, "baci")
 
 
 # Fonction de chargement des tables de passage des millésimes historiques
@@ -1116,13 +1108,13 @@ def load_partner_concordances(
     """Load the correspondence tables into every historical vintage requested.
 
     Same Parquet cache as the BACI step (``CLASSIFICATIONS.CONCORDANCE_PATH``
-    of ``config/baci.yaml``); a missing pair is downloaded from UNSD and
+    of the ``baci`` parameters); a missing pair is downloaded from UNSD and
     cached.
 
     Args:
         vintages: Historical vintages requested.
         nomenclatures: Mapping vintage label -> entry-into-force year.
-        baci_config: Parsed ``config/baci.yaml``.
+        baci_config: The ``baci`` parameter block.
 
     Returns:
         Mapping ``(source, target) -> table``.
@@ -1414,7 +1406,7 @@ def run_partner_step(
 # Point d'entrée
 # ──────────────────────────────────────────────────────────────────────
 
-# Nœud du rapport de run (clé de config/tracking.yaml)
+# Nœud du rapport de run (clé de tracking.CHECKS)
 NODE = "compute_partner_vulnerabilities"
 
 
@@ -1470,9 +1462,9 @@ def main() -> None:
     on_unmapped = vulnerability_config.get(_ON_UNMAPPED_KEY, "drop")
 
     # Options de suivi d'exécution (MLflow optionnel)
-    mlflow_config = vulnerability_config.get("MLFLOW") or {}
-    log_artifacts = bool(mlflow_config.get("LOG_ARTIFACTS", True))
-    measure_drift = bool(mlflow_config.get("DRIFT", True))
+    tracking_config = vulnerability_config.get("TRACKING") or {}
+    log_artifacts = bool(tracking_config.get("LOG_ARTIFACTS", True))
+    measure_drift = bool(tracking_config.get("DRIFT", True))
 
     # Initialisation du Dataflow sur lequel sont calculées les métriques de vulnérabilité
     DATAFLOW = eurostat_config["DATAFLOW"]
@@ -1602,7 +1594,7 @@ def main() -> None:
                         on_unmapped=on_unmapped,
                         is_provisional=is_provisional,
                         backend=backend,
-                        mlflow_config=mlflow_config,
+                        experiment=experiment_name("vulnerabilities"),
                         log_artifacts=log_artifacts,
                         measure_drift=measure_drift,
                         dataflow=DATAFLOW,
@@ -1624,7 +1616,7 @@ def main() -> None:
 def _run_partner_pass(
     partner_pass: PartnerPass,
     *,
-    mlflow_config: Mapping[str, Any],
+    experiment: str,
     dataflow: str,
     **compute_kwargs: Any,
 ) -> PartnerStepResult:
@@ -1632,7 +1624,7 @@ def _run_partner_pass(
 
     Args:
         partner_pass: The planned pass.
-        mlflow_config: ``MLFLOW`` block of ``config/vulnerabilities.yaml``.
+        experiment: MLflow experiment of the run.
         dataflow: Source dataflow (tag of the run).
         **compute_kwargs: Remaining arguments of :func:`compute_partner_units`.
 
@@ -1640,12 +1632,13 @@ def _run_partner_pass(
         The step result of the pass.
     """
     in_force = partner_pass.target_vintage is None
-    # Construction du suivi d'exécution : sans URI (ou sans MLflow installé,
-    # ou serveur injoignable), get_tracker retourne un tracker inerte
+    # Construction du suivi d'exécution : sans URI (MLFLOW_TRACKING_URI non définie,
+    # ou sans MLflow installé, ou serveur injoignable), get_tracker retourne un
+    # tracker inerte
     tracker = CapturingTracker(
         get_tracker(
-            tracking_uri=mlflow_config.get("TRACKING_URI"),
-            experiment=mlflow_config.get("EXPERIMENT", "trade-03-vulnerabilities"),
+            tracking_uri=None,
+            experiment=experiment,
             run_name=run_name(
                 f"vulnerabilities-{partner_pass.label}-{datetime.now():%Y%m%d-%H%M}", NODE
             ),

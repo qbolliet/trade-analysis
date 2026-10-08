@@ -1,0 +1,7 @@
+# Expériences MLflow de l'environnement demo : runs isolés de ceux de la production
+# (préfixe demo-). Fusion destructive : la table complète est redonnée.
+EXPERIMENTS:
+  downloads: "demo-trade-01-downloads"
+  baci: "demo-trade-02-baci"
+  vulnerabilities: "demo-trade-03-vulnerabilities"
+  serving: "demo-trade-04-serving"

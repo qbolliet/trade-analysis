@@ -1,15 +1,15 @@
-# Paramètres d'exécution partagés par les scripts du pipeline (PS-04.1).
-# Lu via la variable d'environnement RUNTIME_CONFIG_PATH (défaut : config/runtime.yaml).
-# Les fichiers de configuration ne sont pas encore fusionnés (pas d'OmegaConf en
-# phase 0) : chaque script lit ce fichier et y applique les valeurs lui-même.
+# Paramètres d'exécution partagés par toutes les étapes du pipeline. Les autres
+# fichiers de paramètres y renvoient par interpolation (${runtime.…}), résolue après la
+# fusion des fichiers d'un même environnement.
 runtime:
-  # Première année de l'analyse, PAR SOURCE (PD-08) : Comext existe depuis 1988 ;
+  # Première année de l'analyse, PAR SOURCE : Comext existe depuis 1988 ;
   # la couverture déclarative Comtrade en SH est jugée satisfaisante à partir de
   # 1994 (Gaulier & Zignago 2010)
   ANALYSIS_START_YEAR:
     eurostat: 1988
     comtrade: 1994
-  # Millésimes du Système harmonisé et année d'entrée en vigueur (PD-20). Source
+  # Millésimes du Système harmonisé et année d'entrée en vigueur (une table par
+  # famille de résultats, clé `classification`, drapeau `in_force`). Source
   # unique pour les cibles BACI (START_YEAR nul → max(entrée en vigueur,
   # ANALYSIS_START_YEAR.comtrade)). HS1992 (H0) est en vigueur depuis 1988.
   NOMENCLATURES:
@@ -22,7 +22,7 @@ runtime:
       HS2017: 2017
       HS2022: 2022
   # Jour de la cadence hebdomadaire (0 = lundi … 6 = dimanche), partagé par BACI,
-  # la synthèse, la cohérence et la maintenance hebdomadaire (PD-23)
+  # la synthèse, la cohérence et la maintenance hebdomadaire
   WEEKLY_DAY: 5
   # Parallélisme intra-pod : null → NUM_CPU (injecté par Argo) ou os.cpu_count()
   N_JOBS: null

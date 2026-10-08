@@ -110,13 +110,8 @@ def test_build_scope_accepts_both_separators() -> None:
 
 @pytest.mark.parametrize("step", STEPS)
 def test_build_registry_from_demo_configuration(step: str, monkeypatch: pytest.MonkeyPatch) -> None:
-    # Configuration du profil demo : chemins des registres sous trade/demo/
-    demo = Path("config/profiles/demo")
-    monkeypatch.setenv("VULNERABILITIES_CONFIG_PATH", str(demo / "vulnerabilities.yaml"))
-    monkeypatch.setenv("EUROSTAT_CONFIG_PATH", str(demo / "eurostat.yaml"))
-    monkeypatch.setenv("BACI_CONFIG_PATH", str(demo / "baci.yaml"))
-    monkeypatch.setenv("SYNTHESIS_CONFIG_PATH", str(demo / "synthesis.yaml"))
-    monkeypatch.setenv("RUNTIME_CONFIG_PATH", str(demo / "runtime.yaml"))
+    # Environnement demo : chemins des registres sous trade/demo/
+    monkeypatch.setenv("KEDRO_ENV", "demo")
     registry = build_registry(step)
     assert registry.step == step
     assert registry.path_template.startswith("trade/demo/")

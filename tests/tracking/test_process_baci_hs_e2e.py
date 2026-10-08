@@ -18,9 +18,7 @@ from typing import Any
 import numpy as np
 import pandas as pd
 import pytest
-import yaml
 
-from conftest import REPO_ROOT
 
 pytestmark = pytest.mark.slow
 
@@ -80,12 +78,13 @@ def baci_world(ducklake_conn, synthetic_world, synthetic_reference, synthetic_se
         bucket=None, max_runtime=None,
     )
 
-    # Configurations : profil demo, sans S3 et avec des chemins temporaires
-    demo = REPO_ROOT / "config" / "profiles" / "demo"
-    comtrade = yaml.safe_load((demo / "comtrade.yaml").read_text(encoding="utf-8"))
+    # Configurations : environnement demo, sans S3 et avec des chemins temporaires
+    from kedro_pipeline.config import load_parameters
+
+    comtrade = load_parameters("demo")["comtrade"]
     comtrade["DOWNLOADS"]["C_A_HS"]["BUCKET"] = None
     comtrade["DOWNLOADS"]["C_A_HS"]["PATHS"]["LAST_DOWNLOAD_PATH"] = str(registry_path)
-    baci = yaml.safe_load((demo / "baci.yaml").read_text(encoding="utf-8"))
+    baci = load_parameters("demo")["baci"]
     baci["BUCKET"] = None
     baci["PATHS"]["LAST_PROCESSING_PATH"] = str(tmp_path / "last_processing.json")
     # Registre de fraîcheur v2 dans le dossier temporaire : sinon un run réussi laisse
@@ -94,14 +93,10 @@ def baci_world(ducklake_conn, synthetic_world, synthetic_reference, synthetic_se
     baci["PARAMETERS"] = {"SCHEMA": {"distance_column": "distw"}, "min_mirror_flows": 5, "fas_countries": ["CAN"]}
     # Fichiers de travail des passes dans le dossier temporaire (bucket nul : chemins locaux)
     baci["PASSES"]["WORK_PATH"] = (tmp_path / "work").as_posix()
-    paths = {}
-    for name, content in (("comtrade", comtrade), ("baci", baci)):
-        paths[name] = tmp_path / f"{name}.yaml"
-        paths[name].write_text(yaml.safe_dump(content), encoding="utf-8")
-    monkeypatch.setenv("COMTRADE_CONFIG_PATH", str(paths["comtrade"]))
-    monkeypatch.setenv("BACI_CONFIG_PATH", str(paths["baci"]))
-    monkeypatch.setenv("RUNTIME_CONFIG_PATH", str(demo / "runtime.yaml"))
-    monkeypatch.setenv("TRACKING_CONFIG_PATH", str(REPO_ROOT / "config" / "tracking.yaml"))
+    # Blocs modifiés servis au script ; runtime et tracking de l'environnement demo
+    monkeypatch.setattr(script, "load_comtrade_config", lambda config_path=None: comtrade)
+    monkeypatch.setattr(script, "load_baci_config", lambda config_path=None: baci)
+    monkeypatch.setenv("KEDRO_ENV", "demo")
 
     # Accès externes
     isos = list(synthetic_world.iso3)

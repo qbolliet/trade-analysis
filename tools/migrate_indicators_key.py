@@ -36,17 +36,15 @@ Options :
   (``classification = vintage_in_force(year)``) sans recalcul du réseau.
 
 À exécuter depuis un service Onyxia (catalogue PostgreSQL et Parquet réels),
-**entre deux exécutions** de l'étape partenaires, profil choisi par les mêmes
-variables d'environnement que les scripts (``VULNERABILITIES_CONFIG_PATH``,
-``SYNTHESIS_CONFIG_PATH``, ``EUROSTAT_CONFIG_PATH``, ``RUNTIME_CONFIG_PATH``).
+**entre deux exécutions** de l'étape partenaires, environnement de configuration
+choisi comme pour les scripts par la variable ``KEDRO_ENV`` (``local`` par défaut,
+``demo`` pour le périmètre de démonstration).
 
 Examples:
     Aperçu, puis migration du profil de démonstration::
 
-        $ VULNERABILITIES_CONFIG_PATH=config/profiles/demo/vulnerabilities.yaml \\
-          SYNTHESIS_CONFIG_PATH=config/profiles/demo/synthesis.yaml \\
-          uv run python tools/migrate_indicators_key.py --dry-run
-        $ ... uv run python tools/migrate_indicators_key.py --drop-dependent --network
+        $ KEDRO_ENV=demo uv run python tools/migrate_indicators_key.py --dry-run
+        $ KEDRO_ENV=demo uv run python tools/migrate_indicators_key.py --drop-dependent --network
 """
 # Importation des modules
 from __future__ import annotations

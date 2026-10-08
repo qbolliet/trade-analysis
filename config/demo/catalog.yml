@@ -1,0 +1,103 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# ENVIRONNEMENT DEMO — PÉRIMÈTRE PROVISOIRE : emplacements isolés des sorties de
+# démonstration (catalogues bruts demo_*, schémas demo_*, chemins trade/demo/…), mêmes
+# valeurs que les paramètres de l'environnement. Le catalogue se fusionne de façon
+# DESTRUCTIVE : chaque entrée redéfinie ici remplace entièrement celle de base, d'où les
+# entrées complètes. Exception : le catalogue `serving` est partagé (un catalogue
+# DuckLake n'admet qu'un chemin de données et Superset n'attache que lui) ; le demo y
+# est isolé par son schéma demo_dashboard.
+# ─────────────────────────────────────────────────────────────────────────────
+
+_ducklake: &ducklake
+  type: kedro_pipeline.io.datasets.DuckLakeTableDataset
+  credentials: ducklake
+
+_registry: &registry
+  type: kedro_pipeline.io.datasets.FreshnessRegistryDataset
+  credentials: s3
+  bucket: qbollietdgddi
+
+eurostat.comext:
+  <<: *ducklake
+  location: {dbname: demo_eurostat, catalog_alias: eurostat, schema: DS_045409,
+             bucket: qbollietdgddi, data_path: trade/demo/datasets/comext}
+
+comtrade.tariffline:
+  <<: *ducklake
+  location: {dbname: demo_comtrade, catalog_alias: comtrade, schema: C_A_HS,
+             bucket: qbollietdgddi, data_path: trade/demo/datasets/comtrade}
+
+"reference.eurostat.{table}":
+  <<: *ducklake
+  location: {dbname: demo_eurostat, catalog_alias: eurostat, schema: "reference_{table}",
+             bucket: qbollietdgddi, data_path: trade/demo/datasets/comext}
+
+"reference.comtrade.{table}":
+  <<: *ducklake
+  location: {dbname: demo_comtrade, catalog_alias: comtrade, schema: "reference_{table}",
+             bucket: qbollietdgddi, data_path: trade/demo/datasets/comtrade}
+
+# Seul millésime BACI de l'environnement : baci.hs2017 (schéma demo_baci_hs2017)
+"baci.{vintage}":
+  <<: *ducklake
+  location: {dbname: demo_comtrade, catalog_alias: comtrade, schema: "demo_baci_{vintage}",
+             bucket: qbollietdgddi, data_path: trade/demo/datasets/comtrade}
+
+vulnerabilities.partners:
+  <<: *ducklake
+  location: {dbname: vulnerabilities, catalog_alias: vulnerabilities, schema: demo_indicators,
+             bucket: qbollietdgddi, data_path: trade/demo/datasets/vulnerabilities/}
+
+vulnerabilities.network:
+  <<: *ducklake
+  location: {dbname: vulnerabilities, catalog_alias: vulnerabilities, schema: demo_network_indicators,
+             bucket: qbollietdgddi, data_path: trade/demo/datasets/vulnerabilities/}
+
+synthesis.scores:
+  <<: *ducklake
+  location: {dbname: vulnerabilities, catalog_alias: vulnerabilities, schema: demo_synthesis,
+             bucket: qbollietdgddi, data_path: trade/demo/datasets/vulnerabilities/}
+
+synthesis.diagnostics:
+  <<: *ducklake
+  location: {dbname: vulnerabilities, catalog_alias: vulnerabilities, schema: demo_synthesis_diagnostics,
+             bucket: qbollietdgddi, data_path: trade/demo/datasets/vulnerabilities/}
+
+state.baci:
+  <<: *registry
+  step: baci
+  path_template: "trade/demo/state/baci/{vintage}.json"
+
+state.partners:
+  <<: *registry
+  step: partners
+  path_template: "trade/demo/state/vulnerabilities/partners/{classification}/{reporter}.json"
+
+state.network:
+  <<: *registry
+  step: network
+  path_template: "trade/demo/state/vulnerabilities/network/{vintage}.json"
+
+state.synthesis:
+  <<: *registry
+  step: synthesis
+  path_template: "trade/demo/state/synthesis/{TIME_PERIOD}.json"
+
+state.coherence:
+  <<: *registry
+  step: coherence
+  path_template: "trade/demo/state/coherence/{TIME_PERIOD}.json"
+
+# Même catalogue `serving` qu'en production, schéma demo_dashboard ; sources demo_*
+serving.tables:
+  type: kedro_pipeline.io.datasets.ServingCatalogDataset
+  credentials: ducklake
+  location: {dbname: serving, catalog_alias: serving, schema: demo_dashboard,
+             bucket: qbollietdgddi, data_path: trade/datasets/serving/}
+  sources:
+    eurostat: {dbname: demo_eurostat, catalog_alias: eurostat, schema: DS_045409,
+               bucket: qbollietdgddi, data_path: trade/demo/datasets/comext}
+    comtrade: {dbname: demo_comtrade, catalog_alias: comtrade, schema: C_A_HS,
+               bucket: qbollietdgddi, data_path: trade/demo/datasets/comtrade}
+    vulnerabilities: {dbname: vulnerabilities, catalog_alias: vulnerabilities, schema: demo_indicators,
+                      bucket: qbollietdgddi, data_path: trade/demo/datasets/vulnerabilities/}

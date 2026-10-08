@@ -1,0 +1,12 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# ENVIRONNEMENT DEMO — PÉRIMÈTRE PROVISOIRE : celui des tables sources demo_* de
+# l'environnement. Le demo ne diffère de la production QUE par l'isolement de ses
+# sorties : schéma demo_dashboard du MÊME catalogue `serving` (un catalogue DuckLake
+# n'admet qu'un chemin de données, et Superset n'attache que ce catalogue). Les tables
+# sources demo_* sont lues dans les blocs des étapes amont du même environnement.
+# Ce fichier ne contient que les SURCHARGES du bloc serving de base ; sélection par
+# KEDRO_ENV=demo ou `--env demo`.
+# ─────────────────────────────────────────────────────────────────────────────
+serving:
+  # Schéma des tables de service (production : dashboard)
+  SCHEMA: "demo_dashboard"

@@ -1,23 +1,15 @@
-# ─────────────────────────────────────────────────────────────────────────────
-# PROFIL DEMO (PD-19, PS-04.4) — copie COMPLÈTE de config/serving.yaml.
-# Périmètre PROVISOIRE (PQ-07) : celui des tables sources demo_* du profil.
-# Le demo ne diffère de la production QUE par l'isolement de ses sorties : schéma
-# demo_dashboard du MÊME catalogue `serving` (un catalogue = un DATA_PATH ; Superset
-# n'attache que ce catalogue), expérience MLflow demo-serving. Les tables sources
-# demo_* sont lues dans les fichiers du profil (VULNERABILITIES_CONFIG_PATH, …).
-# Sélection via la variable d'environnement SERVING_CONFIG_PATH.
-# ─────────────────────────────────────────────────────────────────────────────
-# Couche de service : catalogue DuckLake `serving` lu directement par Superset (PD-21, PS-29).
+# Couche de service : catalogue DuckLake `serving` lu directement par Superset.
 #
-# Lu par scripts/publish_serving.py (serving-script) via la variable d'environnement
-# SERVING_CONFIG_PATH (défaut : config/serving.yaml). Les tables de service sont DÉRIVÉES
+# Lu par l'étape de publication (serving-script, puis nœud publish_serving). Les tables
+# de service sont DÉRIVÉES
 # des tables de résultats par les requêtes SQL DuckDB ci-dessous, puis matérialisées dans
 # le catalogue `serving` en UNE transaction (Superset voit l'état précédent jusqu'au
 # COMMIT). Elles sont larges, libellées et prêtes à l'affichage : un utilisateur de
 # Superset n'écrit ni jointure ni requête.
 #
-# Gabarits SQL : syntaxe string.Template ($nom ou ${nom}) ; une variable inconnue est une
-# erreur. Variables disponibles :
+# Gabarits SQL : syntaxe string.Template, forme $nom UNIQUEMENT (la forme accolée est
+# une interpolation du chargeur de configuration, qui la résoudrait ou échouerait) ;
+# une variable inconnue est une erreur. Variables disponibles :
 #   - tables sources (noms qualifiés, lus depuis les configurations des étapes amont,
 #     schémas demo_* compris en profil demo) : $comext, $indicators, $network,
 #     $synthesis, $diagnostics, $ref_eurostat_products, $ref_eurostat_reporters,
@@ -43,15 +35,16 @@ serving:
   CATALOG_ALIAS: "serving"
   BUCKET: "qbollietdgddi"
   DATA_PATH: "trade/datasets/serving/"
-  # Schéma des tables de service (production : dashboard)
-  SCHEMA: "demo_dashboard"
+  # Schéma des tables de service (demo : demo_dashboard)
+  SCHEMA: "dashboard"
 
   # Mode de publication : full (recréation de chaque table) | by_year (DELETE + INSERT des
   # seules années YEARS dans les tables PARTITIONED, retour automatique en full si les
-  # colonnes produites diffèrent de celles de la table). Phase 0 : full.
+  # colonnes produites diffèrent de celles de la table). Tant que la fraîcheur des tables
+  # de service n'est pas suivie par registre : full.
   MODE: "full"
   # Années republiées en mode by_year ; null → runtime.FORCE_SCOPE.PERIODS, sinon repli
-  # en full (la fraîcheur par registre viendra avec K-05/K-12)
+  # en full
   YEARS: null
 
   # Méthodes de synthèse exposées en colonnes (<méthode>_score_<niveau>,
@@ -67,7 +60,7 @@ serving:
   TOP_PARTNERS: 12
 
   # Grille de cell_scores : prédicat sur la table indicators (alias p), mêmes modalités
-  # que les contextes de la synthèse (config/synthesis.yaml FILTERS), les deux flux gardés
+  # que les contextes de la synthèse (synthesis.SYNTHESIS.FILTERS), les deux flux gardés
   CELL_FILTER: 'CAST(p."indicators" AS VARCHAR) = ''VALUE_IN_EUROS'' AND CAST(p."freq" AS VARCHAR) = ''A'''
   # Flux Comext retenus pour flows (alias c)
   COMEXT_FILTER: 'CAST(c."indicators" AS VARCHAR) = ''VALUE_IN_EUROS'' AND CAST(c."freq" AS VARCHAR) = ''A'''
@@ -88,7 +81,7 @@ serving:
   # Sources facultatives : si la table n'existe pas encore (référentiels non publiés,
   # étape amont jamais exécutée), la variable est remplacée par une table VIDE typée et la
   # publication continue (libellés ou scores NULL, avertissement, métrique
-  # serving/missing_sources). Valeur « reference » : colonnes du référentiel (PS-28.4) ;
+  # serving/missing_sources). Valeur « reference » : colonnes du référentiel ;
   # sinon, colonnes lues par les requêtes et leur type DuckDB. Toute autre source est
   # obligatoire (son absence fait échouer la publication, sans rien modifier).
   OPTIONAL_SOURCES:
@@ -147,11 +140,8 @@ serving:
       value: "DOUBLE"
       n: "INTEGER"
 
-  # Suivi d'exécution MLflow : un run par publication. TRACKING_URI null → la variable
-  # d'environnement MLFLOW_TRACKING_URI, sinon aucun suivi.
-  MLFLOW:
-    TRACKING_URI: null
-    EXPERIMENT: "demo-trade-04-serving"
+  # Suivi d'exécution MLflow : un run par publication (URI du serveur : variable
+  # MLFLOW_TRACKING_URI, sinon aucun suivi ; nom d'expérience : experiments.yml).
 
   # Tables de service, publiées dans cet ordre. PARTITIONED : partition DuckLake par year
   # (élagage des fichiers lus par les filtres du tableau de bord) ; SORT_BY : ordre

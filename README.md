@@ -43,8 +43,14 @@ preprocessing des flux bilatéraux jusqu'aux métriques de dépendance et de ré
   BACI (`baci-script` / `baci-hs-script`) → vulnérabilités partenaires et de réseau
   (`vulnerabilities-eurostat-script` / `vulnerabilities-network-script`) → synthèse
   (`vulnerabilities-synthesis-script`) → cohérence (`vulnerabilities-coherence-script`).
-- **`config/`** — configuration YAML des étapes, dont `config/synthesis.yaml`
-  (blocs `SYNTHESIS` et `COHERENCE`).
+- **`kedro_pipeline/`** — projet Kedro (`settings.py`, registre des pipelines, commandes
+  `kedro trade …`), datasets (poignées DuckLake, registres de fraîcheur, catalogue `serving`)
+  et logique d'étape.
+- **`config/`** — configuration Kedro : `base/` (paramètres de production, un fichier
+  `parameters_<domaine>.yml` par clé racine, catalogue, identifiants par variables
+  d'environnement), `demo/` (surcharges du périmètre de démonstration), `cloud/`, `local/`
+  (non versionné). Les scripts la lisent par `kedro_pipeline.config.load_parameters()`,
+  environnement choisi par `KEDRO_ENV` (`local` par défaut).
 - **`tests/`** — tests de caractérisation qui figent le comportement courant.
   Certains tests de bout en bout (catalogue DuckLake temporaire) sont marqués
   `slow` (cf. `pyproject.toml`) ; `pytest` seul les exécute, `pytest -m "not slow"`

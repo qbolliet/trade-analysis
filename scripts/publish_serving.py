@@ -10,14 +10,14 @@ Superset lit directement ce catalogue (PD-21, PS-30.1).
 Place dans le pipeline (workflow de transition) : après ``coherence`` et ``partners``
 (réussis ou en échec), sérialisé par le mutex ``trade-serving`` (écrivain unique).
 
-Fichiers de configuration lus (profil ``demo`` : ``config/profiles/demo/``) :
-``SERVING_CONFIG_PATH`` (défaut ``config/serving.yaml``), ``EUROSTAT_CONFIG_PATH``,
-``COMTRADE_CONFIG_PATH``, ``VULNERABILITIES_CONFIG_PATH``, ``SYNTHESIS_CONFIG_PATH``,
-``RUNTIME_CONFIG_PATH``. Identifiants : ``trade-postgres-credentials`` et
+Configuration lue : blocs ``serving``, ``eurostat``, ``comtrade``, ``vulnerabilities``,
+``synthesis`` et ``runtime`` des paramètres Kedro, environnement choisi par
+``KEDRO_ENV`` (``local`` par défaut, ``demo`` pour le périmètre de démonstration).
+Identifiants : ``trade-postgres-credentials`` et
 ``trade-s3-credentials`` (aucun secret propre à la couche de service, PD-18).
 
-Le suivi MLflow est piloté par ``serving.MLFLOW`` (ou ``MLFLOW_TRACKING_URI``) : sans
-URI, ``get_tracker`` renvoie un objet nul. Code de sortie non nul si la publication
+Le suivi MLflow est piloté par ``MLFLOW_TRACKING_URI`` (expérience :
+``experiments.yml``) : sans URI, ``get_tracker`` renvoie un objet nul. Code de sortie non nul si la publication
 échoue (elle a alors été entièrement annulée : Superset garde l'état précédent).
 """
 # Importation des modules
@@ -25,13 +25,9 @@ from __future__ import annotations
 # Modules de base
 import argparse
 import logging
-import os
 import sys
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Sequence
-
-# Modules de lecture de la configuration
-import yaml
 
 # Modules internes
 from kedro_pipeline.io.ducklake import (
@@ -39,6 +35,7 @@ from kedro_pipeline.io.ducklake import (
     pg_credentials_from_env,
     s3_credentials_from_env,
 )
+from kedro_pipeline.config import experiment_name, load_parameters
 from kedro_pipeline.io.serving import ServingCatalog
 from kedro_pipeline.steps.serving import publish_serving, source_tables
 from macroforecast.tracking import CapturingTracker, get_tracker
@@ -49,35 +46,27 @@ from scripts._run_report import RunScope, guarded_run, run_name
 # Logger
 logger = logging.getLogger(__name__)
 
-# Fichiers de configuration : (variable d'environnement, chemin par défaut, clé racine)
-_CONFIGS = {
-    "serving": ("SERVING_CONFIG_PATH", "config/serving.yaml", "serving"),
-    "eurostat": ("EUROSTAT_CONFIG_PATH", "config/datasets/eurostat.yaml", None),
-    "comtrade": ("COMTRADE_CONFIG_PATH", "config/datasets/comtrade.yaml", None),
-    "vulnerabilities": ("VULNERABILITIES_CONFIG_PATH", "config/vulnerabilities.yaml", None),
-    "synthesis": ("SYNTHESIS_CONFIG_PATH", "config/synthesis.yaml", None),
-    "runtime": ("RUNTIME_CONFIG_PATH", "config/runtime.yaml", "runtime"),
-}
+# Blocs de paramètres lus par l'étape de service
+_CONFIG_BLOCKS = ("serving", "eurostat", "comtrade", "vulnerabilities", "synthesis", "runtime")
 
 
 # Fonction de chargement des configurations
 def load_configs() -> Dict[str, Dict[str, Any]]:
-    """Load every configuration read by the serving step.
+    """Load every configuration block read by the serving step.
+
+    The blocks come from the Kedro parameters of the ``KEDRO_ENV`` environment
+    (``local`` by default, ``demo`` for the demonstration scope), so that the
+    serving queries target the very schemas the upstream steps wrote.
 
     Returns:
-        Mapping ``name -> parsed configuration`` (``serving`` and ``runtime``
-        under their root key already).
+        Mapping ``name -> block`` for ``serving``, ``eurostat``, ``comtrade``,
+        ``vulnerabilities``, ``synthesis`` and ``runtime``.
 
     Raises:
-        FileNotFoundError: If a configuration file is missing.
+        KeyError: If a block is missing from the parameters.
     """
-    configs: Dict[str, Dict[str, Any]] = {}
-    for name, (variable, default, root) in _CONFIGS.items():
-        path = os.environ.get(variable, default)
-        with open(path, "r", encoding="utf-8") as file:
-            content = yaml.safe_load(file)
-        configs[name] = content[root] if root else content
-    return configs
+    parameters = load_parameters()
+    return {name: parameters[name] for name in _CONFIG_BLOCKS}
 
 
 # Fonction d'analyse des arguments de ligne de commande
@@ -113,7 +102,7 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 
-# Nœud du rapport de run (clé de config/tracking.yaml)
+# Nœud du rapport de run (clé de tracking.CHECKS)
 NODE = "publish_serving"
 
 
@@ -159,11 +148,10 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
     )
 
     # Suivi d'exécution : objet nul sans URI MLflow
-    mlflow_config = params.get("MLFLOW") or {}
     tracker = CapturingTracker(
         get_tracker(
-            tracking_uri=mlflow_config.get("TRACKING_URI"),
-            experiment=mlflow_config.get("EXPERIMENT", "trade-04-serving"),
+            tracking_uri=None,
+            experiment=experiment_name("serving"),
             run_name=run_name(f"serving-{params['SCHEMA']}-{datetime.now():%Y%m%d-%H%M}", NODE),
         )
     )

@@ -1,0 +1,6 @@
+# Environnement cloud : surcharges d'exécution dans les pods Argo (fusion récursive avec
+# le bloc runtime de base). Sélection par KEDRO_ENV=cloud ou `--env cloud`.
+runtime:
+  # Parallélisme intra-pod : null → nombre de CPU du pod, injecté par Argo dans la
+  # variable NUM_CPU (os.cpu_count() verrait les CPU du nœud, pas la limite du pod)
+  N_JOBS: null

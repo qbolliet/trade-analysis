@@ -15,8 +15,8 @@ from typing import Any, Dict
 
 import pandas as pd
 import pytest
-import yaml
 
+from kedro_pipeline.config import load_parameters
 from kedro_pipeline.io.ducklake import compute_write_options, download_buffering_options
 from scripts.download_comtrade import registry_shard_key as comtrade_shard_key
 from scripts.download_eurostat_comext import registry_shard_key as eurostat_shard_key
@@ -25,9 +25,10 @@ from statflows.core.download import SDMXDownloader, download_updates
 from statflows.storage.ducklake.tables import FACT_TABLE, write_dataframe
 
 ROOT = Path(__file__).resolve().parents[1]
+# Blocs de téléchargement × environnements (production et demo)
 CONFIG_FILES = {
-    "comtrade": ["config/datasets/comtrade.yaml", "config/profiles/demo/comtrade.yaml"],
-    "eurostat": ["config/datasets/eurostat.yaml", "config/profiles/demo/eurostat.yaml"],
+    "comtrade": [("comtrade", "base"), ("comtrade", "demo")],
+    "eurostat": [("eurostat", "base"), ("eurostat", "demo")],
 }
 EXPECTED_BUFFERING = {
     "REGISTRY_FLUSH_EVERY": 500,
@@ -39,8 +40,9 @@ EXPECTED_BUFFERING = {
 }
 
 
-def _buffering(path: str) -> Dict[str, Any]:
-    config = yaml.safe_load((ROOT / path).read_text(encoding="utf-8"))
+def _buffering(path: Any) -> Dict[str, Any]:
+    block, env = path
+    config = load_parameters(env)[block]
     return config["DOWNLOADS"][config["DATAFLOW"]]["BUFFERING"]
 
 
@@ -51,7 +53,7 @@ def _buffering(path: str) -> Dict[str, Any]:
 
 @pytest.mark.parametrize("path", [p for paths in CONFIG_FILES.values() for p in paths])
 def test_buffering_block_in_every_download_config(path: str) -> None:
-    """Les quatre fichiers (production et demo) portent le bloc BUFFERING attendu."""
+    """Les quatre configurations (production et demo) portent le bloc BUFFERING attendu."""
     buffering = _buffering(path)
     assert {key: buffering[key] for key in EXPECTED_BUFFERING} == EXPECTED_BUFFERING
     assert buffering["DUCKLAKE_OPTIONS"] is None

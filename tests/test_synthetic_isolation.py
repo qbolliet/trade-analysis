@@ -44,13 +44,15 @@ def test_guard_requires_a_configured_prefix() -> None:
 
 
 def test_demo_profile_is_isolated_and_production_is_not() -> None:
-    """Le profil demo passe la garde configurée ; les fichiers de production la refusent."""
+    """L'environnement demo passe la garde configurée ; la production la refuse."""
     import yaml
+
+    from kedro_pipeline.config import load_parameters
 
     safety = yaml.safe_load((ROOT / "config/profiles/demo/synthetic.yaml").read_text())["synthetic"]["SAFETY"]
     for name in ("comtrade", "eurostat"):
-        demo = yaml.safe_load((ROOT / f"config/profiles/demo/{name}.yaml").read_text())
-        prod = yaml.safe_load((ROOT / f"config/datasets/{name}.yaml").read_text())
+        demo = load_parameters("demo")[name]
+        prod = load_parameters("base")[name]
         ensure_isolated_catalog(demo["DOWNLOADS"]["DBNAME"], safety)
         with pytest.raises(RuntimeError):
             ensure_isolated_catalog(prod["DOWNLOADS"]["DBNAME"], safety)
@@ -60,7 +62,7 @@ def test_comtrade_script_refuses_production_profile(monkeypatch: pytest.MonkeyPa
     """Configuration de production sélectionnée : refus immédiat, avant tout réseau."""
     from scripts.seed_synthetic_comtrade import main
 
-    monkeypatch.setenv("COMTRADE_CONFIG_PATH", str(ROOT / "config/datasets/comtrade.yaml"))
+    monkeypatch.setenv("KEDRO_ENV", "base")
     monkeypatch.setenv("SYNTHETIC_CONFIG_PATH", str(ROOT / "config/profiles/demo/synthetic.yaml"))
     with pytest.raises(RuntimeError, match="Refus d'écrire des données FICTIVES"):
         main([])
@@ -70,7 +72,7 @@ def test_comext_script_refuses_production_profile(monkeypatch: pytest.MonkeyPatc
     """Idem pour le complément Comext."""
     from scripts.complete_synthetic_comext import main
 
-    monkeypatch.setenv("EUROSTAT_CONFIG_PATH", str(ROOT / "config/datasets/eurostat.yaml"))
+    monkeypatch.setenv("KEDRO_ENV", "base")
     monkeypatch.setenv("SYNTHETIC_CONFIG_PATH", str(ROOT / "config/profiles/demo/synthetic.yaml"))
     with pytest.raises(RuntimeError, match="Refus d'écrire des données FICTIVES"):
         main()

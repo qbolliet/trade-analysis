@@ -18,10 +18,10 @@ spec:
     parameters:
       - name: image-tag                 # tag GHCR : sha-<SHA court> ou nom de branche
         value: sha-3095bec
-      - name: profile                   # demo | base (base = chemins de configuration historiques)
+      - name: profile                   # environnement Kedro de la configuration : demo | base
         value: demo
-      - name: max-runtime-hours         # RÉSERVÉ : le budget des téléchargements est lu dans
-        value: "10"                     # <profil>/{comtrade,eurostat}.yaml (MAX_RUNTIME), pas ici
+      - name: max-runtime-hours         # RÉSERVÉ : le budget des téléchargements est lu dans les
+        value: "10"                     # paramètres comtrade / eurostat (MAX_RUNTIME), pas ici
       - name: publish-serving           # serving-script (K-03b) : catalogue DuckLake `serving` lu par Superset
         value: "true"
       # --- Données FICTIVES (config/profiles/demo/synthetic.yaml) : à n'utiliser que pour éprouver
@@ -121,24 +121,11 @@ spec:
               limits:   {cpu: "{{inputs.parameters.cpu}}", memory: "{{inputs.parameters.mem}}Gi"}
       container:
         image: "ghcr.io/qbolliet/trade-analysis:{{workflow.parameters.image-tag}}"
-        # Entrée shell : pointe les *_CONFIG_PATH vers config/profiles/<profil>/ ; pour le profil
-        # `base`, ne les définit pas → les scripts utilisent leurs chemins historiques par défaut
-        # (config/datasets/*.yaml, config/baci.yaml, …). Un seul jeu de variables, sans doublon.
+        # Entrée shell : la configuration est choisie par KEDRO_ENV (paramètres Kedro de
+        # config/base/, surchargés par config/<profil>/), lue par tous les scripts.
         command: [sh, -c]
         args:
           - |
-            if [ "$PROFILE" != "base" ]; then
-              d="config/profiles/$PROFILE"
-              export COMTRADE_CONFIG_PATH="$d/comtrade.yaml"
-              export EUROSTAT_CONFIG_PATH="$d/eurostat.yaml"
-              export BACI_CONFIG_PATH="$d/baci.yaml"
-              export VULNERABILITIES_CONFIG_PATH="$d/vulnerabilities.yaml"
-              export SYNTHESIS_CONFIG_PATH="$d/synthesis.yaml"
-              export RUNTIME_CONFIG_PATH="$d/runtime.yaml"
-              export SYNTHETIC_CONFIG_PATH="$d/synthetic.yaml"
-              export SERVING_CONFIG_PATH="$d/serving.yaml"
-              export TRACKING_CONFIG_PATH="$d/tracking.yaml"
-            fi
             # Budget de temps optionnel : SIGINT (arrêt propre du script, les écritures commitées sont
             # conservées) puis sortie 0, l'étape suivante prenant le relais sur ce qui manque
             if [ -n "$SOFT_TIMEOUT_MINUTES" ]; then
@@ -155,6 +142,8 @@ spec:
           - "{{inputs.parameters.command}}"
         env:
           - {name: PROFILE, value: "{{workflow.parameters.profile}}"}
+          # Environnement de configuration Kedro lu par les scripts (base | demo)
+          - {name: KEDRO_ENV, value: "{{workflow.parameters.profile}}"}
           # Étiquette d'image affichée dans la description du run MLflow
           - {name: IMAGE_TAG, value: "{{workflow.parameters.image-tag}}"}
           - {name: PYTHONUNBUFFERED, value: "1"}

@@ -3293,7 +3293,7 @@ class AreaNesReallocator:
 
     The note also asks for "Commodities NES" to be left aside. That exclusion is
     **not** enforced here: it happens further upstream, at extraction time, via
-    the ``products.exclude`` list of ``config/datasets/comtrade.yaml`` (HS code
+    the ``products.exclude`` list of the ``comtrade`` parameters (HS code
     ``999999``, alongside the ``00``/``0090``/``009000`` aggregates). Should that
     extraction filter change, the exclusion has to be reinstated — either there or
     in this step.

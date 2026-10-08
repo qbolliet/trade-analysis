@@ -39,8 +39,9 @@ l'échec de l'un n'emporte pas les autres, chaque échec est capturé et journal
 seuls les contextes réussis sont écrits, et le script ne sort en erreur qu'en fin
 de parcours.
 
-Le suivi d'exécution MLflow est piloté par le bloc ``COHERENCE.MLFLOW`` de
-``config/synthesis.yaml`` : sans ``TRACKING_URI`` (ou sans serveur joignable),
+Le suivi d'exécution MLflow est piloté par le bloc ``COHERENCE.TRACKING`` des
+paramètres ``synthesis`` (expérience : ``experiments.yml``) : sans
+``MLFLOW_TRACKING_URI`` (ou sans serveur joignable),
 ``get_tracker`` retourne un objet nul et l'exécution est strictement inchangée.
 Un seul run par exécution.
 """
@@ -138,7 +139,7 @@ from macroforecast.trade.methodology import methodology_params
 # Paramètres d'exécution partagés (forçage ponctuel)
 from scripts.download_comtrade import load_runtime_config
 # Macros SQL de nomenclature (référentiel des millésimes)
-from kedro_pipeline.config import nomenclature_macros_sql
+from kedro_pipeline.config import experiment_name, nomenclature_macros_sql
 
 # Configuration de logging
 logging.basicConfig(
@@ -194,7 +195,7 @@ def coherence_config_from_params(
 
     Args:
         params: The ``COHERENCE.PARAMETERS`` mapping of
-            ``config/synthesis.yaml`` (or ``None``, meaning the defaults of
+            the ``synthesis`` parameters (or ``None``, meaning the defaults of
             :class:`~macroforecast.trade.aggregation.CoherenceConfig`).
 
     Returns:
@@ -1047,7 +1048,7 @@ def run_incremental_coherence(
 # Point d'entrée
 # ──────────────────────────────────────────────────────────────────────
 
-# Nœud du rapport de run (clé de config/tracking.yaml)
+# Nœud du rapport de run (clé de tracking.CHECKS)
 NODE = "compute_synthesis_coherence"
 
 
@@ -1088,12 +1089,13 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
     filters = synthesis_config_block.get("FILTERS") or {}
     settings = incremental_settings(coherence_config_block)
 
-    # Options de suivi d'exécution (un seul run par exécution, D-14)
-    mlflow_config = coherence_config_block.get("MLFLOW") or {}
-    log_artifacts = bool(mlflow_config.get("LOG_ARTIFACTS", True))
+    # Options de suivi d'exécution (un seul run par exécution, tous diagnostics
+    # confondus)
+    tracking_config = coherence_config_block.get("TRACKING") or {}
+    log_artifacts = bool(tracking_config.get("LOG_ARTIFACTS", True))
     tracker = get_tracker(
-        tracking_uri=mlflow_config.get("TRACKING_URI"),
-        experiment=mlflow_config.get("EXPERIMENT", "trade-03-vulnerabilities"),
+        tracking_uri=None,
+        experiment=experiment_name("vulnerabilities"),
         run_name=run_name(f"vulnerabilities-coherence-{datetime.now():%Y%m%d-%H%M}", NODE),
     )
     scope = RunScope(NODE)

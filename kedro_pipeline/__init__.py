@@ -1,6 +1,7 @@
-"""Future Kedro project of the trade pipeline (PD-01).
+"""Kedro project of the trade vulnerability pipeline.
 
-In phase 0 (demonstration milestone, PD-19) this package hosts only pure
-modules shared by the transitional ``scripts/`` — it has no dependency on
-Kedro yet.
+The package holds the Kedro project (settings, pipeline registry, hooks, project
+commands), the I/O layer (DuckLake handles and Kedro datasets, freshness
+registries, serving catalog) and the step logic. The methodology itself stays in
+``macroforecast``, which never depends on Kedro.
 """

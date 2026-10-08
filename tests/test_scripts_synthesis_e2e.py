@@ -307,7 +307,7 @@ def _vintage_world(conn, alias: str) -> None:
 
 
 def _real_query(alias: str, vintages: str) -> str:
-    """Requête source de la configuration réelle (SOURCES et JOIN de config/synthesis.yaml)."""
+    """Requête source de la configuration réelle (SOURCES et JOIN des paramètres synthesis)."""
     from conftest import serving_configs
 
     block = serving_configs("base")["synthesis"]["SYNTHESIS"]

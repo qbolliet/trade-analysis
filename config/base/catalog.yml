@@ -1,0 +1,123 @@
+# Catalogue Kedro du pipeline de vulnérabilités commerciales.
+#
+# Aucune entrée ne matérialise une table DuckLake en mémoire : chaque dataset renvoie une
+# POIGNÉE (emplacement + identifiants, aucune connexion avant la première opération),
+# que les nœuds reçoivent, utilisent pour leurs upserts incrémentaux, puis renvoient
+# pour matérialiser la lignée (dépendances du DAG, kedro-viz, tâches Argo).
+#
+# Les emplacements DOIVENT rester identiques à ceux que les étapes lisent dans les
+# paramètres (DBNAME, CATALOG_ALIAS, schéma assaini du dataflow ou RESULT_SCHEMA,
+# BUCKET, DATA_PATH, STATE.PATH_TEMPLATE) : `kedro trade config-check` et un test le
+# vérifient. Le doublon est le prix de la lisibilité du catalogue.
+#
+# Les entrées dont le nom commence par « _ » ne sont que des ancres YAML (ignorées par
+# Kedro). Les factories (« baci.{vintage} »…) formatent toutes les chaînes de leur
+# entrée avec leurs paramètres : une accolade littérale y serait interprétée, d'où les
+# registres de fraîcheur en entrées explicites.
+
+# Poignées de tables DuckLake : identifiants composés métadonnées PostgreSQL + S3
+_ducklake: &ducklake
+  type: kedro_pipeline.io.datasets.DuckLakeTableDataset
+  credentials: ducklake
+
+# Registres de fraîcheur fragmentés (JSON sur S3)
+_registry: &registry
+  type: kedro_pipeline.io.datasets.FreshnessRegistryDataset
+  credentials: s3
+  bucket: qbollietdgddi
+
+# ── Données brutes téléchargées ───────────────────────────────────────────────
+# Flux Comext (dataflow DS-045409, schéma assaini DS_045409)
+eurostat.comext:
+  <<: *ducklake
+  location: {dbname: eurostat, catalog_alias: eurostat, schema: DS_045409,
+             bucket: qbollietdgddi, data_path: trade/datasets/comext}
+
+# Déclarations UN Comtrade (dataflow C_A_HS)
+comtrade.tariffline:
+  <<: *ducklake
+  location: {dbname: comtrade, catalog_alias: comtrade, schema: C_A_HS,
+             bucket: qbollietdgddi, data_path: trade/datasets/comtrade}
+
+# Référentiels (libellés, tables de passage) : un schéma par table, reference_<table>,
+# dans le catalogue de chaque source (ex. reference.eurostat.products,
+# reference.comtrade.hs_concordance)
+"reference.eurostat.{table}":
+  <<: *ducklake
+  location: {dbname: eurostat, catalog_alias: eurostat, schema: "reference_{table}",
+             bucket: qbollietdgddi, data_path: trade/datasets/comext}
+
+"reference.comtrade.{table}":
+  <<: *ducklake
+  location: {dbname: comtrade, catalog_alias: comtrade, schema: "reference_{table}",
+             bucket: qbollietdgddi, data_path: trade/datasets/comtrade}
+
+# ── BACI : un schéma par millésime SH, dans le catalogue Comtrade ────────────
+# baci.hs2022, baci.hs2017 … baci.hs1992 (schéma baci_<millésime en minuscules>)
+"baci.{vintage}":
+  <<: *ducklake
+  location: {dbname: comtrade, catalog_alias: comtrade, schema: "baci_{vintage}",
+             bucket: qbollietdgddi, data_path: trade/datasets/comtrade}
+
+# ── Résultats : catalogue `vulnerabilities` (un seul chemin de données) ───────
+vulnerabilities.partners:
+  <<: *ducklake
+  location: {dbname: vulnerabilities, catalog_alias: vulnerabilities, schema: indicators,
+             bucket: qbollietdgddi, data_path: trade/datasets/vulnerabilities/}
+
+vulnerabilities.network:
+  <<: *ducklake
+  location: {dbname: vulnerabilities, catalog_alias: vulnerabilities, schema: network_indicators,
+             bucket: qbollietdgddi, data_path: trade/datasets/vulnerabilities/}
+
+synthesis.scores:
+  <<: *ducklake
+  location: {dbname: vulnerabilities, catalog_alias: vulnerabilities, schema: synthesis,
+             bucket: qbollietdgddi, data_path: trade/datasets/vulnerabilities/}
+
+synthesis.diagnostics:
+  <<: *ducklake
+  location: {dbname: vulnerabilities, catalog_alias: vulnerabilities, schema: synthesis_diagnostics,
+             bucket: qbollietdgddi, data_path: trade/datasets/vulnerabilities/}
+
+# ── Registres de fraîcheur, un par étape ──────────────────────────────────────
+state.baci:
+  <<: *registry
+  step: baci
+  path_template: "trade/state/baci/{vintage}.json"
+
+state.partners:
+  <<: *registry
+  step: partners
+  path_template: "trade/state/vulnerabilities/partners/{classification}/{reporter}.json"
+
+state.network:
+  <<: *registry
+  step: network
+  path_template: "trade/state/vulnerabilities/network/{vintage}.json"
+
+state.synthesis:
+  <<: *registry
+  step: synthesis
+  path_template: "trade/state/synthesis/{TIME_PERIOD}.json"
+
+state.coherence:
+  <<: *registry
+  step: coherence
+  path_template: "trade/state/coherence/{TIME_PERIOD}.json"
+
+# ── Restitution : catalogue DuckLake `serving`, lu directement par Superset ──
+# Écrit en une transaction par publication ; catalogues sources attachés en lecture
+# seule pour les requêtes de parameters_serving.yml
+serving.tables:
+  type: kedro_pipeline.io.datasets.ServingCatalogDataset
+  credentials: ducklake
+  location: {dbname: serving, catalog_alias: serving, schema: dashboard,
+             bucket: qbollietdgddi, data_path: trade/datasets/serving/}
+  sources:
+    eurostat: {dbname: eurostat, catalog_alias: eurostat, schema: DS_045409,
+               bucket: qbollietdgddi, data_path: trade/datasets/comext}
+    comtrade: {dbname: comtrade, catalog_alias: comtrade, schema: C_A_HS,
+               bucket: qbollietdgddi, data_path: trade/datasets/comtrade}
+    vulnerabilities: {dbname: vulnerabilities, catalog_alias: vulnerabilities, schema: indicators,
+                      bucket: qbollietdgddi, data_path: trade/datasets/vulnerabilities/}

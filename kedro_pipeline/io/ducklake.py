@@ -11,7 +11,12 @@ computation steps: creation of a schema on first write, upsert by primary key
 afterwards, addition of the columns of a new metric through the native API of
 ``dt-ducklake-manager`` (never a hand-written ``ALTER TABLE``), transactional
 replacement of a slice of rows, run identifier and commit message on every
-snapshot.
+snapshot. The handle either borrows a connection opened by its caller, or —
+built by :meth:`DuckLakeTable.lazy`, as the Kedro datasets do — holds only the
+location and credentials of its table and opens a connection on demand. The
+credentials are then checked before any connection, with an explicit message
+(``"PGHOST is not set: …"``), so that a catalog can be instantiated without
+secrets.
 
 ``dt_ducklake_manager`` is imported lazily inside :func:`build_connector` and
 :class:`DuckLakeTable`, so this module stays importable without it (only the
@@ -22,8 +27,9 @@ DuckLake write path requires the dependency).
 import itertools
 import logging
 import os
+from contextlib import contextmanager
 from dataclasses import dataclass
-from typing import Any, Callable, Dict, Iterable, Mapping, Optional, Sequence
+from typing import Any, Callable, Dict, Iterable, Iterator, List, Mapping, Optional, Sequence
 
 # Initialisation du logger
 logger = logging.getLogger(__name__)
@@ -35,6 +41,24 @@ _PG_REQUIRED = ("PGHOST", "PGPORT", "PGUSER", "PGPASSWORD", "PGDATABASE")
 _S3_REQUIRED = ("AWS_S3_ENDPOINT", "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY")
 # Rôle d'administration par défaut (création de la base du catalogue)
 _DEFAULT_ADMIN_USER = "postgres"
+# Identifiants obligatoires à la connexion : clé du mapping -> variable d'origine
+# (nommée dans le message d'erreur, puisque credentials.yml la lit)
+_PG_CREDENTIALS = {
+    "host": "PGHOST",
+    "port": "PGPORT",
+    "user": "PGUSER",
+    "password": "PGPASSWORD",
+}
+_S3_CREDENTIALS = {
+    "endpoint": "AWS_S3_ENDPOINT",
+    "access_key_id": "AWS_ACCESS_KEY_ID",
+    "secret_access_key": "AWS_SECRET_ACCESS_KEY",
+}
+
+
+# Erreur d'identifiants manquants
+class MissingCredentialsError(ValueError):
+    """Raised when a DuckLake connection is attempted with incomplete credentials."""
 
 
 # Classe décrivant l'emplacement d'un schéma DuckLake
@@ -330,6 +354,77 @@ def build_connector(
     )
 
 
+# Fonction de vérification des identifiants avant connexion
+def require_credentials(
+    pg: Optional[Mapping[str, Any]],
+    s3: Optional[Mapping[str, Any]],
+    *,
+    what: str = "the DuckLake catalog",
+) -> None:
+    """Check that the credentials needed by a DuckLake connection are set.
+
+    The Kedro credentials resolve unset environment variables to empty values,
+    so that a catalog can be built without secrets: the error is raised here,
+    at the first real operation, naming the missing variable.
+
+    Args:
+        pg: PostgreSQL credentials (``host``, ``port``, ``user``, ``password``…).
+        s3: S3 credentials (``endpoint``, ``access_key_id``, ``secret_access_key``…).
+        what: Description of the target, used in the message.
+
+    Raises:
+        MissingCredentialsError: If a mandatory value is missing or empty; the
+            message starts with the variable name (``"PGHOST is not set: …"``).
+
+    Examples:
+        >>> require_credentials(  # doctest: +ELLIPSIS
+        ...     {"host": "", "port": "5432", "user": "u", "password": "p"}, {}
+        ... )
+        Traceback (most recent call last):
+        ...
+        kedro_pipeline.io.ducklake.MissingCredentialsError: PGHOST is not set: ...
+    """
+    for mapping, names, kind in ((pg, _PG_CREDENTIALS, "PostgreSQL"), (s3, _S3_CREDENTIALS, "S3")):
+        for key, variable in names.items():
+            if not (mapping or {}).get(key):
+                raise MissingCredentialsError(
+                    f"{variable} is not set: {kind} credential '{key}' is required to "
+                    f"connect to {what} (environment variable read by credentials.yml)"
+                )
+
+
+# Fabrique de connecteur précédée de la vérification des identifiants
+class CheckedConnectorFactory:
+    """Connector factory that checks the credentials before building the connector.
+
+    Picklable (it holds only the wrapped factory), so it can travel with a
+    handle sent to a worker process.
+
+    Args:
+        factory: Wrapped factory, :func:`build_connector` by default.
+
+    Examples:
+        >>> CheckedConnectorFactory()(location, {}, {})  # doctest: +SKIP
+        Traceback (most recent call last):
+        ...
+        MissingCredentialsError: PGHOST is not set: ...
+    """
+
+    def __init__(self, factory: Optional[Callable[..., Any]] = None) -> None:
+        self.factory = factory
+
+    def __call__(
+        self,
+        location: DuckLakeLocation,
+        pg: Optional[Mapping[str, Any]],
+        s3: Optional[Mapping[str, Any]],
+        **kwargs: Any,
+    ) -> Any:
+        """Check the credentials, then build the connector (never connected)."""
+        require_credentials(pg, s3, what=f"the DuckLake catalog '{location.catalog_alias}'")
+        return (self.factory or build_connector)(location, pg, s3, **kwargs)
+
+
 # Fonction de lecture de l'identifiant d'exécution Argo
 def workflow_run_id(environ: Optional[Mapping[str, str]] = None) -> Optional[str]:
     """Return the Argo workflow id recorded on the DuckLake snapshots.
@@ -377,19 +472,40 @@ class DuckLakeTable:
     ``dt_ducklake_manager`` and ``statflows`` are imported lazily, so that this
     module stays importable without them.
 
+    Two modes:
+
+    * **borrowed connection** (``DuckLakeTable(conn, alias, schema)``): the
+      caller owns the open connection, the handle never closes it;
+    * **lazy handle** (:meth:`lazy`, the Kedro datasets): the handle holds the
+      location and the credentials only, never a connection; :meth:`connect`
+      opens one (credentials checked first) and every operation called without
+      an open connection opens a short-lived one.
+
     Args:
-        conn: Open DuckLake connection, owned by the caller.
+        conn: Open DuckLake connection, owned by the caller (``None`` for a lazy
+            handle).
         catalog_alias: Alias under which the catalog is attached.
         schema: Schema holding the fact table.
         categorical_threshold: Maximum cardinality for a text column to become
             a dimension table at creation; ``None`` disables dimension tables.
         label: Optional prefix identifying the table in the logs.
+        location: Catalog identity and data path (lazy handle).
+        pg: PostgreSQL credentials (lazy handle).
+        s3: S3 credentials (lazy handle).
+        connector_factory: Builds an unconnected connector from
+            ``(location, pg, s3)``; by default :func:`build_connector` preceded by
+            :func:`require_credentials` (a file-catalog factory in tests).
 
     Examples:
         >>> table = DuckLakeTable(conn, "vulnerabilities", "indicators")  # doctest: +SKIP
         >>> table.upsert(df, ["reporter", "product"], run_id="wf-1",
         ...              commit_message="compute_x FR")  # doctest: +SKIP
         True
+        >>> lazy = DuckLakeTable.lazy(DuckLakeLocation(
+        ...     dbname="comtrade", catalog_alias="comtrade", schema="C_A_HS",
+        ...     bucket="b", data_path="trade/datasets/comtrade"), pg={}, s3={})
+        >>> lazy.qualified_name, lazy.conn is None
+        ('"comtrade"."C_A_HS"."fact_table"', True)
     """
 
     def __init__(
@@ -400,12 +516,108 @@ class DuckLakeTable:
         *,
         categorical_threshold: Optional[int] = None,
         label: Optional[str] = None,
+        location: Optional[DuckLakeLocation] = None,
+        pg: Optional[Mapping[str, Any]] = None,
+        s3: Optional[Mapping[str, Any]] = None,
+        connector_factory: Optional[Callable[..., Any]] = None,
     ) -> None:
         self.conn = conn
         self.catalog_alias = catalog_alias
         self.schema = schema
         self.categorical_threshold = categorical_threshold
         self.label = label
+        self.location = location
+        self.pg = pg
+        self.s3 = s3
+        self.connector_factory = connector_factory
+
+    # Constructeur d'une poignée paresseuse (aucune connexion)
+    @classmethod
+    def lazy(
+        cls,
+        location: DuckLakeLocation,
+        pg: Optional[Mapping[str, Any]],
+        s3: Optional[Mapping[str, Any]],
+        *,
+        connector_factory: Optional[Callable[..., Any]] = None,
+        categorical_threshold: Optional[int] = None,
+        label: Optional[str] = None,
+    ) -> "DuckLakeTable":
+        """Build a handle that holds a location and credentials, never a connection.
+
+        Args:
+            location: Catalog identity, schema and data path of the table.
+            pg: PostgreSQL credentials (``credentials.yml`` entry ``ducklake_postgres``).
+            s3: S3 credentials (``credentials.yml`` entry ``s3``).
+            connector_factory: Factory of unconnected connectors; checked
+                :func:`build_connector` by default.
+            categorical_threshold: See the class arguments.
+            label: See the class arguments.
+
+        Returns:
+            The lazy handle.
+        """
+        return cls(
+            None,
+            location.catalog_alias,
+            location.schema,
+            categorical_threshold=categorical_threshold,
+            label=label,
+            location=location,
+            pg=pg,
+            s3=s3,
+            connector_factory=connector_factory,
+        )
+
+    # Propriété : nom qualifié de la table de faits
+    @property
+    def qualified_name(self) -> str:
+        """Quoted qualified name of the fact table (``"alias"."schema"."table"``)."""
+        table = self.location.table if self.location is not None else "fact_table"
+        return f'"{self.catalog_alias}"."{self.schema}"."{table}"'
+
+    # Gestionnaire de contexte : connexion ouverte à la demande
+    @contextmanager
+    def connect(self) -> Iterator[Any]:
+        """Yield an open connection attached to the catalog of the table.
+
+        A borrowed connection is yielded as is (and left open). A lazy handle
+        checks its credentials, opens a connection positioned on its schema,
+        binds it for the duration of the block, then closes it.
+
+        Yields:
+            The open DuckDB connection.
+
+        Raises:
+            MissingCredentialsError: If a mandatory credential is empty.
+            RuntimeError: If the handle has neither a connection nor a location.
+        """
+        # Connexion empruntée : l'appelant la possède et la ferme
+        if self.conn is not None:
+            yield self.conn
+            return
+        if self.location is None:
+            raise RuntimeError(
+                f"DuckLakeTable '{self.schema}' has neither an open connection nor a location"
+            )
+        factory = self.connector_factory or CheckedConnectorFactory()
+        conn = factory(self.location, self.pg, self.s3).connect()
+        self.conn = conn
+        try:
+            yield conn
+        finally:
+            self.conn = None
+            conn.close()
+
+    # Connexion d'une opération : fournie, liée à la poignée, sinon ouverte pour elle
+    @contextmanager
+    def _session(self, conn: Any = None) -> Iterator[Any]:
+        """Yield the connection of one operation (opened on demand)."""
+        if conn is not None:
+            yield conn
+            return
+        with self.connect() as opened:
+            yield opened
 
     # Existence de la table de faits
     def exists(self, conn: Any = None) -> bool:
@@ -416,10 +628,79 @@ class DuckLakeTable:
 
         Returns:
             ``True`` when the fact table exists.
+
+        Raises:
+            MissingCredentialsError: If a lazy handle lacks a credential.
         """
         from statflows.storage.ducklake.tables import fact_table_exists
 
-        return fact_table_exists(conn or self.conn, self.catalog_alias, self.schema)
+        with self._session(conn) as session:
+            return fact_table_exists(session, self.catalog_alias, self.schema)
+
+    # Lecture SQL avec paramètres liés
+    def query(
+        self, sql: str, params: Optional[Sequence[Any]] = None, *, conn: Any = None
+    ) -> Any:
+        """Run a read query and return its result as a pandas DataFrame.
+
+        Filters are pushed down in SQL (bound parameters ``?``): the table is
+        never read in full.
+
+        Args:
+            sql: Query, referencing the table by :attr:`qualified_name`.
+            params: Values bound to the ``?`` placeholders.
+            conn: Connection to use instead of the handle's one.
+
+        Returns:
+            The result frame.
+
+        Raises:
+            MissingCredentialsError: If a lazy handle lacks a credential.
+
+        Examples:
+            >>> table.query(  # doctest: +SKIP
+            ...     f'SELECT * FROM {table.qualified_name} WHERE "refYear" = ?', [2020]
+            ... )
+        """
+        with self._session(conn) as session:
+            if params is None:
+                return session.execute(sql).df()
+            return session.execute(sql, list(params)).df()
+
+    # Ajout des colonnes absentes de la table (nouvelle métrique), sans écrire de ligne
+    def add_missing_columns(self, df: Any, *, conn: Any = None) -> List[str]:
+        """Add to the fact table the columns of ``df`` it lacks, without writing rows.
+
+        The columns are added by the library (``ALTER TABLE … ADD COLUMN`` with
+        its metadata row, type inferred from ``df``), exactly as an upsert with
+        ``allow_new_columns`` would; existing rows carry ``NULL``. A missing
+        table is left alone: its first write creates every column.
+
+        Args:
+            df: Frame (pandas, polars or narwhals) carrying the new columns.
+            conn: Connection to use instead of the handle's one.
+
+        Returns:
+            The added columns, in frame order (empty when none).
+
+        Raises:
+            ImportError: If ``dt-ducklake-manager`` is not installed.
+            MissingCredentialsError: If a lazy handle lacks a credential.
+        """
+        import narwhals as nw
+
+        with self._session(conn) as session:
+            if not self.exists(session):
+                return []
+            updater = self._updater(session)
+            frame = nw.from_native(df, eager_only=True)
+            existing = set(updater._get_fact_table_columns())
+            missing = [column for column in frame.columns if column not in existing]
+            if missing:
+                # Routine d'ajout de colonnes de la bibliothèque (celle de l'upsert)
+                updater._add_new_columns_from_update(frame, missing, None)
+                updater._invalidate_metadata_cache()
+            return missing
 
     # Gestionnaire de mise à jour de la bibliothèque
     def _updater(self, conn: Any) -> Any:
@@ -490,7 +771,8 @@ class DuckLakeTable:
                 maintenance pass.
             run_id: Run identifier recorded on the snapshot.
             commit_message: Commit message recorded on the snapshot.
-            conn: Connection to use instead of the handle's one.
+            conn: Connection to use instead of the handle's one (a lazy handle
+                opens one for the call when neither is available).
             build_options: Extra arguments of the creation
                 (``{"partition_by": [...]}``), ignored on an existing table.
             delete_where: SQL condition on the fact table: the matching rows
@@ -508,33 +790,33 @@ class DuckLakeTable:
                 ``allow_new_columns`` is false, or if the library reports a
                 failed update.
         """
-        conn = conn or self.conn
-        # Remplacement d'une tranche : suppression et upsert dans une transaction
-        if delete_where is not None:
-            return self.upsert_many(
-                [df], primary_keys, delete_where=delete_where,
-                allow_new_columns=allow_new_columns, run_id=run_id,
-                commit_message=commit_message, conn=conn, build_options=build_options,
+        with self._session(conn) as conn:
+            # Remplacement d'une tranche : suppression et upsert dans une transaction
+            if delete_where is not None:
+                return self.upsert_many(
+                    [df], primary_keys, delete_where=delete_where,
+                    allow_new_columns=allow_new_columns, run_id=run_id,
+                    commit_message=commit_message, conn=conn, build_options=build_options,
+                )
+            # Première écriture : création du schéma
+            if not self.exists(conn):
+                self._create(conn, df, primary_keys, build_options, run_id, commit_message)
+                return True
+            # Table existante : upsert par la bibliothèque (évolution de schéma native)
+            success = self._updater(conn).update_database(
+                df,
+                use_transaction=True,
+                compact_after_update=compact_after_update,
+                allow_new_columns=allow_new_columns,
+                run_id=run_id,
+                commit_message=commit_message,
             )
-        # Première écriture : création du schéma
-        if not self.exists(conn):
-            self._create(conn, df, primary_keys, build_options, run_id, commit_message)
-            return True
-        # Table existante : upsert par la bibliothèque (évolution de schéma native)
-        success = self._updater(conn).update_database(
-            df,
-            use_transaction=True,
-            compact_after_update=compact_after_update,
-            allow_new_columns=allow_new_columns,
-            run_id=run_id,
-            commit_message=commit_message,
-        )
-        if not success:
-            raise ValueError(
-                f"{self.label + ': ' if self.label else ''}DatabaseUpdater reported "
-                f"failure for schema '{self.schema}'"
-            )
-        return False
+            if not success:
+                raise ValueError(
+                    f"{self.label + ': ' if self.label else ''}DatabaseUpdater reported "
+                    f"failure for schema '{self.schema}'"
+                )
+            return False
 
     # Remplacement transactionnel d'une tranche de la table par plusieurs lots
     def upsert_many(
@@ -586,23 +868,23 @@ class DuckLakeTable:
         """
         from dt_ducklake_manager.operations.deleter import DatabaseDeleter
 
-        conn = conn or self.conn
-        # Lots non vides, parcourus paresseusement : un appelant qui produit ses
-        # lots par tranches (une année BACI) garde une mémoire bornée à un lot
-        non_empty = (frame for frame in frames if len(frame) > 0)
-        created = False
-        # Table absente : création par le premier lot non vide, rien à supprimer
-        if not self.exists(conn):
-            first = next(non_empty, None)
-            if first is None:
-                return False
-            self._create(conn, first, primary_keys, build_options, run_id, commit_message)
-            created = True
-            delete_where = None
-        # Lot suivant lu d'avance : aucune transaction vide n'est ouverte
-        following = next(non_empty, None)
-        if following is None and delete_where is None:
-            return created
+        with self._session(conn) as conn:
+            # Lots non vides, parcourus paresseusement : un appelant qui produit ses
+            # lots par tranches (une année BACI) garde une mémoire bornée à un lot
+            non_empty = (frame for frame in frames if len(frame) > 0)
+            created = False
+            # Table absente : création par le premier lot non vide, rien à supprimer
+            if not self.exists(conn):
+                first = next(non_empty, None)
+                if first is None:
+                    return False
+                self._create(conn, first, primary_keys, build_options, run_id, commit_message)
+                created = True
+                delete_where = None
+            # Lot suivant lu d'avance : aucune transaction vide n'est ouverte
+            following = next(non_empty, None)
+            if following is None and delete_where is None:
+                return created
         pending = itertools.chain([following] if following is not None else [], non_empty)
 
         updater = self._updater(conn)
@@ -693,13 +975,14 @@ class DuckLakeTable:
             ValueError: If a key is missing or null, if ``df`` is not unique on
                 the keys, or if a column exists while ``overwrite`` is false.
         """
-        return self._updater(conn or self.conn).add_columns(
-            df,
-            overwrite=overwrite,
-            compact_after_update=compact_after_update,
-            run_id=run_id,
-            commit_message=commit_message,
-        )
+        with self._session(conn) as session:
+            return self._updater(session).add_columns(
+                df,
+                overwrite=overwrite,
+                compact_after_update=compact_after_update,
+                run_id=run_id,
+                commit_message=commit_message,
+            )
 
     # Écrivain lié aux options d'une étape
     def writer(

@@ -12,9 +12,9 @@ postérieure au dernier téléchargement enregistré », et ``download_updates``
 traite d'abord, par tri stable, les requêtes jamais téléchargées : l'ordre de
 la liste construite ici fait donc foi pour le rattrapage.
 
-Fichiers de configuration lus : ``COMTRADE_CONFIG_PATH`` (défaut
-``config/datasets/comtrade.yaml``) et ``RUNTIME_CONFIG_PATH`` (défaut
-``config/runtime.yaml``).
+Configuration lue : blocs ``comtrade`` et ``runtime`` des paramètres Kedro
+(``config/<env>/parameters_*.yml``), environnement choisi par ``KEDRO_ENV``
+(``local`` par défaut, ``demo`` pour le périmètre de démonstration).
 """
 # Importation des modules
 # Modules de base
@@ -23,8 +23,6 @@ import itertools
 import logging
 from datetime import datetime, timedelta
 from typing import Any, Dict, List, Mapping, Optional, Sequence, TypeVar, Union
-
-import yaml
 
 # Modules de manipulation de données
 import pandas as pd
@@ -36,6 +34,7 @@ from statflows.core.download import download_updates, _schema_name
 
 # Module de suivi d'exécution
 from macroforecast.tracking import CapturingTracker, get_tracker, rekey_metrics
+from kedro_pipeline.config import experiment_name, load_parameters, read_config_file
 from statflows.core.reports import QueryReport
 from statflows.core.registry import DEFAULT_SHARD
 
@@ -74,43 +73,36 @@ T = TypeVar("T")
 
 # Fonction de chargement de la configuration
 def load_config(config_path: Optional[os.PathLike] = None) -> dict:
-    """Load configuration from file.
+    """Load the UN Comtrade download configuration.
 
     Args:
-        config_path: Path to config file. If None, uses default location or
-            the COMTRADE_CONFIG_PATH environment variable.
+        config_path: Explicit YAML file (``comtrade`` root key or historical
+            format without it). If None, the ``comtrade`` block of the Kedro
+            parameters of the ``KEDRO_ENV`` environment.
 
     Returns:
-        dict: Configuration dictionary.
+        dict: Configuration dictionary (``DATAFLOW``, ``DOWNLOADS``, ``split_filters``…).
     """
-    # Détermination du chemin de configuration
     if config_path is None:
-        # Priorité 1 : variable d'environnement (pour flexibilité Kubernetes)
-        config_path = os.environ.get("COMTRADE_CONFIG_PATH", "config/datasets/comtrade.yaml")
-
-    # Chargement du fichier
-    with open(config_path, "r", encoding="utf-8") as file:
-        return yaml.safe_load(file)
+        return load_parameters()["comtrade"]
+    return read_config_file(config_path, "comtrade")
 
 
 # Fonction de chargement de la configuration d'exécution partagée
 def load_runtime_config(config_path: Optional[os.PathLike] = None) -> dict:
-    """Load the shared runtime configuration (``runtime`` root key, PS-04.1).
+    """Load the shared runtime configuration (``runtime`` block).
 
     Args:
-        config_path: Path to config file. If None, uses the
-            RUNTIME_CONFIG_PATH environment variable or ``config/runtime.yaml``.
+        config_path: Explicit YAML file with a ``runtime`` root key. If None,
+            the ``runtime`` block of the Kedro parameters of the ``KEDRO_ENV``
+            environment.
 
     Returns:
         dict: The mapping under the ``runtime`` root key.
     """
-    # Détermination du chemin de configuration
     if config_path is None:
-        config_path = os.environ.get("RUNTIME_CONFIG_PATH", "config/runtime.yaml")
-
-    # Chargement du fichier
-    with open(config_path, "r", encoding="utf-8") as file:
-        return yaml.safe_load(file)["runtime"]
+        return load_parameters()["runtime"]
+    return read_config_file(config_path, "runtime")
 
 
 # Fonction de récupération de la liste des codes d'une catégorie de référence
@@ -374,7 +366,7 @@ def plan_queries(
     reason on exactly the same batches.
 
     Args:
-        config: Parsed ``comtrade.yaml`` (``DATAFLOW``, ``parameters``,
+        config: The ``comtrade`` parameter block (``DATAFLOW``, ``parameters``,
             ``fixed_dims``, ``split_filters``).
         runtime_config: Parsed ``runtime`` mapping (``ANALYSIS_START_YEAR``).
         client: ``ComtradeClient`` (codelists and valid periods).
@@ -416,7 +408,7 @@ def plan_queries(
     )
 
 
-# Nœud du rapport de run (clé de config/tracking.yaml)
+# Nœud du rapport de run (clé de tracking.CHECKS)
 NODE = "download_comtrade"
 
 
@@ -456,18 +448,18 @@ def main() -> None:
     # Chargement des configurations
     config = load_config()
     runtime_config = load_runtime_config()
-    # Dataflow à télécharger (C-05)
+    # Dataflow à télécharger (jamais en dur dans le code)
     DATAFLOW = config["DATAFLOW"]
     downloads_config = config["DOWNLOADS"][DATAFLOW]
 
-    # Construction du suivi d'exécution : sans URI (ou sans MLflow installé, ou serveur
-    # injoignable), get_tracker retourne un tracker inerte et l'exécution est strictement
-    # inchangée. Le run est ouvert dès le début pour que tout échec porte son rapport.
-    mlflow_config = config.get("MLFLOW") or {}
+    # Construction du suivi d'exécution : sans URI (MLFLOW_TRACKING_URI non définie, ou
+    # sans MLflow installé, ou serveur injoignable), get_tracker retourne un tracker
+    # inerte et l'exécution est strictement inchangée. Le run est ouvert dès le début
+    # pour que tout échec porte son rapport.
     tracker = CapturingTracker(
         get_tracker(
-            tracking_uri=mlflow_config.get("TRACKING_URI"),
-            experiment=mlflow_config.get("EXPERIMENT", "comtrade-download"),
+            tracking_uri=None,
+            experiment=experiment_name("downloads"),
             run_name=run_name(f"{DATAFLOW}-{datetime.now():%Y%m%d-%H%M}", NODE),
         )
     )
@@ -496,7 +488,7 @@ def _download(config: dict, runtime_config: dict, tracker: CapturingTracker, sco
     """
     DATAFLOW = config["DATAFLOW"]
     downloads_config = config["DOWNLOADS"][DATAFLOW]
-    mlflow_config = config.get("MLFLOW") or {}
+    tracking_config = config.get("TRACKING") or {}
 
     # Initialisation du client comtrade
     scope.step = "planification des requêtes"
@@ -578,7 +570,7 @@ def _download(config: dict, runtime_config: dict, tracker: CapturingTracker, sco
         scope.step = "rapport de run"
         run_report = build_download_report(
             scope, tracker, report, downloads_config.get("MAX_ERROR_RATIO"),
-            log_artifacts=bool(mlflow_config.get("LOG_ARTIFACTS", True)),
+            log_artifacts=bool(tracking_config.get("LOG_ARTIFACTS", True)),
             tags={
                 "dataflow": DATAFLOW,
                 "stopped_early": str(report.stopped_early),

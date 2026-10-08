@@ -1,4 +1,4 @@
-"""Tests des requêtes de service de ``config/serving.yaml`` (PS-29.2, PS-29.3).
+"""Tests des requêtes de service des paramètres ``serving`` (tables et dérivation des millésimes).
 
 Les requêtes RÉELLES de la configuration sont exécutées par ``publish_serving`` sur des
 catalogues DuckLake fichiers alimentés de données fictives (``build_serving_world``).

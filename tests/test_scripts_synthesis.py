@@ -10,10 +10,9 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 import logging
-from pathlib import Path
 
 import pytest
-import yaml
+from kedro_pipeline.config import load_parameters
 
 # Le script importe ``dt_ducklake_manager`` en tête de module
 pytest.importorskip("dt_ducklake_manager")
@@ -31,7 +30,8 @@ from macroforecast.trade.aggregation import SynthesisConfig  # noqa: E402
 UTC = timezone.utc
 
 # Chemin de la configuration de référence (exemple S-2.2)
-CONFIG_PATH = Path(__file__).resolve().parents[1] / "config" / "synthesis.yaml"
+# Bloc de paramètres de référence (environnement base)
+REFERENCE = load_parameters("base")["synthesis"]
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -80,8 +80,7 @@ WHERE p."flow" = 1 AND p."indicators" = \'VALUE_IN_EUROS\' AND p."freq" = \'A\'
 @pytest.fixture
 def synthesis_block() -> dict:
     """Bloc ``SYNTHESIS`` de la configuration de référence."""
-    with open(CONFIG_PATH, "r", encoding="utf-8") as file:
-        return yaml.safe_load(file)["SYNTHESIS"]
+    return REFERENCE["SYNTHESIS"]
 
 
 def test_build_source_query_matches_s2_2() -> None:
@@ -212,8 +211,7 @@ def test_synthesis_config_from_params_unknown_key_warns(
 
 def test_synthesis_config_from_params_on_reference_config() -> None:
     """La configuration de référence est acceptée intégralement (16 méthodes)."""
-    with open(CONFIG_PATH, "r", encoding="utf-8") as file:
-        parameters = yaml.safe_load(file)["SYNTHESIS"]["PARAMETERS"]
+    parameters = REFERENCE["SYNTHESIS"]["PARAMETERS"]
     config = synthesis_config_from_params(parameters)
     assert [spec.name for spec in config.methods] == [
         "pareto",

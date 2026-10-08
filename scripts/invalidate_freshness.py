@@ -36,9 +36,9 @@ Exemples::
     # Toute la synthèse, sur une seule période
     invalidate-freshness-script --step synthesis --periods 2023
 
-Les registres sont lus et écrits avec la configuration de l'environnement
-(``VULNERABILITIES_CONFIG_PATH``, ``EUROSTAT_CONFIG_PATH``, ``BACI_CONFIG_PATH``,
-``SYNTHESIS_CONFIG_PATH``, ``RUNTIME_CONFIG_PATH``), comme les étapes elles-mêmes.
+Les registres sont lus et écrits avec les paramètres Kedro de l'environnement
+choisi par ``KEDRO_ENV`` (``local`` par défaut, ``demo`` pour le périmètre de
+démonstration), comme les étapes elles-mêmes.
 """
 # Importation des modules
 from __future__ import annotations
@@ -81,7 +81,7 @@ _CONCORDANCE_FINGERPRINT = "concordance"
 _CONSENSUS_FINGERPRINT = "consensus"
 
 # Dimensions des contextes de la synthèse et de la cohérence (clés de contexte de
-# config/synthesis.yaml : millésime SH, fréquence, flux, indicateur, période)
+# la synthèse : millésime SH, fréquence, flux, indicateur, période)
 _CONTEXT_DIMENSIONS = frozenset({"hs_vintage", "freq", "flow", "indicators", "TIME_PERIOD"})
 # Dimensions des unités de chaque étape (contrôle des filtres de périmètre)
 STEP_DIMENSIONS: Mapping[str, FrozenSet[str]] = {
@@ -246,7 +246,7 @@ def build_scope(
 
 # Fonction de lecture des méthodes de synthèse configurées
 def configured_methods() -> Tuple[str, ...]:
-    """Names of the synthesis methods configured in ``config/synthesis.yaml``.
+    """Names of the synthesis methods configured in the ``synthesis`` parameters.
 
     Returns:
         The method names, in configuration order.

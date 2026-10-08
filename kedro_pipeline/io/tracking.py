@@ -33,7 +33,7 @@ logger = logging.getLogger(__name__)
 # Clé de tag MLflow portant la description d'un run (onglet « Overview »)
 DESCRIPTION_TAG = "mlflow.note.content"
 # Valeurs par défaut de la section `REPORT` de la configuration (la valeur de production
-# vit dans config/tracking.yaml)
+# vit dans les paramètres tracking)
 _DEFAULT_MAX_DESCRIPTION_CHARS = 7500
 _DEFAULT_MAX_TABLE_ROWS = 50
 

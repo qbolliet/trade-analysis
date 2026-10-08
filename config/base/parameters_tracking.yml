@@ -1,12 +1,10 @@
-# Rapport de run MLflow (PS-31, PD-13) : verdict, contrôles déclaratifs, description et
-# rapport HTML publiés par chaque script à la fin de son exécution.
-# Lu via la variable d'environnement TRACKING_CONFIG_PATH (défaut : config/tracking.yaml).
-# Les scripts sont les seuls à lire ce fichier ; les nœuds Kedro (K-13) le recevront en
-# paramètres (`parameters_tracking.yml`, même contenu).
+# Rapport de run MLflow : verdict, contrôles déclaratifs, description et rapport HTML
+# publiés par chaque étape à la fin de son exécution (scripts transitoires, puis nœuds
+# Kedro, qui reçoivent ce bloc en paramètre `tracking`).
 tracking:
   # Métriques système du pod (onglet « System metrics »). Les variables
   # MLFLOW_ENABLE_SYSTEM_METRICS_LOGGING / MLFLOW_SYSTEM_METRICS_SAMPLING_INTERVAL sont
-  # injectées dans les pods par le rendu (PS-21.1) ; ce bloc en est la référence.
+  # injectées dans les pods par le rendu des manifestes Argo ; ce bloc en est la référence.
   SYSTEM_METRICS:
     ENABLED: true
     SAMPLING_SECONDS: 30
@@ -16,7 +14,7 @@ tracking:
     # inline : plotly.js embarqué (autonome, ~3,5 Mo) ; cdn : léger, exige internet côté navigateur
     PLOTLY_JS: inline
     # Longueur maximale de la description (tag mlflow.note.content) ; la copie intégrale est
-    # dans report/summary.md. Sous la limite de longueur d'un tag du serveur (PQ-19).
+    # dans report/summary.md. Sous la limite de longueur d'un tag du serveur.
     MAX_DESCRIPTION_CHARS: 7500
     # Lignes affichées par table dans le rapport HTML (le CSV complet reste dans tables/)
     MAX_TABLE_ROWS: 50
@@ -33,7 +31,7 @@ tracking:
   #   op : < <= > >= == !=   (le contrôle est RÉUSSI quand `valeur op seuil` est vrai)
   #   severity : warning | error ; métrique absente → contrôle ignoré (« skipped »)
   # Les métriques visées sont celles RÉELLEMENT émises par les scripts (un test le vérifie).
-  # Seuils initiaux à calibrer sur les premières exécutions réelles (PR-21, K-17).
+  # Seuils initiaux à calibrer sur les premières exécutions réelles.
   CHECKS:
     "download_*":
       - {metric: download/error_share,  op: "<=", threshold: 0.05, severity: warning, label: "Part de requêtes en erreur"}

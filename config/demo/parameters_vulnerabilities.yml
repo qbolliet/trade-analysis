@@ -1,0 +1,26 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# ENVIRONNEMENT DEMO — PÉRIMÈTRE PROVISOIRE : résultats isolés (schémas demo_*,
+# chemins trade/demo/…) et étiquetés provisoires. Ce fichier ne contient que les
+# SURCHARGES du bloc vulnerabilities de base (fusion récursive des mappings,
+# remplacement des listes) ; sélection par KEDRO_ENV=demo ou `--env demo`.
+# ─────────────────────────────────────────────────────────────────────────────
+vulnerabilities:
+  # Une seule série historique (HS2017), seul millésime BACI de l'environnement
+  VINTAGES: ["HS2017"]
+  VULNERABILITIES:
+    DS-045409:
+      RESULT_SCHEMA: "demo_indicators"
+      # Périmètre de produits restreint : résultats de démonstration
+      IS_PROVISIONAL: true
+      PATHS:
+        DATA_PATH: "trade/demo/datasets/vulnerabilities/"
+        LAST_COMPUTATION_PATH: "trade/demo/vulnerabilities/comext/last_computation.json"
+      STATE:
+        PATH_TEMPLATE: "trade/demo/state/vulnerabilities/partners/{classification}/{reporter}.json"
+  NETWORK_VULNERABILITIES:
+    RESULT_SCHEMA: "demo_network_indicators"
+    PATHS:
+      DATA_PATH: "trade/demo/datasets/vulnerabilities/"
+      LAST_COMPUTATION_PATH: "trade/demo/vulnerabilities/baci/last_computation.json"
+    STATE:
+      PATH_TEMPLATE: "trade/demo/state/vulnerabilities/network/{vintage}.json"

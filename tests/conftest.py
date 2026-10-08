@@ -9,12 +9,17 @@ production n'est modifié.
 from __future__ import annotations
 
 import contextlib
+import os
 from pathlib import Path
 from typing import NamedTuple, Sequence
 
 import numpy as np
 import pandas as pd
 import pytest
+
+# Télémétrie Kedro (plugin kedro-telemetry, dépendance de kedro) désactivée : les
+# sessions Kedro créées par les tests n'envoient aucune donnée d'usage
+os.environ.setdefault("KEDRO_DISABLE_TELEMETRY", "true")
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -395,36 +400,15 @@ SERVING_NETWORK_EXPORT_SHIFT = 0.5
 SERVING_METHODS: tuple[str, ...] = ("consensus_borda", "auto_sum", "critic_sum", "pareto")
 
 
-def _load_yaml(path: Path) -> dict:
-    """Charge un fichier YAML du dépôt."""
-    import yaml
-
-    with open(path, encoding="utf-8") as file:
-        return yaml.safe_load(file)
-
-
 def serving_configs(profile: str = "base") -> dict:
-    """Configurations réelles lues par ``serving-script`` (profil ``base`` ou ``demo``)."""
-    config = REPO_ROOT / "config"
-    if profile == "base":
-        paths = {
-            "eurostat": config / "datasets" / "eurostat.yaml",
-            "comtrade": config / "datasets" / "comtrade.yaml",
-            "vulnerabilities": config / "vulnerabilities.yaml",
-            "synthesis": config / "synthesis.yaml",
-            "runtime": config / "runtime.yaml",
-            "serving": config / "serving.yaml",
-        }
-    else:
-        demo = config / "profiles" / profile
-        paths = {
-            name: demo / f"{name}.yaml"
-            for name in ("eurostat", "comtrade", "vulnerabilities", "synthesis", "runtime", "serving")
-        }
-    loaded = {name: _load_yaml(path) for name, path in paths.items()}
-    loaded["runtime"] = loaded["runtime"]["runtime"]
-    loaded["serving"] = loaded["serving"]["serving"]
-    return loaded
+    """Configurations réelles lues par ``serving-script`` (environnement ``base`` ou ``demo``)."""
+    from kedro_pipeline.config import load_parameters
+
+    parameters = load_parameters(profile)
+    return {
+        name: parameters[name]
+        for name in ("eurostat", "comtrade", "vulnerabilities", "synthesis", "runtime", "serving")
+    }
 
 
 def file_connector_factory(root: Path):

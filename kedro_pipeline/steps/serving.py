@@ -1,7 +1,7 @@
 """Serving step: publish the dashboard tables into the ``serving`` catalog (PS-29).
 
 :func:`publish_serving` renders the SQL templates of ``serving.TABLES``
-(``config/serving.yaml``) against the source tables of the pipeline, then
+(the ``serving`` parameters) against the source tables of the pipeline, then
 publishes every table in one transaction through
 :class:`~kedro_pipeline.io.serving.ServingCatalog`. Rendering is pure and
 testable: :func:`source_tables` resolves the physical tables from the
@@ -126,10 +126,10 @@ def source_tables(
     pipeline actually wrote.
 
     Args:
-        eurostat: Parsed ``eurostat.yaml`` (``DATAFLOW``, ``DOWNLOADS``).
-        comtrade: Parsed ``comtrade.yaml`` (``DATAFLOW``, ``DOWNLOADS``).
-        vulnerabilities: Parsed ``vulnerabilities.yaml``.
-        synthesis: Parsed ``synthesis.yaml`` (``SYNTHESIS``, ``COHERENCE``).
+        eurostat: The ``eurostat`` parameter block (``DATAFLOW``, ``DOWNLOADS``).
+        comtrade: The ``comtrade`` parameter block (``DATAFLOW``, ``DOWNLOADS``).
+        vulnerabilities: The ``vulnerabilities`` parameter block.
+        synthesis: The ``synthesis`` parameter block (``SYNTHESIS``, ``COHERENCE``).
 
     Returns:
         Tuple ``(locations, tables)``: the source catalogs to attach
@@ -560,7 +560,7 @@ def publish_serving(
         sources: Template variable -> source table (see
             :func:`source_tables`).
         serving: Serving catalog handle (its sources attached ``READ_ONLY``).
-        params: ``serving`` parameters (``config/serving.yaml``).
+        params: ``serving`` parameters (the ``serving`` parameters).
         runtime: ``runtime`` parameters (``NOMENCLATURES.HS``,
             ``FORCE_SCOPE``).
         tracker: Run tracker receiving the metrics; inert by default.

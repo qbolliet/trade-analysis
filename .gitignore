@@ -243,3 +243,7 @@ Methodologie synthese multicritere*
 
 sspcloud_access_script.txt
 Trade deployment.md
+# Configuration Kedro locale (surcharges de poste, secrets éventuels) : seul le
+# .gitkeep est versionné
+config/local/*
+!config/local/.gitkeep

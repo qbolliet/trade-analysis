@@ -50,8 +50,9 @@ n'interrompt pas les autres, chaque échec est capturé et journalisé, seuls le
 contextes réussis sont écrits et enregistrés, et le script ne sort en erreur
 qu'en fin de parcours.
 
-Le suivi d'exécution MLflow est piloté par le bloc `SYNTHESIS.MLFLOW` de
-`config/synthesis.yaml` : sans `TRACKING_URI` (ou sans serveur joignable),
+Le suivi d'exécution MLflow est piloté par le bloc `SYNTHESIS.TRACKING` des
+paramètres `synthesis` (expérience : `experiments.yml`) : sans
+`MLFLOW_TRACKING_URI` (ou sans serveur joignable),
 `get_tracker` retourne un objet nul et l'exécution est strictement inchangée. Un
 seul run par exécution.
 """
@@ -83,7 +84,6 @@ from typing import (
     Sequence,
     Tuple,
 )
-import yaml
 
 # Modules de chargement/sauvegarde JSON (local ou S3), même brique que le téléchargement
 from statflows.storage.json import Loader, Saver
@@ -128,7 +128,13 @@ from scripts.compute_network_vulnerabilities import network_registry
 # Paramètres d'exécution partagés (nomenclatures, forçage ponctuel)
 from scripts.download_comtrade import load_runtime_config
 # Macros SQL de nomenclature et millésime en vigueur (référentiel des millésimes)
-from kedro_pipeline.config import nomenclature_macros_sql, vintage_in_force
+from kedro_pipeline.config import (
+    experiment_name,
+    load_parameters,
+    nomenclature_macros_sql,
+    read_config_file,
+    vintage_in_force,
+)
 
 # Modules de manipulation de données
 import numpy as np
@@ -213,29 +219,24 @@ _FULL_CHANGE_REASONS = frozenset({"first", "fingerprint", "forced"})
 
 # Fonction de chargement de la configuration de synthèse
 def load_synthesis_config(config_path: Optional[os.PathLike] = None) -> dict:
-    """Load the synthesis configuration from file.
+    """Load the synthesis configuration.
 
     Args:
-        config_path: Path to config file. If ``None``, uses the
-            ``SYNTHESIS_CONFIG_PATH`` environment variable, then the default
-            ``config/synthesis.yaml``.
+        config_path: Explicit YAML file (``synthesis`` root key or historical
+            format without it). If ``None``, the ``synthesis`` block of the
+            Kedro parameters of the ``KEDRO_ENV`` environment.
 
     Returns:
         dict: Configuration dictionary (blocks ``SYNTHESIS`` and ``COHERENCE``).
     """
-    # Détermination du chemin de configuration
     if config_path is None:
-        config_path = os.environ.get(
-            "SYNTHESIS_CONFIG_PATH", "config/synthesis.yaml"
-        )
-    # Chargement du fichier
-    with open(config_path, "r", encoding="utf-8") as file:
-        return yaml.safe_load(file)
+        return load_parameters()["synthesis"]
+    return read_config_file(config_path, "synthesis")
 
 
 # Fonction de chargement de la configuration dédiée au calcul des vulnérabilités
 def load_vulnerability_config(config_path: Optional[os.PathLike] = None) -> dict:
-    """Load the vulnerability-computation configuration from file.
+    """Load the vulnerability-computation configuration.
 
     Read for three things only: the catalog identity shared by the two upstream
     families (``VULNERABILITIES.DBNAME`` / ``VULNERABILITIES.CATALOG_ALIAS``, the
@@ -244,21 +245,16 @@ def load_vulnerability_config(config_path: Optional[os.PathLike] = None) -> dict
     the metric computation is used here.
 
     Args:
-        config_path: Path to config file. If ``None``, uses the
-            ``VULNERABILITIES_CONFIG_PATH`` environment variable, then the
-            default ``config/vulnerabilities.yaml``.
+        config_path: Explicit YAML file (``vulnerabilities`` root key or
+            historical format without it). If ``None``, the ``vulnerabilities``
+            block of the Kedro parameters of the ``KEDRO_ENV`` environment.
 
     Returns:
         dict: Configuration dictionary.
     """
-    # Détermination du chemin de configuration
     if config_path is None:
-        config_path = os.environ.get(
-            "VULNERABILITIES_CONFIG_PATH", "config/vulnerabilities.yaml"
-        )
-    # Chargement du fichier
-    with open(config_path, "r", encoding="utf-8") as file:
-        return yaml.safe_load(file)
+        return load_parameters()["vulnerabilities"]
+    return read_config_file(config_path, "vulnerabilities")
 
 
 # Fonction de construction de la configuration méthodologique de la synthèse
@@ -3207,7 +3203,8 @@ def _optional_eurostat_config() -> Optional[Mapping[str, Any]]:
 
     try:
         return load_eurostat_config()
-    except FileNotFoundError:
+    except (FileNotFoundError, KeyError):
+        # Bloc eurostat absent des paramètres de l'environnement
         return None
 
 
@@ -3258,12 +3255,13 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
     filters = synthesis_config.get("FILTERS") or {}
     settings = incremental_settings(synthesis_config, _optional_eurostat_config())
 
-    # Options de suivi d'exécution (un seul run par exécution, D-14)
-    mlflow_config = synthesis_config.get("MLFLOW") or {}
-    log_artifacts = bool(mlflow_config.get("LOG_ARTIFACTS", True))
+    # Options de suivi d'exécution (un seul run par exécution, toutes méthodes
+    # confondues : les métriques de méthodes se comparent dans un même run)
+    tracking_config = synthesis_config.get("TRACKING") or {}
+    log_artifacts = bool(tracking_config.get("LOG_ARTIFACTS", True))
     tracker = get_tracker(
-        tracking_uri=mlflow_config.get("TRACKING_URI"),
-        experiment=mlflow_config.get("EXPERIMENT", "trade-03-vulnerabilities"),
+        tracking_uri=None,
+        experiment=experiment_name("vulnerabilities"),
         run_name=run_name(f"vulnerabilities-synthesis-{datetime.now():%Y%m%d-%H%M}", NODE),
     )
     scope = RunScope(NODE)

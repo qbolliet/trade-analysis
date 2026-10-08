@@ -1,0 +1,21 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# ENVIRONNEMENT DEMO — PÉRIMÈTRE PROVISOIRE (sélection de produits à confirmer) :
+# produits dont le code commence par 2805, 2846, 8105, 8112, 2844, 3004, 8541, 8542,
+# 8507 (≈ 100 codes SH6). Ce fichier ne contient que les SURCHARGES du bloc eurostat
+# de base (fusion récursive des mappings, remplacement des listes) ; sélection par
+# KEDRO_ENV=demo ou `--env demo`.
+# ─────────────────────────────────────────────────────────────────────────────
+eurostat:
+  split_filters:
+    DS-045409:
+      product:
+        # SH6 / NC8 des produits retenus
+        include_regex: '^(2805|2846|8105|8112|2844|3004|8541|8542|8507)\d{2,4}$'
+  DOWNLOADS:
+    # Catalogue brut isolé (le schéma est imposé par le dataflow)
+    DBNAME: "demo_eurostat"
+    DS-045409:
+      PATHS:
+        DATA_PATH: "trade/demo/datasets/comext"
+        STRUCTURES_PATH: "trade/demo/datasets/structures/comext.json"
+        LAST_DOWNLOAD_PATH: "trade/demo/datasets/last_downloads/comext.json"

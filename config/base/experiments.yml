@@ -1,0 +1,14 @@
+# Expériences MLflow des scripts transitoires, une par bloc d'étapes (les graphiques et
+# les runs d'un même bloc sont regroupés). Hors des paramètres : ces noms ne sont pas
+# des valeurs méthodologiques et ne doivent pas être journalisés comme tels. La variable
+# d'environnement MLFLOW_EXPERIMENT_NAME, si elle est définie, prime sur ce fichier.
+# L'URI du serveur vient de la variable MLFLOW_TRACKING_URI (aucun suivi sans elle).
+EXPERIMENTS:
+  # Téléchargements Eurostat Comext et UN Comtrade
+  downloads: "trade-01-downloads"
+  # Redressement BACI, un run par millésime
+  baci: "trade-02-baci"
+  # Vulnérabilités partenaires et réseau, synthèse et cohérence
+  vulnerabilities: "trade-03-vulnerabilities"
+  # Publication du catalogue de restitution
+  serving: "trade-04-serving"

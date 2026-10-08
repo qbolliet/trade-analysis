@@ -1,0 +1,171 @@
+# Redressement BACI (clé racine unique : le chargeur Kedro fusionne tous les fichiers
+# parameters* dans un seul dictionnaire et refuse les clés dupliquées).
+baci:
+  # Configuration du redressement BACI des flux de commerce international.
+
+  # Bucket S3 des fichiers CEPII (null → lecture locale)
+  BUCKET: "qbollietdgddi" # null
+
+  # Activation de l'étape de réallocation des zones "Areas NES" (étape 6).
+  # Distinct de PARAMETERS.nes_partner_codes : une liste vide de codes NES
+  # déclarés ne signifie pas "ne pas réallouer".
+  APPLY_NES: true
+
+  # Chemins des données (relatifs à la racine du dépôt, résolus par l'appelant)
+  PATHS:
+    # Variables de gravité CEPII
+    DIST_CEPII: "trade/datasets/cepii/dist_cepii.xls"
+    GEO_CEPII: "trade/datasets/cepii/geo_cepii.xls"
+    # Registre v1 des dates de dernier traitement (fichier unique, sans
+    # empreintes) : n'est plus écrit, seulement lu pour la migration vers les
+    # fragments de STATE
+    LAST_PROCESSING_PATH: "trade/datasets/last_processing/baci.json"
+
+  # Registre de fraîcheur fragmenté : un fichier par millésime (pas de course entre
+  # les pods qui redressent des millésimes différents). L'entrée porte l'identifiant
+  # de la passe (fit_id), les années du périmètre (years_scope) et les années écrites
+  # sous ce fit_id (years_written, point de reprise d'une passe interrompue). Son
+  # last_computed est la source de fraîcheur des indicateurs de réseau
+  STATE:
+    PATH_TEMPLATE: "trade/state/baci/{vintage}.json"
+    # Migration : à true pour UN run au déploiement (même règle que les registres
+    # des vulnérabilités, parameters_vulnerabilities.yml)
+    ADOPT_LEGACY_FINGERPRINTS: false
+
+  # Cadence de réestimation d'un millésime. Une passe réestime et réécrit TOUT le
+  # millésime (gravité et qualité des déclarants sont estimées sur toutes ses
+  # années) : elle n'est lancée que si le millésime n'a jamais été calculé, si une
+  # passe précédente est interrompue, si une nouvelle année complète entre dans son
+  # périmètre, si l'empreinte méthodologique change, en cas de forçage, ou si
+  # l'amont Comtrade a été révisé ET que le dernier calcul date d'au moins
+  # MIN_INTERVAL_DAYS jours
+  REFRESH:
+    # Révisions amont : au plus une passe par intervalle
+    MIN_INTERVAL_DAYS: 7
+    # Nouvelle année complète : passe immédiate (sinon soumise à l'intervalle)
+    ON_NEW_COMPLETE_YEAR: true
+
+  # Porte de complétude : une année n'est redressée que si la part
+  # de ses lots Comtrade PLANIFIÉS téléchargés au moins une fois (registre
+  # LAST_DOWNLOAD_PATH du téléchargement) atteint MIN_SHARE. BACI estime la gravité
+  # et la qualité des déclarants sur tout le millésime : une année partielle
+  # biaiserait toutes les autres.
+  COMPLETENESS:
+    MIN_SHARE: 1.0
+    # Motif du périmètre produit complet de BACI (HS6). Quand les produits planifiés
+    # au téléchargement n'en sont qu'un sous-ensemble strict (filtres include* du
+    # profil demo), le résultat est étiqueté provisoire (colonne is_provisional)
+    FULL_PRODUCT_REGEX: '^\d{6}$'
+
+  # Traitement par passes sur des tranches annuelles (mémoire bornée à une tranche).
+  # La table de faits Comtrade n'est jamais lue en entier : chaque année est lue,
+  # harmonisée et convertie en flux miroirs, écrits en Parquet de travail, puis
+  # relue par les passes suivantes. Les estimations mises en commun sur toutes les
+  # années du millésime sont exprimées par des statistiques suffisantes : le
+  # résultat est identique au traitement monobloc, ces paramètres ne changent que
+  # la mémoire et les fichiers intermédiaires (aucun n'entre dans l'empreinte).
+  PASSES:
+    # Racine des fichiers de travail (relative au bucket ci-dessus, ou au dossier
+    # courant sans bucket) : <WORK_PATH>/<millésime>/<fit_id>/{mirror,nes,freight,p0}/
+    WORK_PATH: "trade/work/baci"
+    # Nombre maximal de déclarations Comtrade lues par tranche : au-delà, l'année
+    # est découpée en blocs de chapitres SH entiers (jamais un produit ni une
+    # conversion à cheval sur deux blocs). Échec explicite si un groupe de
+    # chapitres indissociables dépasse encore la limite. null : années entières
+    MAX_ROWS_PER_CHUNK: 15000000
+    # Conservation des fichiers de travail après une passe réussie (diagnostic).
+    # Une passe interrompue les conserve toujours : sa reprise (même fit_id)
+    # réutilise la passe de préparation
+    KEEP_WORK_FILES: false
+
+  # Suivi d'exécution MLflow (l'URI du serveur vient de la variable
+  # MLFLOW_TRACKING_URI, le nom d'expérience de experiments.yml). Dépendance
+  # optionnelle : installer l'extra « tracking » (uv sync --extra tracking).
+  TRACKING:
+    # Publication des artefacts d'étape (taux de conversion, coefficients de
+    # gravité, régimes de valorisation inférés, sigma par pays)
+    LOG_ARTIFACTS: true
+
+  # Paramètres méthodologiques : toute clé portant le nom d'un champ de
+  # BaciConfig surcharge le défaut correspondant (listes YAML → tuples) ;
+  # les clés inconnues sont ignorées avec un avertissement.
+  PARAMETERS:
+    # Conventions de schéma des sources : toute clé portant le nom d'un champ de
+    # ComtradeSchema (noms de colonnes COMTRADE/CEPII, codes de flux) surcharge le
+    # défaut correspondant.
+    SCHEMA:
+      # Variable de distance pondérée population (dist_cepii)
+      distance_column: "distw"
+    # Étape de conversion des quantités en tonnes (validation des taux)
+    # Table des facteurs multiplicatifs vers la tonne, par code unité COMTRADE
+    # (8 = kilogrammes → tonnes ; 21 = tonnes → tonnes, identité)
+    tonne_conversion_factors:
+      8: 0.001
+      21: 1.0
+    min_mirror_flows: 10
+    max_conversion_std: 2.5
+    # Robustesse de l'équation de gravité (seuil de distance de Cook = facteur / n)
+    cook_factor: 4.0
+    # Plancher strictement positif des écarts-types de qualité de déclaration,
+    # exprimé en fraction de la médiane des sigma strictement positifs estimés.
+    # Le poids optimal se comportant comme
+    # sigma_j^2 / (sigma_i^2 + sigma_j^2), monter cette valeur (0.3-0.5) est le
+    # levier qui adoucit réellement l'asymétrie ; à réexaminer une fois la
+    # distribution des sigma observée.
+    min_sigma_ratio: 0.1
+    # Inférence du régime de valorisation des importations depuis les colonnes
+    # cifvalue / fobvalue des déclarations d'import : part de la valeur déclarée en
+    # CIF au-delà de laquelle l'importateur est réputé déclarer en CIF
+    cif_share_threshold: 0.5
+    # Maille de l'inférence : "country_year" (régime daté, repli sur le régime modal
+    # du pays quand l'année manque) ou "country" (un régime unique par pays)
+    regime_granularity: "country_year"
+    # Pays déclarant en FAS (fret retiré seulement si l'écart miroir diminue).
+    # Conservé en configuration : le régime FAS n'est pas distinguable de FAB dans
+    # les colonnes COMTRADE, alors que la note lui réserve une correction
+    # conditionnelle
+    fas_countries: ["CAN"]
+    # Paires dont les flux internes sont écartés
+    excluded_pairs: [["BEL", "LUX"]]
+    # Périmètre temporel (années incluses) : null = pas de borne.
+    # A défaut de borne ici, le périmètre est celui du jeu COMTRADE lu par le script 
+    # (le filtrage en amont, côté SQL, reste préférable pour la volumétrie)
+    period_start: null
+    period_end: null
+    # Code partenaire M49 de l'agrégat Monde (lignes écartées en amont)
+    world_partner_code: 0
+    # « Areas, nes » éligibles à la réallocation (codes partenaires M49)
+    nes_partner_codes: [899]
+    # Agrégats laissés de côté et écartés des données (« Other Asia, nes »)
+    nes_skip_codes: [490]
+
+  # Configuration du script multi-millésimes :
+  # harmonisation des nomenclatures HS puis exécution d'une passe BACI par
+  # millésime cible, chacune écrite dans son propre schéma DuckLake.
+  CLASSIFICATIONS:
+    # Emplacement de cache des tables de correspondance UNSD normalisées
+    # (Parquet, une table par paire de millésimes) et de leur registre
+    # (registry.json : date de téléchargement, URL source, nombre de lignes,
+    # somme de contrôle). Relatif au bucket ci-dessus (racine du dépôt en local).
+    CONCORDANCE_PATH: "trade/datasets/unsd/concordances"
+    # Les tables de correspondance sont invariantes : force le retéléchargement
+    # de toutes les paires même si elles sont déjà en cache.
+    FORCE_REFRESH: false
+    # Millésimes HS sur lesquels le redressement BACI est exécuté. Pour chacun :
+    # première année incluse (les millésimes plus récents y sont reversés par
+    # les tables de passage UNSD) et schéma DuckLake de destination.
+    # START_YEAR null → max(runtime.NOMENCLATURES.HS[millésime],
+    # runtime.ANALYSIS_START_YEAR.comtrade). HS1992 (en vigueur depuis 1988) commence
+    # avec l'analyse Comtrade : sa première année est interpolée depuis le bloc
+    # runtime, sans dupliquer la constante (même valeur que la règle ci-dessus).
+    # Une entrée nulle désactive un millésime (surcharge d'environnement : la
+    # fusion récursive ne permet pas de retirer une clé). Ordre : du plus récent
+    # au plus ancien.
+    TARGETS:
+      HS2022: { START_YEAR: 2022, RESULT_SCHEMA: "baci_hs2022" }
+      HS2017: { START_YEAR: 2017, RESULT_SCHEMA: "baci_hs2017" }
+      HS2012: { START_YEAR: 2012, RESULT_SCHEMA: "baci_hs2012" }
+      HS2007: { START_YEAR: 2007, RESULT_SCHEMA: "baci_hs2007" }
+      HS2002: { START_YEAR: 2002, RESULT_SCHEMA: "baci_hs2002" }
+      HS1996: { START_YEAR: 1996, RESULT_SCHEMA: "baci_hs1996" }
+      HS1992: { START_YEAR: "${runtime.ANALYSIS_START_YEAR.comtrade}", RESULT_SCHEMA: "baci_hs1992" }

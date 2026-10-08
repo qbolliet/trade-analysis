@@ -1,0 +1,154 @@
+# Téléchargement UN Comtrade (clé racine unique : le chargeur Kedro fusionne tous les
+# fichiers parameters* dans un seul dictionnaire et refuse les clés dupliquées).
+comtrade:
+  # Configuration des dimensions scindées UN Comtrade
+  # Filtres de codes appliqués aux codelists des dimensions itérées pour
+  # construire la liste des requêtes (boucle externe sur les années, boucle
+  # interne sur les lots de produits).
+  #
+  # Remarque : les codes reporters/partenaires sont les codes M49 numériques
+  # renvoyés par l'API Comtrade (colonne `reporterCode`), pas les codes ISO.
+  # Les codes produits sont les nomenclatures HS (colonne `id`).
+
+  # Dataflow téléchargé : identifiant logique typeCode_freqCode_clCode (jamais en dur
+  # dans le code)
+  DATAFLOW: "C_A_HS"
+
+  # Suivi d'exécution MLflow du téléchargement (l'URI du serveur vient de la variable
+  # MLFLOW_TRACKING_URI, le nom d'expérience de experiments.yml). Dépendance
+  # optionnelle : installer l'extra « tracking » (uv sync --extra tracking).
+  TRACKING:
+    # Publication de la table de diagnostic par requête
+    LOG_ARTIFACTS: true
+
+  # Groupes de codes réutilisables
+  code_groups:
+    # Exemple de sélection de reporters par code M49 (à compléter selon le besoin).
+    # France=251, Allemagne=276, Italie=380, Espagne=724, Pays-Bas=528.
+    majors_m49: &majors_m49
+      - "251"
+      - "276"
+      - "380"
+      - "724"
+      - "528"
+
+  # Paramètres
+  parameters:
+    # Données annuelles
+    C_A_HS: &params_c_a_hs
+      # Nombre de codes produits par requête
+      products_step: 10
+      # Plafond du nombre de requêtes (null = pas de plafond). null en production
+      # ET en demo : le périmètre demo est borné par ses filtres de codes
+      max_queries: null
+      # Ordre de la liste de requêtes : boucle externe sur les années
+      # ("desc" = récentes d'abord, "asc" = anciennes d'abord), boucle interne sur
+      # les lots de produits dans l'ordre naturel des codes. Une année est ainsi
+      # complète avant que la suivante ne commence (porte de complétude BACI).
+      periods_order: "desc"
+
+    # Données mensuelles (mêmes paramètres)
+    C_M_HS: *params_c_a_hs
+
+  # Paramètres fixes par dataflow, partagés par toutes les requêtes (fréquence,
+  # flux, type de commerce, nomenclature). Les périodes sont une dimension de
+  # découpage (split_filters.<dataflow>.periods), jamais un champ fixe : une requête
+  # ne rapporte qu'une année, ce qui rend chaque année complète avant la suivante.
+  fixed_dims:
+    # Données annuelles, commodities, nomenclature HS
+    C_A_HS: &fixed_dims_c_a_hs
+      frequency: annual
+      flows:
+        - "M"
+        - "X"
+      type_code: "C"
+      classification: "HS"
+
+    # Données mensuelles, commodities, nomenclature HS
+    C_M_HS:
+      <<: *fixed_dims_c_a_hs
+      frequency: monthly
+
+  # Filtres de codes par dataflow et par dimension scindée
+  split_filters:
+    # Données annuelles, commodities, nomenclature HS
+    C_A_HS: &c_hs
+      # Bornes des périodes (années incluses). start : première année de l'analyse
+      # Comtrade, interpolée depuis le bloc runtime (null aurait le même effet) ;
+      # end null → dernière année complète (l'année en cours est exclue)
+      periods:
+        start: ${runtime.ANALYSIS_START_YEAR.comtrade}
+        end: null
+      reporters:
+        include: null            # tous filtres nuls → reporters=None (tous) en une requête
+        include_regex: null
+        exclude: null
+        exclude_regex: null
+      products:
+        include: null            # partir de tous les codes disponibles
+        include_regex: '^\d{6}$' # HS6 uniquement : les agrégats se déduisent par somme
+        exclude:                 # agrégats confidentiels / totaux
+          - "00"
+          - "0090"
+          - "009000"
+          - "999999"
+        exclude_regex: null
+
+    # Données mensuelles, commodities, nomenclature HS (mêmes filtres)
+    C_M_HS: *c_hs
+
+  # Configuration des téléchargements
+  DOWNLOADS:
+    DBNAME: "comtrade"
+    CATALOG_ALIAS: "comtrade"
+    # Tables de référence (libellés) publiées dans ce catalogue à chaque
+    # téléchargement, depuis les métadonnées de référence déjà récupérées : un schéma par
+    # table (<SCHEMA_PREFIX>_<table>), recopiées par serving. Catégorie Comtrade -> table
+    # (« cmd:HS » n'est pas millésimée : codes de l'édition SH la plus récente)
+    REFERENCE:
+      SCHEMA_PREFIX: "reference"
+      DIMENSIONS:
+        reporter: "reporters"
+        "cmd:HS": "products"
+      AGGREGATE_CODES: []
+    # Données annuelles, commodities, nomenclature HS
+    C_A_HS:
+      BUCKET: "qbollietdgddi"
+      PATHS:
+        DATA_PATH: "trade/datasets/comtrade"
+        STRUCTURES_PATH: "trade/datasets/structures/comtrade.json"
+        LAST_DOWNLOAD_PATH: "trade/datasets/last_downloads/comtrade.json"
+      N_LAST_OBSERVATIONS: 10
+      # Partition du téléchargement : sans lui, le registre est réécrit en
+      # entier et une écriture DuckLake (un snapshot) est lancée à chaque requête, soit un coût
+      # quadratique sur 10^4 à 10^5 requêtes. Le registre n'avance qu'après l'écriture du lot qui
+      # contient la requête : un arrêt (SIGTERM, MAX_RUNTIME) ne perd aucune donnée.
+      BUFFERING:
+        # Persistance du registre toutes les N requêtes validées (1 = comportement historique)
+        REGISTRY_FLUSH_EVERY: 500
+        # ... ou dès que T secondes se sont écoulées depuis la dernière persistance (null = aucun seuil)
+        REGISTRY_FLUSH_SECONDS: 300
+        # Écriture DuckLake groupée : un lot est écrit dès N requêtes non vides (null = aucun seuil)
+        WRITE_BATCH_QUERIES: 200
+        # ... ou dès N lignes cumulées dans le lot (null = aucun seuil)
+        WRITE_BATCH_ROWS: 500000
+        # Compaction DuckLake après chaque écriture ; false = laissée à une passe de maintenance
+        COMPACT_AFTER_UPDATE: false
+        # Registre fragmenté, un fichier par année : seuls les fragments modifiés sont réécrits
+        # (le registre existant, en fichier unique, est migré à la première persistance)
+        SHARD_REGISTRY: true
+        # Options DuckLake appliquées à l'ATTACH le temps du run (ex. {data_inlining_row_limit: 1000}) ;
+        # null = aucune
+        DUCKLAKE_OPTIONS: null
+      # Durée maximale d'un run (arrêt propre)
+      MAX_RUNTIME:
+        WEEKS: 0
+        DAYS: 0
+        HOURS: 10
+        MINUTES: 0
+        SECONDS: 0
+      # Part maximale de requêtes en échec tolérée : au-delà, le script sort en erreur et l'étape
+      # du workflow échoue (0 = aucune tolérance, 1 = jamais d'échec, null = pas de contrôle).
+      # Les requêtes en échec ne sont pas marquées comme téléchargées : elles sont retentées au run suivant
+      MAX_ERROR_RATIO: 0.5
+      categorical_threshold: null

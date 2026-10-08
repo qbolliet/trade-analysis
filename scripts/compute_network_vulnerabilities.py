@@ -25,7 +25,7 @@ Argo ordonnançables indépendamment, deux domaines d'échec, deux runs MLflow.
 
 Le périmètre recalculé est décidé par le registre de fraîcheur fragmenté de cette
 étape (`STATE.PATH_TEMPLATE`, un fichier par millésime), confronté au registre
-BACI (lecture seule, `STATE` de `baci.yaml`) : un millésime est recalculé s'il ne
+BACI (lecture seule, `STATE` du bloc `baci`) : un millésime est recalculé s'il ne
 l'a jamais été, si sa dernière passe BACI terminée est postérieure à son dernier
 calcul, si l'empreinte d'une métrique a changé ou en cas de forçage. Un millésime
 dont la passe BACI est interrompue n'est pas scoré (sa table mélange deux
@@ -39,8 +39,9 @@ chaque échec est capturé et journalisé, et le script ne sort en erreur qu'en 
 de parcours. Seuls les millésimes réussis voient leur date de calcul avancer.
 
 Le suivi d'exécution MLflow est piloté par le bloc
-`NETWORK_VULNERABILITIES.MLFLOW` de `config/vulnerabilities.yaml` : sans
-`TRACKING_URI` (ou sans serveur joignable), `get_tracker` retourne un objet nul
+`NETWORK_VULNERABILITIES.TRACKING` des paramètres `vulnerabilities` (expérience :
+`experiments.yml`) : sans `MLFLOW_TRACKING_URI` (ou sans serveur joignable),
+`get_tracker` retourne un objet nul
 et l'exécution est strictement inchangée. La relecture du résultat précédent,
 qui alimente les diagnostics de dérive, est faite ici — jamais par le module de
 calcul.
@@ -61,7 +62,6 @@ import time
 from pathlib import Path
 from functools import partial
 from typing import Any, Dict, Iterator, List, Mapping, Optional, Sequence, Tuple
-import yaml
 
 # Modules de manipulation de données
 import narwhals as nw
@@ -102,7 +102,13 @@ from scripts.process_baci_hs import baci_registry, pass_is_complete
 # Paramètres d'exécution partagés (forçage ponctuel)
 from scripts.download_comtrade import load_runtime_config
 # Millésime SH en vigueur une année donnée
-from kedro_pipeline.config import vintage_in_force
+from kedro_pipeline.config import (
+    active_targets,
+    experiment_name,
+    load_parameters,
+    read_config_file,
+    vintage_in_force,
+)
 
 # Module de suivi d'exécution (MLflow optionnel, objet nul par défaut)
 from macroforecast.tracking import CapturingTracker, RecordingTracker, get_tracker
@@ -157,30 +163,24 @@ _IN_FORCE_COL = "in_force"
 
 # Fonction de chargement de la configuration associée à la base comtrade
 def load_comtrade_config(config_path: Optional[os.PathLike] = None) -> dict:
-    """Load configuration from file.
+    """Load the UN Comtrade configuration (catalog holding the BACI schemas).
 
     Args:
-        config_path: Path to config file. If None, uses default location or
-            the COMTRADE_CONFIG_PATH environment variable.
+        config_path: Explicit YAML file (``comtrade`` root key or historical
+            format without it). If None, the ``comtrade`` block of the Kedro
+            parameters of the ``KEDRO_ENV`` environment.
 
     Returns:
         dict: Configuration dictionary.
     """
-    # Détermination du chemin de configuration
     if config_path is None:
-        # Priorité 1 : variable d'environnement (pour flexibilité Kubernetes)
-        config_path = os.environ.get(
-            "COMTRADE_CONFIG_PATH", "config/datasets/comtrade.yaml"
-        )
-
-    # Chargement du fichier
-    with open(config_path, "r", encoding="utf-8") as file:
-        return yaml.safe_load(file)
+        return load_parameters()["comtrade"]
+    return read_config_file(config_path, "comtrade")
 
 
 # Fonction de chargement de la configuration du redressement BACI
 def load_baci_config(config_path: Optional[os.PathLike] = None) -> dict:
-    """Load configuration from file.
+    """Load the BACI configuration.
 
     Read for two things only: the HS vintages to score
     (``CLASSIFICATIONS.TARGETS``, i.e. which source schemas exist) and the path
@@ -188,46 +188,38 @@ def load_baci_config(config_path: Optional[os.PathLike] = None) -> dict:
     methodological BACI parameter is used here.
 
     Args:
-        config_path: Path to config file. If None, uses default location or
-            the BACI_CONFIG_PATH environment variable.
+        config_path: Explicit YAML file (``baci`` root key or historical format
+            without it). If None, the ``baci`` block of the Kedro parameters of
+            the ``KEDRO_ENV`` environment.
 
     Returns:
         dict: Configuration dictionary.
     """
-    # Détermination du chemin de configuration
     if config_path is None:
-        # Priorité 1 : variable d'environnement (pour flexibilité Kubernetes)
-        config_path = os.environ.get("BACI_CONFIG_PATH", "config/baci.yaml")
-
-    # Chargement du fichier
-    with open(config_path, "r", encoding="utf-8") as file:
-        return yaml.safe_load(file)
+        return load_parameters()["baci"]
+    return read_config_file(config_path, "baci")
 
 
 # Fonction de chargement de la configuration dédiée au calcul des vulnérabilités
 def load_vulnerability_config(config_path: Optional[os.PathLike] = None) -> dict:
-    """Load the vulnerability-computation configuration from file.
+    """Load the vulnerability-computation configuration.
 
-    Same file as ``compute_trade_vulnerabilities.py`` — the two families write
-    into the same DuckLake catalog — but a block of its own
+    Same block as ``compute_trade_vulnerabilities.py`` — the two families write
+    into the same DuckLake catalog — but a sub-block of its own
     (``NETWORK_VULNERABILITIES``), so neither script can be perturbed by the
     other's settings.
 
     Args:
-        config_path: Path to config file. If None, uses default location
-                     or VULNERABILITIES_CONFIG_PATH environment variable.
+        config_path: Explicit YAML file (``vulnerabilities`` root key or
+            historical format without it). If None, the ``vulnerabilities``
+            block of the Kedro parameters of the ``KEDRO_ENV`` environment.
 
     Returns:
         dict: Configuration dictionary.
     """
-    # Détermination du chemin de configuration
     if config_path is None:
-        config_path = os.environ.get(
-            "VULNERABILITIES_CONFIG_PATH", "config/vulnerabilities.yaml"
-        )
-    # Chargement du fichier
-    with open(config_path, "r", encoding="utf-8") as file:
-        return yaml.safe_load(file)
+        return load_parameters()["vulnerabilities"]
+    return read_config_file(config_path, "vulnerabilities")
 
 
 # Fonction de construction de la configuration méthodologique des métriques de réseau
@@ -243,7 +235,7 @@ def network_config_from_params(params: Optional[Dict]) -> NetworkVulnerabilityCo
 
     Args:
         params: The ``NETWORK_VULNERABILITIES.PARAMETERS`` mapping of
-            ``config/vulnerabilities.yaml`` (or ``None``, meaning the default
+            the ``vulnerabilities`` parameters (or ``None``, meaning the default
             BACI conventions).
 
     Returns:
@@ -328,7 +320,7 @@ def load_last_processing_dates(
 
     Args:
         last_processing_path: Path to the ``LAST_PROCESSING_PATH`` registry
-            (cf. ``baci.yaml`` / ``process_baci_hs.py``).
+            (cf. the ``baci`` parameters / ``process_baci_hs.py``).
         loader: ``Loader`` instance.
         bucket: S3 bucket holding the registry, or ``None`` for a local path.
 
@@ -542,7 +534,7 @@ def network_registry(
 
     Args:
         network_config: ``NETWORK_VULNERABILITIES`` block of
-            ``config/vulnerabilities.yaml`` (``BUCKET``, ``STATE``,
+            the ``vulnerabilities`` parameters (``BUCKET``, ``STATE``,
             ``PATHS.LAST_COMPUTATION_PATH`` read as the version-1 fallback).
         loader: JSON loader (a fresh one by default).
         saver: JSON saver (a fresh one by default).
@@ -756,7 +748,7 @@ def compute_vintage_task(task: VintageTask) -> VintageOutcome:
 # ──────────────────────────────────────────────────────────────────────
 
 # Préfixe du nœud du rapport de run : un run par millésime (clé « compute_network_vulnerabilities* »
-# de config/tracking.yaml)
+# de tracking.CHECKS)
 NODE = "compute_network_vulnerabilities"
 
 
@@ -817,17 +809,20 @@ def main() -> None:
     flows = load_flows(network_config)
 
     # Options de suivi d'exécution (un run par millésime, construit dans la boucle)
-    mlflow_config = network_config.get("MLFLOW") or {}
-    log_artifacts = bool(mlflow_config.get("LOG_ARTIFACTS", True))
-    measure_drift = bool(mlflow_config.get("DRIFT", True))
+    tracking_config = network_config.get("TRACKING") or {}
+    log_artifacts = bool(tracking_config.get("LOG_ARTIFACTS", True))
+    measure_drift = bool(tracking_config.get("DRIFT", True))
+    experiment = experiment_name("vulnerabilities")
 
     # Dataflow COMTRADE dont sont issus les flux redressés
     DATAFLOW = comtrade_config["DATAFLOW"]
 
-    # Millésimes configurés : label → schéma source (résultat du redressement BACI)
+    # Millésimes configurés (cibles nulles désactivées écartées) : label → schéma
+    # source (résultat du redressement BACI)
+    configured = active_targets(baci_config["CLASSIFICATIONS"]["TARGETS"])
     targets = {
         label: _schema_name(target_cfg["RESULT_SCHEMA"])
-        for label, target_cfg in baci_config["CLASSIFICATIONS"]["TARGETS"].items()
+        for label, target_cfg in configured.items()
     }
 
     # Unités candidates : millésimes dont la dernière passe BACI est terminée,
@@ -947,10 +942,8 @@ def main() -> None:
                 node = f"{NODE}_{label}"
                 tracker = CapturingTracker(
                     get_tracker(
-                        tracking_uri=mlflow_config.get("TRACKING_URI"),
-                        experiment=mlflow_config.get(
-                            "EXPERIMENT", "trade-03-vulnerabilities"
-                        ),
+                        tracking_uri=None,
+                        experiment=experiment,
                         run_name=run_name(
                             f"network-vulnerabilities-{label}-{datetime.now():%Y%m%d-%H%M}", node
                         ),

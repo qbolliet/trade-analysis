@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from conftest import REPO_ROOT, build_serving_world
+from conftest import build_serving_world
 
 pytestmark = pytest.mark.slow
 
@@ -17,13 +17,8 @@ def script_env(monkeypatch: pytest.MonkeyPatch, mlflow_uri: str):
     for name, value in {
         "PGHOST": "h", "PGPORT": "5432", "PGUSER": "u", "PGPASSWORD": "p", "PGDATABASE": "d",
         "AWS_S3_ENDPOINT": "e", "AWS_ACCESS_KEY_ID": "k", "AWS_SECRET_ACCESS_KEY": "s",
-        "SERVING_CONFIG_PATH": str(REPO_ROOT / "config" / "serving.yaml"),
-        "EUROSTAT_CONFIG_PATH": str(REPO_ROOT / "config" / "datasets" / "eurostat.yaml"),
-        "COMTRADE_CONFIG_PATH": str(REPO_ROOT / "config" / "datasets" / "comtrade.yaml"),
-        "VULNERABILITIES_CONFIG_PATH": str(REPO_ROOT / "config" / "vulnerabilities.yaml"),
-        "SYNTHESIS_CONFIG_PATH": str(REPO_ROOT / "config" / "synthesis.yaml"),
-        "RUNTIME_CONFIG_PATH": str(REPO_ROOT / "config" / "runtime.yaml"),
-        "TRACKING_CONFIG_PATH": str(REPO_ROOT / "config" / "tracking.yaml"),
+        # Configuration de production (environnement base des paramètres Kedro)
+        "KEDRO_ENV": "base",
         "MLFLOW_TRACKING_URI": mlflow_uri,
         "WORKFLOW_ID": "trade-pipeline-daily-abcde",
         "PROFILE": "test",

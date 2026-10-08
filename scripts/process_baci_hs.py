@@ -78,8 +78,9 @@ Périmètre et exécution :
 - **étiquette ``is_provisional``** : vraie quand le périmètre produit planifié
   n'est qu'un sous-ensemble strict du périmètre HS6 complet (profil ``demo``).
 
-Fichiers de configuration lus : ``BACI_CONFIG_PATH``, ``COMTRADE_CONFIG_PATH``
-et ``RUNTIME_CONFIG_PATH``.
+Configuration lue : blocs ``baci``, ``comtrade`` et ``runtime`` des paramètres
+Kedro (``config/<env>/parameters_*.yml``), environnement choisi par ``KEDRO_ENV``
+(``local`` par défaut, ``demo`` pour le périmètre de démonstration).
 """
 # Importation des modules
 # Modules de base
@@ -90,12 +91,18 @@ import sys
 from dataclasses import fields, replace
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, Iterable, Iterator, List, Mapping, Optional, Sequence
-import yaml
 
 # Modules de manipulation de données
 import duckdb
 import pandas as pd
 
+# Configuration du projet (paramètres Kedro, expériences MLflow, cibles actives)
+from kedro_pipeline.config import (
+    active_targets,
+    experiment_name,
+    load_parameters,
+    read_config_file,
+)
 # Fabrique de connecteur DuckLake (seul point de lecture des identifiants)
 from kedro_pipeline.io.ducklake import (
     DuckLakeLocation,
@@ -195,44 +202,36 @@ _PROCESSING_ROOT = "BACI"
 
 # Fonction de chargement de la configuration associée à la base comtrade
 def load_comtrade_config(config_path: Optional[os.PathLike] = None) -> dict:
-    """Load configuration from file.
+    """Load the UN Comtrade configuration (source catalog of BACI).
 
     Args:
-        config_path: Path to config file. If None, uses default location or
-            the COMTRADE_CONFIG_PATH environment variable.
+        config_path: Explicit YAML file (``comtrade`` root key or historical
+            format without it). If None, the ``comtrade`` block of the Kedro
+            parameters of the ``KEDRO_ENV`` environment.
 
     Returns:
         dict: Configuration dictionary.
     """
-    # Détermination du chemin de configuration
     if config_path is None:
-        # Priorité 1 : variable d'environnement (pour flexibilité Kubernetes)
-        config_path = os.environ.get("COMTRADE_CONFIG_PATH", "config/datasets/comtrade.yaml")
-
-    # Chargement du fichier
-    with open(config_path, "r", encoding="utf-8") as file:
-        return yaml.safe_load(file)
+        return load_parameters()["comtrade"]
+    return read_config_file(config_path, "comtrade")
 
 
 # Fonction de chargement de la configuration
 def load_baci_config(config_path: Optional[os.PathLike] = None) -> dict:
-    """Load configuration from file.
+    """Load the BACI configuration.
 
     Args:
-        config_path: Path to config file. If None, uses default location or
-            the BACI_CONFIG_PATH environment variable.
+        config_path: Explicit YAML file (``baci`` root key or historical format
+            without it). If None, the ``baci`` block of the Kedro parameters of
+            the ``KEDRO_ENV`` environment.
 
     Returns:
         dict: Configuration dictionary.
     """
-    # Détermination du chemin de configuration
     if config_path is None:
-        # Priorité 1 : variable d'environnement (pour flexibilité Kubernetes)
-        config_path = os.environ.get("BACI_CONFIG_PATH", "config/baci.yaml")
-
-    # Chargement du fichier
-    with open(config_path, "r", encoding="utf-8") as file:
-        return yaml.safe_load(file)
+        return load_parameters()["baci"]
+    return read_config_file(config_path, "baci")
 
 
 # Fonction de lecture de la table de faits COMTRADE (schéma source du catalogue partagé)
@@ -312,11 +311,12 @@ def resolve_target_start_years(
     ``max(runtime.NOMENCLATURES.HS[vintage], runtime.ANALYSIS_START_YEAR.comtrade)``.
 
     Args:
-        targets: ``CLASSIFICATIONS.TARGETS`` of ``baci.yaml``.
+        targets: ``CLASSIFICATIONS.TARGETS`` of the ``baci`` parameters
+            (null entries, disabled vintages, are skipped).
         runtime_config: Parsed ``runtime`` mapping.
 
     Returns:
-        Mapping ``vintage -> first year``.
+        Mapping ``vintage -> first year`` of the enabled targets.
 
     Raises:
         KeyError: If a null ``START_YEAR`` vintage is absent from
@@ -338,7 +338,7 @@ def resolve_target_start_years(
             if cfg.get("START_YEAR") is not None
             else max(int(in_force[label]), analysis_start)
         )
-        for label, cfg in targets.items()
+        for label, cfg in active_targets(targets).items()
     }
 
 
@@ -419,7 +419,7 @@ def comtrade_schema_from_params(params: Optional[Dict]) -> ComtradeSchema:
     overrides the dataclass default; unknown keys are ignored with a warning.
 
     Args:
-        params: The ``PARAMETERS.SCHEMA`` mapping of ``config/baci.yaml`` (or
+        params: The ``PARAMETERS.SCHEMA`` mapping of the ``baci`` parameters (or
             ``None``, meaning the default COMTRADE/CEPII conventions).
 
     Returns:
@@ -453,7 +453,7 @@ def baci_config_from_params(params: Optional[Dict]) -> BaciConfig:
     :func:`comtrade_schema_from_params`.
 
     Args:
-        params: The ``parameters`` mapping of ``config/baci.yaml`` (or ``None``).
+        params: The ``parameters`` mapping of the ``baci`` parameters (or ``None``).
 
     Returns:
         A ``BaciConfig`` reflecting the configured overrides.
@@ -569,7 +569,7 @@ def baci_registry(
     upstream watermark of its network metrics.
 
     Args:
-        baci_config: Parsed ``config/baci.yaml`` (``BUCKET``, ``STATE``,
+        baci_config: The ``baci`` parameter block (``BUCKET``, ``STATE``,
             ``PATHS.LAST_PROCESSING_PATH`` read as the version-1 fallback).
         loader: JSON loader (a fresh one by default).
         saver: JSON saver (a fresh one by default).
@@ -731,7 +731,7 @@ def baci_is_new_data(
 
     Args:
         scopes: Current scope of each vintage unit.
-        refresh: ``REFRESH`` block of ``config/baci.yaml``
+        refresh: ``REFRESH`` block of the ``baci`` parameters
             (``MIN_INTERVAL_DAYS``, default 7; ``ON_NEW_COMPLETE_YEAR``,
             default true).
         now: Decision instant.
@@ -787,7 +787,7 @@ def plan_baci_vintages(
         force: One-off forcing (step ``baci``; the ``VINTAGES`` filter
             applies, ``PERIODS`` does not since a vintage is always
             re-estimated as a whole).
-        refresh: ``REFRESH`` block of ``config/baci.yaml``.
+        refresh: ``REFRESH`` block of the ``baci`` parameters.
         now: Decision instant.
         adopt_legacy_fingerprints: Deployment migration flag.
 
@@ -933,8 +933,9 @@ def select_targets(
     """Restrict the configured targets to the requested vintages.
 
     Args:
-        targets: ``CLASSIFICATIONS.TARGETS`` of ``baci.yaml``.
-        requested: Requested labels (``None``: every target).
+        targets: ``CLASSIFICATIONS.TARGETS`` of the ``baci`` parameters; a
+            null entry (vintage disabled by an environment) is never selected.
+        requested: Requested labels (``None``: every enabled target).
 
     Returns:
         The selected targets, in configuration order.
@@ -945,7 +946,11 @@ def select_targets(
     Examples:
         >>> select_targets({"HS2022": {}, "HS2017": {}}, ["HS2017"])
         {'HS2017': {}}
+        >>> select_targets({"HS2022": None, "HS2017": {}}, None)
+        {'HS2017': {}}
     """
+    # Cibles désactivées par un environnement (entrée nulle) : jamais traitées
+    targets = active_targets(targets)
     if requested is None:
         return dict(targets)
     unknown = sorted(set(requested) - set(targets))
@@ -982,8 +987,8 @@ def with_year_written(entry: RegistryEntry, year: int) -> RegistryEntry:
 def main(argv: Optional[Sequence[str]] = None) -> None:
     """CLI entry point for the multi-vintage BACI reconstruction script.
 
-    Reads every parameter from the YAML configuration (``BACI_CONFIG_PATH`` or
-    the default ``config/baci.yaml``), including the HS vintages to reconstruct
+    Reads every parameter from the ``baci`` block of the Kedro parameters
+    (environment ``KEDRO_ENV``), including the HS vintages to reconstruct
     (``CLASSIFICATIONS.TARGETS``, optionally restricted by ``--targets`` or
     ``BACI_TARGETS``). Each target is processed independently, pass by pass on
     yearly chunks (``run_baci_passes``): a failure on one vintage is logged and
@@ -1013,11 +1018,12 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
     )
     schema = baci_parameters_config.schema
 
-    # Configuration du suivi d'exécution : sans URI (ou sans MLflow installé,
-    # ou serveur injoignable), get_tracker retourne un tracker inerte et
-    # l'exécution est strictement inchangée
-    mlflow_config = baci_config.get("MLFLOW") or {}
-    log_artifacts = bool(mlflow_config.get("LOG_ARTIFACTS", True))
+    # Configuration du suivi d'exécution : sans URI (MLFLOW_TRACKING_URI non définie,
+    # ou sans MLflow installé, ou serveur injoignable), get_tracker retourne un
+    # tracker inerte et l'exécution est strictement inchangée
+    tracking_config = baci_config.get("TRACKING") or {}
+    log_artifacts = bool(tracking_config.get("LOG_ARTIFACTS", True))
+    experiment = experiment_name("baci")
 
     # Configuration des millésimes cibles (restreints par --targets / BACI_TARGETS)
     # et du cache de correspondance
@@ -1206,8 +1212,8 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
             node = f"process_baci_{label}"
             tracker = CapturingTracker(
                 get_tracker(
-                    tracking_uri=mlflow_config.get("TRACKING_URI"),
-                    experiment=mlflow_config.get("EXPERIMENT", "trade-02-baci"),
+                    tracking_uri=None,
+                    experiment=experiment,
                     run_name=run_name(f"baci-{label}-{datetime.now():%Y%m%d-%H%M}", node),
                     tags={"vintage": label, "is_provisional": str(is_provisional)},
                 )

@@ -1,0 +1,170 @@
+# Indicateurs de vulnérabilité (clé racine unique : le chargeur Kedro fusionne tous
+# les fichiers parameters* dans un seul dictionnaire et refuse les clés dupliquées).
+vulnerabilities:
+  # Configuration du calcul des indicateurs de vulnérabilité commerciale.
+  #
+  # Deux familles d'indicateurs, deux scripts ordonnançables indépendamment, mais
+  # un seul catalogue DuckLake (VULNERABILITIES.DBNAME / CATALOG_ALIAS) :
+  #   - compute_trade_vulnerabilities.py  : indices partenaires (HHI, CDI2, CDI3)
+  #     sur les flux Eurostat Comext          -> bloc VULNERABILITIES + TRACKING + PARAMETERS
+  #   - compute_network_vulnerabilities.py : indices de réseau (centralité,
+  #     clustering, diamètre, SPOF) sur les flux BACI
+  #                                           -> bloc NETWORK_VULNERABILITIES
+
+  # Sens de flux calculés, communs aux deux familles : "import" (exposition du pays à
+  # ses fournisseurs) et/ou "export" (exposition à ses débouchés). Les métriques
+  # partenaires (HHI, CDI2, CDI3) sont calculées dans chaque sens ; les métriques de
+  # réseau aussi (graphe BACI transposé à l'export), via NETWORK_VULNERABILITIES.FLOWS.
+  # Placé à la racine (et non dans PARAMETERS) parce qu'il pilote quelles lignes sont
+  # calculées, pas une valeur de VulnerabilityConfig ; l'ancre &flows le partage avec
+  # le bloc réseau. Les codes écrits dans la colonne flow viennent des champs
+  # import_flow / export_flow des PARAMETERS de chaque bloc (défauts 1 et 2), qui
+  # doivent rester identiques entre les deux blocs : la synthèse joint les deux
+  # familles par égalité du flux. La synthèse (synthesis.SYNTHESIS.FLOWS) reprend
+  # cette valeur par interpolation.
+  FLOWS: &flows ["import", "export"]
+
+  # Millésimes SH historiques : les flux SH6 des années postérieures à un millésime
+  # sont convertis vers lui (tables de passage UNSD de BACI, cache
+  # baci.CLASSIFICATIONS.CONCORDANCE_PATH) et les métriques y sont
+  # recalculées (lignes in_force = false), pour lire un produit sur une longue série
+  # dans une nomenclature fixe. Les lignes en vigueur (codes tels que déclarés) sont
+  # toujours calculées. "all" → tous les millésimes de runtime.NOMENCLATURES.HS sauf
+  # le plus récent (jamais historique) ; liste → sous-ensemble ; [] → aucun.
+  VINTAGES: "all"
+  # Codes SH6 Comext absents d'une table de passage : "drop" (écartés, sans effet sur
+  # les autres codes), "keep" (non convertis), "raise" (échec de la passe). Entre dans
+  # l'empreinte des lignes historiques
+  VINTAGES_ON_UNMAPPED: "drop"
+
+  VULNERABILITIES:
+    # Un catalogue DuckLake n'a qu'un DATA_PATH : les quatre blocs (partenaires, réseau, synthèse,
+    # cohérence) doivent donc pointer vers le même préfixe ; les schémas les distinguent.
+    DBNAME: "vulnerabilities"
+    CATALOG_ALIAS: "vulnerabilities"
+
+    DS-045409:
+      BUCKET: "qbollietdgddi"
+      RESULT_SCHEMA: "indicators"
+      # Étiquette is_provisional des lignes écrites : vrai quand le profil restreint le
+      # périmètre de produits (résultats de démonstration, distincts de la production)
+      IS_PROVISIONAL: false
+      PATHS:
+        DATA_PATH: "trade/datasets/vulnerabilities/"
+        # Registre v1 (fichier unique, sans empreintes) : n'est plus écrit, seulement
+        # lu pour la migration vers les fragments de STATE
+        LAST_COMPUTATION_PATH: "trade/vulnerabilities/comext/last_computation.json"
+      # Registre de fraîcheur fragmenté : un fichier par classification x reporter,
+      # une entrée par produit (dernier calcul, watermark amont, empreinte de chaque
+      # métrique, raison du calcul)
+      STATE:
+        PATH_TEMPLATE: "trade/state/vulnerabilities/partners/{classification}/{reporter}.json"
+        # Migration : à true pour UN run au déploiement, les entrées du registre v1
+        # adoptent les empreintes courantes sans recalcul et sont réécrites en
+        # fragments ; à false sinon (empreinte manquante = jamais calculé avec la
+        # méthodologie courante). Surchargeable par ADOPT_LEGACY_FINGERPRINTS
+        ADOPT_LEGACY_FINGERPRINTS: false
+
+  # Suivi d'exécution MLflow (l'URI du serveur vient de la variable
+  # MLFLOW_TRACKING_URI, le nom d'expérience de experiments.yml). Dépendance
+  # optionnelle : installer l'extra « tracking » (uv sync --extra tracking).
+  TRACKING:
+    # Publication des artefacts de synthèse (cellules les plus vulnérables,
+    # comptes d'alertes, agrégats manquants, déciles)
+    LOG_ARTIFACTS: true
+    # Relecture du résultat de l'exécution précédente pour mesurer la dérive
+    DRIFT: true
+
+  # Paramètres méthodologiques : toute clé portant le nom d'un champ de
+  # VulnerabilityConfig surcharge le défaut correspondant (listes YAML → tuples) ;
+  # les clés inconnues sont ignorées avec un avertissement.
+  PARAMETERS:
+    # Backend de calcul narwhals ("pandas", ou "polars"/"pyarrow" si installés)
+    BACKEND: "pandas"
+    # Seuils d'interprétation des scores
+    high_score_threshold: 0.5
+    unit_score_threshold: 1.0
+    # Seuils de contrôle de cohérence des agrégats
+    shares_lower_bound: 0.9
+    # Comparaison inter-exécutions
+    drift_relative_change: 0.1
+    psi_n_bins: 10
+    # Seuils d'alerte par métrique, matérialisés en colonnes booléennes
+    # « {métrique}_ALERT » à côté du score continu dans la table résultat.
+    # Tous issus de la littérature
+    metric_alert_thresholds:
+      - ["HHI", 0.5]   # littérature (seuil de forte concentration)
+      - ["CDI2", 0.5]  # littérature (seuil de forte concentration)
+      - ["CDI3", 1.0]  # littérature (parité extra-UE / flux opposé)
+    artifact_top_n: 50
+
+  # ──────────────────────────────────────────────────────────────────────
+  # Indicateurs de réseau, calculés sur les flux réconciliés BACI
+  # ──────────────────────────────────────────────────────────────────────
+  # Le catalogue est celui du bloc VULNERABILITIES ci-dessus ; seul le schéma
+  # résultat change (clés primaires supplémentaires : le millésime de nomenclature
+  # et le flux, une ligne par sens).
+  # Les schémas sources, eux, sont ceux de baci.CLASSIFICATIONS.TARGETS
+  NETWORK_VULNERABILITIES:
+    # Sens calculés : même valeur que FLOWS (ancre). À l'export, les métriques
+    # orientées (CENTRALITY_RISK, WORLD_HHI, SPOF, SPOF_DECILE) décrivent la
+    # concentration de la demande mondiale (graphe transposé) ; CLUSTERING_W et
+    # DIAMETER, invariants, sont calculés une fois et recopiés sur les deux sens
+    FLOWS: *flows
+    BUCKET: "qbollietdgddi"
+    RESULT_SCHEMA: "network_indicators"
+    PATHS:
+      DATA_PATH: "trade/datasets/vulnerabilities/"
+      # Registre v1 (fichier unique, sans empreintes) : n'est plus écrit, seulement
+      # lu pour la migration vers les fragments de STATE
+      LAST_COMPUTATION_PATH: "trade/vulnerabilities/baci/last_computation.json"
+    # Registre de fraîcheur fragmenté : un fichier par millésime, confronté au
+    # dernier calcul BACI du millésime (registre baci.STATE)
+    STATE:
+      PATH_TEMPLATE: "trade/state/vulnerabilities/network/{vintage}.json"
+      # Migration des entrées v1 (cf. bloc partenaires)
+      ADOPT_LEGACY_FINGERPRINTS: false
+    # Nombre de processus calculant les millésimes en parallèle (un millésime par
+    # tâche ; le processus parent reste l'unique écrivain). null => variable
+    # d'environnement NUM_CPU (CPU du pod), à défaut nombre de CPU de la machine
+    N_JOBS: null
+    # Suivi d'exécution MLflow, un run par millésime recalculé.
+    TRACKING:
+      # Publication des artefacts de synthèse (produits les plus exposés, comptes
+      # d'alertes, cellules non scorées, déciles)
+      LOG_ARTIFACTS: true
+      # Relecture du résultat précédent du millésime pour mesurer la dérive
+      DRIFT: true
+
+    # Paramètres méthodologiques : toute clé portant le nom d'un champ de
+    # NetworkVulnerabilityConfig surcharge le défaut correspondant (listes YAML →
+    # tuples) ; les clés inconnues sont ignorées avec un avertissement.
+    PARAMETERS:
+      # Backend de calcul narwhals ("pandas", ou "polars"/"pyarrow" si installés)
+      BACKEND: "pandas"
+      # Seuils d'interprétation des scores
+      centrality_risk_threshold: 2.5
+      high_score_threshold: 0.5
+      unit_score_threshold: 1.0
+      # Nombre minimal de pays sous lequel clustering et diamètre ne sont pas
+      # calculés (un graphe de moins de trois nœuds ne ferme aucun triangle)
+      min_graph_nodes: 3
+      # Risque de point de défaillance unique : les produits sont rangés au sein
+      # d'un millésime x année, jamais entre millésimes, puis groupés en déciles
+      spof_rank_keys: ["classification", "year"]
+      spof_n_quantiles: 10
+      # Comparaison inter-exécutions
+      drift_relative_change: 0.1
+      psi_n_bins: 10
+      # Seuils d'alerte par métrique, matérialisés en colonnes booléennes
+      # « {métrique}_ALERT » à côté du score continu dans la table résultat.
+      metric_alert_thresholds:
+        - ["CENTRALITY_RISK", 2.5]  # littérature (1er exportateur ~2/3 du monde ; à l'export, 1er importateur, par symétrie)
+        - ["CLUSTERING_W", 0.5]     # hors littérature (convention)
+        - ["DIAMETER", 4.0]         # hors littérature (convention)
+        - ["WORLD_HHI", 0.5]        # littérature (seuil de forte concentration)
+        - ["SPOF", 0.9]            # hors littérature (convention)
+        - ["SPOF_DECILE", 9.0]     # hors littérature (dernier décile sur 10)
+      # Métrique servant de critère de tri du palmarès des produits exposés
+      ranking_metric: "SPOF"
+      artifact_top_n: 50

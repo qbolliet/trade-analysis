@@ -8,7 +8,15 @@ dependencies = [
     "statflows[s3,ducklake]",
     "boto3>=1.43.34",
     "duckdb>=1.4",
+    "jinja2>=3.1",
     "joblib>=1.4",
+    # Projet Kedro (orchestration), suivi MLflow et rendu Argo des pipelines
+    "kedro>=1.6,<2",
+    "kedro-mlflow==2.0.3",
+    # Importé par kedro-mlflow 2.0.3 (PickleDataset de ses commandes CLI) sans être
+    # déclaré dans ses dépendances : sans lui, `kedro mlflow …` ne se charge pas
+    "kedro-datasets>=8",
+    "argo-kedro==0.1.41",
     "linearmodels>=7.0",
     "narwhals>=2.22.1",
     "openpyxl>=3.1.5",
@@ -26,7 +34,8 @@ dependencies = [
 
 [project.optional-dependencies]
 tracking = [
-    "mlflow>=2.16",
+    # Borne alignée sur kedro-mlflow 2.x
+    "mlflow>=3,<4",
     # Métriques système (CPU, mémoire, disque, réseau) de l'onglet « System metrics »
     "psutil>=5.9",
 ]
@@ -41,6 +50,15 @@ reports = [
 optimal-transport = [
     "jax>=0.4.30",
     "ott-jax>=0.4.6",
+]
+# Visualisation interactive du pipeline (hors image de production)
+viz = [
+    "kedro-viz==12.4.0",
+]
+# Site de documentation statique (mkdocs-material + page kedro-viz)
+docs = [
+    "mkdocs-material>=9.5",
+    "kedro-viz==12.4.0",
 ]
 
 [project.scripts]
@@ -64,9 +82,17 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
-# Paquets construits : la méthodologie, le futur projet Kedro (modules purs en
-# phase 0, PD-01) et les scripts transitoires, cibles des entry points ci-dessus
+# Paquets construits : la méthodologie, le projet Kedro et les scripts transitoires,
+# cibles des entry points ci-dessus (« scripts » retiré à leur suppression)
 packages = ["macroforecast", "kedro_pipeline", "scripts"]
+
+[tool.kedro]
+# Projet Kedro à la racine du dépôt : paquet `kedro_pipeline` à côté de `macroforecast`
+# (source_dir = "." évite un layout src/ qui casserait imports et entry points)
+package_name = "kedro_pipeline"
+project_name = "trade-analysis"
+kedro_init_version = "1.6.0"
+source_dir = "."
 
 [dependency-groups]
 dev = [

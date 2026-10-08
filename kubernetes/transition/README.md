@@ -36,16 +36,17 @@ download-comtrade ──► baci ──► network ─────┘           
 | Nom | Défaut | Rôle |
 |---|---|---|
 | `image-tag` | `sha-543f256` | tag de `ghcr.io/qbolliet/trade-analysis` (`sha-<court>` ou nom de branche) |
-| `profile` | `demo` | `config/profiles/<profil>/` ; `base` = chemins de configuration historiques |
+| `profile` | `demo` | environnement Kedro de la configuration (`KEDRO_ENV`) : `demo` ou `base` |
 | `publish-serving` | `true` | active la tâche `serving` |
-| `max-runtime-hours` | `10` | **réservé, sans effet** : le budget des téléchargements est `MAX_RUNTIME` dans le YAML du profil |
+| `max-runtime-hours` | `10` | **réservé, sans effet** : le budget des téléchargements est `MAX_RUNTIME` dans les paramètres `comtrade` / `eurostat` |
 | `comtrade-mode` | `download` | `download` : API Comtrade ; `synthetic` : monde fictif (cf. plus bas) |
 | `eurostat-mode` | `download` | `download` : API Comext ; `complete` : API puis complément fictif des requêtes manquantes ; `synthetic` : fictif seul |
 | `eurostat-budget-minutes` | *(vide)* | durée max du téléchargement Comext RÉEL avant arrêt propre (vide = `MAX_RUNTIME` du profil) |
 
-Profil : un `sh -c` d'entrée exporte `COMTRADE|EUROSTAT|BACI|VULNERABILITIES|SYNTHESIS|RUNTIME|SYNTHETIC|SERVING_CONFIG_PATH`
-vers `config/profiles/<profil>/…` ; pour `base` il n'exporte rien et les scripts retombent sur
-leurs défauts (`config/datasets/*.yaml`, `config/baci.yaml`…).
+Profil : la variable `KEDRO_ENV` (valeur du paramètre `profile`) choisit l'environnement de
+configuration lu par tous les scripts : paramètres de `config/base/parameters_*.yml`, surchargés
+par ceux de `config/demo/` pour `demo`. Les données fictives lisent toujours
+`config/profiles/demo/synthetic.yaml` (chemin par défaut de leurs scripts).
 
 ### Secrets attendus (PD-18)
 

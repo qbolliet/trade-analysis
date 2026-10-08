@@ -1,0 +1,52 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# ENVIRONNEMENT DEMO — PÉRIMÈTRE PROVISOIRE : sources et résultats isolés (schémas
+# demo_*, chemins trade/demo/…). Ce fichier ne contient que les SURCHARGES du bloc
+# synthesis de base (fusion récursive des mappings) ; les LISTES sont remplacées en
+# entier, d'où SOURCES redonné complètement. Sélection par KEDRO_ENV=demo ou
+# `--env demo`.
+# ─────────────────────────────────────────────────────────────────────────────
+synthesis:
+  SYNTHESIS:
+    RESULT_SCHEMA: "demo_synthesis"
+    PATHS:
+      DATA_PATH: "trade/demo/datasets/vulnerabilities/"
+    STATE:
+      PATH_TEMPLATE: "trade/demo/state/synthesis/{TIME_PERIOD}.json"
+    # Sources DuckLake de l'environnement (liste remplacée en entier)
+    SOURCES:
+      # Grille : famille partenaires (indices Eurostat Comext)
+      - SCHEMA: "demo_indicators"                  # schéma résultat de compute_trade_vulnerabilities.py
+        ALIAS: "p"                                 # alias de la grille dans la requête
+        COLUMNS: ["HHI", "CDI2", "CDI3"]           # métriques partenaires alimentant les méthodes
+      # Source jointe : famille réseau (indices BACI)
+      - SCHEMA: "demo_network_indicators"          # schéma résultat de compute_network_vulnerabilities.py
+        ALIAS: "n"                                 # alias de la source jointe
+        COLUMNS: ["WORLD_HHI", "CENTRALITY_RISK", "CLUSTERING_W"]  # métriques réseau retenues
+        JOIN:
+          # Conditions de correspondance grille -> réseau (code SH6 -> code SH6 du
+          # même millésime, période -> année). product_code (macro de session générée
+          # depuis runtime.NOMENCLATURES.HS) restitue le zéro initial des codes stockés
+          # en entiers ; seuls les codes d'au moins six chiffres (SH6, NC8) ont un
+          # code réseau.
+          "ON":
+            - 'length(product_code(p."product")) >= 6'
+            - 'substr(product_code(p."product"), 1, 6) = lpad(CAST(n."product" AS VARCHAR), 6, ''0'')'
+            - 'CAST(substr(CAST(p."TIME_PERIOD" AS VARCHAR), 1, 4) AS INTEGER) = n."year"'
+            # Millésime de la ligne partenaire : celui en vigueur à sa période pour une
+            # ligne en vigueur, le millésime cible pour une ligne historique. Chaque
+            # ligne est jointe au BACI de son propre millésime (une ligne 2019 en
+            # vigueur au BACI HS2017, jamais à un millésime postérieur)
+            - 'n."classification" = p."hs_vintage"'
+            # Même sens : une ligne export reçoit les métriques du graphe transposé
+            # (concentration de la demande mondiale), une ligne import celles de l'offre
+            - 'n."flow" = p."flow"'
+
+    PARAMETERS:
+      # Groupes plus petits sur le périmètre réduit
+      min_group_size: 10
+  COHERENCE:
+    RESULT_SCHEMA: "demo_synthesis_diagnostics"
+    PATHS:
+      DATA_PATH: "trade/demo/datasets/vulnerabilities/"
+    STATE:
+      PATH_TEMPLATE: "trade/demo/state/coherence/{TIME_PERIOD}.json"

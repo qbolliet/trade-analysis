@@ -9,9 +9,9 @@ avant le suivant, maille utile aux indicateurs partenaires (couple reporter x
 produit). ``download_updates`` trie de façon stable les requêtes jamais
 téléchargées en tête : l'ordre de la liste fait donc foi pour le rattrapage.
 
-Fichiers de configuration lus : ``EUROSTAT_CONFIG_PATH`` (défaut
-``config/datasets/eurostat.yaml``) et ``RUNTIME_CONFIG_PATH`` (défaut
-``config/runtime.yaml``). Peut être ordonnancé (Argo, cron) ou intégré
+Configuration lue : blocs ``eurostat`` et ``runtime`` des paramètres Kedro
+(``config/<env>/parameters_*.yml``), environnement choisi par ``KEDRO_ENV``
+(``local`` par défaut, ``demo`` pour le périmètre de démonstration). Peut être ordonnancé (Argo, cron) ou intégré
 directement comme nœud Kedro via les fonctions exportées.
 """
 # Importation des modules
@@ -21,7 +21,6 @@ from datetime import datetime, timedelta
 import itertools
 import logging
 from typing import Any, Dict, List, Mapping, Optional, Sequence, TypeVar, Union
-import yaml
 
 # Modules de manipulation de données
 import pandas as pd
@@ -42,6 +41,7 @@ from statflows.core.registry import DEFAULT_SHARD
 
 # Module de suivi d'exécution
 from macroforecast.tracking import CapturingTracker, get_tracker, rekey_metrics
+from kedro_pipeline.config import experiment_name, load_parameters, read_config_file
 
 # Fabrique de connecteur DuckLake (seul point de lecture des identifiants)
 from kedro_pipeline.io.download_report import check_download_report
@@ -74,43 +74,36 @@ T = TypeVar("T")
 
 # Fonction de chargement de la configuration
 def load_config(config_path: Optional[os.PathLike] = None) -> dict:
-    """Load configuration from file.
+    """Load the Eurostat Comext download configuration.
 
     Args:
-        config_path: Path to config file. If None, uses default location
-                     or CONFIG_PATH environment variable.
+        config_path: Explicit YAML file (``eurostat`` root key or historical
+            format without it). If None, the ``eurostat`` block of the Kedro
+            parameters of the ``KEDRO_ENV`` environment.
 
     Returns:
         dict: Configuration dictionary
     """
-    # Détermination du chemin de configuration
     if config_path is None:
-        # Priorité 1 : variable d'environnement (pour flexibilité Kubernetes)
-        config_path = os.environ.get('EUROSTAT_CONFIG_PATH', 'config/datasets/eurostat.yaml')
-
-    # Chargement du fichier
-    with open(config_path, "r", encoding="utf-8") as file:
-        return yaml.safe_load(file)
+        return load_parameters()["eurostat"]
+    return read_config_file(config_path, "eurostat")
 
 
 # Fonction de chargement de la configuration d'exécution partagée
 def load_runtime_config(config_path: Optional[os.PathLike] = None) -> dict:
-    """Load the shared runtime configuration (``runtime`` root key, PS-04.1).
+    """Load the shared runtime configuration (``runtime`` block).
 
     Args:
-        config_path: Path to config file. If None, uses the
-            RUNTIME_CONFIG_PATH environment variable or ``config/runtime.yaml``.
+        config_path: Explicit YAML file with a ``runtime`` root key. If None,
+            the ``runtime`` block of the Kedro parameters of the ``KEDRO_ENV``
+            environment.
 
     Returns:
         dict: The mapping under the ``runtime`` root key.
     """
-    # Détermination du chemin de configuration
     if config_path is None:
-        config_path = os.environ.get("RUNTIME_CONFIG_PATH", "config/runtime.yaml")
-
-    # Chargement du fichier
-    with open(config_path, "r", encoding="utf-8") as file:
-        return yaml.safe_load(file)["runtime"]
+        return load_parameters()["runtime"]
+    return read_config_file(config_path, "runtime")
 
 
 # Fonction récupération des listes de codes associées à une dimension d'un dataflow
@@ -314,7 +307,7 @@ def build_split_queries(
     return queries
 
 
-# Nœud du rapport de run (clé de config/tracking.yaml)
+# Nœud du rapport de run (clé de tracking.CHECKS)
 NODE = "download_eurostat"
 
 
@@ -358,15 +351,14 @@ def main() -> None:
     DATAFLOW = config["DATAFLOW"]
     downloads_config = config["DOWNLOADS"][DATAFLOW]
 
-    # Construction du suivi d'exécution : sans URI (ou sans MLflow installé,
-    # ou serveur injoignable), get_tracker retourne un tracker inerte et
-    # l'exécution est strictement inchangée. Le run est ouvert dès le début pour
-    # que tout échec, y compris de planification, porte son rapport.
-    mlflow_config = config.get("MLFLOW") or {}
+    # Construction du suivi d'exécution : sans URI (MLFLOW_TRACKING_URI non définie,
+    # ou sans MLflow installé, ou serveur injoignable), get_tracker retourne un
+    # tracker inerte et l'exécution est strictement inchangée. Le run est ouvert dès
+    # le début pour que tout échec, y compris de planification, porte son rapport.
     tracker = CapturingTracker(
         get_tracker(
-            tracking_uri=mlflow_config.get("TRACKING_URI"),
-            experiment=mlflow_config.get("EXPERIMENT", "eurostat-download"),
+            tracking_uri=None,
+            experiment=experiment_name("downloads"),
             run_name=run_name(f"{DATAFLOW}-{datetime.now():%Y%m%d-%H%M}", NODE),
         )
     )
@@ -395,8 +387,8 @@ def _download(config: dict, runtime_config: dict, tracker: CapturingTracker, sco
     DATAFLOW = config["DATAFLOW"]
     parameters = config["parameters"][DATAFLOW]
     downloads_config = config["DOWNLOADS"][DATAFLOW]
-    mlflow_config = config.get("MLFLOW") or {}
-    log_artifacts = bool(mlflow_config.get("LOG_ARTIFACTS", True))
+    tracking_config = config.get("TRACKING") or {}
+    log_artifacts = bool(tracking_config.get("LOG_ARTIFACTS", True))
 
     # Initialisation du client eurostat
     scope.step = "planification des requêtes"

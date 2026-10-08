@@ -1,6 +1,14 @@
-"""Pure helpers on the nomenclature vintages.
+"""Project configuration access and pure helpers on the nomenclature vintages.
 
-The single source of truth is ``runtime.NOMENCLATURES.HS``: a mapping from HS
+Configuration access: :func:`load_parameters` reproduces the Kedro
+configuration merge (``OmegaConfigLoader`` built with the very arguments of
+``kedro_pipeline.settings``) for the code that runs outside a Kedro session —
+the transitional scripts. The environment is ``KEDRO_ENV`` (``local`` by
+default), as for ``kedro run``. :func:`experiment_name` gives the MLflow
+experiment of a block of steps and :func:`active_targets` the enabled BACI
+targets.
+
+The single source of truth of the vintages is ``runtime.NOMENCLATURES.HS``: a mapping from HS
 vintage label to its entry-into-force year. Every function here is pure (no
 I/O, no environment). The partner step stamps ``classification`` /
 ``hs_vintage`` / ``in_force`` on its rows with them, the historical rows being
@@ -11,7 +19,19 @@ inside DuckDB (serving layer, synthesis join, table migration).
 """
 # Importation des modules
 # Modules de base
-from typing import Any, List, Mapping, Tuple
+import copy
+import functools
+import os
+from pathlib import Path
+from typing import Any, Dict, List, Mapping, Optional, Tuple
+
+# Variable d'environnement de sélection de l'environnement Kedro (comme `kedro run`)
+KEDRO_ENV_VARIABLE = "KEDRO_ENV"
+# Variable d'environnement prioritaire sur le nom d'expérience MLflow configuré
+EXPERIMENT_NAME_VARIABLE = "MLFLOW_EXPERIMENT_NAME"
+# Racine du dépôt : la configuration est cherchée à côté du paquet, puis dans le
+# répertoire courant (paquet installé hors du dépôt)
+_REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
 # Fonction de tri des millésimes par année d'entrée en vigueur
@@ -296,3 +316,182 @@ def nomenclature_macros_sql(nomenclatures: Mapping[str, int]) -> List[str]:
         "WHEN starts_with(CAST(c AS VARCHAR), 'CN') THEN vintage_in_force(y) "
         "ELSE CAST(c AS VARCHAR) END",
     ]
+
+
+# Fonction de résolution de l'environnement Kedro
+def resolve_env(env: Optional[str] = None) -> str:
+    """Return the Kedro environment to load.
+
+    Args:
+        env: Explicit environment; when ``None``, ``KEDRO_ENV`` is used, and
+            ``local`` (the default run environment of the project) when unset.
+
+    Returns:
+        The environment name.
+
+    Examples:
+        >>> resolve_env("demo")
+        'demo'
+    """
+    if env:
+        return env
+    from kedro_pipeline.settings import CONFIG_LOADER_ARGS
+
+    return os.environ.get(KEDRO_ENV_VARIABLE) or str(CONFIG_LOADER_ARGS["default_run_env"])
+
+
+# Fonction de localisation de la source de configuration
+def conf_source_path() -> Path:
+    """Return the configuration directory of the project (``CONF_SOURCE``).
+
+    Returns:
+        ``<repository>/config`` when it exists next to the package, else the
+        ``CONF_SOURCE`` directory of the working directory.
+
+    Examples:
+        >>> conf_source_path().name
+        'config'
+    """
+    from kedro_pipeline.settings import CONF_SOURCE
+
+    candidate = _REPO_ROOT / CONF_SOURCE
+    return candidate if candidate.is_dir() else Path.cwd() / CONF_SOURCE
+
+
+# Chargement mis en cache d'une section de configuration
+@functools.lru_cache(maxsize=None)
+def _cached_section(conf_source: str, env: str, key: str) -> Dict[str, Any]:
+    """Load one configuration section (no copy: callers copy the result)."""
+    from kedro.config import OmegaConfigLoader
+
+    from kedro_pipeline.settings import CONFIG_LOADER_ARGS
+
+    # Mêmes arguments que la session Kedro (settings.py, source unique)
+    loader = OmegaConfigLoader(conf_source=conf_source, env=env, **CONFIG_LOADER_ARGS)
+    return dict(loader[key])
+
+
+# Fonction de chargement d'une section de configuration
+def load_config_section(key: str, env: Optional[str] = None) -> Dict[str, Any]:
+    """Load a configuration section merged as Kedro does (``base`` + environment).
+
+    Args:
+        key: Section key of the configuration loader (``"parameters"``,
+            ``"experiments"``, ``"catalog"``…).
+        env: Kedro environment (see :func:`resolve_env`).
+
+    Returns:
+        A deep copy of the merged section, interpolations resolved.
+
+    Raises:
+        KeyError: If ``key`` is not a configuration pattern of the project.
+        kedro.config.MissingConfigException: If no file matches the section.
+
+    Examples:
+        >>> load_config_section("experiments", "base")["EXPERIMENTS"]["baci"]
+        'trade-02-baci'
+    """
+    section = _cached_section(str(conf_source_path()), resolve_env(env), key)
+    # Copie profonde : un appelant qui modifie le dictionnaire ne pollue pas le cache
+    return copy.deepcopy(section)
+
+
+# Fonction de chargement des paramètres
+def load_parameters(env: Optional[str] = None) -> Dict[str, Any]:
+    """Load the project parameters as a Kedro session would.
+
+    Every ``config/<env>/parameters*.yml`` file holds one root key (``baci``,
+    ``runtime``, ``serving``…); the environment files are merged "softly" into
+    ``base`` (recursive merge of mappings, lists replaced).
+
+    Args:
+        env: Kedro environment; ``KEDRO_ENV``, else ``local``, when ``None``.
+
+    Returns:
+        The merged parameters, keyed by root (e.g. ``load_parameters()["baci"]``).
+
+    Examples:
+        >>> load_parameters("base")["runtime"]["ANALYSIS_START_YEAR"]["comtrade"]
+        1994
+        >>> load_parameters("demo")["serving"]["SCHEMA"]
+        'demo_dashboard'
+    """
+    return load_config_section("parameters", env)
+
+
+# Fonction de lecture du nom d'expérience MLflow d'un bloc d'étapes
+def experiment_name(block: str, env: Optional[str] = None) -> str:
+    """Return the MLflow experiment of a block of steps.
+
+    Args:
+        block: Block name, a key of ``EXPERIMENTS`` in ``experiments.yml``
+            (``"downloads"``, ``"baci"``, ``"vulnerabilities"``, ``"serving"``).
+        env: Kedro environment (see :func:`resolve_env`).
+
+    Returns:
+        ``MLFLOW_EXPERIMENT_NAME`` when set and not empty, else the configured
+        name of the block.
+
+    Raises:
+        KeyError: If the block has no configured experiment.
+
+    Examples:
+        >>> experiment_name("serving", "demo")  # doctest: +SKIP
+        'demo-trade-04-serving'
+    """
+    override = os.environ.get(EXPERIMENT_NAME_VARIABLE)
+    if override:
+        return override
+    experiments = load_config_section("experiments", env).get("EXPERIMENTS") or {}
+    if block not in experiments:
+        raise KeyError(f"No MLflow experiment configured for block '{block}' (experiments.yml)")
+    return str(experiments[block])
+
+
+# Fonction de sélection des cibles BACI actives
+def active_targets(targets: Optional[Mapping[str, Any]]) -> Dict[str, Any]:
+    """Return the enabled BACI targets, in configuration order.
+
+    An environment cannot remove a key of ``base`` (the parameter merge is
+    recursive): it disables a vintage with a null entry, dropped here.
+
+    Args:
+        targets: ``baci.CLASSIFICATIONS.TARGETS`` (vintage -> target or ``None``).
+
+    Returns:
+        The non-null targets.
+
+    Examples:
+        >>> active_targets({"HS2022": None, "HS2017": {"RESULT_SCHEMA": "b"}})
+        {'HS2017': {'RESULT_SCHEMA': 'b'}}
+    """
+    return {label: target for label, target in (targets or {}).items() if target is not None}
+
+
+# Fonction de lecture d'un fichier de configuration explicite
+def read_config_file(path: Any, root: Optional[str] = None) -> Dict[str, Any]:
+    """Read one YAML configuration file given explicitly (tests, one-off runs).
+
+    Args:
+        path: Path of the YAML file.
+        root: Root key of the block; when the document holds this single key
+            (format of ``config/<env>/parameters_*.yml``) the block is
+            returned, otherwise the whole document (historical format).
+
+    Returns:
+        The block, or the whole document.
+
+    Raises:
+        OSError: If the file cannot be read.
+
+    Examples:
+        >>> read_config_file("config/base/parameters_baci.yml", "baci")["BUCKET"]  # doctest: +SKIP
+        'qbollietdgddi'
+    """
+    import yaml
+
+    with open(path, "r", encoding="utf-8") as file:
+        document = yaml.safe_load(file) or {}
+    if root is not None and isinstance(document, Mapping) and list(document) == [root]:
+        return dict(document[root])
+    return dict(document)

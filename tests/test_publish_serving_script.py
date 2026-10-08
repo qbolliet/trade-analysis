@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from conftest import REPO_ROOT, build_serving_world
+from conftest import build_serving_world
 
 
 @pytest.fixture
@@ -16,12 +16,8 @@ def script_env(monkeypatch: pytest.MonkeyPatch):
     for name, value in {
         "PGHOST": "h", "PGPORT": "5432", "PGUSER": "u", "PGPASSWORD": "p", "PGDATABASE": "d",
         "AWS_S3_ENDPOINT": "e", "AWS_ACCESS_KEY_ID": "k", "AWS_SECRET_ACCESS_KEY": "s",
-        "SERVING_CONFIG_PATH": str(REPO_ROOT / "config" / "serving.yaml"),
-        "EUROSTAT_CONFIG_PATH": str(REPO_ROOT / "config" / "datasets" / "eurostat.yaml"),
-        "COMTRADE_CONFIG_PATH": str(REPO_ROOT / "config" / "datasets" / "comtrade.yaml"),
-        "VULNERABILITIES_CONFIG_PATH": str(REPO_ROOT / "config" / "vulnerabilities.yaml"),
-        "SYNTHESIS_CONFIG_PATH": str(REPO_ROOT / "config" / "synthesis.yaml"),
-        "RUNTIME_CONFIG_PATH": str(REPO_ROOT / "config" / "runtime.yaml"),
+        # Configuration de production (environnement base des paramètres Kedro)
+        "KEDRO_ENV": "base",
     }.items():
         monkeypatch.setenv(name, value)
     monkeypatch.delenv("MLFLOW_TRACKING_URI", raising=False)

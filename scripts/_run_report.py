@@ -1,6 +1,6 @@
 """Glue between the pipeline scripts and the run report (ARCH PS-31, K-03d).
 
-Transitional module: it holds what only scripts do (read ``TRACKING_CONFIG_PATH`` and
+Transitional module: it holds what only scripts do (read the ``tracking`` parameters and
 the environment, measure the run, wrap the body of ``main()``). The pure logic lives in
 ``macroforecast.tracking`` and the publication in ``kedro_pipeline.io.tracking``, both
 reused as is by the Kedro nodes (K-13), which will make this module obsolete (K-18).
@@ -24,8 +24,8 @@ import time
 from typing import Any, Callable, Dict, Iterator, List, Mapping, Optional, Sequence, Union
 # Modules de manipulation des données
 import pandas as pd
-import yaml
 # Modules du package
+from kedro_pipeline.config import load_parameters, read_config_file
 from kedro_pipeline.io.download_report import (
     DownloadFailureError,
     check_download_report,
@@ -46,8 +46,6 @@ from macroforecast.tracking.report import (
 # Initialisation du logger
 logger = logging.getLogger(__name__)
 
-# Chemin par défaut de la configuration du rapport de run
-DEFAULT_TRACKING_CONFIG_PATH = "config/tracking.yaml"
 # Libellé affiché pour les liens de la configuration
 _LINK_LABELS = {"ARGO_WORKFLOW": "DAG Argo"}
 
@@ -57,21 +55,24 @@ def load_tracking_config(config_path: Optional[str] = None) -> Dict[str, Any]:
     """Load the ``tracking`` block of the run-report configuration.
 
     Args:
-        config_path: Path of the YAML file. Defaults to the
-            ``TRACKING_CONFIG_PATH`` environment variable, then to
-            ``config/tracking.yaml``.
+        config_path: Explicit YAML file with a ``tracking`` root key. Defaults to
+            the ``tracking`` block of the Kedro parameters of the ``KEDRO_ENV``
+            environment.
 
     Returns:
-        The ``tracking`` block; empty (with a WARNING) when the file is missing,
+        The ``tracking`` block; empty (with a WARNING) when it cannot be read,
         so a missing report configuration never stops a computation.
     """
-    path = config_path or os.environ.get("TRACKING_CONFIG_PATH", DEFAULT_TRACKING_CONFIG_PATH)
     try:
-        with open(path, "r", encoding="utf-8") as file:
-            return dict((yaml.safe_load(file) or {}).get("tracking") or {})
-    except OSError as exc:
-        # Logging
-        logger.warning("Run report configuration %s unreadable (%s): default report.", path, exc)
+        if config_path is None:
+            return dict(load_parameters().get("tracking") or {})
+        return dict(read_config_file(config_path, "tracking"))
+    except Exception as exc:
+        # Configuration illisible (fichier absent, environnement inconnu) : rapport par défaut
+        logger.warning(
+            "Run report configuration %s unreadable (%s): default report.",
+            config_path or "tracking", exc,
+        )
         return {}
 
 
@@ -136,7 +137,7 @@ class RunScope:
     Args:
         node: Node (script) name, e.g. ``"process_baci_HS2017"``; it selects the
             configured checks (:func:`~macroforecast.tracking.report.checks_for_node`).
-        params: The ``tracking`` block; read from ``TRACKING_CONFIG_PATH`` when ``None``.
+        params: The ``tracking`` block; read from the Kedro parameters when ``None``.
         step: Last step reached; scripts update it as they progress so a failure
             report can name it.
 
@@ -175,7 +176,8 @@ class RunScope:
         }
         context: Dict[str, Any] = {
             "workflow_id": workflow_id,
-            "env": os.environ.get("PROFILE"),
+            # Profil du workflow de transition, à défaut l'environnement Kedro
+            "env": os.environ.get("PROFILE") or os.environ.get("KEDRO_ENV"),
             "image": os.environ.get("IMAGE_TAG"),
             "duration_s": time.monotonic() - self.started,
             "peak_memory_mb": peak_memory_mb(),

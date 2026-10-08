@@ -42,6 +42,7 @@
 | 2026-10-06 (K-06b) | **Millésimes de nomenclature implémentés** : `indicators` clé `(classification, freq, reporter, product, flow, indicators, TIME_PERIOD)`, colonnes `hs_vintage`, `in_force`, `is_provisional`, partition `classification` ; lignes historiques par conversion des flux SH6 Comext (`harmonize_partner_flows`, fondée sur `HsHarmonizer`, règle 1 → n = affectation intégrale au code désigné par la table UNSD) ; `prepare_concordances` extrait dans `kedro_pipeline/steps/baci.py` (cache partagé) ; unité historique `(V, reporter, code SH6)` avec préimage multi-millésimes, attente des sources jamais téléchargées, empreinte `concordance` ; synthèse : `VINTAGES`, contexte **`hs_vintage`** (écart assumé : NC8 et SH comparés ensemble), jointure réseau sur `p."hs_vintage"` et `product_code` (correction d'un bug SH6) ; service : colonnes réelles, repli dérivé par `DESCRIBE` ; `network_indicators.in_force` ; migration `tools/migrate_indicators_key.py` (§12). Volumétrie mesurée : ×3,63 en SH6, ×1,86 sur la table | C-11, C-25, PD-20, PS-04.3, PS-10.1, PS-28, PS-29.3, §12 |
 | 2026-10-06 (K-08) | **Évolution de schéma et synthèse incrémentale implémentées** : poignée `kedro_pipeline.io.ducklake.DuckLakeTable` (`upsert`, `upsert_many(delete_where=…)` = remplacement transactionnel d'une tranche, `add_columns`, `writer`) utilisée par partenaires (écrivain injecté dans le runner `macroforecast`), réseau, BACI (`DuckLakeYearWriter`), synthèse et cohérence ; constat empirique : un upsert portant un sous-ensemble des colonnes **préserve** les colonnes absentes (aucune complétion). `run_synthesis(methods=…, df_existing_scores=…)` (équivalence calcul complet / deux temps testée, consensus compris) ; registres **par contexte** (`STATE.PATH_TEMPLATE`, fragment = période) de la synthèse et de la cohérence ; empreintes par méthode + `consensus` + `synthesis` (sélection des entrées) ; planification pure (`plan_synthesis_contexts`, `UpstreamMarks` par millésime), calcul pur par contexte, écriture par lots ; budget, `--cadence-check`, métriques `synthesis/contexts_*`. Écarts : un couple partenaire `first` vaut **changement complet** (choix utilisateur, exactitude) ; pertinence des changements amont par millésime SH ; lignes longues **remplacées** (et non fusionnées) ; pas de migration des registres globaux (première passe `first` partout). **`dt-ducklake-manager 0.4.0` non retenu** : son constructeur stocke `'None'` (texte) dans les champs nuls de `metadata` quand l'entrée est un DataFrame pandas, ce qui fait échouer tout `update_database` ultérieur (`Binder Error … column named "None"`, 26 tests) ; dépendance laissée en 0.3.1, API utilisée identique | C-13, PD-11, PD-12, PS-10, PS-16, PS-17 |
 | 2026-10-06 (K-07) | **BACI par passes implémenté** : `macroforecast/trade/processing/streaming.py` (accumulateurs), `partial_fit`/`finalize` des trois estimateurs groupés, `run_baci_passes` + `BaciPassIO` / `InMemoryPassIO`, `kedro_pipeline/steps/baci.py` (`DuckDBPassIO`, `DuckLakeYearWriter`, porte de complétude, blocs de chapitres), script `process_baci_hs.py` sans lecture intégrale de Comtrade, `BACI_TARGETS`, bloc `PASSES` de `baci.yaml`. Écarts à la spécification : forme factorisée QR (et non `A = Σ w x xᵀ`) pour la gravité, imposée par la précision ; référence des indicatrices d'année = première année de l'échantillon ; quantiles des taux de fret calculés en SQL (passe S2) ; protocole d'E/S regroupant les rappels `chunks_factory` / `median_uv` / `writer` ; orchestration par millésime restée dans le script. Écarts numériques mesurés (PR-05b) ≤ 10⁻¹² | PS-14.2 à PS-14.5, PS-14.7, PR-05b, PQ-21, §12 |
+| 2026-10-08 (K-10) | **Projet Kedro et configuration au format Kedro** : `kedro_pipeline/{__main__,settings,pipeline_registry,hooks,cli,config_check}.py` (pipeline `__default__` vide, `kedro trade config-check`), `config/{base,demo,cloud,local}/` lus par `OmegaConfigLoader` (fusion `soft` des paramètres), `load_parameters(env)` pour les scripts (`KEDRO_ENV`, `local` par défaut ; plus aucune variable `*_CONFIG_PATH`), datasets `kedro_pipeline/io/datasets.py` (`DuckLakeTableDataset`, `FreshnessRegistryDataset`, `ServingCatalogDataset`), `DuckLakeTable.lazy`. Écarts : `kedro` résolu en **1.7.0** (borne `>=1.6,<2`) ; **`kedro-datasets` ajouté** (importé par kedro-mlflow 2.0.3 sans être déclaré) ; aucune contrainte `pytest<9` (elle n'existe que dans l'extra `test` de kedro-mlflow) ; **hooks kedro-mlflow et argo-kedro désactivés** (`DISABLE_HOOKS_FOR_PLUGINS`) tant que `mlflow.yml` / `argo.yml` n'existent pas (sans eux, toute session échoue) ; noms d'expériences dans **`experiments.yml`** (motif `experiments`) ; entrée de credentials composée **`ducklake`** ; cibles BACI désactivées en demo par **entrées nulles** (`active_targets`) ; registres `state.<étape>` en **entrées explicites** (pas de factory) ; interpolations inter-fichiers vérifiées (résolution **par environnement**) ; télémétrie Kedro (`kedro-telemetry`, dépendance de kedro) active par défaut hors CI | C-16, PD-03, PS-02, PS-03, PS-04, PS-05, PS-06, PS-07 |
 
 ## Sommaire
 
@@ -127,7 +128,7 @@ gravité pour la mise en production (🔴 bloquant, 🟠 à traiter avant le ré
 | C-13 | ✅ | ~~L'upsert de `dt_ducklake_manager` ne sait pas ajouter une colonne~~ **Résolu par `dt-ducklake-manager 0.3.1`** : `DatabaseUpdater.update_database(..., allow_new_columns=True)` ajoute les colonnes absentes (`ALTER TABLE … ADD COLUMN … DEFAULT NULL` + ligne de métadonnées) avant l'upsert, et `add_columns(df)` diffuse une nouvelle colonne sur les lignes existantes par clé primaire en une seule mise à jour. Reste à faire : `statflows.write_dataframe` ne transmet ni `allow_new_columns` ni `compact_after_update` (PS-27, PD-11). *(K-08, 2026-10-06 : `statflows 0.1.1` transmet ces options ; toutes les étapes de calcul écrivent par la poignée `DuckLakeTable`. La version 0.4.0 n'est pas retenue (champs nuls de `metadata` écrits `'None'` depuis une entrée pandas, upserts ultérieurs en échec) : 0.3.1 conservée, même API.)* | `dt_ducklake_manager/operations/updater.py:176-372`, `statflows/storage/ducklake/tables.py:165-175` |
 | C-14 | 🔴 | Le `Dockerfile` part de `python:3.12-slim` alors que `requires-python = ">=3.13"`, copie un dossier `parameters/` inexistant, n'installe aucun extra (`tracking`, `optimal-transport`) et utilise `uv:latest` (non reproductible). | `docker/Dockerfile` |
 | C-15 | 🔴 | `kubernetes/workflow.yaml` déclare `kind: Workflow` avec des champs de `CronWorkflow` (`schedule`, `concurrencyPolicy`…), invalides pour ce type ; il référence un script `trade-script` inexistant et un secret `comtrade-credentials` qui ne correspond pas aux secrets créés (`comtrade-api-credentials`, `trade-s3-credentials`). À traiter comme un exemple, pas comme une base. | `kubernetes/workflow.yaml` |
-| C-16 | 🟡 | `config/base/catalog.yaml` et `config/base/parameters.yaml` existent mais sont vides : amorce d'une arborescence Kedro. | `config/base/` |
+| C-16 | ✅ | `config/base/catalog.yaml` et `config/base/parameters.yaml` existent mais sont vides : amorce d'une arborescence Kedro. *(Traité en K-10, 2026-10-08 : fichiers vides supprimés, `config/base/` porte désormais les `parameters_*.yml`, `catalog.yml`, `credentials.yml` et `experiments.yml`.)* | `config/base/` |
 | C-17 | ✅ | Incohérence des chemins CEPII : `process_baci.py` préfixe `s3://{bucket}/` **et** passe `bucket=`, alors que `process_baci_hs.py` passe le chemin relatif et `bucket=`. *(Traité en phase 0, 2026-09-18 : `process_baci.py` supprimé (doublon mono-millésime de `process_baci_hs.py`), ainsi que les clés mortes `baci.PATHS.RESULT_*`.)* | `process_baci.py:257-264` vs `process_baci_hs.py:453-454` |
 | C-18 | ✅ | `scripts/test_baci.py` (écriture `df_reconciled.xlsx` en local) est un script de mise au point, hors pipeline. *(Traité en phase 0, 2026-09-18 : `scripts/test_baci.py` et l'entry point `test-baci-script` supprimés.)* | `scripts/test_baci.py` |
 | C-19 | ✅ | Le suivi MLflow crée une expérience par script, avec des noms de métriques séparés par des points (`gravity.r2`) : l'interface MLflow ne regroupe pas automatiquement les graphiques par étape. *(Traité en phase 0, 2026-09-21 : les scripts journalisent leurs métriques avec `/` (`rekey_metrics`, `flatten_metrics(sep="/")`, préfixes des rapports conservés : `baci/gravity/r_squared`, `download/errors`, `synthesis/by_product/n_groups`) et une expérience par bloc (`trade-01-downloads`…). MLflow 3.15 regroupe les graphiques par préfixe complet (sections `baci`, `baci/gravity`, `baci/tonnage`…) : constat PQ-19.)* | `macroforecast/tracking/` |
@@ -332,24 +333,35 @@ passe par `argo submit` (PS-11) ou `kedro run` depuis un service Onyxia (§12).
    | `config/baci.yaml` | `config/base/parameters_baci.yml` | `baci` |
    | `config/vulnerabilities.yaml` | `config/base/parameters_vulnerabilities.yml` | `vulnerabilities` |
    | `config/synthesis.yaml` | `config/base/parameters_synthesis.yml` | `synthesis` |
-   | *(nouveau)* | `config/base/parameters_runtime.yml` | `runtime` (dont les millésimes de nomenclature, PS-04.1) |
+   | `config/runtime.yaml` (phase 0) | `config/base/parameters_runtime.yml` | `runtime` (dont les millésimes de nomenclature, PS-04.1) |
    | *(nouveau)* | `config/base/parameters_maintenance.yml` | `maintenance` |
-   | *(nouveau)* | `config/base/parameters_serving.yml` | `serving` (PS-29) |
-   | *(nouveau)* | `config/base/parameters_tracking.yml` | `tracking` (contrôles et rapport de run, PS-31) |
+   | `config/serving.yaml` (phase 0) | `config/base/parameters_serving.yml` | `serving` (PS-29) |
+   | `config/tracking.yaml` (phase 0) | `config/base/parameters_tracking.yml` | `tracking` (contrôles et rapport de run, PS-31) |
+   | `config/profiles/demo/*.yaml` (copies complètes) | `config/demo/parameters_*.yml` | **surcharges seules** (fusion `soft`) |
 
    Les ancres YAML restent valides car chaque fichier est analysé isolément.
 2. Les identifiants de dataflow sortent du code (C-05) : clé `DATAFLOW` dans chaque bloc
    (`comtrade.DATAFLOW: "C_A_HS"`, `eurostat.DATAFLOW: "DS-045409"`).
 3. Les blocs `MLFLOW` par script disparaissent au profit de `config/base/mlflow.yml`
    (kedro-mlflow, PD-13). Les options de journalisation (`LOG_ARTIFACTS`, `DRIFT`)
-   restent dans les blocs d'étape sous `TRACKING`.
+   restent dans les blocs d'étape sous `TRACKING`. *(K-10 : fait ; en attendant
+   `mlflow.yml` (K-13), l'URI vient de `MLFLOW_TRACKING_URI` seule — toutes les valeurs
+   YAML étaient nulles — et les noms d'expériences par bloc (`downloads`, `baci`,
+   `vulnerabilities`, `serving`) de `config/<env>/experiments.yml`, motif de
+   configuration `experiments`, hors paramètres ; `MLFLOW_EXPERIMENT_NAME` prime.)*
 4. Les secrets et variables d'environnement passent exclusivement par
    `config/base/credentials.yml`, avec le résolveur `oc.env` (PS-05). Aucun
    `os.environ[...]` ne subsiste dans `steps/` ni dans les nœuds.
 5. Tant qu'ils existent (PD-02), les scripts lisent les nouveaux fichiers via
-   `kedro_pipeline.config.load_parameters(env="base")`, qui reproduit la fusion Kedro
-   (`OmegaConfigLoader`). Leurs variables d'environnement historiques
-   (`BACI_CONFIG_PATH`…) sont supprimées, **`KEDRO_ENV`** les remplace.
+   `kedro_pipeline.config.load_parameters(env=None)`, qui reproduit la fusion Kedro
+   (`OmegaConfigLoader` construit avec `CONF_SOURCE` et `CONFIG_LOADER_ARGS` importés de
+   `settings.py`). Leurs variables d'environnement historiques
+   (`BACI_CONFIG_PATH`…) sont supprimées, **`KEDRO_ENV`** les remplace (défaut : `local`,
+   comme `kedro run` ; le workflow de transition pose `KEDRO_ENV={{profile}}`). Les
+   fonctions `load_*_config(config_path=None)` des scripts gardent leur signature : sans
+   chemin, le bloc des paramètres ; avec un chemin, le fichier (clé racine facultative).
+   Seul `config/profiles/demo/synthetic.yaml` (données fictives, PD-24) reste hors de
+   cette arborescence, jusqu'à son retrait en K-18.
 
 **Justification.** On conserve la paramétrisation externe voulue, tout en la rendant
 native pour Kedro (`params:baci.CLASSIFICATIONS`) et visible dans kedro-viz.
@@ -1592,6 +1604,20 @@ paresseuse (sans l'extra, le rapport est produit sans figures). `psutil` est req
 les métriques système de MLflow. Plus aucun usage direct de `psycopg2` pour la
 restitution (PD-21). `kedro-viz` n'est pas dans l'image (inutile à l'exécution).
 
+**Résolution vérifiée (K-10, 2026-10-08, `uv lock`, Python 3.13.4)** : `kedro 1.7.0`,
+`kedro-mlflow 2.0.3`, `argo-kedro 0.1.41`, `mlflow 3.15.1`, `kedro-viz 12.4.0`,
+`omegaconf 2.3.1` ; `pytest 9.1.1` conservé. La borne `pytest<9` redoutée n'existe que
+dans l'extra `test` de kedro-mlflow, jamais installé : **aucun conflit**. Deux constats :
+- `kedro-mlflow 2.0.3` importe `kedro_datasets.pickle` (module chargé par ses commandes
+  CLI) sans déclarer `kedro-datasets` hors de son extra `test` : sans lui, `kedro mlflow …`
+  ne se charge pas. **`kedro-datasets>=8` ajouté** aux dépendances (9.6.0 résolu, cœur
+  sans extras) — résolution la moins invasive, plutôt qu'un override ;
+- `kedro 1.x` dépend de **`kedro-telemetry`**, dont la collecte est **active par
+  défaut** (consentement implicite) hors CI détectée : `KEDRO_DISABLE_TELEMETRY` ou
+  `DO_NOT_TRACK`, ou un fichier `.telemetry` (`consent: false`) à la racine, la
+  désactivent. Les tests la désactivent (`tests/conftest.py`) ; à trancher pour les pods
+  (variable dans le rendu, K-14).
+
 ### PS-03 — `kedro_pipeline/settings.py`
 
 ```python
@@ -1613,18 +1639,34 @@ CONFIG_LOADER_ARGS = {
     "config_patterns": {
         "argo": ["argo*", "argo*/**"],
         "mlflow": ["mlflow*", "mlflow*/**"],
+        "experiments": ["experiments*", "experiments*/**"],   # K-10, transitoire (PD-03)
     },
 }
 
 # Hooks projet : les hooks kedro-mlflow et argo-kedro sont auto-enregistrés par entry points
 HOOKS = (TradeRunHooks(),)
+
+# K-10 : hooks des plugins désactivés tant que mlflow.yml / argo.yml n'existent pas
+DISABLE_HOOKS_FOR_PLUGINS = ("kedro_mlflow", "argo-kedro")
 ```
 
 Remarques :
 - `soft` permet à `config/demo/parameters_eurostat.yml` de ne surcharger que quelques clés
   du bloc `eurostat` ;
 - les entry points de `kedro-mlflow` et `argo-kedro` enregistrent leurs hooks
-  automatiquement : ne pas les dupliquer dans `HOOKS`.
+  automatiquement : ne pas les dupliquer dans `HOOKS` ;
+- **constat K-10** : sans fichier de configuration, chacun des deux plugins fait échouer
+  la création de **toute** session Kedro — kedro-mlflow configure un magasin fichier
+  `./mlruns`, refusé par MLflow 3 (`MlflowException … filesystem tracking backend … in
+  maintenance mode`), argo-kedro valide une configuration vide (`ArgoConfig` : namespace,
+  machines, runner obligatoires). Leurs hooks sont donc désactivés par
+  `DISABLE_HOOKS_FOR_PLUGINS` (noms de distribution : `kedro_mlflow` souligné,
+  `argo-kedro`) ; **K-13 réactive kedro-mlflow avec `mlflow.yml`, K-14 argo-kedro avec
+  `argo.yml`**. Leurs commandes CLI (`kedro mlflow`, `kedro argo`) restent disponibles ;
+- le motif `experiments` (fusion destructive) porte les noms d'expériences des scripts
+  transitoires (PD-03 point 3) ;
+- `kedro_pipeline.config.load_parameters` instancie le même chargeur avec ces mêmes
+  arguments (source unique).
 
 ### PS-04 — Paramètres
 
@@ -1721,8 +1763,12 @@ comtrade:
 ```
 
 > L'interpolation `${runtime.ANALYSIS_START_YEAR.comtrade}` entre fichiers de paramètres
-> est supportée par `OmegaConfigLoader`, qui résout après fusion. **À vérifier dans
-> K-10** (sinon : `globals.yml` + résolveur `${globals:…}`).
+> est supportée par `OmegaConfigLoader`, qui résout après fusion. *(Vérifié en K-10 sur Kedro 1.7.0 : la résolution
+> a lieu après fusion des fichiers d'un même environnement, `globals.yml` est inutile. Retenu pour
+> `comtrade.split_filters.C_A_HS.periods.start`, `baci…TARGETS.HS1992.START_YEAR` (valeur effective identique au
+> `null` historique, que les scripts remplaçaient par la même valeur) et `synthesis.SYNTHESIS.FLOWS: ${vulnerabilities.FLOWS}`.
+> **Limite** : chaque environnement est résolu séparément puis fusionné ; une valeur interpolée en `base` ne suit donc
+> pas une surcharge de `runtime` faite dans `demo` — la surcharge doit alors redonner aussi la valeur dérivée.)*
 
 Extrait `parameters_eurostat.yml` :
 
@@ -1885,6 +1931,16 @@ synthesis:
 > produits). Les résultats `demo` sont écrits dans des schémas préfixés `demo_` et
 > étiquetés `is_provisional`.
 
+> **Implémentation K-10 (2026-10-08).** `config/demo/parameters_*.yml` ne contient que les
+> surcharges (comtrade, eurostat, baci, vulnerabilities, synthesis, serving ; `runtime` et
+> `tracking` identiques à `base`, donc sans fichier). Deux règles de la fusion `soft`
+> (récursive sur les mappings, remplacement des listes) : (1) une **liste** surchargée est
+> redonnée en entier (`synthesis.SYNTHESIS.SOURCES`) ; (2) une **clé de base ne peut pas
+> être retirée** : `baci.CLASSIFICATIONS.TARGETS` du demo met les six autres millésimes à
+> `null`, écartés par `kedro_pipeline.config.active_targets` (seul lecteur de `TARGETS`
+> des scripts, de `config_check` et des tests). Les données fusionnées sont **identiques**
+> aux anciennes copies complètes (comparaison clé à clé, `MLFLOW` → `TRACKING` mis à part).
+
 > **Données fictives (2026-09-21, PD-24).** En phase 0, le profil `demo` peut être alimenté par
 > un monde simulé (`config/profiles/demo/synthetic.yaml`, paramètres `comtrade-mode` /
 > `eurostat-mode` du workflow de transition). Ces données ne sont écrites que dans les
@@ -1925,6 +1981,16 @@ dans MLflow). Les nœuds obtiennent les identifiants **via les datasets** (argum
 Une valeur vide pour `host` ne provoque d'erreur qu'**à la connexion**, avec un message
 explicite (`"PGHOST is not set: …"`) : `kedro viz build` passe sans secrets.
 
+**Implémentation K-10.** Un dataset Kedro ne reçoit qu'une entrée `credentials` : les
+poignées DuckLake ayant besoin des deux jeux, `credentials.yml` ajoute l'entrée composée
+`ducklake: {postgres: ${ducklake_postgres}, s3: ${s3}}` (interpolation résolue dans le
+fichier, vérifiée), référencée par `DuckLakeTableDataset` et `ServingCatalogDataset` ; les
+registres reçoivent `s3`. Le contrôle des valeurs vides est fait par
+`kedro_pipeline.io.ducklake.require_credentials` (`MissingCredentialsError`, message
+`"<VARIABLE> is not set: …"`, PostgreSQL puis S3) juste avant la construction du
+connecteur ; `AWS_S3_ENDPOINT` ayant un défaut, c'est `AWS_ACCESS_KEY_ID` qui manque en
+premier côté S3. Un test vérifie aussi qu'`oc.env` est refusé dans les paramètres.
+
 ### PS-06 — Fabrique de connecteur et poignée de table (`kedro_pipeline/io/ducklake.py`)
 
 ```python
@@ -1955,6 +2021,19 @@ class DuckLakeTable:
     @property
     def qualified_name(self) -> str: ...   # '"alias"."schema"."fact_table"'
 ```
+
+**Implémentation K-10.** La poignée d'écriture de K-08 (`DuckLakeTable(conn, alias,
+schema)`, connexion empruntée à l'appelant, utilisée par les scripts) est conservée telle
+quelle ; le mode paresseux s'y ajoute par `DuckLakeTable.lazy(location, pg, s3,
+connector_factory=…)` (aucune connexion : `connect()` vérifie les identifiants, ouvre,
+lie la connexion au bloc puis la ferme ; `exists`, `query`, `upsert`, `upsert_many`,
+`add_columns`, `add_missing_columns` ouvrent une connexion le temps de l'appel si aucune
+n'est fournie). `query(sql, params)` lie les paramètres `?` ; `add_missing_columns`
+appelle la routine d'ajout de colonnes de `DatabaseUpdater` (méthode interne
+`_add_new_columns_from_update` de `dt-ducklake-manager 0.3.1`, celle de
+`allow_new_columns`) et ne fait rien sur une table absente ; `qualified_name` vaut
+`'"alias"."schema"."fact_table"'`. Fabrique par défaut : `CheckedConnectorFactory`
+(contrôle des identifiants puis `build_connector`), sérialisable.
 
 Exemple d'usage dans une étape :
 
@@ -2028,6 +2107,35 @@ serving.tables:                        # poignée du catalogue DuckLake `serving
 > paramètres. K-10 ajoute un test qui vérifie cette cohérence et fait échouer la CI en cas
 > d'écart (le doublon est le prix de la lisibilité dans kedro-viz). La syntaxe exacte des
 > dataset factories et de `kedro_mlflow` est à vérifier sur les versions épinglées.
+
+**Catalogue implémenté (K-10, Kedro 1.7.0)** — écarts à l'extrait ci-dessus :
+- `credentials: ducklake` (entrée composée, PS-05) au lieu de `ducklake_postgres` ;
+  `kedro_pipeline/io/datasets.py` porte les trois datasets (`DuckLakeTableDataset`,
+  `FreshnessRegistryDataset`, `ServingCatalogDataset`), aucun ne se connecte à
+  l'instanciation, `save` vérifie l'identité de la poignée et refuse un DataFrame ;
+- factories vérifiées : `"baci.{vintage}"` (schéma `baci_{vintage}`, `demo_baci_{vintage}`
+  en demo) et, au lieu d'un `reference.{source}` unique, **`"reference.eurostat.{table}"`
+  et `"reference.comtrade.{table}"`** : chaque référentiel vit dans son propre schéma
+  `reference_<table>` (K-03b) et le chemin de données diffère par source
+  (`trade/datasets/comext` pour Eurostat), ce qu'un seul motif ne peut pas exprimer ;
+- registres en **entrées explicites** `state.baci`, `state.partners`, `state.network`,
+  `state.synthesis`, `state.coherence` (pas de factory `state.{step}`) : les gabarits
+  diffèrent par étape et Kedro formate (`str.format_map`) toutes les chaînes d'une entrée
+  de factory, si bien que les champs `{vintage}`, `{reporter}`… du gabarit y seraient
+  interprétés comme des paramètres du motif. Le libellé de fragment vaut les valeurs des
+  champs du gabarit jointes par `/` ; la source v1 (`LegacySource`) n'est pas exposée (la
+  migration reste le fait des étapes) ;
+- `serving.tables.sources` décrit l'**emplacement complet** de chaque catalogue source
+  (alias → `location`), nécessaire pour l'attacher ;
+- `baci.scope` (K-11) et les datasets `mlflow.*` (K-13) ne sont pas encore créés ;
+- `config/demo/catalog.yml` redéfinit **toutes** les entrées dont l'emplacement diffère en
+  demo (fusion destructive du catalogue) : sans lui, un `kedro run --env demo` écrirait
+  dans les tables de production ;
+- contrôle : `kedro_pipeline/config_check.py` (`expected_datasets(parameters)` dérive des
+  paramètres ce que chaque dataset doit désigner, schéma assaini par `_schema_name`
+  compris ; `catalog_mismatches(catalog, parameters)`), utilisé par
+  `kedro trade config-check --env <env>` et `tests/test_catalog_parameters_consistency.py`
+  (base : 26 datasets, demo : 20).
 
 ### PS-08 — API des fonctions d'étape (`kedro_pipeline/steps/`)
 
@@ -3382,11 +3490,12 @@ réutilisent celui de Comtrade, même catalogue). Écriture par upsert idempoten
 - Idempotence : republier des tables déjà à jour est sans effet visible ; la fraîcheur
   (PS-10) évite le travail inutile en régime nominal.
 
-#### PS-29.2 Tables de service (`config/serving.yaml`, racine `serving`)
+#### PS-29.2 Tables de service (`config/base/parameters_serving.yml`, racine `serving`)
 
 Phase 0 : `config/serving.yaml` (lu par `SERVING_CONFIG_PATH`) et sa copie complète
 `config/profiles/demo/serving.yaml` (`SCHEMA: demo_dashboard`, expérience
-`demo-serving`) ; migrera vers `config/base/parameters_serving.yml` (K-10). Paramètres :
+`demo-serving`) ; migré vers `config/base/parameters_serving.yml` en K-10 (surcharge demo :
+`config/demo/parameters_serving.yml`, `SCHEMA` seul ; expérience dans `experiments.yml`). Paramètres :
 
 ```yaml
 serving:
@@ -3668,7 +3777,7 @@ l'interface Argo pour le DAG.
 | **System metrics** | CPU, mémoire, disque, réseau du pod au cours du temps (remplace la seule valeur `memory/peak_mb` pour dimensionner les `machine_types`, PS-20) | variables `MLFLOW_ENABLE_SYSTEM_METRICS_LOGGING` / `MLFLOW_SYSTEM_METRICS_SAMPLING_INTERVAL` (PS-21.1), `psutil` |
 | **Artifacts** | `report/report.html` (rapport autonome : mêmes informations que la description, plus figures et tables, une section par étape pour BACI) ; `report/summary.md` (copie intégrale de la description, jamais tronquée) ; `report/checks.csv` ; `tables/*.csv` (couverture, `σ̂` par pays, coefficients…) ; `failures.csv` (unités en échec et message) | `log_text`, `log_table` (PS-31.4) |
 
-#### PS-31.2 Paramètres et contrôles déclaratifs (`config/tracking.yaml` en phase 0, `config/base/parameters_tracking.yml` sous Kedro)
+#### PS-31.2 Paramètres et contrôles déclaratifs (`config/tracking.yaml` en phase 0, `config/base/parameters_tracking.yml` depuis K-10)
 
 Phase 0 : le fichier `config/tracking.yaml` (racine `tracking`, copie dans
 `config/profiles/demo/`, variable `TRACKING_CONFIG_PATH`) est lu par `scripts/_run_report.py` ;

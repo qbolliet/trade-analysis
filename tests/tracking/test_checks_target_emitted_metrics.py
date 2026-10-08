@@ -3,7 +3,7 @@
 Un contrôle sur une métrique que l'étape n'émet jamais serait silencieusement ``skipped`` : le
 verdict du run ne dirait plus rien. Pour chaque script, les métriques sont relevées sur un run
 FICTIF (catalogues DuckLake temporaires, ``CapturingTracker`` en guise de tracker) ; tout contrôle
-de ``config/tracking.yaml`` dont la métrique manque fait échouer le test, comme le nom d'un nœud de
+des paramètres ``tracking`` dont la métrique manque fait échouer le test, comme le nom d'un nœud de
 la configuration qui ne correspond à aucun script.
 """
 
@@ -18,17 +18,14 @@ from typing import Any, Dict, Iterable
 import numpy as np
 import pandas as pd
 import pytest
-import yaml
-
+from kedro_pipeline.config import load_parameters
 from macroforecast.tracking import CapturingTracker, rekey_metrics
 from scripts._run_report import flow_run_metrics
 from macroforecast.tracking.report import Check, checks_for_node
 
 ROOT = Path(__file__).resolve().parents[2]
-TRACKING = yaml.safe_load((ROOT / "config" / "tracking.yaml").read_text(encoding="utf-8"))["tracking"]
-DEMO_TRACKING = yaml.safe_load(
-    (ROOT / "config" / "profiles" / "demo" / "tracking.yaml").read_text(encoding="utf-8")
-)["tracking"]
+TRACKING = load_parameters("base")["tracking"]
+DEMO_TRACKING = load_parameters("demo")["tracking"]
 
 
 def _nodes() -> Dict[str, str]:

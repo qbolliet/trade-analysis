@@ -1,0 +1,24 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# ENVIRONNEMENT DEMO — PÉRIMÈTRE PROVISOIRE : BACI HS2017 seul, sorties isolées
+# (schéma demo_baci_hs2017, chemins trade/demo/…). Ce fichier ne contient que les
+# SURCHARGES du bloc baci de base (fusion récursive des mappings) ; sélection par
+# KEDRO_ENV=demo ou `--env demo`.
+# ─────────────────────────────────────────────────────────────────────────────
+baci:
+  PATHS:
+    LAST_PROCESSING_PATH: "trade/demo/datasets/last_processing/baci.json"
+  STATE:
+    PATH_TEMPLATE: "trade/demo/state/baci/{vintage}.json"
+  PASSES:
+    WORK_PATH: "trade/demo/work/baci"
+  CLASSIFICATIONS:
+    # Cible unique HS2017. La fusion récursive ne sait pas retirer une clé de base :
+    # les autres millésimes sont désactivés par une entrée nulle (écartée à la lecture)
+    TARGETS:
+      HS2022: null
+      HS2017: { START_YEAR: 2017, RESULT_SCHEMA: "demo_baci_hs2017" }
+      HS2012: null
+      HS2007: null
+      HS2002: null
+      HS1996: null
+      HS1992: null

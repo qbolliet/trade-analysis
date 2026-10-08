@@ -1,0 +1,271 @@
+# Synthèse multicritère et cohérence (clé racine unique : le chargeur Kedro fusionne
+# tous les fichiers parameters* dans un seul dictionnaire et refuse les clés dupliquées).
+synthesis:
+  # Synthèse des métriques de vulnérabilité (scores synthétiques) et cohérence.
+  #
+  # Même catalogue DuckLake que les métriques (VULNERABILITIES.DBNAME /
+  # VULNERABILITIES.CATALOG_ALIAS du bloc vulnerabilities) ; deux schémas résultat
+  # distincts, jamais fusionnés avec la table des métriques (un score synthétique
+  # n'est pas une métrique) :
+  #   - compute_synthetic_scores.py   : scores synthétiques par cellule x méthode
+  #     x niveau                                  -> bloc SYNTHESIS (schéma « synthesis »)
+  #   - compute_synthesis_coherence.py : diagnostics de cohérence des métriques et
+  #     des synthèses                             -> bloc COHERENCE (schéma « synthesis_diagnostics »)
+  #
+  # Place dans le pipeline (ordre Argo) :
+  #   download -> process_baci_hs -> compute_trade_vulnerabilities
+  #   || compute_network_vulnerabilities -> compute_synthetic_scores
+  #   -> compute_synthesis_coherence
+
+  # ──────────────────────────────────────────────────────────────────────
+  # Scores synthétiques
+  # ──────────────────────────────────────────────────────────────────────
+  SYNTHESIS:
+    # Sens de flux synthétisés : même valeur que vulnerabilities.FLOWS, reprise par
+    # interpolation (une seule source de vérité). Génère le prédicat p."flow" IN (...) ajouté à
+    # FILTERS.WHERE, les codes étant ceux des PARAMETERS partenaires. Avec plus d'un
+    # sens, "flow" doit figurer dans PARAMETERS.context_columns : import et export ne
+    # sont jamais comparés entre eux (échec au chargement sinon).
+    FLOWS: ${vulnerabilities.FLOWS}
+    # Nomenclatures synthétisées : "in_force" (lignes partenaires de la nomenclature
+    # en vigueur, codes tels que déclarés ; génère le prédicat p."in_force" = true
+    # ajouté à FILTERS.WHERE) ou "all" (aussi les lignes historiques, flux des années
+    # postérieures convertis vers un millésime SH antérieur). Les deux familles ne sont
+    # jamais comparées : "hs_vintage" figure dans PARAMETERS.context_columns (exigé
+    # avec "all", échec au chargement sinon).
+    VINTAGES: "in_force"
+    # Bucket S3 où sont stockées les données de la table de faits « synthesis »
+    BUCKET: "qbollietdgddi"
+    # Schéma résultat des scores dans le catalogue « vulnerabilities »
+    RESULT_SCHEMA: "synthesis"
+    PATHS:
+      # Emplacement des données de la table de faits « synthesis » (sous BUCKET)
+      DATA_PATH: "trade/datasets/vulnerabilities/"
+    # Registre de fraîcheur par contexte (hs_vintage, freq, flow, indicators,
+    # TIME_PERIOD), un fichier JSON par période. Chaque entrée porte une empreinte
+    # par méthode, une pour le consensus et une pour la sélection des entrées
+    # (SOURCES, FILTERS, FLOWS, VINTAGES) : ajouter ou modifier une méthode ne
+    # recalcule qu'elle (et le consensus), sur tous les contextes
+    STATE:
+      # Champs du modèle : colonnes de contexte uniquement (vérifié au chargement)
+      PATH_TEMPLATE: "trade/state/synthesis/{TIME_PERIOD}.json"
+    # Recalcul forcé de tous les contextes, quelle que soit la fraîcheur des amonts
+    # (équivaut à runtime.FORCE_STEPS=synthesis, également pris en compte)
+    FORCE: false
+    # Nombre de périodes les plus récentes recalculées quand les métriques
+    # partenaires ont de nouvelles données (le téléchargement incrémental ne rapporte
+    # que les dernières observations). null => N_LAST_OBSERVATIONS du téléchargement
+    # Eurostat. Un changement complet de l'amont (couple partenaire nouveau,
+    # méthodologie modifiée ou forcée, réseau recalculé) recalcule toutes les périodes
+    RECENT_PERIODS: null
+    # Budget de rattrapage : nombre maximal de contextes calculés par exécution, les
+    # périodes les plus récentes d'abord, le reste à l'exécution suivante. null en
+    # régime nominal (aucune approximation, cadence hebdomadaire)
+    MAX_CONTEXTS_PER_RUN: null
+    # Nombre de contextes lus, écrits et enregistrés ensemble (une transaction
+    # DuckLake par table et par lot ; le registre avance lot par lot)
+    WRITE_BATCH_CONTEXTS: 50
+    # Nombre de processus calculant les contextes en parallèle (chacun ouvre sa
+    # propre connexion de lecture ; le processus parent reste l'unique écrivain).
+    # null => variable d'environnement NUM_CPU (CPU du pod), à défaut nombre de CPU
+    # de la machine. Le résultat ne dépend pas de ce nombre
+    N_JOBS: null
+    # Méthodes calculées dans le processus parent, après la phase parallèle, pour
+    # les mêmes contextes (coût mémoire de JAX / transport optimal). Le consensus
+    # est calculé en dernier, une fois toutes les méthodes disponibles
+    SEQUENTIAL_METHODS: ["kantorovich"]
+    # Cadence : avec --cadence-check (ou CADENCE_CHECK=1), sortie immédiate si le
+    # dernier calcul date de moins de MIN_INTERVAL_DAYS jours et qu'aucun forçage
+    # n'est demandé (workflow de transition quotidien ; en production la cadence est
+    # portée par le CronWorkflow hebdomadaire)
+    CADENCE:
+      MIN_INTERVAL_DAYS: 6
+
+    # Sources DuckLake combinées en une seule requête SQL.
+    # La première source est la GRILLE : elle fixe les cellules à scorer et toutes
+    # les clés (contexte, reporter, produit) sont conservées telles quelles.
+    # Les suivantes sont jointes à GAUCHE par des expressions SQL DuckDB évaluées
+    # dans le catalogue (aucune logique de jointure en Python) ; leurs lignes sans
+    # correspondance produisent des NULL, traités par chaque méthode (exclusion de
+    # la cellule ou imputation, selon la méthode).
+    SOURCES:
+      # Grille : famille partenaires (indices Eurostat Comext)
+      - SCHEMA: "indicators"                       # schéma résultat de compute_trade_vulnerabilities.py
+        ALIAS: "p"                                 # alias de la grille dans la requête
+        COLUMNS: ["HHI", "CDI2", "CDI3"]           # métriques partenaires alimentant les méthodes
+      # Source jointe : famille réseau (indices BACI)
+      - SCHEMA: "network_indicators"               # schéma résultat de compute_network_vulnerabilities.py
+        ALIAS: "n"                                 # alias de la source jointe
+        COLUMNS: ["WORLD_HHI", "CENTRALITY_RISK", "CLUSTERING_W"]  # métriques réseau retenues
+        JOIN:
+          # Conditions de correspondance grille -> réseau (code SH6 -> code SH6 du
+          # même millésime, période -> année). product_code (macro de session générée
+          # depuis runtime.NOMENCLATURES.HS) restitue le zéro initial des codes stockés
+          # en entiers ; seuls les codes d'au moins six chiffres (SH6, NC8) ont un
+          # code réseau.
+          "ON":
+            - 'length(product_code(p."product")) >= 6'
+            - 'substr(product_code(p."product"), 1, 6) = lpad(CAST(n."product" AS VARCHAR), 6, ''0'')'
+            - 'CAST(substr(CAST(p."TIME_PERIOD" AS VARCHAR), 1, 4) AS INTEGER) = n."year"'
+            # Millésime de la ligne partenaire : celui en vigueur à sa période pour une
+            # ligne en vigueur, le millésime cible pour une ligne historique. Chaque
+            # ligne est jointe au BACI de son propre millésime (une ligne 2019 en
+            # vigueur au BACI HS2017, jamais à un millésime postérieur)
+            - 'n."classification" = p."hs_vintage"'
+            # Même sens : une ligne export reçoit les métriques du graphe transposé
+            # (concentration de la demande mondiale), une ligne import celles de l'offre
+            - 'n."flow" = p."flow"'
+
+    # Contextes retenus : prédicat SQL évalué sur la grille p.
+    FILTERS:
+      # Indicateur en valeur, fréquence annuelle (modalités à vérifier contre les
+      # données réelles de DS-045409) ; le reporter agrégé EU27_2020 est exclu de la
+      # synthèse (ses flux sont extra-UE par construction, CDI2 y vaut 1), pas des
+      # métriques. Les prédicats sur le flux et sur in_force sont générés depuis FLOWS
+      # et VINTAGES.
+      WHERE: 'p."indicators" = ''VALUE_IN_EUROS'' AND p."freq" = ''A'' AND p."reporter" <> ''EU27_2020'''
+      # Nombre de dernières périodes conservées (sous-requête sur les TIME_PERIOD
+      # distincts) ; null => toutes les périodes, dont seules les périmées sont
+      # recalculées (registre par contexte)
+      LAST_N_PERIODS: null
+
+    # Suivi d'exécution MLflow : un seul run par exécution du script (l'URI du
+    # serveur vient de MLFLOW_TRACKING_URI, le nom d'expérience de experiments.yml).
+    TRACKING:
+      # Publication des artefacts de synthèse (palmarès par niveau et méthode,
+      # poids ajustés, rapports de sélection « auto », rapport de transport optimal)
+      LOG_ARTIFACTS: true
+
+    # Paramètres méthodologiques : toute clé portant le nom d'un champ de
+    # SynthesisConfig surcharge le défaut correspondant (listes YAML -> tuples) ;
+    # les clés inconnues sont ignorées avec un avertissement.
+    PARAMETERS:
+      # Clés définissant un univers de comparaison ; deux contextes ne sont jamais comparés.
+      # hs_vintage sépare les lignes en vigueur des lignes historiques d'une même
+      # période (et deux millésimes historiques entre eux) ; les codes NC8 et SH d'une
+      # même année en vigueur restent comparés ensemble (même hs_vintage)
+      context_columns: ["hs_vintage", "freq", "flow", "indicators", "TIME_PERIOD"]
+      # Colonne du pays déclarant (cellule)
+      reporter_col: "reporter"
+      # Colonne du produit (cellule)
+      product_col: "product"
+      # Colonnes de métriques mises à disposition des méthodes
+      metric_columns: ["HHI", "CDI2", "CDI3", "WORLD_HHI", "CENTRALITY_RISK", "CLUSTERING_W"]
+      # Paires (métrique, +/-1) ; toute métrique non listée a une polarité positive.
+      # Aucune différence entre import et export : plus concentré = plus vulnérable,
+      # côté fournisseurs à l'import, côté débouchés à l'export, pour les métriques
+      # partenaires comme réseau
+      polarities: []
+      # Niveaux de comparaison à l'intérieur d'un contexte : par produit (pays
+      # comparés entre eux), par pays (produits comparés), global
+      levels: ["by_product", "by_reporter", "global"]
+      # Normalisation par défaut, appliquée à toute méthode qui l'admet
+      normalization: "minmax"
+      # Quantile haut de winsorisation ; null => désactivée
+      winsorize_quantile: null
+      # Plancher de taille de groupe, en plus du défaut propre à chaque méthode
+      min_group_size: 30
+      # Règles de consensus transformées en pseudo-méthodes
+      consensus: ["borda", "copeland"]
+      # Présélection Borda sur laquelle Copeland (et Kemeny) sont résolus
+      consensus_top_n: 100
+      # Nombre de tirages de Dirichlet partagés par SMAA et le quantile de cône
+      smaa_n_draws: 2000
+      # Profondeur du facteur de confiance SMAA
+      smaa_k: 50
+      # Méthodes pour lesquelles un intervalle de rang est bootstrappé (coût élevé :
+      # réservé aux méthodes principales)
+      bootstrap_methods: ["critic_sum", "auto_sum"]
+      # Nombre de rééchantillons bootstrap
+      bootstrap_n: 50
+      # Niveaux auxquels le bootstrap tourne (le niveau global est exclu : trop
+      # coûteux pour un gain d'information faible)
+      bootstrap_levels: ["by_product", "by_reporter"]
+      # Graine d'où sont dérivées les graines par groupe
+      random_state: 0
+      # Liste de méthodes ; chaque entrée -> un MethodSpec (name et kind obligatoires,
+      # kind = clé du registre de méthodes de macroforecast, params transmis à la fabrique d'estimateur)
+      methods:
+        # Dominance de Pareto : front epsilon glouton, couches, réduction préalable de d
+        - {name: "pareto", kind: "pareto",
+           params: {epsilon: 0.1, epsilon_scale: "mad", reduce: {threshold: 0.3}, layers: true}}
+        # Pareto au niveau global uniquement : front exact, sans couches
+        - {name: "pareto_global", kind: "pareto", levels: ["global"],
+           params: {epsilon: 0.1, reduce: {threshold: 0.3}, layers: false}}
+        # Moyenne des rangs normalisés (Borda sur métriques)
+        - {name: "rank_mean", kind: "rank_mean"}
+        # Somme pondérée, poids par entropie de Shannon
+        - {name: "entropy_sum", kind: "weighted", params: {weighting: "entropy", aggregation: "weighted_sum"}}
+        # Somme pondérée, poids CRITIC (corrélation de Spearman, échelle MAD)
+        - {name: "critic_sum", kind: "weighted", params: {weighting: "critic", aggregation: "weighted_sum",
+                                                          weighting_params: {method: "spearman", scale: "mad"}}}
+        # Somme pondérée, méta-sélection automatique du schéma de poids
+        - {name: "auto_sum", kind: "weighted", params: {weighting: "auto", aggregation: "weighted_sum"}}
+        # Moyenne géométrique pondérée, poids sélectionnés automatiquement
+        - {name: "auto_geo", kind: "weighted", params: {weighting: "auto", aggregation: "geometric_mean",
+                                                        aggregation_params: {epsilon: 1.0e-3}}}
+        # Mazziotta-Pareto Index (pénalité d'incohérence horizontale)
+        - {name: "mpi", kind: "mpi"}
+        # TOPSIS, poids CRITIC, variante robuste
+        - {name: "topsis_critic", kind: "topsis", params: {weighting: "critic", robust: true}}
+        # VIKOR, poids CRITIC, compromis v = 0,5
+        - {name: "vikor_critic", kind: "vikor", params: {weighting: "critic", v: 0.5}}
+        # Benefit of the doubt, rapports de poids bornés (région d'assurance)
+        - {name: "bod", kind: "bod", params: {rho: 4.0, restriction: "assurance_region"}}
+        # Projection blanchie orientée, covariance robuste (MCD)
+        - {name: "whitened", kind: "whitened_projection", params: {covariance_estimator: "mcd"}}
+        # Score de Kantorovitch orienté (transport optimal) sur un sous-ensemble de
+        # métriques ; calibration conforme par découpage, alerte projetée
+        - {name: "kantorovich", kind: "kantorovich",
+           metrics: ["HHI", "CDI2", "CDI3", "WORLD_HHI"],
+           params: {epsilon: 0.1, n_target: 4096, fit_sample_size: 20000, alpha: 0.05,
+                    theta0_degrees: 60.0, conformal: "split", alert: "projected"}}
+        # SMAA sur une somme pondérée (acceptabilité de rang par tirages de poids)
+        - {name: "smaa", kind: "smaa", params: {aggregation: "weighted_sum"}}
+        # Quantile de cône (Hamel & Kostner 2018)
+        - {name: "cone_quantile", kind: "cone_quantile"}
+
+  # ──────────────────────────────────────────────────────────────────────
+  # Cohérence des métriques et des synthèses
+  # ──────────────────────────────────────────────────────────────────────
+  COHERENCE:
+    # Schéma résultat des diagnostics dans le catalogue « vulnerabilities »
+    RESULT_SCHEMA: "synthesis_diagnostics"
+    PATHS:
+      # Emplacement des données de la table de faits « synthesis_diagnostics »
+      DATA_PATH: "trade/datasets/vulnerabilities/"
+    # Registre de fraîcheur par contexte, un fichier JSON par période : un contexte
+    # est recalculé quand sa synthèse l'a été depuis, quand l'empreinte de la
+    # configuration de cohérence change (empreinte globale) ou en cas de forçage
+    STATE:
+      PATH_TEMPLATE: "trade/state/coherence/{TIME_PERIOD}.json"
+    # Recalcul forcé, quelle que soit la fraîcheur du registre de synthèse
+    # (équivaut à runtime.FORCE_STEPS=coherence, également pris en compte)
+    FORCE: false
+    # Budget de rattrapage (cf. bloc SYNTHESIS), null en régime nominal
+    MAX_CONTEXTS_PER_RUN: null
+    # Nombre de contextes lus, écrits et enregistrés ensemble
+    WRITE_BATCH_CONTEXTS: 50
+    # Nombre de processus calculant les contextes en parallèle (cf. bloc SYNTHESIS)
+    N_JOBS: null
+    # Cadence sous --cadence-check (cf. bloc SYNTHESIS)
+    CADENCE:
+      MIN_INTERVAL_DAYS: 6
+    # Suivi d'exécution MLflow : un seul run par exécution du script de cohérence
+    TRACKING:
+      LOG_ARTIFACTS: true
+    # Paramètres méthodologiques : toute clé portant le nom d'un champ de
+    # CoherenceConfig surcharge le défaut correspondant.
+    PARAMETERS:
+      # Profondeurs k des recouvrements de tête (topk_overlap)
+      topk_depths: [10, 50, 100]
+      # Paramètre de persistance p du rank-biased overlap
+      rbo_p: 0.98
+      # Fraction de n au-delà de laquelle l'étendue de rang rend une cellule « disputée »
+      dispute_fraction: 0.01
+      # Sensibilité « leave-one-metric-out »
+      lomo: true
+      # Méthodes soumises au leave-one-metric-out
+      lomo_methods: ["critic_sum", "auto_sum"]
+      # Corrélations de rang entre paires de métriques
+      metric_pairs: true

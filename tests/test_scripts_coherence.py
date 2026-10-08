@@ -9,12 +9,11 @@ L'écriture DuckLake et ``run_coherence`` ne sont pas exercés ici.
 from __future__ import annotations
 
 import logging
-from pathlib import Path
 
 import numpy as np
 import pandas as pd
 import pytest
-import yaml
+from kedro_pipeline.config import load_parameters
 
 # Le script importe ``dt_ducklake_manager`` (via le script de synthèse) en tête de module
 pytest.importorskip("dt_ducklake_manager")
@@ -33,7 +32,8 @@ from macroforecast.trade.aggregation import (  # noqa: E402
 )
 
 # Chemin de la configuration de référence (exemple S-2.2)
-CONFIG_PATH = Path(__file__).resolve().parents[1] / "config" / "synthesis.yaml"
+# Bloc de paramètres de référence (environnement base)
+REFERENCE = load_parameters("base")["synthesis"]
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -80,8 +80,7 @@ def test_coherence_config_from_params_unknown_key_warns(
 
 def test_coherence_config_from_params_on_reference_config() -> None:
     """La configuration de référence est acceptée intégralement."""
-    with open(CONFIG_PATH, "r", encoding="utf-8") as file:
-        parameters = yaml.safe_load(file)["COHERENCE"]["PARAMETERS"]
+    parameters = REFERENCE["COHERENCE"]["PARAMETERS"]
     config = coherence_config_from_params(parameters)
     assert config.topk_depths == (10, 50, 100)
     assert config.rbo_p == 0.98
