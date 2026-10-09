@@ -9,7 +9,15 @@ from typing import Any, Callable, Dict, Mapping
 from kedro_pipeline.io.datasets import ConcordanceCache, DuckLakeCatalogs
 from kedro_pipeline.io.freshness import FreshnessRegistry
 from kedro_pipeline.io.registry_views import DownloadRegistryView
-from kedro_pipeline.pipelines._common import adopt_legacy, finish_step, force_spec, n_jobs_of, run_id
+from kedro_pipeline.io.tracking import node_unit_runs
+from kedro_pipeline.pipelines._common import (
+    adopt_legacy,
+    finish_step,
+    force_spec,
+    n_jobs_of,
+    node_reporting,
+    run_id,
+)
 from kedro_pipeline.steps._config import (
     baci_target_schemas,
     download_location,
@@ -51,8 +59,12 @@ def compute_partner_vulnerabilities(
     vulnerabilities: Mapping[str, Any],
     baci: Mapping[str, Any],
     runtime: Mapping[str, Any],
+    tracking: Mapping[str, Any],
 ) -> Dict[str, Any]:
     """Compute the partner metrics of the stale units (rows in force, then each historical vintage).
+
+    Every pass logs into the node's MLflow run, its metrics at the step of its
+    HS vintage; the node publishes one report, the checks evaluated per pass.
 
     Args:
         comext: Handle of the Comext fact table.
@@ -65,6 +77,7 @@ def compute_partner_vulnerabilities(
         vulnerabilities: The ``vulnerabilities`` parameters.
         baci: The ``baci`` parameters (correspondence-table cache).
         runtime: ``runtime`` parameters.
+        tracking: ``tracking`` parameters (report of the run).
 
     Returns:
         ``table`` (handle of the partner metrics), ``metrics`` and ``artifacts``.
@@ -72,6 +85,7 @@ def compute_partner_vulnerabilities(
     Raises:
         RuntimeError: If a pass failed, once the registry and metrics are saved.
     """
+    reporting = node_reporting("compute_partner_vulnerabilities", tracking)
     dataflow = eurostat["DATAFLOW"]
     block = vulnerabilities["VULNERABILITIES"][dataflow]
     downloads = eurostat["DOWNLOADS"][dataflow]
@@ -82,8 +96,9 @@ def compute_partner_vulnerabilities(
         params=vulnerabilities, runtime=runtime, dataflow=dataflow,
         concordances_loader=partial(load_partner_concordances, baci_config=baci, client_factory=unsd_client),
         force=force_spec(runtime), adopt_legacy_fingerprints=adopt_legacy(block), run_id=run_id(),
+        runs=node_unit_runs(reporting.step_tracker),
     )
-    return finish_step(outcome, state, outputs={"table": result})
+    return finish_step(outcome, state, outputs={"table": result}, reporting=reporting)
 
 
 # Nœud : métriques de réseau des millésimes BACI
@@ -95,9 +110,13 @@ def compute_network_vulnerabilities(
     baci: Mapping[str, Any],
     vulnerabilities: Mapping[str, Any],
     runtime: Mapping[str, Any],
+    tracking: Mapping[str, Any],
     **vintages: Any,
 ) -> Dict[str, Any]:
     """Compute the network metrics of the stale BACI vintages.
+
+    Every vintage logs into the node's MLflow run, its metrics at the step of
+    its year; the node publishes one report, the checks evaluated per vintage.
 
     Args:
         baci_state: BACI freshness registry (read only: upstream watermark).
@@ -107,6 +126,7 @@ def compute_network_vulnerabilities(
         baci: The ``baci`` parameters (target vintages).
         vulnerabilities: The ``vulnerabilities`` parameters.
         runtime: ``runtime`` parameters (``N_JOBS`` resolved).
+        tracking: ``tracking`` parameters (report of the run).
         **vintages: Handles of the BACI tables, received to run after every
             vintage task; the step reads the targets of the parameters.
 
@@ -116,6 +136,7 @@ def compute_network_vulnerabilities(
     Raises:
         RuntimeError: If a vintage failed, once the registry and metrics are saved.
     """
+    reporting = node_reporting("compute_network_vulnerabilities", tracking)
     network = vulnerabilities["NETWORK_VULNERABILITIES"]
     tables = {
         label: catalogs.table(download_location(comtrade, schema=schema))
@@ -127,5 +148,6 @@ def compute_network_vulnerabilities(
         params=vulnerabilities, runtime=runtime, dataflow=comtrade["DATAFLOW"],
         n_jobs=n_jobs_of(network, runtime), force=force_spec(runtime),
         adopt_legacy_fingerprints=adopt_legacy(network), run_id=run_id(),
+        runs=node_unit_runs(reporting.step_tracker),
     )
-    return finish_step(outcome, state, outputs={"table": result})
+    return finish_step(outcome, state, outputs={"table": result}, reporting=reporting)

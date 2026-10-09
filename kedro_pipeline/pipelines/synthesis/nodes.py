@@ -13,7 +13,7 @@ from typing import Any, Dict, Mapping
 # Modules du package
 from kedro_pipeline.io.datasets import DuckLakeCatalogs
 from kedro_pipeline.io.freshness import FreshnessRegistry
-from kedro_pipeline.pipelines._common import finish_step, force_spec, n_jobs_of, run_id
+from kedro_pipeline.pipelines._common import finish_step, force_spec, n_jobs_of, node_reporting, run_id
 from kedro_pipeline.steps._config import schema_name, vulnerabilities_location
 from kedro_pipeline.steps.coherence import run_coherence_step
 from kedro_pipeline.steps.synthesis import run_synthesis_step
@@ -61,6 +61,7 @@ def compute_synthetic_scores(
     vulnerabilities: Mapping[str, Any],
     eurostat: Mapping[str, Any],
     runtime: Mapping[str, Any],
+    tracking: Mapping[str, Any],
 ) -> Dict[str, Any]:
     """Compute the synthetic scores of the stale contexts.
 
@@ -80,6 +81,7 @@ def compute_synthetic_scores(
         vulnerabilities: The ``vulnerabilities`` parameters.
         eurostat: The ``eurostat`` parameters (default recent periods).
         runtime: ``runtime`` parameters (``N_JOBS`` resolved).
+        tracking: ``tracking`` parameters (report of the run).
 
     Returns:
         ``table`` (handle of the scores), ``metrics`` and ``artifacts``.
@@ -87,6 +89,7 @@ def compute_synthetic_scores(
     Raises:
         RuntimeError: If a context failed, once the registry and metrics are saved.
     """
+    reporting = node_reporting("compute_synthetic_scores", tracking)
     scores = synthesis_table(catalogs, vulnerabilities, synthesis, "SYNTHESIS")
     diagnostics = synthesis_table(catalogs, vulnerabilities, synthesis, "COHERENCE")
     result = run_synthesis_step(
@@ -94,8 +97,9 @@ def compute_synthetic_scores(
         params=synthesis, vulnerability_params=vulnerabilities, runtime=runtime,
         n_jobs=n_jobs_of(synthesis["SYNTHESIS"], runtime), eurostat=eurostat,
         force=force_spec(runtime), cadence_check=False, run_id=run_id(),
+        tracker=reporting.step_tracker,
     )
-    return finish_step(result, state, outputs={"table": scores})
+    return finish_step(result, state, outputs={"table": scores}, reporting=reporting)
 
 
 # Nœud : diagnostics de cohérence
@@ -109,6 +113,7 @@ def compute_synthesis_coherence(
     synthesis: Mapping[str, Any],
     vulnerabilities: Mapping[str, Any],
     runtime: Mapping[str, Any],
+    tracking: Mapping[str, Any],
 ) -> Dict[str, Any]:
     """Compute the coherence diagnostics of the contexts synthesised since their last diagnosis.
 
@@ -123,6 +128,7 @@ def compute_synthesis_coherence(
         synthesis: The ``synthesis`` parameters.
         vulnerabilities: The ``vulnerabilities`` parameters.
         runtime: ``runtime`` parameters (``N_JOBS`` resolved).
+        tracking: ``tracking`` parameters (report of the run).
 
     Returns:
         ``table`` (handle of the diagnostics), ``metrics`` and ``artifacts``.
@@ -130,11 +136,12 @@ def compute_synthesis_coherence(
     Raises:
         RuntimeError: If a context failed, once the registry and metrics are saved.
     """
+    reporting = node_reporting("compute_synthesis_coherence", tracking)
     diagnostics = synthesis_table(catalogs, vulnerabilities, synthesis, "COHERENCE")
     result = run_coherence_step(
         scores, diagnostics, state, synthesis_state,
         params=synthesis, vulnerability_params=vulnerabilities, runtime=runtime,
         n_jobs=n_jobs_of(synthesis["COHERENCE"], runtime), force=force_spec(runtime),
-        cadence_check=False, run_id=run_id(),
+        cadence_check=False, run_id=run_id(), tracker=reporting.step_tracker,
     )
-    return finish_step(result, state, outputs={"table": diagnostics})
+    return finish_step(result, state, outputs={"table": diagnostics}, reporting=reporting)

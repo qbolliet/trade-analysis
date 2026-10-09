@@ -24,10 +24,10 @@ PARAMS = {"REPORT": {"HTML": True, "PLOTLY_JS": "cdn", "MAX_DESCRIPTION_CHARS": 
 def _report():
     return build_report(
         "process_baci_HS2017",
-        metrics={"baci/gravity/r_squared": 0.42, "baci/flows": 10.0},
+        metrics={"gravity/r_squared": 0.42, "output/flows": 10.0},
         checks=[
-            Check("baci/gravity/r_squared", ">=", 0.5, "warning", "R² de la gravité"),
-            Check("baci/flows", ">", 0, "error", "Flux écrits"),
+            Check("gravity/r_squared", ">=", 0.5, "warning", "R² de la gravité"),
+            Check("output/flows", ">", 0, "error", "Flux écrits"),
             Check("absent", ">", 0, "warning", "Absente"),
         ],
         units=Units(1, 1, 0),

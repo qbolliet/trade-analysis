@@ -1,0 +1,32 @@
+# Configuration de kedro-mlflow (hook projet GuardedMlflowHook) : un run MLflow par
+# `kedro run`, soit un run par tâche Argo.
+#
+# Les trois valeurs propres à une exécution viennent de l'environnement du pod (posées
+# par le rendu Argo) via le résolveur `trade.env`, limité à ces variables :
+# - MLFLOW_TRACKING_URI : serveur MLflow ; absent → aucun suivi (le calcul s'exécute
+#   normalement, avec un avertissement) ;
+# - MLFLOW_EXPERIMENT_NAME : expérience du bloc de la tâche (trade-00-maintenance,
+#   trade-01-downloads, trade-02-baci, trade-03-vulnerabilities, trade-04-serving) ;
+# - WORKFLOW_ID : identifiant du workflow Argo ; le hook projet renomme le run
+#   `<tâche>-<WORKFLOW_ID>` et pose les tags de regroupement.
+# Les identifiants du serveur (stockage des artefacts) ne passent jamais par ce fichier.
+server:
+  mlflow_tracking_uri: ${trade.env:MLFLOW_TRACKING_URI,null}
+tracking:
+  disable_tracking:
+    pipelines: []
+  experiment:
+    name: ${trade.env:MLFLOW_EXPERIMENT_NAME,trade-local}
+    restore_if_deleted: true
+  run:
+    id: null
+    name: ${trade.env:WORKFLOW_ID,local}
+    nested: true
+  params:
+    # Paramètres des nœuds aplatis (« baci.PASSES.MAX_ROWS_PER_CHUNK »), tronqués à la
+    # longueur maximale acceptée par MLflow plutôt que de faire échouer le run
+    dict_params:
+      flatten: true
+      recursive: true
+      sep: "."
+    long_params_strategy: truncate

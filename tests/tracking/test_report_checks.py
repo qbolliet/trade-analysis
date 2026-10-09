@@ -117,7 +117,7 @@ class TestChecksForNode:
         "CHECKS": {
             "download_*": [{"metric": "download/processed", "op": ">", "threshold": 0}],
             "process_baci_*": [
-                {"metric": "baci/flows", "op": ">", "threshold": 0, "severity": "error", "label": "Flux"}
+                {"metric": "output/flows", "op": ">", "threshold": 0, "severity": "error", "label": "Flux"}
             ],
             "process_baci_HS2017": [{"metric": "extra", "op": "<", "threshold": 1}],
             "publish_serving": [],
@@ -130,7 +130,7 @@ class TestChecksForNode:
 
     def test_every_matching_key_contributes_in_order(self) -> None:
         checks = checks_for_node("process_baci_HS2017", self.CONFIG)
-        assert [c.metric for c in checks] == ["baci/flows", "extra"]
+        assert [c.metric for c in checks] == ["output/flows", "extra"]
         assert checks[0].severity == "error" and checks[0].label == "Flux"
 
     def test_no_match_or_empty_config(self) -> None:

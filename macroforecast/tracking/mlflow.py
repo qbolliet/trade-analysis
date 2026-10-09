@@ -6,6 +6,7 @@ import logging
 import math
 import os
 import tempfile
+import time
 from pathlib import Path
 from typing import Any, Mapping, Optional
 # Modules de manipulation des données
@@ -215,6 +216,214 @@ class MlflowTracker:
             tags: Mapping of tag names to values.
         """
         self._guard("set_tags", lambda: self._mlflow.set_tags(dict(tags)))
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Suivi dans le run ouvert par un orchestrateur
+# ──────────────────────────────────────────────────────────────────────
+
+# Suivi adossé au run MLflow actif, ouvert et fermé par un tiers
+class ActiveRunTracker:
+    """:class:`~macroforecast.tracking.base.RunTracker` writing into the active MLflow run.
+
+    The run belongs to someone else (the kedro-mlflow hook opens it before the
+    first node and closes it after the last one): entering or leaving the
+    tracker does nothing. Every write targets the run active **at the time of
+    the call**, through an ``MlflowClient`` bound to that run's identifier, and
+    is a no-op when no run is active. ``mlflow`` is imported lazily; any
+    failure (no package, unreachable server, rejected value) is logged as a
+    WARNING and never propagated, so that tracking never interrupts a
+    computation.
+
+    Args:
+        log_tables: Whether :meth:`log_table` writes the table as an artifact.
+            ``False`` when the caller publishes the tables itself (as outputs of
+            a pipeline node), so that each table is written once.
+
+    Examples:
+        >>> tracker = ActiveRunTracker(log_tables=False)
+        >>> with tracker:
+        ...     tracker.log_metrics({"gravity/r_squared": 0.7})  # no active run: no-op
+        >>> tracker.log_tables
+        False
+    """
+
+    # Initialisation
+    def __init__(self, *, log_tables: bool = True) -> None:
+        # Stockage tel quel (convention sklearn)
+        self.log_tables = log_tables
+
+    # Ouverture : le run appartient à l'orchestrateur
+    def __enter__(self) -> "ActiveRunTracker":
+        """Return the tracker; no run is opened.
+
+        Returns:
+            The tracker itself.
+        """
+        return self
+
+    # Fermeture : le run appartient à l'orchestrateur
+    def __exit__(self, *exc: Any) -> None:
+        """Close nothing and never swallow an exception.
+
+        Args:
+            *exc: Exception triple, ignored.
+        """
+
+    # Méthode auxiliaire : client et identifiant du run actif
+    @staticmethod
+    def _active() -> Optional[tuple]:
+        """Return ``(mlflow module, client, run_id)`` of the active run, or ``None``.
+
+        Returns:
+            The triple, ``None`` when ``mlflow`` is missing or no run is active.
+        """
+        try:
+            # Import paresseux : MLflow est une dépendance optionnelle
+            mlflow = importlib.import_module("mlflow")
+            run = mlflow.active_run()
+        except Exception:
+            return None
+        if run is None:
+            return None
+        return mlflow, mlflow.tracking.MlflowClient(), run.info.run_id
+
+    # Méthode auxiliaire : exécution protégée d'une écriture
+    def _guard(self, action: str, call: Any) -> None:
+        """Run a tracking write on the active run, warning instead of raising.
+
+        Args:
+            action: Short description of the write, used in the warning.
+            call: Callable of ``(mlflow, client, run_id)`` performing the write.
+        """
+        active = self._active()
+        if active is None:
+            return
+        try:
+            call(*active)
+        except Exception as exc:
+            # Aucun échec de suivi n'interrompt un traitement
+            logger.warning("MLflow %s failed on the active run: %s", action, exc)
+
+    # Enregistrement des paramètres
+    def log_params(self, params: Mapping[str, Any]) -> None:
+        """Record the parameters of the run.
+
+        Args:
+            params: Mapping of parameter names to values.
+        """
+        if not params:
+            return
+        self._guard(
+            "log_params",
+            lambda mlflow, client, run_id: client.log_batch(
+                run_id,
+                params=[mlflow.entities.Param(str(k), str(v)) for k, v in params.items()],
+            ),
+        )
+
+    # Enregistrement des métriques
+    def log_metrics(self, metrics: Mapping[str, float], step: Optional[int] = None) -> None:
+        """Record numeric metrics, dropping the non-finite ones.
+
+        Args:
+            metrics: Mapping of metric names to values.
+            step: Optional step index (``0`` when ``None``, as MLflow does).
+        """
+        # Filtrage des valeurs non finies, rejetées par MLflow
+        finite = {
+            name: float(value)
+            for name, value in metrics.items()
+            if isinstance(value, (int, float)) and math.isfinite(float(value))
+        }
+        if len(finite) < len(metrics):
+            # Logging
+            logger.warning(
+                "MLflow log_metrics: %d non-finite metrics dropped", len(metrics) - len(finite)
+            )
+        if not finite:
+            return
+
+        def _write(mlflow: Any, client: Any, run_id: str) -> None:
+            # Lot unique horodaté : une requête par appel, quel que soit le nombre de métriques
+            timestamp = int(time.time() * 1000)
+            client.log_batch(
+                run_id,
+                metrics=[
+                    mlflow.entities.Metric(name, value, timestamp, int(step or 0))
+                    for name, value in finite.items()
+                ],
+            )
+
+        self._guard("log_metrics", _write)
+
+    # Enregistrement d'un dictionnaire en artefact
+    def log_dict(self, obj: Mapping[str, Any], artifact_file: str) -> None:
+        """Record a mapping as a JSON artifact.
+
+        Args:
+            obj: Mapping to serialise.
+            artifact_file: Artifact path, e.g. ``"gravity/coefficients.json"``.
+        """
+        self._guard(
+            f"log_dict({artifact_file})",
+            lambda mlflow, client, run_id: client.log_dict(run_id, dict(obj), artifact_file),
+        )
+
+    # Enregistrement d'une table en artefact
+    def log_table(self, df_table: pd.DataFrame, artifact_file: str) -> None:
+        """Record a table as a CSV artifact (unless :attr:`log_tables` is false).
+
+        Args:
+            df_table: Table to serialise.
+            artifact_file: Artifact path, e.g. ``"quality/sigma_by_country.csv"``.
+        """
+        if not self.log_tables:
+            return
+
+        def _write(mlflow: Any, client: Any, run_id: str) -> None:
+            # Écriture dans un fichier temporaire, MLflow ne versant que des fichiers
+            artifact_path = str(Path(artifact_file).parent).replace("\\", "/")
+            with tempfile.TemporaryDirectory() as tmpdir:
+                local_path = Path(tmpdir) / Path(artifact_file).name
+                df_table.to_csv(local_path, index=False, encoding="utf-8")
+                client.log_artifact(
+                    run_id,
+                    str(local_path),
+                    artifact_path=None if artifact_path in (".", "") else artifact_path,
+                )
+
+        self._guard(f"log_table({artifact_file})", _write)
+
+    # Enregistrement d'un texte en artefact
+    def log_text(self, text: str, artifact_file: str) -> None:
+        """Record a text as an artifact.
+
+        Args:
+            text: Text to record (Markdown, HTML, CSV…).
+            artifact_file: Artifact path, e.g. ``"report/summary.md"``.
+        """
+        self._guard(
+            f"log_text({artifact_file})",
+            lambda mlflow, client, run_id: client.log_text(run_id, text, artifact_file),
+        )
+
+    # Attachement des tags
+    def set_tags(self, tags: Mapping[str, str]) -> None:
+        """Attach tags to the run.
+
+        Args:
+            tags: Mapping of tag names to values.
+        """
+        if not tags:
+            return
+        self._guard(
+            "set_tags",
+            lambda mlflow, client, run_id: client.log_batch(
+                run_id,
+                tags=[mlflow.entities.RunTag(str(k), str(v)) for k, v in tags.items()],
+            ),
+        )
 
 
 # ──────────────────────────────────────────────────────────────────────

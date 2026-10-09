@@ -14,12 +14,15 @@ from datetime import datetime, timezone
 import logging
 from typing import Any, Callable, Dict, Mapping
 
+# Modules de manipulation de données
+import pandas as pd
+
 # Modules du package
 from kedro_pipeline.config import active_targets
 from kedro_pipeline.io.datasets import ConcordanceCache, DuckLakeCatalogs
 from kedro_pipeline.io.freshness import FreshnessRegistry
 from kedro_pipeline.io.registry_views import DownloadRegistryView
-from kedro_pipeline.pipelines._common import adopt_legacy, finish_step, force_spec, run_id
+from kedro_pipeline.pipelines._common import adopt_legacy, finish_step, force_spec, node_reporting, run_id
 from kedro_pipeline.steps._config import (
     HS_REFERENCE_TABLES,
     download_location,
@@ -77,6 +80,7 @@ def prepare_baci_node(
     baci: Mapping[str, Any],
     comtrade_params: Mapping[str, Any],
     runtime: Mapping[str, Any],
+    tracking: Mapping[str, Any],
 ) -> Dict[str, Any]:
     """Decide which vintages are due and prepare their shared inputs.
 
@@ -93,6 +97,7 @@ def prepare_baci_node(
         baci: The ``baci`` parameters.
         comtrade_params: The ``comtrade`` parameters.
         runtime: ``runtime`` parameters.
+        tracking: ``tracking`` parameters (report of the run).
 
     Returns:
         ``scope`` (vintages due and their inputs), ``concordances`` (cache
@@ -100,6 +105,7 @@ def prepare_baci_node(
     """
     # Instant de référence capturé avant tout traitement
     now = datetime.now(timezone.utc)
+    reporting = node_reporting("prepare_baci", tracking)
     client = comtrade_client()
     try:
         plan = plan_download(client, source="comtrade", params=comtrade_params, runtime=runtime)
@@ -116,15 +122,19 @@ def prepare_baci_node(
         force=force_spec(runtime), adopt_legacy_fingerprints=adopt_legacy(baci), now=now,
         concordance_client_factory=unsd_client,
     )
+    metrics = {
+        "completeness/years_eligible": float(len(scope.years_eligible)),
+        "completeness/share_min": float(min(scope.shares.values(), default=0.0)),
+        "freshness/vintages_due": float(len(scope.targets)),
+    }
+    reporting.step_tracker.log_metrics(metrics)
     result = StepResult(
         "baci_prepare",
         n_units_planned=len(scope.targets),
         n_units_succeeded=len(scope.targets),
-        metrics={
-            "completeness/years_eligible": float(len(scope.years_eligible)),
-            "freshness/vintages_due": float(len(scope.targets)),
-        },
-        reportable=False,
+        metrics=metrics,
+        units_label=f"{len(scope.targets)} millésime(s) à réestimer",
+        report_tables={"scope": scope_frame(scope)},
     )
     references = {
         name: catalogs.table(reference_location(comtrade_params, name)) for name in HS_REFERENCE_TABLES
@@ -133,7 +143,34 @@ def prepare_baci_node(
         result, state,
         outputs={"scope": scope, "concordances": concordance_cache(baci), **references},
         artifacts=False,
+        reporting=reporting,
     )
+
+
+# Fonction de la table du périmètre décidé par la préparation
+def scope_frame(scope: BaciScope) -> pd.DataFrame:
+    """Tabulate the scope of the BACI preparation: years to re-estimate, by vintage.
+
+    Args:
+        scope: Scope of the preparation.
+
+    Returns:
+        One row per vintage due: ``vintage``, ``n_years``, ``first_year``,
+        ``last_year`` and ``reason`` (freshness reason of its plan).
+    """
+    rows = []
+    for vintage in scope.targets:
+        years = sorted(scope.scopes.get(vintage) or [])
+        rows.append(
+            {
+                "vintage": vintage,
+                "n_years": len(years),
+                "first_year": years[0] if years else None,
+                "last_year": years[-1] if years else None,
+                "reason": getattr(scope.plans.get(vintage), "reason", None),
+            }
+        )
+    return pd.DataFrame(rows, columns=["vintage", "n_years", "first_year", "last_year", "reason"])
 
 
 # Nœud : redressement d'un millésime
@@ -146,6 +183,7 @@ def process_baci_vintage(
     baci: Mapping[str, Any],
     comtrade_params: Mapping[str, Any],
     runtime: Mapping[str, Any],
+    tracking: Mapping[str, Any],
     *,
     vintage: str,
 ) -> Dict[str, Any]:
@@ -161,6 +199,7 @@ def process_baci_vintage(
         baci: The ``baci`` parameters.
         comtrade_params: The ``comtrade`` parameters (catalog of the result).
         runtime: ``runtime`` parameters.
+        tracking: ``tracking`` parameters (report of the run).
         vintage: Vintage label.
 
     Returns:
@@ -170,9 +209,13 @@ def process_baci_vintage(
         Exception: The failure of the re-estimation, once the registry and the
             metrics are saved.
     """
+    reporting = node_reporting(f"process_baci_{vintage.lower()}", tracking)
     if vintage in scope.targets and scope.scopes.get(vintage):
         try:
-            result = run_baci_vintage(vintage, scope, comtrade, state, params=baci, run_id=run_id())
+            result = run_baci_vintage(
+                vintage, scope, comtrade, state, params=baci, run_id=run_id(),
+                tracker=reporting.step_tracker, progress=reporting,
+            )
         except Exception as exc:
             # Échec du millésime : point de reprise déjà écrit par l'étape
             logger.exception("Échec du redressement BACI pour le millésime %s", vintage)
@@ -184,7 +227,7 @@ def process_baci_vintage(
         logger.info("Millésime %s : aucun redressement planifié.", vintage)
         result = StepResult("baci", reportable=False)
     table = catalogs.table(download_location(comtrade_params, schema=vintage_schema(vintage, baci)))
-    return finish_step(result, state, outputs={"table": table})
+    return finish_step(result, state, outputs={"table": table}, reporting=reporting)
 
 
 # Fonction de construction du nœud d'un millésime
@@ -215,9 +258,10 @@ def vintage_node(vintage: str) -> Callable[..., Dict[str, Any]]:
         baci: Mapping[str, Any],
         comtrade_params: Mapping[str, Any],
         runtime: Mapping[str, Any],
+        tracking: Mapping[str, Any],
     ) -> Dict[str, Any]:
         return process_baci_vintage(
-            scope, concordances, comtrade, state, catalogs, baci, comtrade_params, runtime,
+            scope, concordances, comtrade, state, catalogs, baci, comtrade_params, runtime, tracking,
             vintage=vintage,
         )
 

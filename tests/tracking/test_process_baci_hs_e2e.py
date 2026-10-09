@@ -168,7 +168,7 @@ def test_main_publishes_the_baci_run_report(baci_world, monkeypatch, mlflow_uri,
     assert tags["health"] in ("ok", "warning") and tags["node"] == "process_baci_HS2017"
 
     # Métriques hiérarchisées par « / » (Model metrics) et contrôles
-    assert metrics["baci/flows"] > 0 and "baci/gravity/r_squared" in metrics and metrics["coverage/years_eligible"] == 3
+    assert metrics["output/flows"] > 0 and "gravity/r_squared" in metrics and metrics["coverage/years_eligible"] == 3
     assert not any(name.startswith("baci.") for name in metrics)
     assert metrics["checks/n_failed"] == 0 and metrics["run/duration_seconds"] > 0
     # Traitement par passes : durées par passe, lignes et pic mémoire par année ;

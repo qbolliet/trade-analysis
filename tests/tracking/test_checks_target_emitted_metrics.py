@@ -19,7 +19,7 @@ import numpy as np
 import pandas as pd
 import pytest
 from kedro_pipeline.config import load_parameters
-from macroforecast.tracking import CapturingTracker, rekey_metrics
+from macroforecast.tracking import CapturingTracker
 from scripts._run_report import flow_run_metrics
 from macroforecast.tracking.report import Check, checks_for_node
 
@@ -161,6 +161,8 @@ def test_baci_and_network_checks_target_emitted_metrics(
     from macroforecast.trade.processing import BaciConfig, HsHarmonizer, required_columns, run_baci
     from scripts.download_comtrade import build_split_queries
     from scripts.process_baci_hs import _read_comtrade_fact_table, coverage_metrics
+    # Mise en forme des métriques par l'étape BACI (sections conversion/, gravity/, output/…)
+    from kedro_pipeline.steps.baci import baci_section_metrics
     from statflows.core.download import download_updates
     from statflows.storage.ducklake.tables import write_dataframe
 
@@ -195,7 +197,7 @@ def test_baci_and_network_checks_target_emitted_metrics(
     result, report = run_baci(declarations, dist, geo, config=config, tracker=tracker, log_artifacts=True)
     emitted = {
         **coverage_metrics([2019, 2020, 2021], {2019: 1.0, 2020: 1.0, 2021: 1.0}, 2019, None),
-        **rekey_metrics(report.to_metrics()),
+        **baci_section_metrics(report),
     }
     assert_checks_target_emitted(_nodes()["process_baci"], emitted)
     # Les tables d'artefacts dont se servent les sections BACI sont bien journalisées
@@ -216,7 +218,7 @@ def test_baci_and_network_checks_target_emitted_metrics(
     passes_report, _ = run_baci_passes(io, dist, geo, config=config, tracker=passes_tracker, log_artifacts=True)
     passes_emitted = {
         **coverage_metrics([2019, 2020, 2021], {2019: 1.0, 2020: 1.0, 2021: 1.0}, 2019, None),
-        **rekey_metrics(passes_report.to_metrics()),
+        **baci_section_metrics(passes_report),
     }
     assert_checks_target_emitted(_nodes()["process_baci"], passes_emitted)
     assert set(passes_tracker.tables) == set(tracker.tables) and set(passes_tracker.dicts) == set(tracker.dicts)

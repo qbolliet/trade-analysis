@@ -57,7 +57,7 @@ from kedro_pipeline.io.registry_views import DownloadRegistryView, period_year, 
 from kedro_pipeline.steps.coverage import audit_coverage
 from kedro_pipeline.steps.reference import publish_reference
 from kedro_pipeline.steps.result import StepProgress, StepResult, capturing, mark
-from macroforecast.tracking import RunTracker, rekey_metrics
+from macroforecast.tracking import RunTracker
 
 # Initialisation du logger
 logger = logging.getLogger(__name__)
@@ -807,6 +807,48 @@ def publish_download_reference(
     return reference
 
 
+# Sections des métriques d'une requête : statistiques HTTP et du limiteur de débit à
+# part (leurs propres sections dans l'interface MLflow), le reste sous « download/ »
+QUERY_SECTIONS: Dict[str, str] = {
+    "http": "http",
+    "rate_limit": "rate_limit",
+    "fetch": "download/fetch",
+}
+QUERY_SECTION = "download/query"
+
+
+# Fonction des métriques d'une requête de téléchargement
+def query_metrics(query_report: Any) -> Dict[str, float]:
+    """Return the metrics of one downloaded query, ``/``-separated, by section.
+
+    Logged once per query, with the query rank as step, so that every metric
+    draws a curve over the run. Correspondence with the query report fields:
+    ``http.*`` → ``http/…``, ``rate_limit.*`` → ``rate_limit/…``, ``fetch.*`` →
+    ``download/fetch/…``, any other numeric field → ``download/query/…``.
+
+    Args:
+        query_report: ``statflows`` ``QueryReport`` of the query.
+
+    Returns:
+        Metric name -> finite value.
+
+    Examples:
+        >>> from statflows.core.reports import QueryReport
+        >>> metrics = query_metrics(QueryReport(rows_written=5))
+        >>> metrics["download/query/rows_written"], metrics["http/n_requests"]
+        (5.0, 0.0)
+    """
+    metrics: Dict[str, float] = {}
+    for name, value in query_report.to_metrics(prefix="").items():
+        head, _, rest = name.partition(".")
+        if rest and head in QUERY_SECTIONS:
+            key = f"{QUERY_SECTIONS[head]}/{rest}"
+        else:
+            key = f"{QUERY_SECTION}/{name}"
+        metrics[key.replace(".", "/")] = value
+    return metrics
+
+
 # Phase 3 : téléchargement incrémental des requêtes planifiées
 def download_planned(
     client: Any,
@@ -841,7 +883,7 @@ def download_planned(
 
     def stream_query_metrics(query_report: QueryReport) -> None:
         """Send one query's diagnostics to the tracker."""
-        tracker.log_metrics(rekey_metrics(query_report.to_metrics()), step=len(streamed_queries))
+        tracker.log_metrics(query_metrics(query_report), step=len(streamed_queries))
         streamed_queries.append(query_report)
 
     # Téléchargement incrémental (fetch_updates des clients)
@@ -980,6 +1022,55 @@ def download_result(
         outputs={"report": report, "reference": reference, "coverage": coverage},
         children={"coverage": coverage} if coverage is not None else {},
         failure_exception=failure,
+    )
+
+
+# Noms des tables du rapport d'un téléchargement : artefact de l'audit -> table du rapport
+COVERAGE_REPORT_TABLES = {
+    "coverage/by_year.csv": "coverage_by_year",
+    "coverage/by_reporter.csv": "coverage_by_reporter",
+}
+
+
+# Fonction du résultat rapporté d'un téléchargement : téléchargement et audit réunis
+def download_report_result(result: StepResult, coverage: Optional[StepResult]) -> StepResult:
+    """Merge a download result and its coverage audit into the result of one report.
+
+    The download task publishes one report for both: the units, failures and
+    verdict of the download, plus the ``coverage/*`` metrics, the coverage
+    tables (``coverage/by_year.csv``, ``coverage/by_reporter.csv``) for the
+    report sections and the tables ``coverage_by_year`` / ``coverage_by_reporter``
+    (with ``errors``) attached to the run.
+
+    Args:
+        result: Result of the download (:func:`download_result`).
+        coverage: Result of the audit; ``None`` when it could not run.
+
+    Returns:
+        A copy of ``result`` completed with the audit, without children.
+
+    Examples:
+        >>> audit = StepResult("coverage", metrics={"coverage/eta_days": 2.0},
+        ...                    artifacts={"coverage/by_year.csv": pd.DataFrame({"year": [2020]})})
+        >>> merged = download_report_result(StepResult("download", 3, 3), audit)
+        >>> merged.metrics["coverage/eta_days"], sorted(merged.report_tables)
+        (2.0, ['coverage_by_year'])
+    """
+    from dataclasses import replace
+
+    if coverage is None:
+        return replace(result, children={})
+    tables = {
+        COVERAGE_REPORT_TABLES[path]: table
+        for path, table in coverage.artifacts.items()
+        if path in COVERAGE_REPORT_TABLES and isinstance(table, pd.DataFrame)
+    }
+    return replace(
+        result,
+        metrics={**result.metrics, **coverage.metrics},
+        artifacts={**result.artifacts, **coverage.artifacts},
+        report_tables={**result.report_tables, **tables},
+        children={},
     )
 
 

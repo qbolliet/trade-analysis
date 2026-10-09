@@ -55,7 +55,7 @@ def _under(metrics: Mapping[str, float], prefix: str) -> Dict[str, float]:
         Mapping of the suffix to the value, in the original order.
 
     Examples:
-        >>> _under({"baci/gravity/r_squared": 0.7, "baci/flows": 3.0}, "baci/gravity")
+        >>> _under({"gravity/r_squared": 0.7, "output/flows": 3.0}, "gravity")
         {'r_squared': 0.7}
     """
     head = prefix.rstrip("/") + "/"
@@ -362,10 +362,12 @@ def key_figures_downloads(metrics: Mapping[str, float]) -> List[str]:
     """Key figures of a download run.
 
     Args:
-        metrics: Metrics of the run (``download/*``, ``run/*``).
+        metrics: Metrics of the run (``download/*``, ``coverage/*``, ``run/*``).
 
     Returns:
-        Queries processed, in error and left, rows written, limiter wait share.
+        Queries processed, in error and left, rows written, limiter wait share,
+        share of the planned queries ever downloaded and days left at the
+        current pace.
 
     Examples:
         >>> key_figures_downloads({"download/processed": 90.0, "download/errors": 2.0})
@@ -378,6 +380,8 @@ def key_figures_downloads(metrics: Mapping[str, float]) -> List[str]:
         _fig("restantes", d.get("n_queries_remaining")),
         _fig("lignes écrites", d.get("rows_written")),
         _fig("du temps en attente du limiteur", metrics.get("download/wait_share"), pct=True),
+        _fig("des requêtes planifiées déjà téléchargées", metrics.get("coverage/share_downloaded"), pct=True),
+        _fig("jours restants au rythme actuel", metrics.get("coverage/eta_days")),
         _fig("Mo de pic mémoire", metrics.get("run/peak_memory_mb")),
     )
 
@@ -391,10 +395,14 @@ def sections_downloads(
     Args:
         metrics: Metrics of the run.
         artifacts: Artifact tables; ``download/queries.csv`` (one row per
-            query) feeds the per-query views.
+            query) feeds the per-query views, ``coverage/by_year.csv`` (share of
+            the planned queries downloaded, by year) and
+            ``coverage/by_reporter.csv`` (stored coverage, by reporter) the
+            coverage audit.
 
     Returns:
-        Requests and errors, per-query progress, limiter waits, timing.
+        Requests and errors, per-query progress, limiter waits, coverage,
+        timing.
 
     Examples:
         >>> sections_downloads({"download/processed": 3.0}, {})[0].title
@@ -437,6 +445,27 @@ def sections_downloads(
             _section("Attentes du limiteur", [_bar("Répartition du temps", list(waits), list(waits.values()))],
                      {"Temps": _kv_table(waits)})
         )
+    # Audit de couverture : part téléchargée par année, couverture stockée par déclarant
+    coverage = _under(metrics, "coverage")
+    by_year = artifacts.get("coverage/by_year.csv")
+    by_reporter = artifacts.get("coverage/by_reporter.csv")
+    if coverage or by_year is not None or by_reporter is not None:
+        figure = (
+            _bar("Part des requêtes planifiées téléchargées, par année",
+                 by_year["year"].astype(str).tolist(), by_year["share_queries_downloaded"].tolist())
+            if by_year is not None and {"year", "share_queries_downloaded"} <= set(by_year.columns) else None
+        )
+        sections.append(
+            _section(
+                "Couverture",
+                [figure],
+                {
+                    "Audit": _kv_table(coverage),
+                    "Par année": by_year if by_year is not None else pd.DataFrame(),
+                    "Par déclarant": by_reporter if by_reporter is not None else pd.DataFrame(),
+                },
+            )
+        )
     timing = _timing_section(metrics)
     return sections + ([timing] if timing else [])
 
@@ -450,24 +479,27 @@ def key_figures_baci(metrics: Mapping[str, float]) -> List[str]:
     """Key figures of a BACI vintage run.
 
     Args:
-        metrics: Metrics of the run (``baci/*``, ``hs/*``, ``coverage/*``, ``run/*``).
+        metrics: Metrics of the run, one section per step (``conversion/*``,
+            ``gravity/*``, ``valuation/*``, ``reconciliation/*``, ``quality/*``,
+            ``nes/*``, ``harmonization/*``, ``output/*``), plus ``coverage/*``
+            and ``run/*``.
 
     Returns:
         Years eligible, flows, converted share, median freight rate, gravity
         R², value reallocated from NES, memory peak.
 
     Examples:
-        >>> key_figures_baci({"baci/flows": 212000000.0, "baci/tonnage/share_tonnage_missing": 0.022})
+        >>> key_figures_baci({"output/flows": 212000000.0, "conversion/share_tonnage_missing": 0.022})
         ['212 000 000 flux', '97,8 % converti en tonnes']
     """
-    missing = metrics.get("baci/tonnage/share_tonnage_missing")
+    missing = metrics.get("conversion/share_tonnage_missing")
     return _figs(
         _fig("années éligibles", metrics.get("coverage/years_eligible")),
-        _fig("flux", metrics.get("baci/flows")),
+        _fig("flux", metrics.get("output/flows")),
         _fig("converti en tonnes", None if missing is None else 1.0 - missing, pct=True),
-        _fig("de taux de fret médian", metrics.get("baci/gravity/median_freight_rate"), pct=True),
-        _fig("de R² de la gravité", metrics.get("baci/gravity/r_squared")),
-        _fig("de valeur NES réallouée", metrics.get("baci/nes/share_nes_value_reallocated"), pct=True),
+        _fig("de taux de fret médian", metrics.get("gravity/median_freight_rate"), pct=True),
+        _fig("de R² de la gravité", metrics.get("gravity/r_squared")),
+        _fig("de valeur NES réallouée", metrics.get("nes/share_nes_value_reallocated"), pct=True),
         _fig("Mo de pic mémoire", metrics.get("run/peak_memory_mb")),
     )
 
@@ -482,7 +514,8 @@ def sections_baci(
     reconciliation, NES, harmonization, output, timing.
 
     Args:
-        metrics: Metrics of the run (``baci/*``, ``hs/*``, ``coverage/*``, ``run/*``).
+        metrics: Metrics of the run, one section per step (see
+            :func:`key_figures_baci`).
         artifacts: Artifact tables logged by ``run_baci``:
             ``tonnage/conversion_rates.csv``, ``fobisation/valuation_regimes.csv``,
             ``quality/sigma_by_country.csv``; and ``output/rows_by_year.csv``
@@ -492,14 +525,14 @@ def sections_baci(
         Sections in pipeline order; a step without any metric is skipped.
 
     Examples:
-        >>> titles = [s.title for s in sections_baci({"baci/flows": 3.0}, {})]
+        >>> titles = [s.title for s in sections_baci({"output/flows": 3.0}, {})]
         >>> titles
         ['Sortie']
     """
     sections: List[Section] = []
 
     # Conversion en tonnes : taux validés par produit et unité
-    tonnage = {k: v for k, v in _under(metrics, "baci/tonnage").items() if "/" not in k}
+    tonnage = {k: v for k, v in _under(metrics, "conversion").items() if "/" not in k}
     rates = artifacts.get("tonnage/conversion_rates.csv")
     if tonnage or rates is not None:
         shares = {k: v for k, v in tonnage.items() if k.startswith("share_")}
@@ -516,13 +549,15 @@ def sections_baci(
         )
 
     # Fobisation : taux de fret, parts FAS rétablies / tronquées
-    fob = {k: v for k, v in _under(metrics, "baci/fobisation").items() if "/" not in k}
+    fob = {
+        k: v for k, v in _under(metrics, "valuation").items() if "/" not in k and not k.startswith("regime_")
+    }
     regimes = artifacts.get("fobisation/valuation_regimes.csv")
     if fob or regimes is not None:
         shares = {k: v for k, v in fob.items() if k.startswith("share_")}
         freight = {
             k.replace("_freight_rate", ""): v
-            for k, v in _under(metrics, "baci/gravity").items()
+            for k, v in _under(metrics, "gravity").items()
             if k in ("p10_freight_rate", "median_freight_rate", "mean_freight_rate", "p90_freight_rate")
         }
         sections.append(
@@ -537,7 +572,7 @@ def sections_baci(
         )
 
     # Gravité : coefficients, R², points de Cook exclus
-    gravity = _under(metrics, "baci/gravity")
+    gravity = _under(metrics, "gravity")
     if gravity:
         coefficients = {k.split("/", 1)[1]: v for k, v in gravity.items() if k.startswith("coefficients/")}
         scalars = {k: v for k, v in gravity.items() if "/" not in k and "freight" not in k}
@@ -553,8 +588,8 @@ def sections_baci(
     sigma = artifacts.get("quality/sigma_by_country.csv")
     quality = {
         f"{step}/{k}": v
-        for step in ("quality_value", "quality_quantity")
-        for k, v in _under(metrics, f"baci/{step}").items()
+        for step in ("value", "quantity")
+        for k, v in _under(metrics, f"quality/{step}").items()
     }
     if quality or sigma is not None:
         figure, top = None, pd.DataFrame()
@@ -566,8 +601,8 @@ def sections_baci(
                                  {"Métriques": _kv_table(quality), "σ̂ par pays (30 plus élevés)": top}))
 
     # Valorisation et réconciliation des flux miroirs
-    mirror = {k: v for k, v in _under(metrics, "baci/mirror").items() if "/" not in k}
-    regime = {k: v for k, v in _under(metrics, "baci").items() if k.startswith("regime_")}
+    mirror = {k: v for k, v in _under(metrics, "reconciliation").items() if "/" not in k}
+    regime = {k: v for k, v in _under(metrics, "valuation").items() if k.startswith("regime_")}
     if mirror or regime:
         shares = {k: v for k, v in mirror.items() if k.startswith("share_")}
         sections.append(
@@ -579,7 +614,7 @@ def sections_baci(
         )
 
     # NES : valeur réallouée
-    nes = {k: v for k, v in _under(metrics, "baci/nes").items() if "/" not in k}
+    nes = {k: v for k, v in _under(metrics, "nes").items() if "/" not in k}
     if nes:
         values = {k: v for k, v in nes.items() if k.startswith("value_")}
         sections.append(
@@ -589,13 +624,16 @@ def sections_baci(
         )
 
     # Harmonisation de nomenclature
-    hs = _under(metrics, "hs")
+    hs = _under(metrics, "harmonization")
     if hs:
-        sections.append(_scalar_section(metrics, "hs", "Harmonisation de nomenclature", bar_title=None))
+        sections.append(_scalar_section(metrics, "harmonization", "Harmonisation de nomenclature", bar_title=None))
 
     # Sortie
-    output = {k: metrics[k] for k in ("baci/flows", "baci/created", "baci/n_input_declarations", "baci/total_reconciled_value")
-              if k in metrics}
+    output = {
+        k: metrics[k]
+        for k in ("output/flows", "output/created", "output/n_input_declarations", "output/total_reconciled_value")
+        if k in metrics
+    }
     coverage = _under(metrics, "coverage")
     by_year = artifacts.get("output/rows_by_year.csv")
     if output or coverage or by_year is not None:

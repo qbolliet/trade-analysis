@@ -84,6 +84,7 @@ def create_pipeline(parameters: Optional[Mapping[str, Any]] = None, **kwargs: An
                     "vulnerabilities": "params:vulnerabilities",
                     "synthesis": "params:synthesis",
                     "runtime": "params:runtime",
+                    "tracking": "params:tracking",
                     **SOURCES,
                     **reference_inputs(parameters),
                 },

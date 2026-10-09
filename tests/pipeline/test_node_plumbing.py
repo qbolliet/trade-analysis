@@ -200,5 +200,11 @@ def test_concordance_cache_dataset_checks_identity() -> None:
 def test_maintenance_node_reports_an_empty_result() -> None:
     from kedro_pipeline.pipelines.maintenance.nodes import maintain_ducklake
 
+    # Hors workflow (aucun identifiant dans le contexte) : aucun run orphelin recherché
     outputs = maintain_ducklake({"CATALOGS": [{"dbname": "eurostat"}]}, {})
-    assert outputs == {"metrics": {"units/planned": 0.0, "units/succeeded": 0.0, "units/failed": 0.0}}
+    assert outputs == {
+        "metrics": {
+            "units/planned": 0.0, "units/succeeded": 0.0, "units/failed": 0.0,
+            "mlflow/stale_runs_closed": 0.0,
+        }
+    }

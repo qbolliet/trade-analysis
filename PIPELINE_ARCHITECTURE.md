@@ -45,6 +45,7 @@
 | 2026-10-08 (K-10) | **Projet Kedro et configuration au format Kedro** : `kedro_pipeline/{__main__,settings,pipeline_registry,hooks,cli,config_check}.py` (pipeline `__default__` vide, `kedro trade config-check`), `config/{base,demo,cloud,local}/` lus par `OmegaConfigLoader` (fusion `soft` des paramètres), `load_parameters(env)` pour les scripts (`KEDRO_ENV`, `local` par défaut ; plus aucune variable `*_CONFIG_PATH`), datasets `kedro_pipeline/io/datasets.py` (`DuckLakeTableDataset`, `FreshnessRegistryDataset`, `ServingCatalogDataset`), `DuckLakeTable.lazy`. Écarts : `kedro` résolu en **1.7.0** (borne `>=1.6,<2`) ; **`kedro-datasets` ajouté** (importé par kedro-mlflow 2.0.3 sans être déclaré) ; aucune contrainte `pytest<9` (elle n'existe que dans l'extra `test` de kedro-mlflow) ; **hooks kedro-mlflow et argo-kedro désactivés** (`DISABLE_HOOKS_FOR_PLUGINS`) tant que `mlflow.yml` / `argo.yml` n'existent pas (sans eux, toute session échoue) ; noms d'expériences dans **`experiments.yml`** (motif `experiments`) ; entrée de credentials composée **`ducklake`** ; cibles BACI désactivées en demo par **entrées nulles** (`active_targets`) ; registres `state.<étape>` en **entrées explicites** (pas de factory) ; interpolations inter-fichiers vérifiées (résolution **par environnement**) ; télémétrie Kedro (`kedro-telemetry`, dépendance de kedro) active par défaut hors CI | C-16, PD-03, PS-02, PS-03, PS-04, PS-05, PS-06, PS-07 |
 | 2026-10-09 (K-11) | **Fonctions d'étape partagées, scripts en enveloppes minces** : `kedro_pipeline/steps/{result,_config,downloads,coverage,partners,network,synthesis,coherence}.py` (nouveaux), `baci.py` (fraîcheur, `prepare_baci`, `run_baci_vintage(s)`), `reference.py` et `serving.py` (retour `StepResult`) ; `StepResult` étendu (unités en échec, libellé, tables du rapport, `reportable`, `outputs` lisibles par clé, `children`, `failure_exception`) ; runs par unité par fabrique `UnitRuns` (un run par passe partenaires, par millésime BACI et réseau) ; construction unique du rapport `kedro_pipeline.io.tracking.build_step_report` ; `DuckLakeTable.connector()` / `.reader()`, `attached_catalog_alias` ; scripts : chargement, poignées paresseuses (identifiants lus à la première connexion), tracker, appel, rapport, `raise_if_failed` ; ré-exports des symboles importés par les tests et `tools/`. **Audit de couverture implémenté** et branché, non bloquant, dans les téléchargements (bloc `COVERAGE`). Écarts : arguments résolus par l'appelant (`force`, `adopt_legacy_fingerprints`, `run_id`, `n_jobs`), `prepare_baci` reçoit les requêtes planifiées, injection des collaborateurs BACI (client UNSD, cache, référentiels, passes), une ligne d'import de test modifiée (`test_scripts_synthesis_parallel_e2e.py`) | PD-02, PS-08, PS-13 |
 | 2026-10-09 (K-12) | **Pipelines et nœuds Kedro, deux cadences, test de bout en bout** : `kedro_pipeline/pipelines/{downloads,baci,vulnerabilities,synthesis,serving,maintenance}/` (nœuds `argo_kedro.pipeline.Node`, téléchargements en `FusedPipeline`), `__default__` par `sum_pipelines` (16 tâches en base), `daily` (4) et `weekly` (12) filtrés par tag ; `kedro_pipeline/pipelines/_common.py` (sorties de suivi, ordre registres → échec) ; hook `TradeRunHooks` (`N_JOBS`, `context.argo` par défaut, métriques d'un nœud en échec) ; datasets `ducklake.catalogs`, `clients.*`, `baci.scope`, `baci.concordances`, `mlflow.metrics.{node}` / `mlflow.artifacts.{node}` (fichiers locaux) ; catalogues DuckLake fichiers (`FileConnectorFactory`, métadonnées SQLite) choisis par `credentials.ducklake.file_root` ; `run_download` découpé en phases ; étape `maintenance` minimale ; environnement `config/test/` (résolveur `trade.test_root`, clients factices `tests/pipeline/fakes.py`). Écarts : tags en `famille.valeur` (Kedro refuse `:`), registres en entrée seulement, `state.baci` unique, diagnostics `fit` hors sorties de la synthèse, `baci.scope` en pickle. Constats : `kedro run` est la commande d'argo-kedro (FusedRunner) et **ignore `--params`** ; un téléchargement sans nouvelle donnée avance `last_download` (PQ-22) | PD-14, PS-07, PS-08, PS-09, PS-11, PS-18, §6, PQ-22 |
+| 2026-10-09 (K-13) | **Suivi MLflow du pipeline Kedro** : `config/{base,test}/mlflow.yml` (résolveur `trade.env` limité à `MLFLOW_TRACKING_URI`, `MLFLOW_EXPERIMENT_NAME`, `WORKFLOW_ID`) ; hook kedro-mlflow **gardé** `kedro_pipeline/mlflow_hook.py::GuardedMlflowHook` (sonde du serveur, aucune erreur de suivi ne remonte au runner, plus de réouverture du run avant chaque nœud) à la place de celui du plugin ; `ActiveRunTracker` ; `build_tracker`, `node_unit_runs` (unités d'un nœud au `step` de leur millésime), `build_node_report` (contrôles par unité, runs inactifs), `close_stale_runs`, `tag_active_experiment` (`kedro_pipeline/io/tracking.py`) ; datasets `MlflowRunMetricsDataset` (sans doublon) et `MlflowTablesDataset` (`kedro_pipeline/io/mlflow_datasets.py`) ; `TradeRunHooks` (tags, nom de run, contexte injecté dans `params:tracking`, description réduite) ; `finish_step` : registres → rapport → échec ; **sections PD-13** des métriques BACI (`output/`, `conversion/`, `gravity/`, `valuation/`, `reconciliation/`, `quality/{value,quantity}/`, `nes/`, `harmonization/`) et des requêtes (`download/query/`, `download/fetch/`, `http/`, `rate_limit/`), `CHECKS` renommés ; couverture et tables PS-31.4 dans le rapport des téléchargements ; clôture des runs orphelins par `maintain_ducklake`. Écarts : `trade.env` au lieu d'`oc.env`, datasets projet au lieu de `MlflowArtifactDataset`, expériences typées « Model training » (interface MLflow 3). Constats : métriques système actives par la seule variable ; la réouverture du run par kedro-mlflow démarrait un moniteur de plus par nœud | C-19, PD-13, PD-16, PS-07, PS-08, PS-19, PS-31, §5.1, §5.8, PR-19, PR-20, PQ-19 |
 
 ## Sommaire
 
@@ -133,7 +134,7 @@ gravité pour la mise en production (🔴 bloquant, 🟠 à traiter avant le ré
 | C-16 | ✅ | `config/base/catalog.yaml` et `config/base/parameters.yaml` existent mais sont vides : amorce d'une arborescence Kedro. *(Traité en K-10, 2026-10-08 : fichiers vides supprimés, `config/base/` porte désormais les `parameters_*.yml`, `catalog.yml`, `credentials.yml` et `experiments.yml`.)* | `config/base/` |
 | C-17 | ✅ | Incohérence des chemins CEPII : `process_baci.py` préfixe `s3://{bucket}/` **et** passe `bucket=`, alors que `process_baci_hs.py` passe le chemin relatif et `bucket=`. *(Traité en phase 0, 2026-09-18 : `process_baci.py` supprimé (doublon mono-millésime de `process_baci_hs.py`), ainsi que les clés mortes `baci.PATHS.RESULT_*`.)* | `process_baci.py:257-264` vs `process_baci_hs.py:453-454` |
 | C-18 | ✅ | `scripts/test_baci.py` (écriture `df_reconciled.xlsx` en local) est un script de mise au point, hors pipeline. *(Traité en phase 0, 2026-09-18 : `scripts/test_baci.py` et l'entry point `test-baci-script` supprimés.)* | `scripts/test_baci.py` |
-| C-19 | ✅ | Le suivi MLflow crée une expérience par script, avec des noms de métriques séparés par des points (`gravity.r2`) : l'interface MLflow ne regroupe pas automatiquement les graphiques par étape. *(Traité en phase 0, 2026-09-21 : les scripts journalisent leurs métriques avec `/` (`rekey_metrics`, `flatten_metrics(sep="/")`, préfixes des rapports conservés : `baci/gravity/r_squared`, `download/errors`, `synthesis/by_product/n_groups`) et une expérience par bloc (`trade-01-downloads`…). MLflow 3.15 regroupe les graphiques par préfixe complet (sections `baci`, `baci/gravity`, `baci/tonnage`…) : constat PQ-19.)* | `macroforecast/tracking/` |
+| C-19 | ✅ | Le suivi MLflow crée une expérience par script, avec des noms de métriques séparés par des points (`gravity.r2`) : l'interface MLflow ne regroupe pas automatiquement les graphiques par étape. *(Traité en phase 0, 2026-09-21 : les scripts journalisent leurs métriques avec `/` (`rekey_metrics`, `flatten_metrics(sep="/")`, préfixes des rapports conservés : `baci/gravity/r_squared`, `download/errors`, `synthesis/by_product/n_groups`) et une expérience par bloc (`trade-01-downloads`…). MLflow 3.15 regroupe les graphiques par préfixe complet (sections `baci`, `baci/gravity`, `baci/tonnage`…) : constat PQ-19.)* *(K-13, 2026-10-09 : sections cibles de PD-13 appliquées par les fonctions d'étape — `gravity/r_squared`, `conversion/…`, `output/flows`, `http/…` —, scripts et nœuds compris.)* | `macroforecast/tracking/` |
 | C-20 | 🔴 | **Accès au cluster impossible depuis le poste local** : le jeton de rafraîchissement OIDC de `sspcloud_access_script.txt` est lié à une preuve DPoP (`oauth2: "invalid_grant" "DPoP proof is missing"`), que le fournisseur `oidc` de `kubectl` ne sait pas produire. Voir PQ-09. | `sspcloud_access_script.txt` |
 | C-21 | 🟡 | Aucune documentation mkdocs, aucun workflow GitHub Actions, aucun `.dockerignore` dans le dépôt. `sspcloud_access_script.txt` et `Trade deployment.md` sont bien ignorés par git, mais **seraient copiés dans une image** construite avec `COPY . .`. | racine |
 | C-22 | 🟠 | **Aucune table de référence** (libellés de produits par millésime, libellés de pays, tables de passage HS exposées) n'est produite : un tableau de bord ne peut afficher que des codes. Les codelists sont pourtant téléchargées à chaque exécution (`fetch_dimension_codelists`) et les concordances UNSD sont en cache Parquet. *(Traité en phase 0, K-03b, 2026-09-21 : `publish_reference` / `publish_hs_reference` appelées par `download_*.py` et `process_baci_hs.py`, PS-28.4.)* | `scripts/download_*.py`, `scripts/process_baci_hs.py:_ensure_concordances` |
@@ -982,7 +983,7 @@ Le registre global actuel (C-10) serait « tout ou rien ».
   `coverage/…`, `download/…`, `query/…`, `vulnerabilities/…`, `network_vulnerabilities/…`,
   `synthesis/<niveau>/…`, `coherence/<niveau>/…`, `serving/<table>/…`, `checks/…`, `run/…` ;
   l'étape « conversion » de BACI s'appelle donc `tonnage`. Les noms de PD-13 ci-dessus
-  restent la cible de K-13.*
+  sont appliqués depuis K-13 (correspondance exacte ci-dessous).*
 
 - Le protocole `RunTracker` est conservé et gagne deux méthodes, `log_text(text,
   artifact_file)` et `set_tags(tags)` (implémentées par `NullTracker` et
@@ -1000,6 +1001,52 @@ Le registre global actuel (C-10) serait « tout ou rien ».
   un pod tué (OOM, expiration) sont clos par la maintenance `onExit` (PR-20).
 - `flatten_metrics(payload, prefix, sep=".")` gagne un paramètre `sep`. Le pipeline
   utilise `sep="/"` ; le défaut `"."` préserve les tests existants.
+
+**Implémentation (K-13, 2026-10-09).**
+
+- **Correspondance des sections**, établie sur les champs réels des rapports et appliquée
+  dans `kedro_pipeline/steps/` (`baci_section_metrics`, `harmonization_metrics`,
+  `query_metrics`), jamais dans `macroforecast` :
+
+  | Champ réel | Avant (K-03d) | Métrique (K-13) |
+  |---|---|---|
+  | `BaciReport.flows`, `n_input_declarations`, `total_reconciled_value`, `period_start`, `period_end`, `created` | `baci/<champ>` | `output/<champ>` |
+  | `BaciReport.regime_country_years`, `regime_fob_country_years`, `regime_no_information` (régime de valorisation des importations) | `baci/regime_*` | `valuation/regime_*` |
+  | `BaciReport.tonnage` (`TonnageReport`) | `baci/tonnage/*` | `conversion/*` |
+  | `BaciReport.gravity` (`GravityReport`, `coefficients/*` compris) | `baci/gravity/*` | `gravity/*` |
+  | `BaciReport.fobisation` (`FobisationReport`) | `baci/fobisation/*` | `valuation/*` |
+  | `BaciReport.mirror` (`MirrorReport`) | `baci/mirror/*` | `reconciliation/*` |
+  | `BaciReport.quality_value` / `quality_quantity` (`QualityReport`) | `baci/quality_value/*`, `baci/quality_quantity/*` | `quality/value/*`, `quality/quantity/*` |
+  | `BaciReport.nes` (`NesReport`) | `baci/nes/*` | `nes/*` |
+  | `HsHarmonizationReport` | `hs/*` | `harmonization/*` |
+  | `run_baci_passes` (journalisé par `macroforecast`, inchangé) | `timing/seconds`, `output/rows` (`step` = année), `passes/<passe>/seconds`, `memory/*` | inchangés |
+  | `QueryReport` (une requête, `step` = rang de la requête) | `query/*`, `query/http/*`, `query/rate_limit/*`, `query/fetch/*` | `download/query/*`, `http/*`, `rate_limit/*`, `download/fetch/*` |
+  | `DownloadReport` (run), couverture, fraîcheur, partenaires, réseau, synthèse, cohérence, service | `download/*`, `coverage/*`, `freshness/*`, `partners/<flux>/*`, `network/<flux>/*`, `synthesis/<niveau>/*`, `coherence/<niveau>/*`, `serving/*` | inchangés |
+
+  Les métriques par requête existaient déjà pour les deux sources (`on_query_complete`
+  est générique dans `download_planned`) : vérifié sur Comtrade par le test de bout en bout.
+- **Unités d'un nœud** (passes partenaires, millésimes réseau) : un seul run par nœud ;
+  chaque unité journalise sous les noms PD-13 avec `step` = année de son millésime
+  (`partners/import/cells/n_total` au step 2022, puis 2017) ; ses tags et artefacts sont
+  préfixés de son libellé (`HS2017/…`). Les contrôles configurés sont évalués **par unité**
+  (« Cellules … — HS2017 » dans `report/checks.csv`), le verdict est le pire.
+- **Une seule écriture par métrique et par table** : les étapes journalisent en direct
+  (séries par `step` préservées) ; `mlflow.metrics.<nœud>` (`MlflowRunMetricsDataset`,
+  sous-classe de `MlflowMetricsHistoryDataset`, `prefix: ""`) n'écrit que les noms absents
+  du run (`units/*`, ou tout si l'écriture directe a échoué) ; les tables des étapes ne
+  sont écrites que par `mlflow.artifacts.<nœud>` (`MlflowTablesDataset`, CSV aux chemins
+  qu'utilisaient les scripts). `MlflowArtifactDataset` n'est pas retenu : son écriture
+  lève si le serveur est injoignable (la tâche échouerait pour une raison de suivi) et il
+  versait le dossier local d'un `PartitionedDataset` sous un sous-dossier. L'environnement
+  `test` garde ses fichiers locaux.
+- **Hook gardé** : `GuardedMlflowHook` (`kedro_pipeline/mlflow_hook.py`), sous-classe de
+  `MlflowHook` enregistrée dans `settings.HOOKS` (entry point du plugin désactivé). Sans
+  URI, ou serveur muet à la sonde (délai 5 s, aucune reprise), le suivi est désactivé
+  avec un avertissement ; toute erreur d'un hook de kedro-mlflow est un avertissement.
+- **Expériences typées** : le hook projet pose le tag d'expérience
+  `mlflow.experimentKind = custom_model_development` ; sans lui, MLflow 3.15 ouvre
+  l'expérience en mode « GenAI » sur l'onglet *Traces* et un lien filtré perd son filtre
+  (constat K-13, §5.1).
 
 **Justification.** Chaque tâche Argo produit exactement un run : c'est la bonne maille
 pour répondre à « cette exécution s'est-elle bien passée ? ». En plaçant le verdict
@@ -1123,6 +1170,12 @@ fonctions.
 6. **Clôture des runs orphelins** : le nœud passe en `FAILED` les runs MLflow du même
    `workflow_id` restés `RUNNING` (pod tué avant d'avoir pu fermer son run), avec une
    description « tâche interrompue — voir Argo » (PR-20, PS-31.5).
+   *(K-13, 2026-10-09 : `kedro_pipeline/io/tracking.py::close_stale_runs(workflow_id,
+   experiments, min_age)`, appelée par le nœud `maintain_ducklake` avec le bloc
+   `tracking.STALE_RUNS` (expériences, âge minimal, description) et l'identifiant du
+   workflow injecté par le hook ; le run de la maintenance est exclu ; métrique
+   `mlflow/stale_runs_closed`. K-14 n'étant pas passé, l'étape de maintenance est encore
+   vide : **K-14 doit conserver cet appel** dans le nœud.)*
 
 **Justification.** Un pipeline quotidien qui fait des upserts crée chaque jour des
 petits fichiers, des tombstones et des snapshots. Sans compaction, expiration et
@@ -2179,6 +2232,13 @@ serving.tables:                        # poignée du catalogue DuckLake `serving
   changera que le type ;
 - `kedro trade config-check --env test` : 20 datasets cohérents (avec `TRADE_TEST_ROOT`).
 
+**Catalogue complété en K-13** : `"mlflow.metrics.{node}"` →
+`kedro_pipeline.io.mlflow_datasets.MlflowRunMetricsDataset` (`prefix: ""` : sinon
+kedro-mlflow préfixe chaque nom par celui du dataset, `mlflow.metrics.x.gravity/r2`) ;
+`"mlflow.artifacts.{node}"` → `kedro_pipeline.io.mlflow_datasets.MlflowTablesDataset`
+(PD-13, implémentation). Les deux n'écrivent que dans le run actif et ne lèvent jamais.
+`config/test/catalog.yml` conserve les fichiers JSON / CSV de K-12.
+
 ### PS-08 — API des fonctions d'étape (`kedro_pipeline/steps/`)
 
 Toutes les étapes renvoient un **`StepResult`** :
@@ -2260,6 +2320,13 @@ Invariants communs (hérités des scripts, à conserver) :
 > | `reference.py` | `publish_reference(codelists, table, *, source, params, conn=None) -> StepResult` | `table` est un connecteur (ou une connexion ouverte `conn`) |
 >
 > Arguments communs résolus **par l'appelant** (invariant 4) : `force` (`ForceSpec`), `adopt_legacy_fingerprints`, `run_id` (identifiant du workflow), `n_jobs` ; sans eux, les étapes prennent `ForceSpec.from_runtime(runtime, environ={})` et `adopt_legacy_flag(..., environ={})`, sans lire l'environnement. Les étapes n'entrent jamais le tracker : le run appartient à l'appelant (script ou nœud). Le rapport est construit une seule fois, par `kedro_pipeline.io.tracking.build_step_report(result, node=…, params=…, context=…)` ; `progress` (attribut `step`) nomme la dernière étape atteinte dans la description réduite d'un échec. **À traiter en K-12/K-13** : avec `shared_runs`, toutes les passes partenaires partageraient un run et les mêmes noms de métriques ; un nœud Kedro par passe ou un préfixe par passe sera nécessaire.
+
+> **K-13** — `kedro_pipeline/pipelines/_common.py::finish_step(…, reporting=, reported=)`
+> applique l'invariant 3 dans cet ordre : sauvegarde des registres, publication du rapport
+> du run (`NodeReporting.publish`, jamais bloquante), puis `raise_if_failed()` ; l'exception
+> porte `step_result` et `report_published`. `NodeReporting` (créé par `node_reporting`)
+> fournit aux étapes un tracker qui écrit en direct sauf les tables, et sert d'objet
+> `progress` (dernière étape atteinte, lue par la description réduite d'un échec).
 
 ### PS-09 — Pipelines et nœuds
 
@@ -3079,6 +3146,43 @@ Conventions :
   nœud lève avant d'y arriver ;
 - les métriques système sont activées par variable d'environnement dans les pods
   (PS-21.1) : aucune ligne de code dans les nœuds.
+
+**Implémentation (K-13, 2026-10-09)** — vérifié dans le code installé (kedro 1.7.0,
+kedro-mlflow 2.0.3, MLflow 3.15.1) :
+- **`oc.env` refusé** hors credentials (`OmegaConfigLoader` retire le résolveur). Plutôt
+  que de l'ouvrir à tous les fichiers (un paramètre pourrait alors lire un secret, ce
+  qu'interdit le test `test_oc_env_is_refused_in_parameters`), `CONFIG_LOADER_ARGS`
+  déclare **`trade.env`** (`kedro_pipeline.config.resolve_tracking_env`), qui ne lit que
+  `MLFLOW_TRACKING_URI`, `MLFLOW_EXPERIMENT_NAME` et `WORKFLOW_ID` :
+  `mlflow_tracking_uri: ${trade.env:MLFLOW_TRACKING_URI,null}`. `config/test/mlflow.yml`
+  vise un magasin `file:` sous `${trade.test_root:mlruns}` (MLflow 3 l'exige avec
+  `MLFLOW_ALLOW_FILE_STORE=true`, sinon suivi désactivé avec avertissement).
+- **Ordre des hooks** : Kedro enregistre `settings.HOOKS` dans l'ordre du tuple et pluggy
+  appelle d'abord le dernier enregistré ; `HOOKS = (TradeRunHooks(), GuardedMlflowHook())`
+  : le run est ouvert quand `TradeRunHooks.before_pipeline_run` (déclaré en outre
+  `trylast`) pose les tags et renomme le run (`mlflow.runName`) ; `before_node_run`
+  injecte le contexte (`workflow_id`, `env`, `image`, `git_sha`, début de la tâche, liens)
+  dans `params:tracking` : les nœuds ne lisent jamais l'environnement.
+- **Hook du plugin remplacé** (`DISABLE_HOOKS_FOR_PLUGINS = ("kedro_mlflow", "argo-kedro")`)
+  par `GuardedMlflowHook` : sonde du serveur, erreurs converties en avertissements. Son
+  `before_node_run` ne rouvre plus le run déjà actif dans le fil courant : la réouverture
+  de kedro-mlflow (`start_run(run_id=…, nested=True)`, prévue pour les runners à fils)
+  empilait le run une fois de plus et **démarrait un moniteur de métriques système par
+  nœud** (échantillons dupliqués, fichiers de métriques entrelacés sur un magasin
+  fichier) ; les entrées en trop survivaient à la session, si bien qu'une session suivante
+  du même processus écrivait dans l'ancien run. Les paramètres sont journalisés un par un
+  (un refus n'arrête pas les suivants).
+- **Tâche fusionnée** : `FusedRunner` déplie la tâche ; les hooks de nœud voient
+  `fetch_<source>`, `publish_reference_<source>`, `audit_coverage_<source>` ; le nom de la
+  tâche vient de `run_params["node_names"]` ; seul l'audit publie le rapport, sous
+  `download_<source>`.
+- **Métriques système** : `MLFLOW_ENABLE_SYSTEM_METRICS_LOGGING=true` suffit sur les runs
+  ouverts par kedro-mlflow (huit métriques `system/*` par run dans le test de bout en
+  bout) ; aucune activation explicite n'est ajoutée.
+- **Magasin fichier sous Windows** (poste de développement seulement) : réécrire un
+  paramètre déjà journalisé dont la valeur contient des caractères non ASCII est refusé
+  (valeur relue dans un autre encodage) ; avertissement seulement, sans objet sur
+  PostgreSQL.
 
 ### PS-20 — `config/base/argo.yml`
 
@@ -3936,14 +4040,16 @@ tracking:
       - {metric: download/wait_share,   op: "<=", threshold: 0.5,  severity: warning, label: "Temps passé en attente du limiteur"}
     "process_baci_*":                 # nœud par millésime : process_baci_<millésime> ; inclut la porte de complétude
       - {metric: coverage/years_eligible,                  op: ">",  threshold: 0,    severity: error,   label: "Au moins une année complète"}
-      - {metric: baci/flows,                               op: ">",  threshold: 0,    severity: error,   label: "Flux écrits"}
-      - {metric: baci/tonnage/share_tonnage_missing,       op: "<=", threshold: 0.05, severity: warning, label: "Flux sans tonnage (1 − part convertie en tonnes)"}
-      - {metric: baci/gravity/r_squared,                   op: ">=", threshold: 0.5,  severity: warning, label: "R² de l'équation de gravité"}
-      - {metric: baci/fobisation/share_clipped_to_zero,    op: "<=", threshold: 0.01, severity: warning, label: "Valeurs FOB tronquées à zéro"}
-    compute_partner_vulnerabilities:
-      - {metric: vulnerabilities/cells/n_total,            op: ">",  threshold: 0,    severity: warning, label: "Cellules de vulnérabilité calculées"}
-    "compute_network_vulnerabilities*":   # un run par millésime : compute_network_vulnerabilities_<millésime>
-      - {metric: network_vulnerabilities/cells/n_total,    op: ">",  threshold: 0,    severity: warning, label: "Cellules de vulnérabilité de réseau calculées"}
+      - {metric: output/flows,                             op: ">",  threshold: 0,    severity: error,   label: "Flux écrits"}
+      - {metric: conversion/share_tonnage_missing,         op: "<=", threshold: 0.05, severity: warning, label: "Flux sans tonnage (1 − part convertie en tonnes)"}
+      - {metric: gravity/r_squared,                        op: ">=", threshold: 0.5,  severity: warning, label: "R² de l'équation de gravité"}
+      - {metric: valuation/share_clipped_to_zero,          op: "<=", threshold: 0.01, severity: warning, label: "Valeurs FOB tronquées à zéro"}
+    compute_partner_vulnerabilities:      # contrôles évalués par passe (millésime SH) sous Kedro
+      - {metric: partners/import/cells/n_total,            op: ">",  threshold: 0,    severity: warning, label: "Cellules de vulnérabilité calculées (import)"}
+      - {metric: partners/export/cells/n_total,            op: ">",  threshold: 0,    severity: warning, label: "Cellules de vulnérabilité calculées (export)"}
+    "compute_network_vulnerabilities*":   # scripts : un run par millésime ; Kedro : un run, contrôles par millésime
+      - {metric: network/import/cells/n_total,             op: ">",  threshold: 0,    severity: warning, label: "Cellules de vulnérabilité de réseau calculées (import)"}
+      - {metric: network/export/cells/n_total,             op: ">",  threshold: 0,    severity: warning, label: "Cellules de vulnérabilité de réseau calculées (export)"}
     compute_synthetic_scores:
       - {metric: synthesis/n_contexts,                     op: ">",  threshold: 0,    severity: warning, label: "Contextes calculés"}
     compute_synthesis_coherence:
@@ -3951,7 +4057,21 @@ tracking:
     publish_serving:
       - {metric: serving/cell_scores/rows,                 op: ">",  threshold: 0,    severity: error,   label: "Table cell_scores non vide"}
       - {metric: serving/countries/rows,                   op: ">",  threshold: 0,    severity: error,   label: "Table countries non vide"}
+  STALE_RUNS:                         # runs orphelins clos par maintain_ducklake (PD-16.6)
+    EXPERIMENTS: [trade-00-maintenance, trade-01-downloads, trade-02-baci, trade-03-vulnerabilities, trade-04-serving]
+    MIN_AGE_MINUTES: 0
+    DESCRIPTION: "tâche interrompue — voir Argo"
 ```
+
+Noms renommés en K-13 (sections PD-13) : `baci/flows` → `output/flows`,
+`baci/tonnage/share_tonnage_missing` → `conversion/share_tonnage_missing`,
+`baci/gravity/r_squared` → `gravity/r_squared`, `baci/fobisation/share_clipped_to_zero` →
+`valuation/share_clipped_to_zero` ; contrôles partenaires et réseau par sens de flux
+(`partners/<flux>/…`, `network/<flux>/…`, depuis l'implémentation import / export). Le
+test « chaque contrôle vise une métrique émise » existe pour les scripts
+(`tests/tracking/test_checks_target_emitted_metrics.py`) **et pour chaque nœud Kedro**
+(`tests/pipeline/test_kedro_mlflow_run.py`, sur les runs MLflow eux-mêmes) ;
+`STALE_RUNS.EXPERIMENTS` est vérifié égal aux tags `experiment.*` des nœuds.
 
 Écarts entre les noms indicatifs de la première rédaction et les noms réels (K-03d) :
 
@@ -4023,6 +4143,15 @@ Description réduite en cas d'exception non rattrapée (hook `on_node_error`) : 
 `❌ <nœud> — échec`, type et message de l'exception (tronqués), dernière étape atteinte
 si connue, lien Argo ; tag `health=failed`.
 
+*K-13* : sous Kedro, la description réduite est posée par `TradeRunHooks.on_node_error`
+quand le nœud a levé **avant** son rapport (l'exception ne porte pas
+`report_published`) ; un nœud dont l'étape a échoué après calcul publie son rapport
+complet (verdict `failed`) puis lève. Un run qui n'avait **rien à recalculer** porte
+aussi un rapport : contrôles implicites seuls (les contrôles configurés signaleraient
+l'absence de calcul comme un défaut) et chiffre clé « rien à recalculer ». Les unités
+d'un nœud (passes, millésimes) donnent une ligne de contrôle par unité, des chiffres clés
+et des sections préfixés de l'unité.
+
 #### PS-31.4 Contenu par étape (chiffres clés, rapport HTML, tables)
 
 | Nœud | Chiffres clés (description) | Sections et figures du rapport HTML | Tables (`tables/`) |
@@ -4036,6 +4165,13 @@ si connue, lien Argo ; tag `health=failed`.
 | `compute_synthesis_coherence` | contextes calculés ; concordance médiane entre méthodes (statistique `PRIMARY` de PQ-18) | distribution des concordances par paire de méthodes ; paires de métriques les moins cohérentes | `coherence_summary.csv` |
 | `publish_serving` | tables publiées, lignes par table, mode (`full` / `by_year`), durée | lignes et fichiers par table | `tables.csv` |
 | `maintain_ducklake` | tables maintenues, fichiers avant → après, snapshots expirés, sauvegarde, runs orphelins clos | fichiers par table avant / après | `maintenance.csv` |
+
+*K-13* : le rapport de la tâche de téléchargement réunit téléchargement et audit de
+couverture (`download_report_result`) : métriques `coverage/*`, section « Couverture »
+(part téléchargée par année, audit par déclarant), chiffres clés
+`coverage/share_downloaded` et `coverage/eta_days`, tables `coverage_by_year`,
+`coverage_by_reporter` et `errors`. `prepare_baci` publie la table `scope` (millésimes à
+réestimer, années, raison) ; `maintain_ducklake` la métrique `mlflow/stale_runs_closed`.
 
 Les figures sont construites par `macroforecast/tracking/figures.py` à partir des
 métriques et des DataFrames d'artefacts que les étapes produisent déjà ; aucune
@@ -4053,7 +4189,13 @@ n'est pas disponible dans l'interface (PQ-19), l'information reste accessible.
 - **DAG et statut des pods** : interface Argo (lien dans chaque description).
 - **Runs orphelins** : un pod tué (OOM, `activeDeadlineSeconds`) ne peut pas fermer son
   run, qui resterait `RUNNING`. La maintenance `onExit` les passe en `FAILED` avec une
-  description « tâche interrompue — voir Argo » (PD-16.6, PR-20).
+  description « tâche interrompue — voir Argo » (PD-16.6, PR-20). *Implémenté en K-13.*
+- *Vérifié en K-13 (MLflow 3.15.1 local)* : le filtre passe dans l'URL de la liste des
+  runs (`#/experiments/<id>/runs?searchFilter=…`) ; la vue multi-expériences existe et
+  accepte le même filtre (`#/compare-experiments/s?experiments=[…]&searchFilter=…`, ou
+  cases à cocher de la liste des expériences puis *Compare*) ; une expérience non typée
+  s'ouvre en mode « GenAI » sur *Traces* et perd le filtre (d'où le tag
+  `mlflow.experimentKind` posé par le hook).
 
 #### PS-31.6 Points à vérifier (K-03d, K-13)
 
@@ -4073,8 +4215,10 @@ fictif de `process_baci_hs.main()` piloté dans un Chromium sans tête ; test
 3. **Métriques système** — `MLFLOW_ENABLE_SYSTEM_METRICS_LOGGING=true` suffit, sur un run
    ouvert par `mlflow.start_run` : huit métriques `system/*` (CPU, mémoire, disque, réseau)
    et l'onglet *System metrics* peuplé. Un échantillon n'est écrit qu'après un intervalle
-   d'échantillonnage : un run plus court n'en a aucun. *À revérifier* sur les runs ouverts par
-   kedro-mlflow (K-13) et `psutil` dans l'image.
+   d'échantillonnage : un run plus court n'en a aucun. *K-13* : vérifié sur les runs ouverts
+   par kedro-mlflow (`MLFLOW_SYSTEM_METRICS_SAMPLING_INTERVAL=1`, huit métriques `system/*`
+   par run), à condition de ne pas rouvrir le run avant chaque nœud (PS-19,
+   implémentation). *À revérifier* : `psutil` dans l'image (K-15).
 4. **Description dans *Overview*** — elle est affichée **sous** « About this run », les tags
    et les jeux de données (pas « en tête de page »), **repliée** sur environ quatre lignes
    avec un lien *Show more* : le titre (verdict) et la ligne d'exécution sont visibles, le
@@ -4085,8 +4229,15 @@ fictif de `process_baci_hs.main()` piloté dans un Chromium sans tête ; test
    premières lignes.
 5. **Regroupement des métriques** — MLflow 3.15 groupe les graphiques de l'onglet *Model
    metrics* par **préfixe complet** (tout ce qui précède le dernier `/`) : sections `baci`,
-   `baci/gravity`, `baci/tonnage`, `checks`, `coverage`, `hs`, `run`… La vue multi-expériences
-   et la conservation des colonnes dans l'URL restent à vérifier sur Onyxia.
+   `baci/gravity`, `baci/tonnage`, `checks`, `coverage`, `hs`, `run`… (depuis K-13 :
+   `gravity`, `conversion`, `output`, `http`, `download/query`…). *K-13* : vue
+   multi-expériences et filtre dans l'URL vérifiés en local (PS-31.5) ; les colonnes
+   affichées se choisissent par le menu *Columns* (l'URL ne porte que le filtre et les
+   expériences). À revérifier sur Onyxia.
+8. **Type d'expérience (K-13)** — MLflow 3.15 ouvre une expérience sans tag
+   `mlflow.experimentKind` en mode « GenAI » (onglet *Traces*) et y redirige un lien vers
+   la liste des runs, filtre perdu. Le hook projet pose `custom_model_development` sur
+   l'expérience de chaque run (idempotent) : l'expérience s'ouvre sur *Training runs*.
 6. **Magasin fichier** — MLflow 3.15 met le magasin `file:` en mode maintenance et le refuse
    sans `MLFLOW_ALLOW_FILE_STORE=true` (variable posée par les tests et à poser pour un
    `mlflow server --backend-store-uri file:…` local). Sans objet sur Onyxia (PostgreSQL).
@@ -4094,7 +4245,9 @@ fictif de `process_baci_hs.main()` piloté dans un Chromium sans tête ; test
    `FINISHED`, même traversé par une exception ; il le clôt désormais en `FAILED`. Les runs
    laissés `RUNNING` par un pod tué relèvent toujours de la maintenance `onExit` (PR-20).
 
-Écarts laissés à K-13 : aucun run n'est ouvert quand un script sort tôt (« rien à
+Écarts laissés à K-13 (*K-13 : sous Kedro, chaque tâche a son run et son rapport, même
+sans rien à recalculer ; la couverture des téléchargements est dans leur rapport ; les
+durées par passe restent celles de `passes/*`*) : aucun run n'est ouvert quand un script sort tôt (« rien à
 recalculer ») ; BACI n'émet aucune durée par passe ni par année (section « Temps et
 ressources » réduite à la durée et au pic mémoire du run) ; les sections de couverture par
 année et par déclarant des téléchargements exigeraient une lecture du registre, non faite.
@@ -4117,8 +4270,16 @@ minutes :
    défaut, unités en échec), puis *Artifacts → report/report.html* pour le détail et
    *System metrics* pour un problème de ressources.
 
-Modèle d'URL de la liste filtrée (à compléter en K-17 avec l'URL réelle et les
-colonnes retenues) : `<mlflow>/#/experiments/<id>?searchFilter=tags.workflow_id%3D'<workflow_id>'`.
+Modèles d'URL (vérifiés en K-13 sur MLflow 3.15 ; URL du serveur à compléter en K-17) :
+- liste filtrée d'une expérience — le chemin **`/runs`** est nécessaire :
+  `<mlflow>/#/experiments/<id>/runs?searchFilter=tags.workflow_id%20%3D%20'<workflow_id>'` ;
+- toute l'exécution, toutes expériences confondues :
+  `<mlflow>/#/compare-experiments/s?experiments=%5B%22<id1>%22%2C%22<id2>%22%5D&searchFilter=tags.workflow_id%20%3D%20'<workflow_id>'`
+  (ou : liste des expériences, cocher les cinq `trade-*`, *Compare*, puis saisir le filtre) ;
+- colonnes `tags.node`, `tags.health`, `metrics.checks/n_failed` : menu *Columns*.
+Si une expérience s'ouvre sur *Traces* (mode « GenAI »), basculer sur *Model training*
+en haut à gauche ; le pipeline pose le tag `mlflow.experimentKind` qui l'évite (PS-31.6
+point 8).
 
 ### 5.2 Ajouter une métrique de vulnérabilité ou une méthode de synthèse
 
@@ -4201,7 +4362,10 @@ nécessaire.
 - **Supervision** : dans MLflow uniquement (PS-31). Un run par tâche, nommé
   `<nœud>-<workflow_id>` ; verdict dans la description (*Overview*), détail dans
   *Model metrics*, *System metrics* et *Artifacts* (`report/report.html`). Vue d'une
-  exécution : §5.1. **Ajuster un seuil de contrôle** : modifier
+  exécution : §5.1 (liste filtrée, ou vue multi-expériences). Un run resté `RUNNING` après
+  la fin du workflow est clos par la maintenance (`health=failed`, « tâche interrompue —
+  voir Argo ») : lire alors le pod dans Argo. Sans `MLFLOW_TRACKING_URI`, ou serveur
+  injoignable, les tâches s'exécutent sans suivi (avertissement dans les journaux du pod). **Ajuster un seuil de contrôle** : modifier
   `config/base/parameters_tracking.yml` (`CHECKS`), pousser, republier l'image ; aucune
   donnée n'est recalculée (les contrôles ne font pas partie des empreintes, PS-10.2).
 - **Vulnérabilités** : tableau de bord Superset « Vulnérabilités » (PS-30), branché par
@@ -4277,7 +4441,7 @@ ni le cluster.
 | PR-17 | Recouvrement `daily`/`weekly` : `publish_serving` lu pendant une publication | Faible / faible | Publication en une transaction DuckLake (Superset lit le snapshot précédent jusqu'au `COMMIT`) ; mutex Argo (écrivain unique) |
 | PR-18 | Code reporter `EU27_2020` absent ou différent dans DS-045409 | Moyenne / moyen | PQ-17 : vérification de la codelist au premier téléchargement ; repli : agrégation des membres avec partenaires extra-UE seulement (documentée comme approximation) |
 | PR-19 | L'onglet *Artifacts* de MLflow n'exécute pas le JavaScript d'un HTML Plotly (iframe restreinte) : figures invisibles | Moyenne / faible | Chaque figure a son équivalent CSV (PS-31.4) ; repli PNG statique (`matplotlib`, `log_figure`) ; vérifié en K-03d (PQ-19) : le HTML Plotly **s'exécute** dans l'aperçu de MLflow 3.15, repli non utilisé ; à revérifier sur Onyxia |
-| PR-20 | Pod tué (OOM, dépassement de délai) : le run MLflow reste `RUNNING` sans rapport, et un échec passe inaperçu dans MLflow | Moyenne / moyen | Clôture des runs orphelins par la maintenance `onExit` (PD-16.6) ; tag `health` absent = run à regarder ; statut du workflow dans Argo |
+| PR-20 | Pod tué (OOM, dépassement de délai) : le run MLflow reste `RUNNING` sans rapport, et un échec passe inaperçu dans MLflow | Moyenne / moyen | Clôture des runs orphelins par la maintenance `onExit` (PD-16.6) — implémentée en K-13 (`close_stale_runs`, testée) ; tag `health` absent = run à regarder ; statut du workflow dans Argo |
 | PR-21 | Seuils de contrôle mal calibrés : fausses alertes (bruit) ou alertes manquées | Certaine au début / faible | Valeurs initiales `warning` sauf évidences ; recalibrage en K-17 sur les premières exécutions réelles ; seuils en configuration (§5.8) |
 | PR-22 | Données fictives prises pour des mesures : écrites dans un catalogue de production, restées dans un tableau de bord, ou données `demo_*` mélangeant réel et fictif conservées après le retour au réel | Faible avec la garde / **critique** (décisions sur des chiffres simulés) | Garde `REQUIRED_CATALOG_PREFIX` avant toute connexion (PD-24, testée), marquage `synthetic` des registres, mention « données simulées » sur tout support de démonstration, retrait K-17b (contrôle de non-contamination) puis K-18 |
 
@@ -4305,7 +4469,7 @@ ni le cluster.
 | PQ-16 | ~~**Quota total** du namespace (somme CPU/mémoire des pods actifs) ?~~ **Résolu (2026-09-20)** : `onyxia-quota` ne borne **ni CPU ni mémoire** au total ; il limite `count/pods` à 100, GPU à 1 (`nvidia.com/gpu`) et `requests.storage` à 2 Ti. **Aucun `LimitRange`** dans le namespace. Seules les limites par pod (PQ-01) contraignent : les ressources de départ du workflow de transition (4 CPU / 32 Gi pour BACI, 4 / 16 Gi ailleurs) sont conservées. | — |
 | PQ-17 | Le reporter agrégé **`EU27_2020`** existe-t-il dans la codelist `reporter` de DS-045409 avec des flux extra-UE ? **Non vérifiable hors ligne (2026-09-18)** : aucune structure DS-045409 en cache dans le dépôt. `EU27_2020` est ajouté à `reporter.include` ; **à vérifier au premier téléchargement** (un code inclus absent de la codelist est signalé par un avertissement de `filter_codes`, sans échec). | Oui ; sinon repli de PR-18 |
 | PQ-18 | Quelle **statistique de cohérence** et quelle **méthode de synthèse** afficher par défaut dans le tableau de bord (« indicateur synthétique le plus pertinent ») ? | `PRIMARY_METHOD: borda` (consensus) et corrélation de Spearman ; changeable en configuration `serving` |
-| PQ-19 | Sur le MLflow 3 déployé : le rapport HTML Plotly s'affiche-t-il dans *Artifacts* ? Quelle longueur maximale pour la description (tag) ? Les métriques système s'activent-elles par variable d'environnement sur les runs de kedro-mlflow ? La vue multi-expériences existe-t-elle ? | Oui pour tout ; limite de tag 8 000 caractères ; replis de PS-31.6 sinon. Vérifié en K-03d sur MLflow 3.15 local : **oui, oui (7 500 caractères acceptés ; limite de MLflow 3 : 8 000) et oui** (variable d'environnement suffisante sur un run `mlflow.start_run`) ; vue multi-expériences non vérifiée ; constats détaillés en PS-31.6 ; à refaire sur le MLflow d'Onyxia |
+| PQ-19 | Sur le MLflow 3 déployé : le rapport HTML Plotly s'affiche-t-il dans *Artifacts* ? Quelle longueur maximale pour la description (tag) ? Les métriques système s'activent-elles par variable d'environnement sur les runs de kedro-mlflow ? La vue multi-expériences existe-t-elle ? | Oui pour tout ; limite de tag 8 000 caractères ; replis de PS-31.6 sinon. Vérifié en K-03d sur MLflow 3.15 local : **oui, oui (7 500 caractères acceptés ; limite de MLflow 3 : 8 000) et oui** (variable d'environnement suffisante sur un run `mlflow.start_run`) ; vue multi-expériences non vérifiée ; constats détaillés en PS-31.6 ; à refaire sur le MLflow d'Onyxia. *K-13* : métriques système **actives par la seule variable sur les runs de kedro-mlflow** (après suppression de la réouverture du run par nœud) ; vue multi-expériences **existante** (`#/compare-experiments`, filtre `tags.workflow_id` accepté) ; liste filtrée par URL sur le chemin `/runs` ; expériences typées « Model training » par le pipeline (sinon ouverture sur *Traces*, filtre perdu) |
 | PQ-20 | À partir de quel seuil les **données réelles sont-elles « complètes »** pour retirer le demo (K-17b) ? | Toutes les requêtes Comext planifiées présentes au registre ; Comtrade : `COMPLETENESS.MIN_SHARE` (1,0) atteint sur toutes les années de `ANALYSIS_START_YEAR.comtrade` à l'année complète la plus récente ; au moins une exécution `daily` et une `weekly` de production réussies (PR-01 : plusieurs jours à semaines). K-17b mesure ces critères et **s'arrête** s'ils ne sont pas remplis |
 | PQ-21 | Que faire des déclarations Comtrade d'un millésime **antérieur** à la cible (déclarant en retard d'une révision, ex. `H3` en 2015 pour la cible `HS2012`) ? UNSD ne publie que les 21 tables **descendantes** (vérifié le 2026-10-06 dans `statflows/parameters/unsd.json` : toutes présentes jusqu'à HS1992) ; une conversion ascendante n'est pas fonctionnelle et `HsHarmonizer` la refuse, ce qui fait échouer le millésime cible concerné (comportement antérieur à K-07, inchangé). | Sans objet pour HS1992 (toutes les conversions sont descendantes). Pour les cibles récentes : à décider sur données réelles (écarter ces lignes et mesurer la valeur perdue, ou affecter selon la table descendante inverse) ; rien n'est fait en attendant |
 | PQ-22 | **Recalcul quotidien complet des partenaires** (constat K-12) : `statflows` avance `last_download` d'une requête même quand la réponse est vide (`statflows/core/download.py`, validation de l'entrée sur résultat vide) ; les métriques partenaires en font leur filigrane amont, donc chaque téléchargement quotidien rend toutes les unités `new_data` (puis toute la synthèse et la cohérence de la semaine). Vérifié sur `config/test/` : seconde exécution complète = 0 ligne téléchargée, BACI et réseau à jour, partenaires / synthèse / cohérence entièrement recalculés (comportement figé par `test_kedro_run.py`). | Rien n'est changé en K-12. Correctif proposé dans `statflows` : conserver une date de dernière **donnée écrite** (`last_data`) distincte de `last_download`, lue par `DownloadRegistryView.pairs_last_download` ; le test devra alors attendre 0 unité partenaires à la seconde exécution |

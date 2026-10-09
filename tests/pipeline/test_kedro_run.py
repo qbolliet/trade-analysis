@@ -68,6 +68,10 @@ def test_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     # Environnement lu à la construction des pipelines (nœuds BACI des cibles de test)
     monkeypatch.setenv("KEDRO_ENV", "test")
     monkeypatch.delenv("WORKFLOW_ID", raising=False)
+    # Aucun suivi vers un serveur MLflow ambiant (le magasin fichier de l'environnement test
+    # est refusé sans MLFLOW_ALLOW_FILE_STORE : suivi désactivé, avec un avertissement)
+    for name in ("MLFLOW_TRACKING_URI", "MLFLOW_ALLOW_FILE_STORE"):
+        monkeypatch.delenv(name, raising=False)
     config._cached_section.cache_clear()
     bootstrap_project(PROJECT)
     yield root
@@ -180,7 +184,8 @@ def test_kedro_run_command_on_the_test_environment(tmp_path: Path) -> None:
         "KEDRO_ENV": "test",
         "KEDRO_DISABLE_TELEMETRY": "true",
     }
-    env.pop("WORKFLOW_ID", None)
+    for name in ("WORKFLOW_ID", "MLFLOW_TRACKING_URI", "MLFLOW_ALLOW_FILE_STORE"):
+        env.pop(name, None)
     completed = subprocess.run(
         [sys.executable, "-m", "kedro", "run", "--env", "test"],
         cwd=PROJECT, env=env, capture_output=True, text=True, encoding="utf-8", errors="replace",

@@ -357,6 +357,56 @@ def resolve_test_root(subpath: str = "", environ: Optional[Mapping[str, str]] = 
     return f"{base}/{subpath.strip('/')}" if subpath else base
 
 
+# Variables d'environnement lisibles hors des credentials : description du suivi MLflow
+# posée dans les pods par le rendu Argo (aucune n'est un secret ; les identifiants du
+# serveur restent dans les credentials)
+TRACKING_ENV_VARIABLES = frozenset({"MLFLOW_TRACKING_URI", "MLFLOW_EXPERIMENT_NAME", "WORKFLOW_ID"})
+
+
+# Résolveur de configuration des variables du suivi MLflow
+def resolve_tracking_env(
+    name: str,
+    default: Optional[str] = None,
+    environ: Optional[Mapping[str, str]] = None,
+) -> Optional[str]:
+    """Return a tracking variable of the environment, for ``mlflow.yml``.
+
+    Registered as the configuration resolver ``trade.env``
+    (``${trade.env:MLFLOW_TRACKING_URI,null}``). Kedro withholds ``oc.env``
+    outside the credentials so that no secret reaches the parameters; this
+    resolver only reads the tracking server URI, the experiment name and the
+    workflow identifier, which the Argo rendering sets in every pod.
+
+    Args:
+        name: Variable name, one of :data:`TRACKING_ENV_VARIABLES`.
+        default: Value when the variable is unset or empty.
+        environ: Environment mapping; ``os.environ`` when ``None``.
+
+    Returns:
+        The value of the variable, else ``default``.
+
+    Raises:
+        KeyError: If ``name`` is not a tracking variable.
+
+    Examples:
+        >>> resolve_tracking_env("WORKFLOW_ID", "local", {"WORKFLOW_ID": "wf-1"})
+        'wf-1'
+        >>> resolve_tracking_env("MLFLOW_EXPERIMENT_NAME", "trade-local", {})
+        'trade-local'
+        >>> resolve_tracking_env("PGPASSWORD", None, {})
+        Traceback (most recent call last):
+        ...
+        KeyError: "'PGPASSWORD' is not readable outside the credentials: expected one of ['MLFLOW_EXPERIMENT_NAME', 'MLFLOW_TRACKING_URI', 'WORKFLOW_ID']"
+    """
+    if name not in TRACKING_ENV_VARIABLES:
+        raise KeyError(
+            f"{name!r} is not readable outside the credentials: expected one of "
+            f"{sorted(TRACKING_ENV_VARIABLES)}"
+        )
+    value = (os.environ if environ is None else environ).get(name)
+    return value if value else default
+
+
 # Fonction de résolution de l'environnement Kedro
 def resolve_env(env: Optional[str] = None) -> str:
     """Return the Kedro environment to load.

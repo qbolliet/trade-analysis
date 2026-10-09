@@ -1,0 +1,22 @@
+# ENVIRONNEMENT TEST — suivi MLflow dans un magasin FICHIER sous la racine temporaire
+# (TRADE_TEST_ROOT), sauf si MLFLOW_TRACKING_URI désigne un autre magasin.
+# MLflow 3 n'accepte le magasin fichier qu'avec MLFLOW_ALLOW_FILE_STORE=true : sans
+# cette variable, le suivi est désactivé (avertissement) et le pipeline s'exécute.
+server:
+  mlflow_tracking_uri: ${trade.env:MLFLOW_TRACKING_URI,${trade.test_root:mlruns}}
+tracking:
+  disable_tracking:
+    pipelines: []
+  experiment:
+    name: ${trade.env:MLFLOW_EXPERIMENT_NAME,trade-test}
+    restore_if_deleted: true
+  run:
+    id: null
+    name: ${trade.env:WORKFLOW_ID,local}
+    nested: true
+  params:
+    dict_params:
+      flatten: true
+      recursive: true
+      sep: "."
+    long_params_strategy: truncate

@@ -21,17 +21,17 @@ def _ps31_example() -> RunReport:
     """Le run d'exemple de PS-31.3 : 6 contrôles réussis, un avertissement (R² de la gravité)."""
     checks = [
         Check("coverage/years_eligible", ">", 0, "error", "Au moins une année complète"),
-        Check("baci/flows", ">", 0, "error", "Flux écrits"),
-        Check("baci/tonnage/share_tonnage_missing", "<=", 0.05, "warning", "Flux sans tonnage"),
-        Check("baci/gravity/r_squared", ">=", 0.5, "warning", "R² de l'équation de gravité"),
-        Check("baci/fobisation/share_clipped_to_zero", "<=", 0.01, "warning", "Valeurs FOB tronquées à zéro"),
+        Check("output/flows", ">", 0, "error", "Flux écrits"),
+        Check("conversion/share_tonnage_missing", "<=", 0.05, "warning", "Flux sans tonnage"),
+        Check("gravity/r_squared", ">=", 0.5, "warning", "R² de l'équation de gravité"),
+        Check("valuation/share_clipped_to_zero", "<=", 0.01, "warning", "Valeurs FOB tronquées à zéro"),
     ]
     metrics = {
         "coverage/years_eligible": 24.0,
-        "baci/flows": 212_000_000.0,
-        "baci/tonnage/share_tonnage_missing": 0.022,
-        "baci/gravity/r_squared": 0.42,
-        "baci/fobisation/share_clipped_to_zero": 0.002,
+        "output/flows": 212_000_000.0,
+        "conversion/share_tonnage_missing": 0.022,
+        "gravity/r_squared": 0.42,
+        "valuation/share_clipped_to_zero": 0.002,
     }
     return build_report(
         "process_baci_hs2017",

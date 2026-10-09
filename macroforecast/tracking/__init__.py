@@ -14,6 +14,7 @@ from .base import (
 )
 # Implémentation MLflow (import de mlflow paresseux)
 from .mlflow import (
+    ActiveRunTracker,
     MlflowTracker,
     get_tracker,
 )
@@ -32,6 +33,7 @@ __all__ = [
     "rekey_metrics",
     "run_params",
     # Implémentation MLflow
+    "ActiveRunTracker",
     "MlflowTracker",
     "get_tracker",
 ]

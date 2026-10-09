@@ -169,16 +169,17 @@ baci.concordances:
   cache_path: trade/datasets/unsd/concordances
   bucket: qbollietdgddi
 
-# ── Suivi des nœuds : métriques (JSON) et tables d'artefacts (CSV) ────────────
-# Fichiers locaux, en attendant leur journalisation MLflow sous les mêmes noms
+# ── Suivi des nœuds : run MLflow de la tâche (ouvert par le hook kedro-mlflow) ──
+# Métriques : les étapes les journalisent en direct (séries par année, par requête, par
+# millésime) ; ce dataset n'écrit que celles que le run ne porte pas encore (units/*).
+# `prefix: ""` : sans préfixe explicite, kedro-mlflow préfixerait chaque nom par celui
+# du dataset et casserait les sections « / » de l'interface MLflow
 "mlflow.metrics.{node}":
-  type: kedro_datasets.json.JSONDataset
-  filepath: data/08_reporting/metrics/{node}.json
+  type: kedro_pipeline.io.mlflow_datasets.MlflowRunMetricsDataset
+  prefix: ""
 
+# Tables d'artefacts des étapes (download/queries.csv, tonnage/conversion_rates.csv…),
+# écrites en CSV à la racine des artefacts du run ; le rapport (report/*, tables/*) est
+# publié à part par le nœud
 "mlflow.artifacts.{node}":
-  type: kedro_datasets.partitions.PartitionedDataset
-  path: data/08_reporting/artifacts/{node}
-  dataset:
-    type: pandas.CSVDataset
-    save_args: {index: false}
-  filename_suffix: ".csv"
+  type: kedro_pipeline.io.mlflow_datasets.MlflowTablesDataset

@@ -74,6 +74,7 @@ def create_pipeline(parameters: Optional[Mapping[str, Any]] = None, **kwargs: An
                 "baci": "params:baci",
                 "comtrade_params": "params:comtrade",
                 "runtime": "params:runtime",
+                "tracking": "params:tracking",
             },
             outputs={
                 "scope": "baci.scope",
@@ -100,6 +101,7 @@ def create_pipeline(parameters: Optional[Mapping[str, Any]] = None, **kwargs: An
                     "baci": "params:baci",
                     "comtrade_params": "params:comtrade",
                     "runtime": "params:runtime",
+                    "tracking": "params:tracking",
                 },
                 outputs={"table": f"baci.{vintage.lower()}", **reporting_outputs(name)},
                 name=name,

@@ -56,6 +56,7 @@ def create_pipeline(parameters: Optional[Mapping[str, Any]] = None, **kwargs: An
                     "vulnerabilities": "params:vulnerabilities",
                     "baci": "params:baci",
                     "runtime": "params:runtime",
+                    "tracking": "params:tracking",
                 },
                 outputs={
                     "table": "vulnerabilities.partners",
@@ -75,6 +76,7 @@ def create_pipeline(parameters: Optional[Mapping[str, Any]] = None, **kwargs: An
                     "baci": "params:baci",
                     "vulnerabilities": "params:vulnerabilities",
                     "runtime": "params:runtime",
+                    "tracking": "params:tracking",
                     **vintages,
                 },
                 outputs={

@@ -78,7 +78,7 @@ from kedro_pipeline.steps.result import (
 from macroforecast.trade.methodology import methodology_params
 from macroforecast.trade.processing import BACI_FINGERPRINT_EXCLUDED, BaciConfig
 from macroforecast.trade.processing import DEFAULT_CONFIG  # noqa: F401  (exemples des docstrings)
-from macroforecast.tracking import RunTracker, rekey_metrics
+from macroforecast.tracking import RunTracker
 
 # Initialisation du logger
 logger = logging.getLogger(__name__)
@@ -1236,6 +1236,94 @@ def coverage_metrics(
     }
 
 
+# Sections des métriques d'un redressement : un préfixe par étape de la méthodologie.
+# Les champs scalaires du rapport global décrivent la sortie (flux, valeur, période) ou,
+# pour le régime de valorisation des importations, l'étape de fobisation ; chaque
+# rapport d'étape devient une section que l'interface MLflow regroupe à part
+BACI_OUTPUT_SECTION = "output"
+BACI_REGIME_SECTION = "valuation"
+BACI_REPORT_SECTIONS: Dict[str, str] = {
+    "tonnage": "conversion",
+    "gravity": "gravity",
+    "fobisation": "valuation",
+    "mirror": "reconciliation",
+    "quality_value": "quality/value",
+    "quality_quantity": "quality/quantity",
+    "nes": "nes",
+}
+# Préfixe des diagnostics d'harmonisation des nomenclatures
+HARMONIZATION_SECTION = "harmonization"
+
+
+# Fonction des métriques d'un redressement BACI, rangées par étape de la méthodologie
+def baci_section_metrics(report: Any) -> Dict[str, float]:
+    """Return the metrics of a BACI report, one ``/``-separated section per step.
+
+    Correspondence between the report fields and the metric sections:
+
+    * scalar fields ``flows``, ``n_input_declarations``, ``total_reconciled_value``,
+      ``period_start``, ``period_end``, ``created`` → ``output/<field>``;
+    * ``regime_country_years``, ``regime_fob_country_years``,
+      ``regime_no_information`` (valuation regime of the imports) →
+      ``valuation/<field>``;
+    * step reports: ``tonnage`` → ``conversion/…``, ``gravity`` → ``gravity/…``
+      (coefficients included), ``fobisation`` → ``valuation/…``, ``mirror`` →
+      ``reconciliation/…``, ``quality_value`` → ``quality/value/…``,
+      ``quality_quantity`` → ``quality/quantity/…``, ``nes`` → ``nes/…``.
+
+    Non-numeric fields (``classification_code``) and non-finite values are
+    dropped, as MLflow rejects them.
+
+    Args:
+        report: ``BaciReport`` of the reconstruction.
+
+    Returns:
+        Metric name -> finite value.
+
+    Examples:
+        >>> from macroforecast.trade.processing.baci import BaciReport
+        >>> metrics = baci_section_metrics(BaciReport(flows=12, regime_country_years=3))
+        >>> metrics["output/flows"], metrics["valuation/regime_country_years"]
+        (12.0, 3.0)
+        >>> any(name.startswith("baci/") for name in metrics)
+        False
+    """
+    from dataclasses import fields as dataclass_fields
+
+    from macroforecast.tracking import flatten_metrics
+
+    metrics: Dict[str, float] = {}
+    for item in dataclass_fields(report):
+        value = getattr(report, item.name)
+        if item.name in BACI_REPORT_SECTIONS:
+            metrics.update(flatten_metrics(value, prefix=BACI_REPORT_SECTIONS[item.name], sep="/"))
+        elif item.name.startswith("regime_"):
+            metrics.update(flatten_metrics({item.name: value}, prefix=BACI_REGIME_SECTION, sep="/"))
+        else:
+            metrics.update(flatten_metrics({item.name: value}, prefix=BACI_OUTPUT_SECTION, sep="/"))
+    return metrics
+
+
+# Fonction des métriques de l'harmonisation des nomenclatures
+def harmonization_metrics(report: Any) -> Dict[str, float]:
+    """Return the metrics of an HS harmonisation report under ``harmonization/``.
+
+    Args:
+        report: ``HsHarmonizationReport`` of the vintage.
+
+    Returns:
+        Metric name -> finite value (``harmonization/n_codes_mapped``…).
+
+    Examples:
+        >>> from macroforecast.trade.processing.classification import HsHarmonizationReport
+        >>> harmonization_metrics(HsHarmonizationReport(n_codes_mapped=4))["harmonization/n_codes_mapped"]
+        4.0
+    """
+    from macroforecast.tracking import flatten_metrics
+
+    return flatten_metrics(report, prefix=HARMONIZATION_SECTION, sep="/")
+
+
 
 # ──────────────────────────────────────────────────────────────────────
 # Registre de fraîcheur : un fragment par millésime, cadence de réestimation
@@ -2104,11 +2192,11 @@ def run_baci_vintage(
         if not bool(passes.get("KEEP_WORK_FILES", False)):
             io.cleanup()
 
-        # Métriques du redressement et de l'harmonisation (noms séparés par « / »)
-        tracker.log_metrics(rekey_metrics(report.to_metrics()))
+        # Métriques du redressement et de l'harmonisation, une section par étape
+        tracker.log_metrics(baci_section_metrics(report))
         harmonization = io.harmonization_report()
         if harmonization is not None:
-            tracker.log_metrics(rekey_metrics(harmonization.to_metrics()))
+            tracker.log_metrics(harmonization_metrics(harmonization))
         tracker.set_tags({"result_schema": result_schema, "created": str(report.created)})
         # Répartition des relations de nomenclature : perte d'information à la conversion
         if log_artifacts and harmonization is not None:

@@ -38,18 +38,23 @@ tracking:
       - {metric: download/processed,    op: ">",  threshold: 0,    severity: warning, label: "Au moins une requête traitée"}
       - {metric: download/wait_share,   op: "<=", threshold: 0.5,  severity: warning, label: "Temps passé en attente du limiteur"}
     "process_baci_*":
-      # La porte de complétude (années complètes) est évaluée par le script BACI lui-même
+      # La porte de complétude (années complètes) est évaluée par l'étape BACI elle-même.
+      # Une section de métriques par étape : conversion, gravity, valuation (fobisation et
+      # régime de valorisation), reconciliation, quality, nes, harmonization, output
       - {metric: coverage/years_eligible,                  op: ">",  threshold: 0,    severity: error,   label: "Au moins une année complète"}
-      - {metric: baci/flows,                               op: ">",  threshold: 0,    severity: error,   label: "Flux écrits"}
-      - {metric: baci/tonnage/share_tonnage_missing,       op: "<=", threshold: 0.05, severity: warning, label: "Flux sans tonnage (1 − part convertie en tonnes)"}
-      - {metric: baci/gravity/r_squared,                   op: ">=", threshold: 0.5,  severity: warning, label: "R² de l'équation de gravité"}
-      - {metric: baci/fobisation/share_clipped_to_zero,    op: "<=", threshold: 0.01, severity: warning, label: "Valeurs FOB tronquées à zéro"}
+      - {metric: output/flows,                             op: ">",  threshold: 0,    severity: error,   label: "Flux écrits"}
+      - {metric: conversion/share_tonnage_missing,         op: "<=", threshold: 0.05, severity: warning, label: "Flux sans tonnage (1 − part convertie en tonnes)"}
+      - {metric: gravity/r_squared,                        op: ">=", threshold: 0.5,  severity: warning, label: "R² de l'équation de gravité"}
+      - {metric: valuation/share_clipped_to_zero,          op: "<=", threshold: 0.01, severity: warning, label: "Valeurs FOB tronquées à zéro"}
     # Métriques préfixées par sens de flux : un contrôle par sens, ignoré (« skipped ») pour
-    # un sens absent de FLOWS ou non recalculé par ce run
+    # un sens absent de FLOWS ou non recalculé par ce run. Sous Kedro, un run par nœud : les
+    # contrôles sont évalués sur chaque passe (millésime SH) et libellés « … — HS2022 »
     compute_partner_vulnerabilities:
       - {metric: partners/import/cells/n_total,            op: ">",  threshold: 0,    severity: warning, label: "Cellules de vulnérabilité calculées (import)"}
       - {metric: partners/export/cells/n_total,            op: ">",  threshold: 0,    severity: warning, label: "Cellules de vulnérabilité calculées (export)"}
-    "compute_network_vulnerabilities*":   # un run par millésime : compute_network_vulnerabilities_<millésime>
+    # Scripts : un run par millésime (compute_network_vulnerabilities_<millésime>) ; Kedro :
+    # un run pour le nœud, contrôles évalués sur chaque millésime
+    "compute_network_vulnerabilities*":
       - {metric: network/import/cells/n_total,             op: ">",  threshold: 0,    severity: warning, label: "Cellules de vulnérabilité de réseau calculées (import)"}
       - {metric: network/export/cells/n_total,             op: ">",  threshold: 0,    severity: warning, label: "Cellules de vulnérabilité de réseau calculées (export)"}
     compute_synthetic_scores:
@@ -59,3 +64,18 @@ tracking:
     publish_serving:
       - {metric: serving/cell_scores/rows,                 op: ">",  threshold: 0,    severity: error,   label: "Table cell_scores non vide"}
       - {metric: serving/countries/rows,                   op: ">",  threshold: 0,    severity: error,   label: "Table countries non vide"}
+  # Runs orphelins : à la fin de chaque exécution, la maintenance passe en FAILED les runs
+  # de l'exécution (tag workflow_id) restés RUNNING dans ces expériences — tâche tuée par
+  # un manque de mémoire ou une échéance avant d'avoir fermé son run. Les expériences sont
+  # celles des tags `experiment.*` des nœuds (un test le vérifie).
+  STALE_RUNS:
+    EXPERIMENTS:
+      - trade-00-maintenance
+      - trade-01-downloads
+      - trade-02-baci
+      - trade-03-vulnerabilities
+      - trade-04-serving
+    # Âge minimal d'un run pour être clos : toutes les autres tâches sont terminées quand
+    # la maintenance s'exécute (gestionnaire de fin de workflow), aucun délai n'est requis
+    MIN_AGE_MINUTES: 0
+    DESCRIPTION: "tâche interrompue — voir Argo"

@@ -6,7 +6,7 @@ from typing import Any, Dict, Mapping
 
 # Modules du package
 from kedro_pipeline.io.datasets import DuckLakeCatalogs
-from kedro_pipeline.pipelines._common import finish_step
+from kedro_pipeline.pipelines._common import finish_step, node_reporting
 from kedro_pipeline.steps._config import serving_location
 from kedro_pipeline.steps.serving import publish_serving, source_tables
 
@@ -20,6 +20,7 @@ def publish_serving_node(
     vulnerabilities: Mapping[str, Any],
     synthesis: Mapping[str, Any],
     runtime: Mapping[str, Any],
+    tracking: Mapping[str, Any],
     **upstream: Any,
 ) -> Dict[str, Any]:
     """Publish every serving table into the ``serving`` catalog, in one transaction.
@@ -36,6 +37,7 @@ def publish_serving_node(
         vulnerabilities: The ``vulnerabilities`` parameters.
         synthesis: The ``synthesis`` parameters.
         runtime: ``runtime`` parameters.
+        tracking: ``tracking`` parameters (report of the run).
         **upstream: Handles of every source table (results, raw tables,
             reference tables), received for the lineage: in the daily run the
             weekly tables are read as they are.
@@ -46,9 +48,10 @@ def publish_serving_node(
     Raises:
         Exception: The publication failure, once the metrics are saved.
     """
+    reporting = node_reporting("publish_serving", tracking)
     locations, tables = source_tables(
         eurostat=eurostat, comtrade=comtrade, vulnerabilities=vulnerabilities, synthesis=synthesis
     )
     catalog = catalogs.serving(serving_location(serving), locations)
-    result = publish_serving(tables, catalog, params=serving, runtime=runtime)
-    return finish_step(result, outputs={"catalog": catalog})
+    result = publish_serving(tables, catalog, params=serving, runtime=runtime, tracker=reporting.step_tracker)
+    return finish_step(result, outputs={"catalog": catalog}, reporting=reporting)

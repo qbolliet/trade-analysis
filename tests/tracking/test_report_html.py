@@ -14,8 +14,8 @@ from macroforecast.tracking.report import Check, RunReport, Section, Units, buil
 def _report(sections) -> RunReport:
     return build_report(
         "process_baci_HS2017",
-        metrics={"baci/gravity/r_squared": 0.42},
-        checks=[Check("baci/gravity/r_squared", ">=", 0.5, "warning", "R² de la gravité")],
+        metrics={"gravity/r_squared": 0.42},
+        checks=[Check("gravity/r_squared", ">=", 0.5, "warning", "R² de la gravité")],
         units=Units(1, 1, 0),
         key_figures=["212 M flux"],
         sections=sections,
@@ -71,11 +71,11 @@ def test_plotly_js_is_embedded_once_by_the_first_figure(mode: str, first) -> Non
 def test_with_plotly_the_baci_sections_carry_real_figures() -> None:
     pytest.importorskip("plotly")
     metrics = {
-        "baci/tonnage/share_tonnage_missing": 0.02,
-        "baci/tonnage/share_converted_from_other_units": 0.3,
-        "baci/gravity/r_squared": 0.7,
-        "baci/gravity/coefficients/log_dist": -0.8,
-        "baci/flows": 1000.0,
+        "conversion/share_tonnage_missing": 0.02,
+        "conversion/share_converted_from_other_units": 0.3,
+        "gravity/r_squared": 0.7,
+        "gravity/coefficients/log_dist": -0.8,
+        "output/flows": 1000.0,
     }
     sections = figures.sections_baci(metrics, {})
     assert any(section.figures for section in sections)
@@ -88,7 +88,7 @@ def test_without_plotly_sections_keep_their_tables_but_lose_their_figures(monkey
     monkeypatch.setitem(sys.modules, "plotly", None)
     monkeypatch.setitem(sys.modules, "plotly.graph_objects", None)
     assert figures._plotly() is None
-    metrics = {"baci/gravity/r_squared": 0.7, "baci/gravity/coefficients/log_dist": -0.8, "baci/flows": 1000.0}
+    metrics = {"gravity/r_squared": 0.7, "gravity/coefficients/log_dist": -0.8, "output/flows": 1000.0}
     sections = figures.sections_baci(metrics, {})
     assert sections and all(not section.figures for section in sections)
     gravity = next(section for section in sections if section.title == "Gravité")

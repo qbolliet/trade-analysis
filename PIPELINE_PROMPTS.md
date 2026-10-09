@@ -2125,6 +2125,7 @@ performante et de taille maîtrisée avec une exécution quotidienne, sans inter
 humaine.
 
 TRAVAIL
+0. Passer en version 0.4.1 du dt-ducklake-manager.
 1. VÉRIFICATIONS PRÉALABLES sur la version installée (DuckDB 1.5.3 + extension ducklake),
    par un script jetable sur catalogue fichier local : disponibilité et signature de
    `ducklake_merge_adjacent_files`, `ducklake_rewrite_data_files`,
