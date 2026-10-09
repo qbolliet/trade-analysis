@@ -318,6 +318,45 @@ def nomenclature_macros_sql(nomenclatures: Mapping[str, int]) -> List[str]:
     ]
 
 
+# Variable d'environnement de la racine des données de l'environnement `test`
+TEST_ROOT_VARIABLE = "TRADE_TEST_ROOT"
+
+
+# Résolveur de configuration de la racine de l'environnement `test`
+def resolve_test_root(subpath: str = "", environ: Optional[Mapping[str, str]] = None) -> str:
+    """Return the root directory of the ``test`` environment, or a path below it.
+
+    Registered as the configuration resolver ``trade.test_root``
+    (``${trade.test_root:}`` or ``${trade.test_root:state}``), used only by the
+    files of ``config/test/``: every catalog, registry and work file of that
+    environment lives in a temporary directory named by ``TRADE_TEST_ROOT``.
+    Only this variable is read, so the parameters still never receive a
+    secret through the environment.
+
+    Args:
+        subpath: Relative path appended to the root (``/``-separated).
+        environ: Environment mapping; ``os.environ`` when ``None``.
+
+    Returns:
+        The absolute path, ``/``-separated, without trailing separator.
+
+    Raises:
+        KeyError: If ``TRADE_TEST_ROOT`` is unset or empty.
+
+    Examples:
+        >>> resolve_test_root("state", {"TRADE_TEST_ROOT": "/tmp/trade"}).endswith("/tmp/trade/state")
+        True
+    """
+    root = (os.environ if environ is None else environ).get(TEST_ROOT_VARIABLE)
+    if not root:
+        raise KeyError(
+            f"{TEST_ROOT_VARIABLE} is not set: the 'test' environment writes every "
+            "catalog and registry under this temporary directory"
+        )
+    base = Path(root).resolve().as_posix()
+    return f"{base}/{subpath.strip('/')}" if subpath else base
+
+
 # Fonction de résolution de l'environnement Kedro
 def resolve_env(env: Optional[str] = None) -> str:
     """Return the Kedro environment to load.

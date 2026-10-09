@@ -247,3 +247,8 @@ Trade deployment.md
 # .gitkeep est versionné
 config/local/*
 !config/local/.gitkeep
+
+# Sorties locales des nœuds Kedro (métriques, artefacts)
+data/
+# Statistiques de datasets écrites par le hook kedro-viz à chaque `kedro run`
+.viz/

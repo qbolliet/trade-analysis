@@ -1,0 +1,29 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# ENVIRONNEMENT TEST — exécution locale sur un petit monde simulé (tests/pipeline/
+# fakes.py) : 3 reporters Comext, 4 produits SH6, années 2018-2022, aucun bucket
+# (fichiers sous TRADE_TEST_ROOT). SURCHARGES du bloc de base uniquement (fusion
+# récursive des mappings, remplacement des listes).
+# ─────────────────────────────────────────────────────────────────────────────
+synthesis:
+  SYNTHESIS:
+    BUCKET: null
+    STATE:
+      PATH_TEMPLATE: "${trade.test_root:}/state/synthesis/{TIME_PERIOD}.json"
+    # Aucune méthode à ajustement séquentiel parmi les méthodes retenues ici
+    SEQUENTIAL_METHODS: []
+    PARAMETERS:
+      # 3 reporters x 4 produits par contexte
+      min_group_size: 2
+      consensus_top_n: 10
+      smaa_n_draws: 50
+      bootstrap_n: 5
+      methods:
+        - {name: "rank_mean", kind: "rank_mean"}
+        - {name: "critic_sum", kind: "weighted", params: {weighting: "critic", aggregation: "weighted_sum",
+                                                          weighting_params: {method: "spearman", scale: "mad"}}}
+        - {name: "auto_sum", kind: "weighted", params: {weighting: "auto", aggregation: "weighted_sum"}}
+  COHERENCE:
+    STATE:
+      PATH_TEMPLATE: "${trade.test_root:}/state/coherence/{TIME_PERIOD}.json"
+    PARAMETERS:
+      topk_depths: [3, 5]

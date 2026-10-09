@@ -1,0 +1,8 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# ENVIRONNEMENT TEST — exécution locale sur un petit monde simulé (tests/pipeline/
+# fakes.py) : 3 reporters Comext, 4 produits SH6, années 2018-2022, aucun bucket
+# (fichiers sous TRADE_TEST_ROOT). SURCHARGES du bloc de base uniquement (fusion
+# récursive des mappings, remplacement des listes).
+# ─────────────────────────────────────────────────────────────────────────────
+serving:
+  BUCKET: null

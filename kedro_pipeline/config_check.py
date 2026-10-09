@@ -69,7 +69,9 @@ def expected_datasets(parameters: Mapping[str, Any]) -> Dict[str, Any]:
     Returns:
         Mapping ``dataset name -> expectation``: a :class:`DuckLakeLocation` for
         a table, an :class:`ExpectedRegistry` for a freshness registry, an
-        :class:`ExpectedServing` for ``serving.tables``. BACI datasets are named
+        :class:`ExpectedServing` for ``serving.tables``, a
+        :class:`~kedro_pipeline.io.datasets.ConcordanceCache` for the
+        correspondence-table cache ``baci.concordances``. BACI datasets are named
         ``baci.<vintage in lower case>`` (one per enabled target), reference
         tables ``reference.<source>.<table>``.
 
@@ -81,6 +83,7 @@ def expected_datasets(parameters: Mapping[str, Any]) -> Dict[str, Any]:
         >>> expected_datasets(load_parameters("base"))["baci.hs2017"].schema
         'baci_hs2017'
     """
+    from kedro_pipeline.io.datasets import ConcordanceCache
     from kedro_pipeline.steps.reference import reference_schema
     from kedro_pipeline.steps.serving import source_tables
 
@@ -145,6 +148,11 @@ def expected_datasets(parameters: Mapping[str, Any]) -> Dict[str, Any]:
             str(block["STATE"]["PATH_TEMPLATE"]), bucket, step
         )
 
+    # Cache des tables de correspondance SH, partagé par BACI et les métriques partenaires
+    expected["baci.concordances"] = ConcordanceCache(
+        str(baci["CLASSIFICATIONS"]["CONCORDANCE_PATH"]), baci.get("BUCKET")
+    )
+
     # Restitution : catalogue `serving` et catalogues sources lus par ses requêtes
     locations, _ = source_tables(
         eurostat=eurostat, comtrade=comtrade, vulnerabilities=vulnerabilities, synthesis=synthesis
@@ -163,6 +171,7 @@ def expected_datasets(parameters: Mapping[str, Any]) -> Dict[str, Any]:
 def _designated(dataset: Any) -> Any:
     """Return what a project dataset designates, in the form of the expectations."""
     from kedro_pipeline.io.datasets import (
+        ConcordanceCacheDataset,
         DuckLakeTableDataset,
         FreshnessRegistryDataset,
         ServingCatalogDataset,
@@ -173,6 +182,8 @@ def _designated(dataset: Any) -> Any:
     if isinstance(dataset, FreshnessRegistryDataset):
         registry = dataset.load()
         return ExpectedRegistry(registry.path_template, registry.bucket, registry.step)
+    if isinstance(dataset, ConcordanceCacheDataset):
+        return dataset.load()
     if isinstance(dataset, ServingCatalogDataset):
         catalog = dataset.load()
         return ExpectedServing(catalog.location, dict(catalog.sources))

@@ -44,6 +44,7 @@
 | 2026-10-06 (K-07) | **BACI par passes implémenté** : `macroforecast/trade/processing/streaming.py` (accumulateurs), `partial_fit`/`finalize` des trois estimateurs groupés, `run_baci_passes` + `BaciPassIO` / `InMemoryPassIO`, `kedro_pipeline/steps/baci.py` (`DuckDBPassIO`, `DuckLakeYearWriter`, porte de complétude, blocs de chapitres), script `process_baci_hs.py` sans lecture intégrale de Comtrade, `BACI_TARGETS`, bloc `PASSES` de `baci.yaml`. Écarts à la spécification : forme factorisée QR (et non `A = Σ w x xᵀ`) pour la gravité, imposée par la précision ; référence des indicatrices d'année = première année de l'échantillon ; quantiles des taux de fret calculés en SQL (passe S2) ; protocole d'E/S regroupant les rappels `chunks_factory` / `median_uv` / `writer` ; orchestration par millésime restée dans le script. Écarts numériques mesurés (PR-05b) ≤ 10⁻¹² | PS-14.2 à PS-14.5, PS-14.7, PR-05b, PQ-21, §12 |
 | 2026-10-08 (K-10) | **Projet Kedro et configuration au format Kedro** : `kedro_pipeline/{__main__,settings,pipeline_registry,hooks,cli,config_check}.py` (pipeline `__default__` vide, `kedro trade config-check`), `config/{base,demo,cloud,local}/` lus par `OmegaConfigLoader` (fusion `soft` des paramètres), `load_parameters(env)` pour les scripts (`KEDRO_ENV`, `local` par défaut ; plus aucune variable `*_CONFIG_PATH`), datasets `kedro_pipeline/io/datasets.py` (`DuckLakeTableDataset`, `FreshnessRegistryDataset`, `ServingCatalogDataset`), `DuckLakeTable.lazy`. Écarts : `kedro` résolu en **1.7.0** (borne `>=1.6,<2`) ; **`kedro-datasets` ajouté** (importé par kedro-mlflow 2.0.3 sans être déclaré) ; aucune contrainte `pytest<9` (elle n'existe que dans l'extra `test` de kedro-mlflow) ; **hooks kedro-mlflow et argo-kedro désactivés** (`DISABLE_HOOKS_FOR_PLUGINS`) tant que `mlflow.yml` / `argo.yml` n'existent pas (sans eux, toute session échoue) ; noms d'expériences dans **`experiments.yml`** (motif `experiments`) ; entrée de credentials composée **`ducklake`** ; cibles BACI désactivées en demo par **entrées nulles** (`active_targets`) ; registres `state.<étape>` en **entrées explicites** (pas de factory) ; interpolations inter-fichiers vérifiées (résolution **par environnement**) ; télémétrie Kedro (`kedro-telemetry`, dépendance de kedro) active par défaut hors CI | C-16, PD-03, PS-02, PS-03, PS-04, PS-05, PS-06, PS-07 |
 | 2026-10-09 (K-11) | **Fonctions d'étape partagées, scripts en enveloppes minces** : `kedro_pipeline/steps/{result,_config,downloads,coverage,partners,network,synthesis,coherence}.py` (nouveaux), `baci.py` (fraîcheur, `prepare_baci`, `run_baci_vintage(s)`), `reference.py` et `serving.py` (retour `StepResult`) ; `StepResult` étendu (unités en échec, libellé, tables du rapport, `reportable`, `outputs` lisibles par clé, `children`, `failure_exception`) ; runs par unité par fabrique `UnitRuns` (un run par passe partenaires, par millésime BACI et réseau) ; construction unique du rapport `kedro_pipeline.io.tracking.build_step_report` ; `DuckLakeTable.connector()` / `.reader()`, `attached_catalog_alias` ; scripts : chargement, poignées paresseuses (identifiants lus à la première connexion), tracker, appel, rapport, `raise_if_failed` ; ré-exports des symboles importés par les tests et `tools/`. **Audit de couverture implémenté** et branché, non bloquant, dans les téléchargements (bloc `COVERAGE`). Écarts : arguments résolus par l'appelant (`force`, `adopt_legacy_fingerprints`, `run_id`, `n_jobs`), `prepare_baci` reçoit les requêtes planifiées, injection des collaborateurs BACI (client UNSD, cache, référentiels, passes), une ligne d'import de test modifiée (`test_scripts_synthesis_parallel_e2e.py`) | PD-02, PS-08, PS-13 |
+| 2026-10-09 (K-12) | **Pipelines et nœuds Kedro, deux cadences, test de bout en bout** : `kedro_pipeline/pipelines/{downloads,baci,vulnerabilities,synthesis,serving,maintenance}/` (nœuds `argo_kedro.pipeline.Node`, téléchargements en `FusedPipeline`), `__default__` par `sum_pipelines` (16 tâches en base), `daily` (4) et `weekly` (12) filtrés par tag ; `kedro_pipeline/pipelines/_common.py` (sorties de suivi, ordre registres → échec) ; hook `TradeRunHooks` (`N_JOBS`, `context.argo` par défaut, métriques d'un nœud en échec) ; datasets `ducklake.catalogs`, `clients.*`, `baci.scope`, `baci.concordances`, `mlflow.metrics.{node}` / `mlflow.artifacts.{node}` (fichiers locaux) ; catalogues DuckLake fichiers (`FileConnectorFactory`, métadonnées SQLite) choisis par `credentials.ducklake.file_root` ; `run_download` découpé en phases ; étape `maintenance` minimale ; environnement `config/test/` (résolveur `trade.test_root`, clients factices `tests/pipeline/fakes.py`). Écarts : tags en `famille.valeur` (Kedro refuse `:`), registres en entrée seulement, `state.baci` unique, diagnostics `fit` hors sorties de la synthèse, `baci.scope` en pickle. Constats : `kedro run` est la commande d'argo-kedro (FusedRunner) et **ignore `--params`** ; un téléchargement sans nouvelle donnée avance `last_download` (PQ-22) | PD-14, PS-07, PS-08, PS-09, PS-11, PS-18, §6, PQ-22 |
 
 ## Sommaire
 
@@ -2151,6 +2152,33 @@ serving.tables:                        # poignée du catalogue DuckLake `serving
   `kedro trade config-check --env <env>` et `tests/test_catalog_parameters_consistency.py`
   (base : 26 datasets, demo : 20).
 
+**Catalogue complété en K-12** :
+- **`ducklake.catalogs`** (`DuckLakeCatalogsDataset`) : fabrique des poignées qu'un nœud
+  écrit. Kedro refuse qu'un dataset soit à la fois entrée et sortie d'un nœud ; le nœud
+  construit donc la poignée de sa table de sortie depuis les paramètres (mêmes fonctions
+  que les scripts : `download_location`, `vulnerabilities_location`, `reference_location`,
+  `serving_location`) avec ces identifiants, et le dataset de sortie vérifie qu'elle
+  désigne sa table (un test le vérifie pour chaque sortie, en base et en demo) ;
+- **catalogues fichiers** : une entrée `ducklake` des credentials portant `file_root`
+  remplace PostgreSQL + S3 par `FileConnectorFactory` (métadonnées SQLite
+  `<root>/<dbname>.sqlite`, plusieurs connexions possibles ; données
+  `<root>/<dbname>_data/`) pour toutes les poignées ;
+- **`clients.eurostat` / `clients.comtrade` / `clients.unsd`** (`ClientFactoryDataset`) :
+  classe du client (`statflows.*` en base, clients factices en `test`) et clé Comtrade
+  depuis `credentials.comtrade_api` (valeurs vides écartées) ;
+- **`eurostat.download_plan` / `comtrade.download_plan`** : `MemoryDataset`
+  (`copy_mode: assign`), internes aux tâches fusionnées de téléchargement ;
+- **`baci.scope`** : `PickleDataset` (S3, nouvelle entrée de credentials **`s3fs`** au
+  format fsspec ; chemin isolé en demo) — le périmètre contient tables de passage et
+  fichiers CEPII, relus par chaque pod de millésime ;
+- **`baci.concordances`** (`ConcordanceCacheDataset`, argument `cache_path` : Kedro
+  rend absolu un argument nommé `path`) : emplacement du cache des tables de passage,
+  vérifié par `config_check` contre `baci.CLASSIFICATIONS.CONCORDANCE_PATH` / `BUCKET` ;
+- **`mlflow.metrics.{node}`** (`JSONDataset`) et **`mlflow.artifacts.{node}`**
+  (`PartitionedDataset` de CSV) sous `data/08_reporting/` (ignoré par git) : K-13 n'en
+  changera que le type ;
+- `kedro trade config-check --env test` : 20 datasets cohérents (avec `TRADE_TEST_ROOT`).
+
 ### PS-08 — API des fonctions d'étape (`kedro_pipeline/steps/`)
 
 Toutes les étapes renvoient un **`StepResult`** :
@@ -2261,6 +2289,61 @@ lus par le rendu (PD-14).
   avec l'environnement `KEDRO_ENV` ;
 - le nœud `compute_synthesis_coherence` prend `synthesis.scores` en entrée : c'est ce qui
   fonde la dépendance synthèse → cohérence dans Argo.
+
+> **Implémentation (K-12, 2026-10-09)** — `kedro_pipeline/pipelines/<nom>/{nodes,pipeline}.py`,
+> registre `kedro_pipeline/pipeline_registry.py`. Vérifié dans le code installé (Kedro
+> 1.7.0, argo-kedro 0.1.41) et écarts au tableau ci-dessus :
+>
+> - **Tags `famille.valeur`** : `experiment.trade-01-downloads`, `cadence.daily`,
+>   `cadence.weekly`, `mutex.trade-serving`, `mutex.trade-maintenance`, `onexit`. Kedro
+>   n'admet dans un tag que lettres, chiffres, `-`, `_` et `.` (`ValueError` à la création
+>   du nœud avec `:`). Le rendu Argo (K-15) lit ces tags.
+> - **`__default__ = sum_pipelines(...)`** (argo-kedro) : `Pipeline.__add__` (donc
+>   `sum`) recompose à partir des nœuds internes et **défait** les `FusedPipeline`.
+>   `daily` / `weekly` = `__default__.only_nodes_with_tags(...)` : le filtre garde les
+>   `FusedNode` et n'ajoute aucun nœud amont ; toute entrée libre est un dataset du
+>   catalogue (test `test_free_inputs_are_catalog_datasets`). Base : 16 tâches, `daily` 4,
+>   `weekly` 12 (`publish_serving` dans les deux, `maintain_ducklake` dans aucune).
+> - **Téléchargements** : `FusedPipeline` `download_<source>` (`machine_type="io-small"`)
+>   de trois nœuds, `fetch_<source>` (planification et téléchargement, un seul client) →
+>   `publish_reference_<source>` → `audit_coverage_<source>`, qui lève l'échec du
+>   téléchargement (part de requêtes en erreur > `MAX_ERROR_RATIO`) **après** référentiels
+>   et audit. `run_download` est découpé en phases (`plan_download`,
+>   `publish_download_reference`, `download_planned`, `audit_download`,
+>   `download_result`) et reste leur composition, dans l'ordre d'origine, pour les scripts.
+> - **Registres en entrée seulement** : un nœud ne peut avoir le même dataset en entrée et
+>   en sortie ; il sauvegarde lui-même ses registres (`finish_step`) avant
+>   `raise_if_failed()` — l'ordre de sauvegarde des sorties Kedro n'est pas garanti et un
+>   nœud qui lève n'en sauvegarde aucune. Les dépendances passent par les poignées de
+>   tables. Un seul `state.baci` (fragment par millésime) au lieu de `state.baci_<v>`.
+> - **Métriques d'un nœud en échec** : l'exception porte le `StepResult`
+>   (`step_result`) ; `TradeRunHooks.on_node_error` enregistre `mlflow.metrics.<nœud>` /
+>   `mlflow.artifacts.<nœud>`. Métriques = celles de l'étape, celles des runs d'unité
+>   préfixées par le libellé (`HS2017/…`), plus `units/planned|succeeded|failed`.
+> - **Entrées ajoutées** : `ducklake.catalogs` (écrivains), `clients.*` (téléchargements,
+>   `prepare_baci`, partenaires), `params:eurostat` (synthèse : périodes récentes),
+>   `params:baci` (partenaires : cache des tables de passage), `params:comtrade`
+>   (réseau). `prepare_baci` planifie Comtrade par `plan_download` (même fonction et même
+>   client que le téléchargement) et produit `baci.scope`, `baci.concordances`,
+>   `reference.comtrade.hs_concordance` / `hs_vintages`.
+> - **`process_baci_<v>`** : générés depuis `active_targets(baci.CLASSIFICATIONS.TARGETS)`
+>   des paramètres de **`KEDRO_ENV`** (les pipelines sont construits avant toute session :
+>   `KEDRO_ENV` doit nommer l'environnement de `--env`) ; un millésime non planifié ne fait
+>   rien (`units/planned = 0`).
+> - **Synthèse** : écrit aussi la famille `fit` de `synthesis_diagnostics` par une poignée
+>   construite dans le nœud, **non déclarée** en sortie (deux producteurs d'un dataset
+>   sont refusés, et la cohérence en dépendrait d'elle-même). `cadence_check=False`.
+> - **Maintenance** : `kedro_pipeline/steps/maintenance.py::run_maintenance` renvoie un
+>   `StepResult` vide (K-14).
+> - **`kedro run`** est la commande globale d'argo-kedro (FusedRunner, seul runner qui
+>   exécute un `FusedNode`, dont la fonction est un `lambda` vide) ; elle lit
+>   `context.argo.runner`, que `TradeRunHooks.after_context_created` fournit par défaut
+>   tant que le hook argo-kedro est désactivé (à retirer en K-15), et **ignore
+>   `--params`** : les commandes locales de PS-11 sont inopérantes via la CLI
+>   (`KedroSession.create(runtime_params=…)` fonctionne) — à traiter en K-15.
+> - **Test** : `config/test/` + `tests/pipeline/test_kedro_run.py` (`slow`, ≈ 2 min 40) ;
+>   `uv run --extra viz kedro viz build` réussit sans secret (avertissement : pas de
+>   code source pour les `FusedNode`).
 
 ### PS-10 — Registres de fraîcheur v2
 
@@ -2941,6 +3024,13 @@ pas les résultats des méthodes calculées : un test d'équivalence le vérifie
 >   canonique des valeurs (`1`, `1.0`, `np.int32(1)` donnent la même graine), donc indépendante
 >   du type lu et de l'ordre d'exécution. Ce changement a modifié les tirages des méthodes
 >   aléatoires par rapport aux versions antérieures (aucun résultat de production n'existait).
+
+> **Nœuds Kedro (K-12)** : `TradeRunHooks.before_node_run` renvoie
+> `{"params:runtime": {..., "N_JOBS": resolve_n_jobs(runtime.N_JOBS)}}` — mécanisme natif
+> de Kedro (le dictionnaire renvoyé remplace les entrées chargées), sans dataset ni
+> fonction supplémentaire ; le nœud prend `N_JOBS` de son bloc s'il est positif, sinon
+> celui de `runtime` (même ordre que les scripts). Forçage (`ForceSpec.from_runtime`) et
+> adoption des empreintes héritées lus dans les paramètres seuls (`environ={}`).
 
 ### PS-19 — Journalisation MLflow
 
@@ -4218,6 +4308,7 @@ ni le cluster.
 | PQ-19 | Sur le MLflow 3 déployé : le rapport HTML Plotly s'affiche-t-il dans *Artifacts* ? Quelle longueur maximale pour la description (tag) ? Les métriques système s'activent-elles par variable d'environnement sur les runs de kedro-mlflow ? La vue multi-expériences existe-t-elle ? | Oui pour tout ; limite de tag 8 000 caractères ; replis de PS-31.6 sinon. Vérifié en K-03d sur MLflow 3.15 local : **oui, oui (7 500 caractères acceptés ; limite de MLflow 3 : 8 000) et oui** (variable d'environnement suffisante sur un run `mlflow.start_run`) ; vue multi-expériences non vérifiée ; constats détaillés en PS-31.6 ; à refaire sur le MLflow d'Onyxia |
 | PQ-20 | À partir de quel seuil les **données réelles sont-elles « complètes »** pour retirer le demo (K-17b) ? | Toutes les requêtes Comext planifiées présentes au registre ; Comtrade : `COMPLETENESS.MIN_SHARE` (1,0) atteint sur toutes les années de `ANALYSIS_START_YEAR.comtrade` à l'année complète la plus récente ; au moins une exécution `daily` et une `weekly` de production réussies (PR-01 : plusieurs jours à semaines). K-17b mesure ces critères et **s'arrête** s'ils ne sont pas remplis |
 | PQ-21 | Que faire des déclarations Comtrade d'un millésime **antérieur** à la cible (déclarant en retard d'une révision, ex. `H3` en 2015 pour la cible `HS2012`) ? UNSD ne publie que les 21 tables **descendantes** (vérifié le 2026-10-06 dans `statflows/parameters/unsd.json` : toutes présentes jusqu'à HS1992) ; une conversion ascendante n'est pas fonctionnelle et `HsHarmonizer` la refuse, ce qui fait échouer le millésime cible concerné (comportement antérieur à K-07, inchangé). | Sans objet pour HS1992 (toutes les conversions sont descendantes). Pour les cibles récentes : à décider sur données réelles (écarter ces lignes et mesurer la valeur perdue, ou affecter selon la table descendante inverse) ; rien n'est fait en attendant |
+| PQ-22 | **Recalcul quotidien complet des partenaires** (constat K-12) : `statflows` avance `last_download` d'une requête même quand la réponse est vide (`statflows/core/download.py`, validation de l'entrée sur résultat vide) ; les métriques partenaires en font leur filigrane amont, donc chaque téléchargement quotidien rend toutes les unités `new_data` (puis toute la synthèse et la cohérence de la semaine). Vérifié sur `config/test/` : seconde exécution complète = 0 ligne téléchargée, BACI et réseau à jour, partenaires / synthèse / cohérence entièrement recalculés (comportement figé par `test_kedro_run.py`). | Rien n'est changé en K-12. Correctif proposé dans `statflows` : conserver une date de dernière **donnée écrite** (`last_data`) distincte de `last_download`, lue par `DownloadRegistryView.pairs_last_download` ; le test devra alors attendre 0 unité partenaires à la seconde exécution |
 
 ---
 

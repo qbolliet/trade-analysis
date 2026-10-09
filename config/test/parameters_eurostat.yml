@@ -1,0 +1,21 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# ENVIRONNEMENT TEST — exécution locale sur un petit monde simulé (tests/pipeline/
+# fakes.py) : 3 reporters Comext, 4 produits SH6, années 2018-2022, aucun bucket
+# (fichiers sous TRADE_TEST_ROOT). SURCHARGES du bloc de base uniquement (fusion
+# récursive des mappings, remplacement des listes).
+# ─────────────────────────────────────────────────────────────────────────────
+eurostat:
+  split_filters:
+    DS-045409:
+      reporter:
+        include: ["FR", "DE", "IT"]
+      product:
+        include: ["280519", "300490", "810510", "854110"]
+        include_regex: null
+        exclude: null
+  DOWNLOADS:
+    DS-045409:
+      BUCKET: null
+      PATHS:
+        STRUCTURES_PATH: "${trade.test_root:}/datasets/structures/comext.json"
+        LAST_DOWNLOAD_PATH: "${trade.test_root:}/datasets/last_downloads/comext.json"

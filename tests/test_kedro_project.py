@@ -37,13 +37,18 @@ def test_settings_use_config_folder_and_soft_parameter_merge(project: Path) -> N
     assert any(isinstance(hook, TradeRunHooks) for hook in settings.HOOKS)
 
 
-def test_registry_has_an_empty_default_pipeline(project: Path) -> None:
-    """Aucun pipeline métier encore : le pipeline par défaut existe et est vide."""
+def test_registry_has_the_business_pipelines_and_both_cadences(project: Path) -> None:
+    """Six pipelines métier, leur somme et les deux cadences planifiées."""
+    from kedro_pipeline.config import load_parameters
     from kedro_pipeline.pipeline_registry import register_pipelines
 
-    pipelines = register_pipelines()
-    assert list(pipelines) == ["__default__"]
-    assert len(pipelines["__default__"].nodes) == 0
+    pipelines = register_pipelines(load_parameters("base"))
+    assert set(pipelines) == {
+        "downloads", "baci", "vulnerabilities", "synthesis", "serving", "maintenance",
+        "__default__", "daily", "weekly",
+    }
+    assert len(pipelines["__default__"].nodes) == 16
+    assert len(pipelines["daily"].nodes) == 4
 
 
 @pytest.mark.parametrize("env", ["base", "demo", "cloud", "local"])

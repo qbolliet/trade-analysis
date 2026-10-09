@@ -35,19 +35,33 @@ def _catalog(env: str):
     return DataCatalog.from_config(loader["catalog"], loader["credentials"])
 
 
-@pytest.mark.parametrize("env", ["base", "demo"])
-def test_catalog_matches_parameters(env: str) -> None:
-    assert catalog_mismatches(_catalog(env), load_parameters(env)) == []
+@pytest.mark.parametrize("env", ["base", "demo", "test"])
+def test_catalog_matches_parameters(env: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from kedro_pipeline import config
+
+    # Environnement test : chemins sous une racine temporaire (TRADE_TEST_ROOT)
+    monkeypatch.setenv("TRADE_TEST_ROOT", str(tmp_path))
+    config._cached_section.cache_clear()
+    try:
+        assert catalog_mismatches(_catalog(env), load_parameters(env)) == []
+    finally:
+        config._cached_section.cache_clear()
+
+
+def test_concordance_cache_matches_the_baci_parameters() -> None:
+    """Le cache des tables de passage du catalogue est celui des paramètres BACI."""
+    expected = expected_datasets(load_parameters("base"))["baci.concordances"]
+    assert (expected.path, expected.bucket) == ("trade/datasets/unsd/concordances", "qbollietdgddi")
 
 
 def test_every_baci_target_has_its_factory_dataset() -> None:
     """Un dataset par millésime cible, résolu par la factory « baci.{vintage} »."""
     expected = expected_datasets(load_parameters("base"))
-    baci = sorted(name for name in expected if name.startswith("baci."))
+    baci = sorted(name for name in expected if name.startswith("baci.hs"))
     assert baci == [f"baci.hs{year}" for year in (1992, 1996, 2002, 2007, 2012, 2017, 2022)]
     assert expected["baci.hs1992"].schema == "baci_hs1992"
     demo = expected_datasets(load_parameters("demo"))
-    assert sorted(name for name in demo if name.startswith("baci.")) == ["baci.hs2017"]
+    assert sorted(name for name in demo if name.startswith("baci.hs")) == ["baci.hs2017"]
     assert demo["baci.hs2017"].schema == "demo_baci_hs2017"
 
 

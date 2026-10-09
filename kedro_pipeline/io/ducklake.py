@@ -24,6 +24,7 @@ DuckLake write path requires the dependency).
 """
 # Importation des modules
 # Modules de base
+import functools
 import itertools
 import logging
 import os
@@ -424,6 +425,158 @@ class CheckedConnectorFactory:
         """Check the credentials, then build the connector (never connected)."""
         require_credentials(pg, s3, what=f"the DuckLake catalog '{location.catalog_alias}'")
         return (self.factory or build_connector)(location, pg, s3, **kwargs)
+
+
+# Classe de connecteur à métadonnées SQLite locales (construite une seule fois)
+@functools.lru_cache(maxsize=None)
+def _sqlite_connector_class(base: type) -> type:
+    """Return a ``DuckLakeConnector`` subclass suited to a local SQLite catalog.
+
+    Two adjustments to the library connector:
+
+    * the parent directories are created from the real file path: the library
+      derives them from the ``sqlite:<path>`` attach target, which is not a
+      valid directory name on Windows;
+    * the SQLite metadata are attached with a write-ahead journal and a lock
+      timeout, so that a reader connection (a worker, a read-only source
+      catalog) waits for a writer of the same process instead of failing.
+
+    Args:
+        base: The ``DuckLakeConnector`` class (imported lazily by the caller).
+
+    Returns:
+        The subclass.
+    """
+
+    class SqliteFileConnector(base):  # type: ignore[misc, valid-type]
+        """``DuckLakeConnector`` on a local SQLite metadata file."""
+
+        # Chemin réel du fichier de métadonnées (sans le préfixe du backend)
+        @property
+        def metadata_file(self) -> str:
+            return self.catalog_path.split(":", 1)[1]
+
+        def _ensure_paths_exist(self) -> None:
+            os.makedirs(os.path.dirname(self.metadata_file), exist_ok=True)
+            os.makedirs(self.data_path, exist_ok=True)
+
+        def _build_attach_sql(self) -> str:
+            sql = super()._build_attach_sql()
+            # Journal WAL (écriture seulement) et attente des verrous SQLite
+            extra = ["META_BUSY_TIMEOUT 60000"]
+            if not self.read_only:
+                extra.insert(0, "META_JOURNAL_MODE 'WAL'")
+            return f"{sql[:-1]}, {', '.join(extra)})"
+
+    return SqliteFileConnector
+
+
+# Fabrique de connecteurs vers des catalogues DuckLake locaux (fichiers)
+class FileConnectorFactory:
+    """Connector factory targeting local file catalogs instead of PostgreSQL + S3.
+
+    One catalog per database name: the metadata live in
+    ``<root>/<dbname>.sqlite`` (SQLite backend, which several connections of
+    one process — or several worker processes — can attach at the same time,
+    unlike a ``.ducklake`` DuckDB file locked by its first user) and the
+    Parquet files under ``<root>/<dbname>_data/``. The bucket and the data path
+    of the location are ignored: every table of a catalog shares its data
+    directory, as on S3. Same call signature as :func:`build_connector`, and
+    picklable (it holds a path only), so a handle built with it can travel to a
+    worker process.
+
+    Args:
+        root: Directory holding the catalogs (created on first connection).
+
+    Examples:
+        >>> factory = FileConnectorFactory("/tmp/catalogs")
+        >>> location = DuckLakeLocation(dbname="comtrade", catalog_alias="comtrade",
+        ...     schema="C_A_HS", bucket="b", data_path="trade/datasets/comtrade")
+        >>> factory.paths(location)  # doctest: +SKIP
+        ('/tmp/catalogs/comtrade.sqlite', '/tmp/catalogs/comtrade_data/')
+    """
+
+    def __init__(self, root: Any) -> None:
+        self.root = str(root)
+
+    # Chemins du catalogue et des données d'un emplacement
+    def paths(self, location: DuckLakeLocation) -> tuple:
+        """Return ``(metadata file, data directory)`` of the catalog of ``location``."""
+        from pathlib import Path
+
+        root = Path(self.root)
+        return (root / f"{location.dbname}.sqlite").as_posix(), (root / f"{location.dbname}_data").as_posix() + "/"
+
+    def __call__(
+        self,
+        location: DuckLakeLocation,
+        pg: Optional[Mapping[str, Any]] = None,
+        s3: Optional[Mapping[str, Any]] = None,
+        *,
+        create_db_if_missing: bool = True,
+        read_only: bool = False,
+    ) -> Any:
+        """Build (never connect) the file connector of ``location``.
+
+        Args:
+            location: Catalog identity and schema.
+            pg: Ignored (no PostgreSQL server).
+            s3: Ignored (no object storage).
+            create_db_if_missing: Ignored: a file catalog is created on attach.
+            read_only: Whether the catalog is attached ``READ_ONLY``.
+
+        Returns:
+            An unconnected ``dt_ducklake_manager.DuckLakeConnector``.
+
+        Raises:
+            ImportError: If ``dt-ducklake-manager`` is not installed.
+        """
+        try:
+            from dt_ducklake_manager import DuckLakeConnector
+        except ImportError as exc:
+            raise ImportError(
+                "dt-ducklake-manager is required to build a DuckLake connector"
+            ) from exc
+
+        catalog_path, data_path = self.paths(location)
+        return _sqlite_connector_class(DuckLakeConnector)(
+            catalog_path=f"sqlite:{catalog_path}",
+            data_path=data_path,
+            catalog_type="sqlite",
+            catalog_alias=location.catalog_alias,
+            schema=location.schema,
+            read_only=read_only,
+        )
+
+    def __eq__(self, other: Any) -> bool:
+        return isinstance(other, FileConnectorFactory) and other.root == self.root
+
+    def __hash__(self) -> int:
+        return hash((FileConnectorFactory, self.root))
+
+
+# Fonction de choix de la fabrique de connecteurs d'après les identifiants
+def connector_factory_for(credentials: Optional[Mapping[str, Any]]) -> Callable[..., Any]:
+    """Choose the connector factory of a ``ducklake`` credentials entry.
+
+    A ``file_root`` key (local and test environments) selects local file
+    catalogs under that directory; otherwise the catalogs are PostgreSQL +
+    S3, with the credentials checked before the first connection.
+
+    Args:
+        credentials: ``ducklake`` entry of ``credentials.yml``, or ``None``.
+
+    Returns:
+        A connector factory with the signature of :func:`build_connector`.
+
+    Examples:
+        >>> isinstance(connector_factory_for({"file_root": "/tmp/x"}), FileConnectorFactory)
+        True
+        >>> isinstance(connector_factory_for(None), CheckedConnectorFactory)
+        True
+    """
+    root = (credentials or {}).get("file_root")
+    return FileConnectorFactory(root) if root else CheckedConnectorFactory()
 
 
 # Fonction de lecture de l'identifiant d'exécution Argo

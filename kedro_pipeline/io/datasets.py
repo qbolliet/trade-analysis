@@ -26,16 +26,18 @@ secret (documentation build, configuration checks).
 # Importation des modules
 # Modules de base
 import string
+from dataclasses import dataclass
 from typing import Any, Dict, List, Mapping, Optional
 
 # Kedro
 from kedro.io import AbstractDataset, DatasetError
 
 # Modules internes
+from kedro_pipeline.io.clients import ClientFactory
 from kedro_pipeline.io.ducklake import (
-    CheckedConnectorFactory,
     DuckLakeLocation,
     DuckLakeTable,
+    connector_factory_for,
 )
 from kedro_pipeline.io.freshness import FreshnessRegistry, Unit
 from kedro_pipeline.io.serving import ServingCatalog
@@ -84,7 +86,8 @@ class DuckLakeTableDataset(AbstractDataset[DuckLakeTable, DuckLakeTable]):
             ``catalog_alias``, ``schema`` — sanitised as written by the
             pipeline —, ``bucket``, ``data_path``, optional ``table``).
         credentials: ``ducklake`` entry of ``credentials.yml``
-            (``{"postgres": {...}, "s3": {...}}``).
+            (``{"postgres": {...}, "s3": {...}}``, or ``{"file_root": ...}`` for
+            local file catalogs).
         metadata: Free metadata, ignored by Kedro (kedro-viz displays it).
 
     Examples:
@@ -105,6 +108,7 @@ class DuckLakeTableDataset(AbstractDataset[DuckLakeTable, DuckLakeTable]):
         # Aucune connexion ici : le catalogue s'instancie sans secrets
         self._location = _location(location)
         self._pg, self._s3 = _ducklake_credentials(credentials)
+        self._factory = connector_factory_for(credentials)
         self.metadata = metadata
 
     # Propriété : emplacement de la table
@@ -121,7 +125,7 @@ class DuckLakeTableDataset(AbstractDataset[DuckLakeTable, DuckLakeTable]):
             The handle; its first real operation checks the credentials.
         """
         return DuckLakeTable.lazy(
-            self._location, self._pg, self._s3, connector_factory=CheckedConnectorFactory()
+            self._location, self._pg, self._s3, connector_factory=self._factory
         )
 
     # Sauvegarde : vérification d'identité de la poignée
@@ -343,6 +347,7 @@ class ServingCatalogDataset(AbstractDataset[ServingCatalog, ServingCatalog]):
         self._location = _location(location)
         self._sources = {alias: _location(source) for alias, source in (sources or {}).items()}
         self._pg, self._s3 = _ducklake_credentials(credentials)
+        self._factory = connector_factory_for(credentials)
         self.metadata = metadata
 
     # Chargement : poignée sans connexion
@@ -353,7 +358,7 @@ class ServingCatalogDataset(AbstractDataset[ServingCatalog, ServingCatalog]):
             self._pg,
             self._s3,
             dict(self._sources),
-            connector_factory=CheckedConnectorFactory(),
+            connector_factory=self._factory,
         )
 
     # Sauvegarde : vérification d'identité
@@ -385,3 +390,226 @@ class ServingCatalogDataset(AbstractDataset[ServingCatalog, ServingCatalog]):
             "data_url": self._location.data_url,
             "sources": sorted(self._sources),
         }
+
+
+# Fabrique des poignées écrites par les nœuds
+class DuckLakeCatalogs:
+    """Factory of the handles a node writes through (its output tables, the serving catalog).
+
+    A Kedro node cannot receive a dataset it also outputs: the handle of a table
+    it writes is therefore built by the node itself, from the location its
+    parameters designate, with the credentials and connector factory held
+    here (the very ones of the table datasets). The output dataset then checks
+    that the handle returned designates its own table.
+
+    Args:
+        pg: PostgreSQL credentials.
+        s3: S3 credentials.
+        connector_factory: Factory of unconnected connectors.
+
+    Examples:
+        >>> catalogs = DuckLakeCatalogsDataset().load()
+        >>> catalogs.table(DuckLakeLocation(dbname="d", catalog_alias="d", schema="s",
+        ...     bucket="b", data_path="p")).qualified_name
+        '"d"."s"."fact_table"'
+    """
+
+    def __init__(
+        self,
+        pg: Mapping[str, Any],
+        s3: Mapping[str, Any],
+        connector_factory: Any,
+    ) -> None:
+        self.pg = dict(pg)
+        self.s3 = dict(s3)
+        self.connector_factory = connector_factory
+
+    # Poignée paresseuse d'une table
+    def table(self, location: DuckLakeLocation) -> DuckLakeTable:
+        """Return a lazy handle on the table at ``location`` (no connection opened).
+
+        Args:
+            location: Catalog identity, schema and data path of the table.
+
+        Returns:
+            The handle.
+        """
+        return DuckLakeTable.lazy(location, self.pg, self.s3, connector_factory=self.connector_factory)
+
+    # Poignée du catalogue de restitution
+    def serving(
+        self, location: DuckLakeLocation, sources: Mapping[str, DuckLakeLocation]
+    ) -> ServingCatalog:
+        """Return the handle on the serving catalog and its read-only sources.
+
+        Args:
+            location: Serving catalog and schema.
+            sources: Source catalogs attached read-only, by alias.
+
+        Returns:
+            The handle (no connection opened).
+        """
+        return ServingCatalog(
+            location, self.pg, self.s3, dict(sources), connector_factory=self.connector_factory
+        )
+
+
+# Dataset de la fabrique des poignées écrites
+class DuckLakeCatalogsDataset(AbstractDataset[DuckLakeCatalogs, None]):
+    """Read-only dataset handing out the :class:`DuckLakeCatalogs` factory.
+
+    Args:
+        credentials: ``ducklake`` entry of ``credentials.yml``.
+        metadata: Free metadata, ignored by Kedro.
+
+    Examples:
+        >>> DuckLakeCatalogsDataset(credentials={"file_root": "/tmp/x"}).load().connector_factory.root
+        '/tmp/x'
+    """
+
+    def __init__(
+        self,
+        *,
+        credentials: Optional[Mapping[str, Any]] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        self._pg, self._s3 = _ducklake_credentials(credentials)
+        self._factory = connector_factory_for(credentials)
+        self.metadata = metadata
+
+    def load(self) -> DuckLakeCatalogs:
+        """Return the factory (no connection opened)."""
+        return DuckLakeCatalogs(self._pg, self._s3, self._factory)
+
+    def save(self, data: Any) -> None:
+        """Refuse any write: the factory is an input only.
+
+        Raises:
+            DatasetError: Always.
+        """
+        raise DatasetError("DuckLakeCatalogsDataset is read-only")
+
+    def _describe(self) -> Dict[str, Any]:
+        """Describe the dataset (connector kind only, never the credentials)."""
+        return {"connector": type(self._factory).__name__}
+
+
+# Dataset d'une fabrique de client d'API
+class ClientFactoryDataset(AbstractDataset[ClientFactory, None]):
+    """Read-only dataset handing out the factory of one API client.
+
+    Args:
+        factory: Dotted path of the client class (``"statflows.EurostatClient"``,
+            a network-free class in the ``test`` environment).
+        options: Public keyword arguments of the client.
+        credentials: Secret keyword arguments (``comtrade_api`` entry:
+            ``subscription_key``); empty values are dropped, the client then
+            applying its own default.
+        metadata: Free metadata, ignored by Kedro.
+
+    Examples:
+        >>> dataset = ClientFactoryDataset(factory="collections.OrderedDict",
+        ...     options={"a": 1}, credentials={"key": ""})
+        >>> dataset.load()()
+        OrderedDict({'a': 1})
+    """
+
+    def __init__(
+        self,
+        *,
+        factory: str,
+        options: Optional[Mapping[str, Any]] = None,
+        credentials: Optional[Mapping[str, Any]] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        self._path = str(factory)
+        # Valeurs secrètes vides (variable d'environnement absente) écartées
+        secrets = {key: value for key, value in (credentials or {}).items() if value not in ("", None)}
+        self._options = {**dict(options or {}), **secrets}
+        self._public = sorted((options or {}).keys())
+        self.metadata = metadata
+
+    def load(self) -> ClientFactory:
+        """Return the client factory (no client built here)."""
+        return ClientFactory(self._path, self._options)
+
+    def save(self, data: Any) -> None:
+        """Refuse any write: the factory is an input only.
+
+        Raises:
+            DatasetError: Always.
+        """
+        raise DatasetError("ClientFactoryDataset is read-only")
+
+    def _describe(self) -> Dict[str, Any]:
+        """Describe the dataset (class path and public option names, never secrets)."""
+        return {"factory": self._path, "options": self._public}
+
+
+# Poignée du cache des tables de correspondance SH
+@dataclass(frozen=True)
+class ConcordanceCache:
+    """Location of the shared cache of HS correspondence tables (Parquet).
+
+    Written by the BACI preparation (and completed by the partner metrics when
+    a historical vintage needs a missing pair); exchanged between nodes to
+    order them, the steps reading the very same location in their parameters.
+
+    Attributes:
+        path: Root directory of the cache (``baci.CLASSIFICATIONS.CONCORDANCE_PATH``).
+        bucket: S3 bucket, ``None`` for a local cache (``baci.BUCKET``).
+    """
+
+    path: str
+    bucket: Optional[str] = None
+
+
+# Dataset du cache des tables de correspondance
+class ConcordanceCacheDataset(AbstractDataset[ConcordanceCache, ConcordanceCache]):
+    """Dataset whose data is the location of the correspondence-table cache.
+
+    ``load`` never reads the cache (it may not exist yet: the partner metrics
+    of the daily run do not wait for BACI); ``save`` only checks the identity
+    of the location returned by the node.
+
+    Args:
+        cache_path: Root directory of the cache, relative to ``bucket`` (not
+            named ``path``: Kedro would turn a relative ``path`` argument into a
+            local absolute path).
+        bucket: S3 bucket, ``None`` for a local cache.
+        metadata: Free metadata, ignored by Kedro.
+
+    Examples:
+        >>> ConcordanceCacheDataset(cache_path="trade/unsd", bucket="b").load()
+        ConcordanceCache(path='trade/unsd', bucket='b')
+    """
+
+    def __init__(
+        self,
+        *,
+        cache_path: str,
+        bucket: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        self._cache = ConcordanceCache(str(cache_path), bucket)
+        self.metadata = metadata
+
+    def load(self) -> ConcordanceCache:
+        """Return the cache location (nothing read)."""
+        return self._cache
+
+    def save(self, data: ConcordanceCache) -> None:
+        """Accept back the cache location the node prepared.
+
+        Args:
+            data: Location returned by the node.
+
+        Raises:
+            DatasetError: If ``data`` designates another cache.
+        """
+        if data != self._cache:
+            raise DatasetError(f"Concordance cache {data} returned for the dataset of {self._cache}")
+
+    def _describe(self) -> Dict[str, Any]:
+        """Describe the dataset."""
+        return {"path": self._cache.path, "bucket": self._cache.bucket}

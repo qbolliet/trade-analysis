@@ -1,0 +1,32 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# ENVIRONNEMENT TEST — exécution locale sur un petit monde simulé (tests/pipeline/
+# fakes.py) : 3 reporters Comext, 4 produits SH6, années 2018-2022, aucun bucket
+# (fichiers sous TRADE_TEST_ROOT). SURCHARGES du bloc de base uniquement (fusion
+# récursive des mappings, remplacement des listes).
+# ─────────────────────────────────────────────────────────────────────────────
+baci:
+  BUCKET: null
+  PATHS:
+    # Fichiers de gravité écrits par le client Comtrade factice
+    DIST_CEPII: "${trade.test_root:}/cepii/dist_cepii.parquet"
+    GEO_CEPII: "${trade.test_root:}/cepii/geo_cepii.parquet"
+    LAST_PROCESSING_PATH: "${trade.test_root:}/datasets/last_processing/baci.json"
+  STATE:
+    PATH_TEMPLATE: "${trade.test_root:}/state/baci/{vintage}.json"
+  PASSES:
+    WORK_PATH: "${trade.test_root:}/work/baci"
+  PARAMETERS:
+    # Monde de 10 pays : peu de flux miroirs par paire
+    min_mirror_flows: 5
+  CLASSIFICATIONS:
+    CONCORDANCE_PATH: "${trade.test_root:}/unsd/concordances"
+    # Cible unique HS2017 (les déclarations simulées sont en H5) ; les autres
+    # millésimes sont désactivés par une entrée nulle
+    TARGETS:
+      HS2022: null
+      HS2017: { START_YEAR: 2017, RESULT_SCHEMA: "baci_hs2017" }
+      HS2012: null
+      HS2007: null
+      HS2002: null
+      HS1996: null
+      HS1992: null

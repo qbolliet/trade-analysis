@@ -24,6 +24,7 @@ from a factory given by the caller (its subscription key included).
 # Importation des modules
 from __future__ import annotations
 # Modules de base
+from dataclasses import dataclass
 from datetime import datetime, timedelta
 import itertools
 import logging
@@ -698,144 +699,253 @@ def max_runtime(downloads: Mapping[str, Any]) -> timedelta:
     )
 
 
-# Fonction d'étape : téléchargement d'une source
-def run_download(
-    client_factory: Callable[[], Any],
-    table: Any,
+# Plan d'un téléchargement : requêtes, codelists des référentiels, clé de fragment
+@dataclass
+class DownloadPlan:
+    """Planned queries of one source and what the following phases need.
+
+    Built by :func:`plan_download` with the API client, then completed by
+    :func:`download_planned` with the ``statflows`` report: the reference
+    tables (:func:`publish_download_reference`) and the coverage audit
+    (:func:`audit_download`) need no client, so they can run in other nodes of
+    the same pod.
+
+    Attributes:
+        source: ``"comtrade"`` or ``"eurostat"``.
+        dataflow: Dataflow identifier.
+        planned: Planned queries, uncapped (the coverage audit and the BACI
+            completeness gate judge against the full list).
+        queries: Queries actually downloaded (capped by ``max_queries``).
+        reference_codes: Codelists published as reference tables, by dimension.
+        shard_key: Registry fragment of a query (picklable module function).
+        report: ``statflows`` download report, once downloaded.
+        result: Result of the download (:func:`download_result`), set by the
+            caller that splits the phases, so that a later phase can raise its
+            failure.
+    """
+
+    source: str
+    dataflow: str
+    planned: List[Any]
+    queries: List[Any]
+    reference_codes: Dict[str, pd.DataFrame]
+    shard_key: Callable[[Any], str]
+    report: Any = None
+    result: Optional[StepResult] = None
+
+
+# Phase 1 : planification des requêtes (seule phase, avec le téléchargement, qui
+# interroge l'API)
+def plan_download(
+    client: Any,
     *,
     source: str,
     params: Mapping[str, Any],
     runtime: Mapping[str, Any],
-    tracker: Optional[RunTracker] = None,
-    progress: Optional[StepProgress] = None,
-    registry: Optional[DownloadRegistryView] = None,
-    year: Optional[int] = None,
-) -> StepResult:
-    """Plan, download and audit one source, logging the run to the tracker.
-
-    Steps: codelists and planned queries (capped by ``max_queries``),
-    reference tables of the codelists (never blocking), incremental download
-    with per-query metrics streamed to the tracker, coverage audit (never
-    blocking), then the run metrics, tags and per-query table. The failed
-    queries only fail the step when their share exceeds ``MAX_ERROR_RATIO``.
+) -> DownloadPlan:
+    """Plan the queries of a source and fetch the codelists of its reference tables.
 
     Args:
-        client_factory: Builds the API client (``ComtradeClient`` with its
-            subscription key, ``EurostatClient``); closed by the step.
-        table: :class:`~kedro_pipeline.io.ducklake.DuckLakeTable` (lazy handle)
-            of the downloaded fact table; its connector is handed to
-            ``statflows``.
+        client: Open API client (``ComtradeClient``, ``EurostatClient``).
         source: ``"comtrade"`` or ``"eurostat"``.
-        params: Parameter block of the source (``DATAFLOW``, ``DOWNLOADS``,
-            ``parameters``, ``fixed_dims``, ``split_filters``, ``TRACKING``,
-            ``COVERAGE``).
-        runtime: ``runtime`` parameters (``ANALYSIS_START_YEAR``,
-            ``NOMENCLATURES``).
-        tracker: Tracker of the open run (never entered here).
-        progress: Holder of the stage reached, named by a failure report.
-        registry: View of the download registry for the coverage audit; read
-            from ``PATHS.LAST_DOWNLOAD_PATH`` when ``None``.
-        year: Year the codelists describe in the reference tables; the current
-            year when ``None``.
+        params: Parameter block of the source.
+        runtime: ``runtime`` parameters.
 
     Returns:
-        The step result: one unit per planned query, run metrics ``download/*``,
-        the per-query table (``download/queries.csv``) for the report sections,
-        the failed queries under ``report_tables["errors"]``; ``outputs``
-        ``report`` (``statflows`` report), ``reference`` and ``coverage``
-        (their own results). ``failures`` holds the over-threshold error, raised
-        as :class:`~kedro_pipeline.io.download_report.DownloadFailureError`.
+        The plan (``report`` still ``None``).
 
     Raises:
         KeyError: If ``source`` is unknown or a parameter is missing.
     """
     planner = _PLANNERS[source]
-    tracker = capturing(tracker)
     dataflow = params["DATAFLOW"]
-    downloads = params["DOWNLOADS"][dataflow]
     parameters = params["parameters"][dataflow]
-    log_artifacts = bool((params.get("TRACKING") or {}).get("LOG_ARTIFACTS", True))
+    planned, reference_codes, shard_key = planner(client, params, runtime)
+    # Plafond optionnel (null = aucun)
+    queries = cap_queries(planned, parameters.get("max_queries"))
+    return DownloadPlan(source, dataflow, list(planned), queries, reference_codes, shard_key)
 
-    # Planification des requêtes
-    mark(progress, "planification des requêtes")
-    client = client_factory()
+
+# Phase 2 : référentiels publiés depuis les codelists déjà récupérées (non bloquant)
+def publish_download_reference(
+    plan: DownloadPlan,
+    table: Any,
+    *,
+    params: Mapping[str, Any],
+    runtime: Mapping[str, Any],
+    year: Optional[int] = None,
+) -> StepResult:
+    """Publish the reference tables (country and product labels) of a source.
+
+    Never blocking for the download: the failures are recorded in the result.
+
+    Args:
+        plan: Plan of the source (its codelists).
+        table: :class:`~kedro_pipeline.io.ducklake.DuckLakeTable` of the
+            downloaded fact table; the reference schemas live in its catalog.
+        params: Parameter block of the source (``DOWNLOADS.REFERENCE``).
+        runtime: ``runtime`` parameters (``NOMENCLATURES``).
+        year: Year the codelists describe; the current year when ``None``.
+
+    Returns:
+        The result of the publication (``rows`` and ``failures`` per table).
+    """
+    reference = publish_reference(
+        plan.reference_codes,
+        table.connector(),
+        source=plan.source,
+        params={
+            **params["DOWNLOADS"]["REFERENCE"],
+            "NOMENCLATURES": runtime["NOMENCLATURES"]["HS"],
+            "YEAR": year if year is not None else datetime.now().year,
+        },
+    )
+    logger.info(
+        f"Référentiels {_SOURCE_LABELS.get(plan.source, plan.source)} : {reference['rows']} ; "
+        f"échecs : {reference['failures']}"
+    )
+    return reference
+
+
+# Phase 3 : téléchargement incrémental des requêtes planifiées
+def download_planned(
+    client: Any,
+    plan: DownloadPlan,
+    table: Any,
+    *,
+    params: Mapping[str, Any],
+    tracker: Optional[RunTracker] = None,
+    progress: Optional[StepProgress] = None,
+) -> Any:
+    """Download the planned queries incrementally, streaming per-query metrics.
+
+    Args:
+        client: Open API client (the one of the planning: its codelists and
+            structures are cached).
+        plan: Plan of the source; its ``report`` is set here.
+        table: Handle of the downloaded fact table; its connector is handed to
+            ``statflows``.
+        params: Parameter block of the source (``DOWNLOADS``).
+        tracker: Tracker of the open run (never entered here).
+        progress: Holder of the stage reached, named by a failure report.
+
+    Returns:
+        The ``statflows`` download report (also stored in ``plan.report``).
+    """
+    tracker = capturing(tracker)
+    downloads = params["DOWNLOADS"][plan.dataflow]
+
+    # Suivi requête par requête : statflows ignore tout du suivi, le rappel est
+    # le seul point de contact
+    streamed_queries: List[QueryReport] = []
+
+    def stream_query_metrics(query_report: QueryReport) -> None:
+        """Send one query's diagnostics to the tracker."""
+        tracker.log_metrics(rekey_metrics(query_report.to_metrics()), step=len(streamed_queries))
+        streamed_queries.append(query_report)
+
+    # Téléchargement incrémental (fetch_updates des clients)
+    mark(progress, "téléchargement")
+    plan.report = download_updates(
+        client=client,
+        queries=plan.queries,
+        connector=table.connector(),
+        structures_path=downloads["PATHS"]["STRUCTURES_PATH"],
+        last_download_path=downloads["PATHS"]["LAST_DOWNLOAD_PATH"],
+        n_observations=downloads["N_LAST_OBSERVATIONS"],
+        fresh_registry=False,
+        max_runtime=max_runtime(downloads),
+        categorical_threshold=None,  # A supprimer avec la nouvelle version de la base de données
+        bucket=downloads["BUCKET"],
+        storage_options=None,
+        on_query_complete=stream_query_metrics,
+        # Partition du registre et des écritures
+        **download_buffering_options(downloads.get("BUFFERING"), shard_key=plan.shard_key),
+    )
+    return plan.report
+
+
+# Phase 4 : audit de couverture (non bloquant)
+def audit_download(
+    plan: DownloadPlan,
+    table: Any,
+    *,
+    params: Mapping[str, Any],
+    runtime: Mapping[str, Any],
+    tracker: Optional[RunTracker] = None,
+    registry: Optional[DownloadRegistryView] = None,
+) -> Optional[StepResult]:
+    """Audit the coverage of the downloaded source; a failure is only a warning.
+
+    Args:
+        plan: Downloaded plan (``report`` set).
+        table: Handle of the downloaded fact table.
+        params: Parameter block of the source.
+        runtime: ``runtime`` parameters.
+        tracker: Tracker of the open run (never entered here).
+        registry: View of the download registry; read from
+            ``PATHS.LAST_DOWNLOAD_PATH`` when ``None``.
+
+    Returns:
+        The result of the audit, ``None`` when it could not run.
+    """
+    downloads = params["DOWNLOADS"][plan.dataflow]
     try:
-        planned, reference_codes, shard_key = planner(client, params, runtime)
-        # Plafond optionnel (null = aucun)
-        queries = cap_queries(planned, parameters.get("max_queries"))
-        connector = table.connector()
-
-        # Référentiels (libellés des pays et des produits) depuis les codelists déjà
-        # récupérées ; non bloquant pour le téléchargement
-        reference = publish_reference(
-            reference_codes,
-            connector,
-            source=source,
-            params={
-                **params["DOWNLOADS"]["REFERENCE"],
-                "NOMENCLATURES": runtime["NOMENCLATURES"]["HS"],
-                "YEAR": year if year is not None else datetime.now().year,
-            },
-        )
-        logger.info(
-            f"Référentiels {_SOURCE_LABELS.get(source, source)} : {reference['rows']} ; "
-            f"échecs : {reference['failures']}"
-        )
-
-        # Suivi requête par requête : statflows ignore tout du suivi, le rappel est
-        # le seul point de contact
-        streamed_queries: List[QueryReport] = []
-
-        def stream_query_metrics(query_report: QueryReport) -> None:
-            """Send one query's diagnostics to the tracker."""
-            tracker.log_metrics(rekey_metrics(query_report.to_metrics()), step=len(streamed_queries))
-            streamed_queries.append(query_report)
-
-        # Téléchargement incrémental (fetch_updates des clients)
-        mark(progress, "téléchargement")
-        report = download_updates(
-            client=client,
-            queries=queries,
-            connector=connector,
-            structures_path=downloads["PATHS"]["STRUCTURES_PATH"],
-            last_download_path=downloads["PATHS"]["LAST_DOWNLOAD_PATH"],
-            n_observations=downloads["N_LAST_OBSERVATIONS"],
-            fresh_registry=False,
-            max_runtime=max_runtime(downloads),
-            categorical_threshold=None,  # A supprimer avec la nouvelle version de la base de données
-            bucket=downloads["BUCKET"],
-            storage_options=None,
-            on_query_complete=stream_query_metrics,
-            # Partition du registre et des écritures
-            **download_buffering_options(downloads.get("BUFFERING"), shard_key=shard_key),
-        )
-    finally:
-        client.close()
-
-    # Audit de couverture : jamais bloquant, une panne n'est qu'un avertissement
-    coverage: Optional[StepResult] = None
-    try:
-        coverage = audit_coverage(
+        return audit_coverage(
             table,
             registry or DownloadRegistryView(
-                downloads["PATHS"]["LAST_DOWNLOAD_PATH"], bucket=downloads["BUCKET"], dataflow=dataflow
+                downloads["PATHS"]["LAST_DOWNLOAD_PATH"], bucket=downloads["BUCKET"], dataflow=plan.dataflow
             ),
-            planned,
-            source=source,
+            plan.planned,
+            source=plan.source,
             params=params,
             runtime=runtime,
-            n_processed=int(report.processed),
+            n_processed=int(plan.report.processed),
             tracker=tracker,
         )
     except Exception as exc:
-        logger.warning(f"Audit de couverture {source} impossible : {exc}")
+        logger.warning(f"Audit de couverture {plan.source} impossible : {exc}")
+        return None
+
+
+# Phase 5 : métriques, tags, table par requête et seuil d'échec du run
+def download_result(
+    plan: DownloadPlan,
+    *,
+    params: Mapping[str, Any],
+    tracker: Optional[RunTracker] = None,
+    progress: Optional[StepProgress] = None,
+    reference: Optional[StepResult] = None,
+    coverage: Optional[StepResult] = None,
+) -> StepResult:
+    """Build the result of a download from its report, logging the run metrics.
+
+    The failed queries only fail the step when their share exceeds
+    ``MAX_ERROR_RATIO``.
+
+    Args:
+        plan: Downloaded plan (``report`` set).
+        params: Parameter block of the source (``DOWNLOADS``, ``TRACKING``).
+        tracker: Tracker of the open run (never entered here).
+        progress: Holder of the stage reached, named by a failure report.
+        reference: Result of the reference publication, kept in ``outputs``.
+        coverage: Result of the coverage audit, kept in ``outputs`` and
+            ``children``.
+
+    Returns:
+        The step result (see :func:`run_download`).
+    """
+    tracker = capturing(tracker)
+    report = plan.report
+    downloads = params["DOWNLOADS"][plan.dataflow]
+    log_artifacts = bool((params.get("TRACKING") or {}).get("LOG_ARTIFACTS", True))
 
     # Métriques, tags et table par requête du run
     mark(progress, "rapport de run")
     metrics = download_run_metrics(report)
     tracker.log_metrics(metrics)
     tags = {
-        "dataflow": dataflow,
+        "dataflow": plan.dataflow,
         "stopped_early": str(report.stopped_early),
         "n_queries_planned": str(report.n_queries_planned),
     }
@@ -870,4 +980,80 @@ def run_download(
         outputs={"report": report, "reference": reference, "coverage": coverage},
         children={"coverage": coverage} if coverage is not None else {},
         failure_exception=failure,
+    )
+
+
+# Fonction d'étape : téléchargement d'une source
+def run_download(
+    client_factory: Callable[[], Any],
+    table: Any,
+    *,
+    source: str,
+    params: Mapping[str, Any],
+    runtime: Mapping[str, Any],
+    tracker: Optional[RunTracker] = None,
+    progress: Optional[StepProgress] = None,
+    registry: Optional[DownloadRegistryView] = None,
+    year: Optional[int] = None,
+) -> StepResult:
+    """Plan, download and audit one source, logging the run to the tracker.
+
+    Steps: codelists and planned queries (capped by ``max_queries``),
+    reference tables of the codelists (never blocking), incremental download
+    with per-query metrics streamed to the tracker, coverage audit (never
+    blocking), then the run metrics, tags and per-query table. The failed
+    queries only fail the step when their share exceeds ``MAX_ERROR_RATIO``.
+    The phases are also exposed one by one (:func:`plan_download`,
+    :func:`publish_download_reference`, :func:`download_planned`,
+    :func:`audit_download`, :func:`download_result`) for the pipeline nodes,
+    which run them as separate nodes of a single pod.
+
+    Args:
+        client_factory: Builds the API client (``ComtradeClient`` with its
+            subscription key, ``EurostatClient``); closed by the step.
+        table: :class:`~kedro_pipeline.io.ducklake.DuckLakeTable` (lazy handle)
+            of the downloaded fact table; its connector is handed to
+            ``statflows``.
+        source: ``"comtrade"`` or ``"eurostat"``.
+        params: Parameter block of the source (``DATAFLOW``, ``DOWNLOADS``,
+            ``parameters``, ``fixed_dims``, ``split_filters``, ``TRACKING``,
+            ``COVERAGE``).
+        runtime: ``runtime`` parameters (``ANALYSIS_START_YEAR``,
+            ``NOMENCLATURES``).
+        tracker: Tracker of the open run (never entered here).
+        progress: Holder of the stage reached, named by a failure report.
+        registry: View of the download registry for the coverage audit; read
+            from ``PATHS.LAST_DOWNLOAD_PATH`` when ``None``.
+        year: Year the codelists describe in the reference tables; the current
+            year when ``None``.
+
+    Returns:
+        The step result: one unit per planned query, run metrics ``download/*``,
+        the per-query table (``download/queries.csv``) for the report sections,
+        the failed queries under ``report_tables["errors"]``; ``outputs``
+        ``report`` (``statflows`` report), ``reference`` and ``coverage``
+        (their own results). ``failures`` holds the over-threshold error, raised
+        as :class:`~kedro_pipeline.io.download_report.DownloadFailureError`.
+
+    Raises:
+        KeyError: If ``source`` is unknown or a parameter is missing.
+    """
+    tracker = capturing(tracker)
+
+    # Planification des requêtes
+    mark(progress, "planification des requêtes")
+    client = client_factory()
+    try:
+        plan = plan_download(client, source=source, params=params, runtime=runtime)
+        # Référentiels (libellés des pays et des produits) depuis les codelists déjà
+        # récupérées ; non bloquant pour le téléchargement
+        reference = publish_download_reference(plan, table, params=params, runtime=runtime, year=year)
+        download_planned(client, plan, table, params=params, tracker=tracker, progress=progress)
+    finally:
+        client.close()
+
+    # Audit de couverture : jamais bloquant, une panne n'est qu'un avertissement
+    coverage = audit_download(plan, table, params=params, runtime=runtime, tracker=tracker, registry=registry)
+    return download_result(
+        plan, params=params, tracker=tracker, progress=progress, reference=reference, coverage=coverage
     )

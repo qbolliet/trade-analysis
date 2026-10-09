@@ -121,3 +121,64 @@ serving.tables:
                bucket: qbollietdgddi, data_path: trade/datasets/comtrade}
     vulnerabilities: {dbname: vulnerabilities, catalog_alias: vulnerabilities, schema: indicators,
                       bucket: qbollietdgddi, data_path: trade/datasets/vulnerabilities/}
+
+# ── Écritures : fabrique des poignées construites par les nœuds ───────────────
+# Un nœud ne peut pas recevoir un dataset qu'il produit : il construit la poignée de
+# chaque table qu'il écrit à partir des paramètres, avec ces identifiants, et la renvoie
+# au dataset de sortie, qui vérifie qu'elle désigne bien sa table
+ducklake.catalogs:
+  type: kedro_pipeline.io.datasets.DuckLakeCatalogsDataset
+  credentials: ducklake
+
+# ── Clients des API (fabriques ; la clé Comtrade vient des credentials) ───────
+clients.eurostat:
+  type: kedro_pipeline.io.datasets.ClientFactoryDataset
+  factory: statflows.EurostatClient
+
+clients.comtrade:
+  type: kedro_pipeline.io.datasets.ClientFactoryDataset
+  factory: statflows.ComtradeClient
+  credentials: comtrade_api
+
+clients.unsd:
+  type: kedro_pipeline.io.datasets.ClientFactoryDataset
+  factory: statflows.UNSDClient
+
+# ── Plans de téléchargement : échangés en mémoire entre les nœuds d'une même tâche
+# fusionnée (téléchargement → référentiels → audit), jamais entre deux pods ─────
+eurostat.download_plan:
+  type: MemoryDataset
+  copy_mode: assign
+
+comtrade.download_plan:
+  type: MemoryDataset
+  copy_mode: assign
+
+# ── BACI : périmètre décidé par la préparation, lu par chaque millésime ───────
+# Objet Python complet (plans, tables de passage, fichiers CEPII) : chaque tâche de
+# millésime tourne dans son propre pod et le relit
+baci.scope:
+  type: kedro_datasets.pickle.PickleDataset
+  filepath: s3://qbollietdgddi/trade/state/baci/scope.pkl
+  credentials: s3fs
+
+# Cache des tables de correspondance SH (Parquet), préparé par BACI et complété au
+# besoin par les métriques partenaires (= baci.CLASSIFICATIONS.CONCORDANCE_PATH, baci.BUCKET)
+baci.concordances:
+  type: kedro_pipeline.io.datasets.ConcordanceCacheDataset
+  cache_path: trade/datasets/unsd/concordances
+  bucket: qbollietdgddi
+
+# ── Suivi des nœuds : métriques (JSON) et tables d'artefacts (CSV) ────────────
+# Fichiers locaux, en attendant leur journalisation MLflow sous les mêmes noms
+"mlflow.metrics.{node}":
+  type: kedro_datasets.json.JSONDataset
+  filepath: data/08_reporting/metrics/{node}.json
+
+"mlflow.artifacts.{node}":
+  type: kedro_datasets.partitions.PartitionedDataset
+  path: data/08_reporting/artifacts/{node}
+  dataset:
+    type: pandas.CSVDataset
+    save_args: {index: false}
+  filename_suffix: ".csv"

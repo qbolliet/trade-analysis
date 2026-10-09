@@ -1,0 +1,22 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# ENVIRONNEMENT TEST — exécution locale sur un petit monde simulé (tests/pipeline/
+# fakes.py) : 3 reporters Comext, 4 produits SH6, années 2018-2022, aucun bucket
+# (fichiers sous TRADE_TEST_ROOT). SURCHARGES du bloc de base uniquement (fusion
+# récursive des mappings, remplacement des listes).
+# ─────────────────────────────────────────────────────────────────────────────
+vulnerabilities:
+  # Une seule série historique (HS2017), seul millésime BACI de l'environnement
+  VINTAGES: ["HS2017"]
+  VULNERABILITIES:
+    DS-045409:
+      BUCKET: null
+      PATHS:
+        LAST_COMPUTATION_PATH: "${trade.test_root:}/vulnerabilities/comext/last_computation.json"
+      STATE:
+        PATH_TEMPLATE: "${trade.test_root:}/state/vulnerabilities/partners/{classification}/{reporter}.json"
+  NETWORK_VULNERABILITIES:
+    BUCKET: null
+    PATHS:
+      LAST_COMPUTATION_PATH: "${trade.test_root:}/vulnerabilities/baci/last_computation.json"
+    STATE:
+      PATH_TEMPLATE: "${trade.test_root:}/state/vulnerabilities/network/{vintage}.json"

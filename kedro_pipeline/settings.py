@@ -7,6 +7,7 @@ Kedro configuration merge for the transitional scripts.
 # Importation des modules
 from kedro.config import OmegaConfigLoader
 
+from kedro_pipeline.config import resolve_test_root
 from kedro_pipeline.hooks import TradeRunHooks
 
 # Source de configuration : dossier existant `config/` (et non `conf/`)
@@ -20,11 +21,15 @@ CONF_SOURCE = "config"
 # d'un bloc (fusion récursive des mappings, remplacement des listes). Les noms
 # d'expériences MLflow des scripts transitoires vivent hors des paramètres
 # (`experiments*`), en attendant la configuration de kedro-mlflow.
+# Résolveur `trade.test_root` : racine temporaire (TRADE_TEST_ROOT) de l'environnement
+# test, seule variable d'environnement lisible hors des credentials (oc.env y reste
+# cantonné, de sorte qu'aucun secret ne transite par les paramètres)
 CONFIG_LOADER_CLASS = OmegaConfigLoader
 CONFIG_LOADER_ARGS = {
     "base_env": "base",
     "default_run_env": "local",
     "merge_strategy": {"parameters": "soft"},
+    "custom_resolvers": {"trade.test_root": resolve_test_root},
     "config_patterns": {
         "argo": ["argo*", "argo*/**"],
         "mlflow": ["mlflow*", "mlflow*/**"],

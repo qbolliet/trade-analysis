@@ -1,0 +1,142 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# ENVIRONNEMENT TEST — catalogue local sur données simulées (TRADE_TEST_ROOT).
+# La fusion du catalogue est destructive : toute entrée dont un champ diffère de base
+# est redéclarée en entier. Les tables DuckLake gardent leurs catalogues et schémas de
+# base, sans bucket (catalogues fichiers, cf. credentials.yml) ; registres, périmètre
+# BACI, cache des tables de passage et sorties de suivi sont sous la racine de test ;
+# les clients d'API sont les classes factices de tests/pipeline/fakes.py.
+# ─────────────────────────────────────────────────────────────────────────────
+
+_ducklake: &ducklake
+  type: kedro_pipeline.io.datasets.DuckLakeTableDataset
+  credentials: ducklake
+
+_registry: &registry
+  type: kedro_pipeline.io.datasets.FreshnessRegistryDataset
+  bucket: null
+
+# ── Données brutes et référentiels ─────────────────────────────────────────
+eurostat.comext:
+  <<: *ducklake
+  location: {dbname: eurostat, catalog_alias: eurostat, schema: DS_045409,
+             bucket: null, data_path: trade/datasets/comext}
+
+comtrade.tariffline:
+  <<: *ducklake
+  location: {dbname: comtrade, catalog_alias: comtrade, schema: C_A_HS,
+             bucket: null, data_path: trade/datasets/comtrade}
+
+"reference.eurostat.{table}":
+  <<: *ducklake
+  location: {dbname: eurostat, catalog_alias: eurostat, schema: "reference_{table}",
+             bucket: null, data_path: trade/datasets/comext}
+
+"reference.comtrade.{table}":
+  <<: *ducklake
+  location: {dbname: comtrade, catalog_alias: comtrade, schema: "reference_{table}",
+             bucket: null, data_path: trade/datasets/comtrade}
+
+"baci.{vintage}":
+  <<: *ducklake
+  location: {dbname: comtrade, catalog_alias: comtrade, schema: "baci_{vintage}",
+             bucket: null, data_path: trade/datasets/comtrade}
+
+# ── Résultats ───────────────────────────────────────────────────────────────
+vulnerabilities.partners:
+  <<: *ducklake
+  location: {dbname: vulnerabilities, catalog_alias: vulnerabilities, schema: indicators,
+             bucket: null, data_path: trade/datasets/vulnerabilities/}
+
+vulnerabilities.network:
+  <<: *ducklake
+  location: {dbname: vulnerabilities, catalog_alias: vulnerabilities, schema: network_indicators,
+             bucket: null, data_path: trade/datasets/vulnerabilities/}
+
+synthesis.scores:
+  <<: *ducklake
+  location: {dbname: vulnerabilities, catalog_alias: vulnerabilities, schema: synthesis,
+             bucket: null, data_path: trade/datasets/vulnerabilities/}
+
+synthesis.diagnostics:
+  <<: *ducklake
+  location: {dbname: vulnerabilities, catalog_alias: vulnerabilities, schema: synthesis_diagnostics,
+             bucket: null, data_path: trade/datasets/vulnerabilities/}
+
+# ── Registres de fraîcheur (fichiers JSON locaux) ───────────────────────────
+state.baci:
+  <<: *registry
+  step: baci
+  path_template: "${trade.test_root:}/state/baci/{vintage}.json"
+
+state.partners:
+  <<: *registry
+  step: partners
+  path_template: "${trade.test_root:}/state/vulnerabilities/partners/{classification}/{reporter}.json"
+
+state.network:
+  <<: *registry
+  step: network
+  path_template: "${trade.test_root:}/state/vulnerabilities/network/{vintage}.json"
+
+state.synthesis:
+  <<: *registry
+  step: synthesis
+  path_template: "${trade.test_root:}/state/synthesis/{TIME_PERIOD}.json"
+
+state.coherence:
+  <<: *registry
+  step: coherence
+  path_template: "${trade.test_root:}/state/coherence/{TIME_PERIOD}.json"
+
+# ── Restitution : catalogue FICHIER serving ─────────────────────────────────
+serving.tables:
+  type: kedro_pipeline.io.datasets.ServingCatalogDataset
+  credentials: ducklake
+  location: {dbname: serving, catalog_alias: serving, schema: dashboard,
+             bucket: null, data_path: trade/datasets/serving/}
+  sources:
+    eurostat: {dbname: eurostat, catalog_alias: eurostat, schema: DS_045409,
+               bucket: null, data_path: trade/datasets/comext}
+    comtrade: {dbname: comtrade, catalog_alias: comtrade, schema: C_A_HS,
+               bucket: null, data_path: trade/datasets/comtrade}
+    vulnerabilities: {dbname: vulnerabilities, catalog_alias: vulnerabilities, schema: indicators,
+                      bucket: null, data_path: trade/datasets/vulnerabilities/}
+
+# ── Clients d'API factices (aucun appel réseau) ─────────────────────────────
+clients.eurostat:
+  type: kedro_pipeline.io.datasets.ClientFactoryDataset
+  factory: tests.pipeline.fakes.FakeEurostatClient
+  options: {root: "${trade.test_root:}"}
+
+clients.comtrade:
+  type: kedro_pipeline.io.datasets.ClientFactoryDataset
+  factory: tests.pipeline.fakes.FakeComtradeClient
+  options: {root: "${trade.test_root:}"}
+
+clients.unsd:
+  type: kedro_pipeline.io.datasets.ClientFactoryDataset
+  factory: tests.pipeline.fakes.FakeUNSDClient
+  options: {root: "${trade.test_root:}"}
+
+# ── BACI : périmètre et cache des tables de passage, locaux ─────────────────
+baci.scope:
+  type: kedro_datasets.pickle.PickleDataset
+  filepath: "${trade.test_root:}/state/baci/scope.pkl"
+
+baci.concordances:
+  type: kedro_pipeline.io.datasets.ConcordanceCacheDataset
+  cache_path: "${trade.test_root:}/unsd/concordances"
+  bucket: null
+
+# ── Suivi des nœuds sous la racine de test ──────────────────────────────────
+"mlflow.metrics.{node}":
+  type: kedro_datasets.json.JSONDataset
+  filepath: "${trade.test_root:}/reporting/metrics/{node}.json"
+
+"mlflow.artifacts.{node}":
+  type: kedro_datasets.partitions.PartitionedDataset
+  path: "${trade.test_root:}/reporting/artifacts/{node}"
+  dataset:
+    type: pandas.CSVDataset
+    save_args: {index: false}
+  filename_suffix: ".csv"

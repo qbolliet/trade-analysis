@@ -101,3 +101,9 @@ serving.tables:
                bucket: qbollietdgddi, data_path: trade/demo/datasets/comtrade}
     vulnerabilities: {dbname: vulnerabilities, catalog_alias: vulnerabilities, schema: demo_indicators,
                       bucket: qbollietdgddi, data_path: trade/demo/datasets/vulnerabilities/}
+
+# Périmètre BACI de démonstration, isolé de celui de production
+baci.scope:
+  type: kedro_datasets.pickle.PickleDataset
+  filepath: s3://qbollietdgddi/trade/demo/state/baci/scope.pkl
+  credentials: s3fs

@@ -721,3 +721,63 @@ def baci_target_schemas(baci_config: Mapping[str, Any]) -> Dict[str, str]:
         label: schema_name(target["RESULT_SCHEMA"])
         for label, target in active_targets(baci_config["CLASSIFICATIONS"]["TARGETS"]).items()
     }
+
+
+# Tables de référence SH publiées par BACI dans le catalogue Comtrade
+HS_REFERENCE_TABLES: Tuple[str, ...] = ("hs_concordance", "hs_vintages")
+
+
+# Fonction des tables de référence publiées depuis les codelists d'une source
+def reference_tables(config: Mapping[str, Any]) -> List[str]:
+    """Return the reference tables published from the codelists of a source.
+
+    Args:
+        config: Download parameter block (``DOWNLOADS.REFERENCE.DIMENSIONS``:
+            dimension -> table).
+
+    Returns:
+        The table names, in configuration order.
+
+    Examples:
+        >>> reference_tables({"DOWNLOADS": {"REFERENCE": {"DIMENSIONS": {"reporter": "reporters"}}}})
+        ['reporters']
+    """
+    return list(config["DOWNLOADS"]["REFERENCE"]["DIMENSIONS"].values())
+
+
+# Fonction de localisation d'une table de référence
+def reference_location(config: Mapping[str, Any], table: str) -> DuckLakeLocation:
+    """Locate a reference table (its own schema in the catalog of the source).
+
+    Args:
+        config: Download parameter block of the source.
+        table: Reference table name (``"products"``, ``"hs_concordance"``…).
+
+    Returns:
+        The location: catalog and data path of the downloaded table, schema
+        ``<SCHEMA_PREFIX>_<table>``.
+    """
+    from kedro_pipeline.steps.reference import reference_schema
+
+    prefix = config["DOWNLOADS"]["REFERENCE"]["SCHEMA_PREFIX"]
+    return download_location(config, schema=schema_name(reference_schema(prefix, table)))
+
+
+# Fonction de localisation du catalogue de restitution
+def serving_location(params: Mapping[str, Any]) -> DuckLakeLocation:
+    """Locate the ``serving`` catalog and schema written by the publication.
+
+    Args:
+        params: The ``serving`` parameters (``DBNAME``, ``CATALOG_ALIAS``,
+            ``SCHEMA``, ``BUCKET``, ``DATA_PATH``).
+
+    Returns:
+        The location.
+    """
+    return DuckLakeLocation(
+        dbname=params["DBNAME"],
+        catalog_alias=params["CATALOG_ALIAS"],
+        schema=params["SCHEMA"],
+        bucket=params["BUCKET"],
+        data_path=params["DATA_PATH"],
+    )
