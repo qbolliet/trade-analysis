@@ -43,6 +43,7 @@
 | 2026-10-06 (K-08) | **Évolution de schéma et synthèse incrémentale implémentées** : poignée `kedro_pipeline.io.ducklake.DuckLakeTable` (`upsert`, `upsert_many(delete_where=…)` = remplacement transactionnel d'une tranche, `add_columns`, `writer`) utilisée par partenaires (écrivain injecté dans le runner `macroforecast`), réseau, BACI (`DuckLakeYearWriter`), synthèse et cohérence ; constat empirique : un upsert portant un sous-ensemble des colonnes **préserve** les colonnes absentes (aucune complétion). `run_synthesis(methods=…, df_existing_scores=…)` (équivalence calcul complet / deux temps testée, consensus compris) ; registres **par contexte** (`STATE.PATH_TEMPLATE`, fragment = période) de la synthèse et de la cohérence ; empreintes par méthode + `consensus` + `synthesis` (sélection des entrées) ; planification pure (`plan_synthesis_contexts`, `UpstreamMarks` par millésime), calcul pur par contexte, écriture par lots ; budget, `--cadence-check`, métriques `synthesis/contexts_*`. Écarts : un couple partenaire `first` vaut **changement complet** (choix utilisateur, exactitude) ; pertinence des changements amont par millésime SH ; lignes longues **remplacées** (et non fusionnées) ; pas de migration des registres globaux (première passe `first` partout). **`dt-ducklake-manager 0.4.0` non retenu** : son constructeur stocke `'None'` (texte) dans les champs nuls de `metadata` quand l'entrée est un DataFrame pandas, ce qui fait échouer tout `update_database` ultérieur (`Binder Error … column named "None"`, 26 tests) ; dépendance laissée en 0.3.1, API utilisée identique | C-13, PD-11, PD-12, PS-10, PS-16, PS-17 |
 | 2026-10-06 (K-07) | **BACI par passes implémenté** : `macroforecast/trade/processing/streaming.py` (accumulateurs), `partial_fit`/`finalize` des trois estimateurs groupés, `run_baci_passes` + `BaciPassIO` / `InMemoryPassIO`, `kedro_pipeline/steps/baci.py` (`DuckDBPassIO`, `DuckLakeYearWriter`, porte de complétude, blocs de chapitres), script `process_baci_hs.py` sans lecture intégrale de Comtrade, `BACI_TARGETS`, bloc `PASSES` de `baci.yaml`. Écarts à la spécification : forme factorisée QR (et non `A = Σ w x xᵀ`) pour la gravité, imposée par la précision ; référence des indicatrices d'année = première année de l'échantillon ; quantiles des taux de fret calculés en SQL (passe S2) ; protocole d'E/S regroupant les rappels `chunks_factory` / `median_uv` / `writer` ; orchestration par millésime restée dans le script. Écarts numériques mesurés (PR-05b) ≤ 10⁻¹² | PS-14.2 à PS-14.5, PS-14.7, PR-05b, PQ-21, §12 |
 | 2026-10-08 (K-10) | **Projet Kedro et configuration au format Kedro** : `kedro_pipeline/{__main__,settings,pipeline_registry,hooks,cli,config_check}.py` (pipeline `__default__` vide, `kedro trade config-check`), `config/{base,demo,cloud,local}/` lus par `OmegaConfigLoader` (fusion `soft` des paramètres), `load_parameters(env)` pour les scripts (`KEDRO_ENV`, `local` par défaut ; plus aucune variable `*_CONFIG_PATH`), datasets `kedro_pipeline/io/datasets.py` (`DuckLakeTableDataset`, `FreshnessRegistryDataset`, `ServingCatalogDataset`), `DuckLakeTable.lazy`. Écarts : `kedro` résolu en **1.7.0** (borne `>=1.6,<2`) ; **`kedro-datasets` ajouté** (importé par kedro-mlflow 2.0.3 sans être déclaré) ; aucune contrainte `pytest<9` (elle n'existe que dans l'extra `test` de kedro-mlflow) ; **hooks kedro-mlflow et argo-kedro désactivés** (`DISABLE_HOOKS_FOR_PLUGINS`) tant que `mlflow.yml` / `argo.yml` n'existent pas (sans eux, toute session échoue) ; noms d'expériences dans **`experiments.yml`** (motif `experiments`) ; entrée de credentials composée **`ducklake`** ; cibles BACI désactivées en demo par **entrées nulles** (`active_targets`) ; registres `state.<étape>` en **entrées explicites** (pas de factory) ; interpolations inter-fichiers vérifiées (résolution **par environnement**) ; télémétrie Kedro (`kedro-telemetry`, dépendance de kedro) active par défaut hors CI | C-16, PD-03, PS-02, PS-03, PS-04, PS-05, PS-06, PS-07 |
+| 2026-10-09 (K-11) | **Fonctions d'étape partagées, scripts en enveloppes minces** : `kedro_pipeline/steps/{result,_config,downloads,coverage,partners,network,synthesis,coherence}.py` (nouveaux), `baci.py` (fraîcheur, `prepare_baci`, `run_baci_vintage(s)`), `reference.py` et `serving.py` (retour `StepResult`) ; `StepResult` étendu (unités en échec, libellé, tables du rapport, `reportable`, `outputs` lisibles par clé, `children`, `failure_exception`) ; runs par unité par fabrique `UnitRuns` (un run par passe partenaires, par millésime BACI et réseau) ; construction unique du rapport `kedro_pipeline.io.tracking.build_step_report` ; `DuckLakeTable.connector()` / `.reader()`, `attached_catalog_alias` ; scripts : chargement, poignées paresseuses (identifiants lus à la première connexion), tracker, appel, rapport, `raise_if_failed` ; ré-exports des symboles importés par les tests et `tools/`. **Audit de couverture implémenté** et branché, non bloquant, dans les téléchargements (bloc `COVERAGE`). Écarts : arguments résolus par l'appelant (`force`, `adopt_legacy_fingerprints`, `run_id`, `n_jobs`), `prepare_baci` reçoit les requêtes planifiées, injection des collaborateurs BACI (client UNSD, cache, référentiels, passes), une ligne d'import de test modifiée (`test_scripts_synthesis_parallel_e2e.py`) | PD-02, PS-08, PS-13 |
 
 ## Sommaire
 
@@ -316,6 +317,19 @@ d'entrée du paquet.
 **Conséquences.** Le refactoring (K-11) doit laisser `uv run pytest` vert à l'identique ;
 K-18 supprime `scripts/` et migre les tests. Toute exécution ponctuelle en production
 passe par `argo submit` (PS-11) ou `kedro run` depuis un service Onyxia (§12).
+
+> **Implémentation (K-11, 2026-10-09).** Chaque script ne fait plus que charger les paramètres
+> (`load_*_config`, `KEDRO_ENV`), construire les poignées paresseuses (`DuckLakeTable.lazy`, avec
+> une fabrique qui lit les identifiants à la **première connexion**, comme avant le refactoring),
+> les registres, le tracker (`get_tracker`) ou la fabrique de runs par unité
+> (`scripts._run_report.script_runs`), appeler la fonction d'étape, publier le rapport à partir
+> du `StepResult` (`RunScope.publish_result`) et appeler `raise_if_failed()` (`serving-script` :
+> `sys.exit(1)`). Les symboles importés par `tests/` et `tools/` restent importables depuis les
+> scripts (ré-exports). Deux tests remplaçaient des attributs des scripts : le test BACI de bout
+> en bout reste intact grâce à l'injection des collaborateurs par l'enveloppe (client Comtrade,
+> requêtes planifiées, client UNSD, cache des tables de passage, référentiels SH, passes BACI,
+> fabrique de connecteur) ; `tests/test_scripts_synthesis_parallel_e2e.py` importe désormais le
+> module d'étape `kedro_pipeline.steps.synthesis` (une ligne d'import, aucune assertion changée).
 
 ### PD-03 — Configuration : fichiers `parameters_*.yml` à clé racine, secrets par `credentials.yml`
 
@@ -2202,6 +2216,23 @@ Invariants communs (hérités des scripts, à conserver) :
    rapport de run (PS-31) : un run en échec porte donc lui aussi son rapport ;
 4. aucune lecture de variable d'environnement, aucun chemin YAML.
 
+> **Implémentation (K-11, 2026-10-09)** — signatures réelles et écarts :
+>
+> | Module | Fonction d'étape | Écart à la signature cible |
+> |---|---|---|
+> | `result.py` | `StepResult`, `UnitRuns`, `shared_runs` | champs ajoutés : `n_units_failed` (requêtes en erreur sous le seuil toléré), `units_label`, `report_tables`, `reportable` (faux quand rien n'était périmé), `outputs` (valeurs propres à l'étape, lisibles par clé : `result["rows"]`), `children` (un résultat par run d'unité), `failure_exception` (exception exacte levée par `raise_if_failed`, messages inchangés) |
+> | `downloads.py` | `run_download(client_factory, table, *, source, params, runtime, tracker, progress, registry=None)` | `registry` (vue du registre, pour l'audit) au lieu d'un chemin ; référentiels et audit de couverture appelés ici, jamais bloquants |
+> | `coverage.py` | `audit_coverage(table, registry, planned, *, source, params, runtime, n_processed, tracker)` | vue `DownloadRegistryView` et requêtes planifiées au lieu de `registry_path` |
+> | `baci.py` | `prepare_baci(comtrade, state, registry_view, planned, available_products, *, params, comtrade_params, runtime, targets, force, …) -> BaciScope` ; `run_baci_vintage(vintage, scope, comtrade, state, *, params, tracker, progress, run_id, passes_runner)` ; `run_baci_vintages(scope, comtrade, state, *, params, runs, …)` | la planification Comtrade (API) est faite par l'appelant et passée en `planned` ; collaborateurs injectables (`concordance_client_factory`, `concordances_loader`, `reference_publisher`, `passes_runner`, `loader`/`saver`) ; `run_baci_vintage` **lève** en cas d'échec (le millésime est toute l'unité de son run) ; deux connexions au lieu d'une (préparation, puis tous les millésimes) |
+> | `partners.py` | `run_partner_vulnerabilities(source, result, state, download_registry, *, params, runtime, dataflow, runs, concordances_loader, …)` ; `plan_partner_passes` | `runs` au lieu de `tracker` (un run par passe) ; tables de passage chargées par `concordances_loader(vintages, nomenclatures)` |
+> | `network.py` | `run_network_vulnerabilities(baci, result, state, baci_state, *, params, runtime, dataflow, runs, n_jobs, …)` | `runs` au lieu de `tracker` (un run par millésime) |
+> | `synthesis.py` | `run_synthesis_step(scores, diagnostics, state, upstream_partners, upstream_network, *, params, vulnerability_params, runtime, tracker, n_jobs, eurostat, force, cadence_check, run_id)` | nommée `run_synthesis_step` (`run_synthesis` est la méthodologie de `macroforecast`) ; registres amont par famille ; la table des scores porte aussi la lecture des métriques ; `cadence_check` décidé par l'appelant |
+> | `coherence.py` | `run_coherence_step(scores, diagnostics, state, synthesis_state, *, params, vulnerability_params, runtime, tracker, n_jobs, force, cadence_check, run_id)` | idem |
+> | `serving.py` | `publish_serving(sources, serving, *, params, runtime, tracker) -> StepResult` | `sources` reste `Mapping[str, SourceTable]` : le catalogue de service attache des catalogues entiers en lecture seule, pas des tables |
+> | `reference.py` | `publish_reference(codelists, table, *, source, params, conn=None) -> StepResult` | `table` est un connecteur (ou une connexion ouverte `conn`) |
+>
+> Arguments communs résolus **par l'appelant** (invariant 4) : `force` (`ForceSpec`), `adopt_legacy_fingerprints`, `run_id` (identifiant du workflow), `n_jobs` ; sans eux, les étapes prennent `ForceSpec.from_runtime(runtime, environ={})` et `adopt_legacy_flag(..., environ={})`, sans lire l'environnement. Les étapes n'entrent jamais le tracker : le run appartient à l'appelant (script ou nœud). Le rapport est construit une seule fois, par `kedro_pipeline.io.tracking.build_step_report(result, node=…, params=…, context=…)` ; `progress` (attribut `step`) nomme la dernière étape atteinte dans la description réduite d'un échec. **À traiter en K-12/K-13** : avec `shared_runs`, toutes les passes partenaires partageraient un run et les mêmes noms de métriques ; un nœud Kedro par passe ou un préfixe par passe sera nécessaire.
+
 ### PS-09 — Pipelines et nœuds
 
 | Pipeline | Nœud Kedro (nom) | Entrées | Sorties | Tags | `machine_type` |
@@ -2465,6 +2496,17 @@ Artefacts : `coverage/by_reporter.csv` (reporter, min_period, max_period, n_prod
 n_rows) et `coverage/by_year.csv` (year, share_queries_downloaded). La lecture passe par
 **une seule requête SQL agrégée** (`GROUP BY reporter`), jamais par un chargement de
 table.
+
+> **Implémentation (K-11, 2026-10-09).** `kedro_pipeline/steps/coverage.py::audit_coverage`,
+> appelée par `run_download` après le téléchargement, dans le même run ; un échec (registre ou
+> table illisible) n'est qu'un avertissement et ne change ni le statut ni le code de sortie.
+> Paramètres : bloc `COVERAGE` de `parameters_eurostat.yml` / `parameters_comtrade.yml`
+> (`EXPECTED_FULL_HISTORY_REPORTERS`, `COLUMNS` : colonnes reporter / période / produit de la
+> table). Un reporter attendu mais absent de la table compte parmi `reporters_below_start` ;
+> `eta_days` n'est publié que si le run a traité des requêtes (0 quand rien ne manque). Écart :
+> `coverage/by_year.csv` n'est produit que pour Comtrade, les requêtes Comext portant toutes les
+> années à la fois (leur part téléchargée ne varie pas par année). Les métriques `coverage/*` ne
+> font pas partie du rapport de run du téléchargement (aucun contrôle ne les vise encore).
 
 ### PS-14 — BACI : porte de complétude, passes sur tranches annuelles et statistiques suffisantes
 

@@ -11,6 +11,20 @@ eurostat:
     # Publication de la table de diagnostic par requête
     LOG_ARTIFACTS: true
 
+  # Audit de couverture en fin de téléchargement (jamais bloquant) : requêtes planifiées
+  # jamais téléchargées, part téléchargée, première année en base, reporters attendus
+  # sur tout l'historique dont la première année stockée est postérieure à
+  # runtime.ANALYSIS_START_YEAR (rattrapage en cours, ou source plus courte). Une seule
+  # requête SQL agrégée par reporter sur la table téléchargée.
+  COVERAGE:
+    # Reporters attendus depuis la première année de l'analyse (codes de la table)
+    EXPECTED_FULL_HISTORY_REPORTERS: []
+    # Colonnes de la table téléchargée lues par l'audit
+    COLUMNS:
+      REPORTER: "reporter"
+      PERIOD: "TIME_PERIOD"
+      PRODUCT: "product"
+
   # Configuration des dimensions scindées Eurostat
   # Filtres de codes appliqués aux codelists des dimensions itérées pour
   # construire le produit cartésien des requêtes.

@@ -41,7 +41,7 @@ from macroforecast.trade.aggregation import (  # noqa: E402
     MethodSpec,
     SynthesisConfig,
 )
-from scripts import compute_synthetic_scores  # noqa: E402
+from kedro_pipeline.steps import synthesis as compute_synthetic_scores  # noqa: E402
 from scripts.compute_synthesis_coherence import (  # noqa: E402
     coherence_requested,
     run_incremental_coherence,

@@ -1,11 +1,11 @@
 """Script de publication de la couche de service (catalogue DuckLake ``serving``).
 
-Enveloppe transitoire (phase 0, PD-02) de la fonction d'étape
+Enveloppe transitoire de la fonction d'étape
 ``kedro_pipeline.steps.serving.publish_serving`` : il charge les configurations,
 construit la poignée ``ServingCatalog`` (catalogue ``serving`` en écriture, catalogues
 ``eurostat``, ``comtrade`` et ``vulnerabilities`` en lecture seule) et le suivi
 d'exécution, puis publie toutes les tables de ``serving.TABLES`` en une transaction.
-Superset lit directement ce catalogue (PD-21, PS-30.1).
+Superset lit directement ce catalogue.
 
 Place dans le pipeline (workflow de transition) : après ``coherence`` et ``partners``
 (réussis ou en échec), sérialisé par le mutex ``trade-serving`` (écrivain unique).
@@ -14,7 +14,7 @@ Configuration lue : blocs ``serving``, ``eurostat``, ``comtrade``, ``vulnerabili
 ``synthesis`` et ``runtime`` des paramètres Kedro, environnement choisi par
 ``KEDRO_ENV`` (``local`` par défaut, ``demo`` pour le périmètre de démonstration).
 Identifiants : ``trade-postgres-credentials`` et
-``trade-s3-credentials`` (aucun secret propre à la couche de service, PD-18).
+``trade-s3-credentials`` (aucun secret propre à la couche de service).
 
 Le suivi MLflow est piloté par ``MLFLOW_TRACKING_URI`` (expérience :
 ``experiments.yml``) : sans URI, ``get_tracker`` renvoie un objet nul. Code de sortie non nul si la publication
@@ -39,8 +39,6 @@ from kedro_pipeline.config import experiment_name, load_parameters
 from kedro_pipeline.io.serving import ServingCatalog
 from kedro_pipeline.steps.serving import publish_serving, source_tables
 from macroforecast.tracking import CapturingTracker, get_tracker
-from macroforecast.tracking.figures import key_figures_serving, sections_serving
-from macroforecast.tracking.report import Units
 from scripts._run_report import RunScope, guarded_run, run_name
 
 # Logger
@@ -106,6 +104,47 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
 NODE = "publish_serving"
 
 
+# Fonction de localisation du catalogue de service
+def serving_location(params: Dict[str, Any]) -> DuckLakeLocation:
+    """Locate the ``serving`` catalog written by the publication.
+
+    Args:
+        params: The ``serving`` parameters (``DBNAME``, ``CATALOG_ALIAS``,
+            ``SCHEMA``, ``BUCKET``, ``DATA_PATH``).
+
+    Returns:
+        The location.
+    """
+    return DuckLakeLocation(
+        dbname=params["DBNAME"],
+        catalog_alias=params["CATALOG_ALIAS"],
+        schema=params["SCHEMA"],
+        bucket=params["BUCKET"],
+        data_path=params["DATA_PATH"],
+    )
+
+
+# Fonction de compte rendu de la publication
+def log_outcome(result: Any, schema: str) -> bool:
+    """Log the rows published per table, or the failures of a rolled-back publication.
+
+    Args:
+        result: Step result of :func:`publish_serving`.
+        schema: Schema of the serving tables.
+
+    Returns:
+        ``True`` when the publication succeeded.
+    """
+    for table, rows in result["rows"].items():
+        logger.info(f"{schema}.{table} : {rows} ligne(s).")
+    if result["failures"]:
+        failures: List[str] = [f"{name}: {message}" for name, message in result["failures"].items()]
+        logger.error("Publication annulée :\n" + "\n".join(failures))
+        return False
+    logger.info(f"Publication réussie ({result['mode']}) de {len(result['tables'])} table(s).")
+    return True
+
+
 # Fonction principale
 def main(argv: Optional[Sequence[str]] = None) -> None:
     """CLI entry point of ``serving-script``.
@@ -135,15 +174,7 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
         synthesis=configs["synthesis"],
     )
     catalog = ServingCatalog(
-        DuckLakeLocation(
-            dbname=params["DBNAME"],
-            catalog_alias=params["CATALOG_ALIAS"],
-            schema=params["SCHEMA"],
-            bucket=params["BUCKET"],
-            data_path=params["DATA_PATH"],
-        ),
-        pg=pg_credentials_from_env(),
-        s3=s3_credentials_from_env(),
+        serving_location(params), pg=pg_credentials_from_env(), s3=s3_credentials_from_env(),
         sources=locations,
     )
 
@@ -160,43 +191,14 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
         result = publish_serving(
             tables, catalog, params=params, runtime=configs["runtime"], tracker=tracker
         )
-        tracker.set_tags(
-            {
-                "schema": str(params["SCHEMA"]),
-                "mode": result["mode"],
-                "missing_sources": ",".join(result["missing_sources"]),
-            }
-        )
-
+        tracker.set_tags({"schema": str(params["SCHEMA"]), **result.tags})
         # Rapport de run, publié avant la sortie en erreur : la publication est atomique
         # (tout ou rien), une panne annule donc toutes les tables
-        scope.step = "rapport de run"
-        planned = len(params["TABLES"])
-        failed = len(result["failures"])
-        scope.publish(
-            tracker,
-            scope.build(
-                metrics=tracker.metrics,
-                units=Units(
-                    planned=planned,
-                    succeeded=0 if failed else len(result["tables"]),
-                    failed=failed,
-                    planned_label=f"{planned} tables (mode {result['mode']})",
-                ),
-                failures=result["failures"],
-                key_figures=key_figures_serving,
-                sections=lambda m: sections_serving(m, tracker.tables),
-            ),
-        )
+        scope.publish_result(tracker, result)
 
-    # Compte rendu
-    for table, rows in result["rows"].items():
-        logger.info(f"{params['SCHEMA']}.{table} : {rows} ligne(s).")
-    if result["failures"]:
-        failures: List[str] = [f"{name}: {message}" for name, message in result["failures"].items()]
-        logger.error("Publication annulée :\n" + "\n".join(failures))
+    # Compte rendu, puis sortie en erreur si la publication a été annulée
+    if not log_outcome(result, params["SCHEMA"]):
         sys.exit(1)
-    logger.info(f"Publication réussie ({result['mode']}) de {len(result['tables'])} table(s).")
 
 
 if __name__ == "__main__":

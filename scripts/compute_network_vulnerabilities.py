@@ -1,76 +1,33 @@
 """Script de calcul/mise à jour des indicateurs de vulnérabilité de réseau.
 
-Recalcule, pour chaque millésime de nomenclature HS du redressement BACI, les
-indicateurs portant sur le graphe mondial des échanges d'un produit — risque de
-centralité, clustering pondéré, diamètre, concentration des exportations
-mondiales et risque de point de défaillance unique (cf.
-`macroforecast.trade.vulnerabilities.network_metrics`). La cellule de sortie est
-un quadruplet `nomenclature x produit x année x flux`, le millésime étant la clé
-primaire supplémentaire que la table des indicateurs partenaires ne porte pas.
+Enveloppe CLI de la fonction d'étape
+``kedro_pipeline.steps.network.run_network_vulnerabilities`` : indicateurs portant
+sur le graphe mondial des échanges d'un produit (risque de centralité,
+clustering pondéré, diamètre, concentration mondiale, point de défaillance
+unique), pour chaque millésime HS du redressement BACI et chaque sens de
+``NETWORK_VULNERABILITIES.FLOWS`` (matrice transposée à l'export). Fraîcheur par
+millésime, confrontée au registre BACI (lecture seule) ; calcul dans des
+processus de travail, écriture par le seul processus parent, un run MLflow par
+millésime.
 
-Chaque sens de `NETWORK_VULNERABILITIES.FLOWS` est calculé sur la même matrice
-BACI : tel quel à l'import (concentration de l'offre mondiale), transposé à
-l'export (concentration de la demande mondiale). La colonne `flow` porte les
-mêmes codes que la table partenaires, ce qui ramène la jointure de synthèse à
-une égalité. Les empreintes sont tenues par métrique et par sens
-(`SPOF/export`) : ajouter un sens ne recalcule que ce sens. Les métriques MLflow
-sont préfixées par sens (`network/import/...`, `network/export/...`).
+Ce script charge les paramètres, construit les poignées des tables BACI (une par
+millésime configuré) et de la table résultat (identifiants lus à la première
+connexion), les registres, la fabrique de runs et le nombre de processus
+(``N_JOBS``, à défaut ``NUM_CPU``), appelle l'étape puis sort en erreur si un
+millésime a échoué.
 
-Script distinct de `compute_trade_vulnerabilities.py`, et non une étape de plus
-dans celui-ci : les deux familles n'ont ni la même source (flux réconciliés BACI
-dans le catalogue COMTRADE contre flux Eurostat Comext), ni la même clé de
-sortie, ni la même dépendance amont (`process_baci_hs.py` contre
-`download_eurostat_comext.py`), ni le même registre de fraîcheur. Deux nœuds
-Argo ordonnançables indépendamment, deux domaines d'échec, deux runs MLflow.
-
-Le périmètre recalculé est décidé par le registre de fraîcheur fragmenté de cette
-étape (`STATE.PATH_TEMPLATE`, un fichier par millésime), confronté au registre
-BACI (lecture seule, `STATE` du bloc `baci`) : un millésime est recalculé s'il ne
-l'a jamais été, si sa dernière passe BACI terminée est postérieure à son dernier
-calcul, si l'empreinte d'une métrique a changé ou en cas de forçage. Un millésime
-dont la passe BACI est interrompue n'est pas scoré (sa table mélange deux
-ajustements). La maille est le millésime entier, et non l'année : une passe BACI
-réestime la gravité et la qualité des déclarants sur toute sa tranche
-temporelle, donc toutes ses années bougent ensemble — prétendre à une
-granularité annuelle serait faux.
-
-Comme `process_baci_hs.py`, l'échec d'un millésime n'interrompt pas les autres :
-chaque échec est capturé et journalisé, et le script ne sort en erreur qu'en fin
-de parcours. Seuls les millésimes réussis voient leur date de calcul avancer.
-
-Le suivi d'exécution MLflow est piloté par le bloc
-`NETWORK_VULNERABILITIES.TRACKING` des paramètres `vulnerabilities` (expérience :
-`experiments.yml`) : sans `MLFLOW_TRACKING_URI` (ou sans serveur joignable),
-`get_tracker` retourne un objet nul
-et l'exécution est strictement inchangée. La relecture du résultat précédent,
-qui alimente les diagnostics de dérive, est faite ici — jamais par le module de
-calcul.
-
-Chaque ligne porte `in_force` : vrai quand le millésime de la ligne est celui en
-vigueur l'année de la ligne (`runtime.NOMENCLATURES.HS`). Les lignes d'un
-millésime ancien sur des années postérieures sont la version « historique » des
-métriques, jointe aux lignes partenaires historiques de même millésime.
+Configuration lue : blocs ``comtrade``, ``baci``, ``vulnerabilities`` et
+``runtime`` des paramètres Kedro, environnement choisi par ``KEDRO_ENV``.
 """
 # Importation des modules
 from __future__ import annotations
 # Modules de base
-from dataclasses import dataclass, fields, replace
-from datetime import datetime
 import logging
 import os
-import time
-from pathlib import Path
-from functools import partial
-from typing import Any, Dict, Iterator, List, Mapping, Optional, Sequence, Tuple
+from typing import Any, Optional
 
-# Modules de manipulation de données
-import narwhals as nw
-
-# Modules de chargement/sauvegarde JSON (local ou S3), même brique que le téléchargement
-from statflows.storage.json import Loader, Saver
 # Fabrique de connecteur DuckLake (seul point de lecture des identifiants)
 from kedro_pipeline.io.ducklake import (
-    ConnectionReader,
     DuckLakeLocation,
     DuckLakeTable,
     build_connector,
@@ -78,59 +35,42 @@ from kedro_pipeline.io.ducklake import (
     s3_credentials_from_env,
     workflow_run_id,
 )
-# Parallélisme intra-pod (résolution de n_jobs, carte parallèle, erreurs transmissibles)
-from kedro_pipeline.parallel import parallel_map, resolve_n_jobs, serialisable_exception
-# Module d'utilitaires de téléchargement
-from statflows.core.download import _now, _parse_iso, _schema_name
-# Registres de fraîcheur v2 (fragments, empreintes, forçage)
-from kedro_pipeline.io.freshness import (
-    ForceSpec,
-    FreshnessRegistry,
-    LegacySource,
-    RegistryEntry,
-    Unit,
-    UnitPlan,
-    adopt_legacy_flag,
-    fingerprint,
-    legacy_entry,
-    plan_metrics,
-    qualifiers_to_compute,
-    units_to_compute,
+from kedro_pipeline.io.freshness import ForceSpec, adopt_legacy_flag
+# Parallélisme intra-pod (résolution de n_jobs)
+from kedro_pipeline.parallel import resolve_n_jobs
+from kedro_pipeline.config import experiment_name, load_parameters, read_config_file
+from kedro_pipeline.steps._config import (  # noqa: F401
+    baci_target_schemas,
+    download_location,
+    network_config_from_params,
+    schema_name,
+    vulnerabilities_location,
 )
 # Registre BACI (amont, lecture seule) et complétude d'une passe
-from scripts.process_baci_hs import baci_registry, pass_is_complete
+from kedro_pipeline.steps.baci import baci_registry, pass_is_complete  # noqa: F401
+# Étape réseau (ré-exportée : fraîcheur, tâches des workers, annotation)
+from kedro_pipeline.steps.network import (  # noqa: F401
+    NODE,
+    STEP,
+    VintageOutcome,
+    VintageTask,
+    _CONFIG_ROOT,
+    _dates_by_schema,
+    annotate_network_in_force,
+    compute_vintage_task,
+    load_last_computation_dates,
+    load_last_processing_dates,
+    network_registry,
+    network_requested,
+    network_upstream,
+    plan_network_units,
+    run_network_vulnerabilities,
+    save_last_computation_dates,
+    vintages_to_recompute,
+)
 # Paramètres d'exécution partagés (forçage ponctuel)
 from scripts.download_comtrade import load_runtime_config
-# Millésime SH en vigueur une année donnée
-from kedro_pipeline.config import (
-    active_targets,
-    experiment_name,
-    load_parameters,
-    read_config_file,
-    vintage_in_force,
-)
-
-# Module de suivi d'exécution (MLflow optionnel, objet nul par défaut)
-from macroforecast.tracking import CapturingTracker, RecordingTracker, get_tracker
-from macroforecast.tracking.figures import (
-    key_figures_network_vulnerabilities,
-    sections_network_vulnerabilities,
-)
-from macroforecast.tracking.report import Units
-from scripts._run_report import RunScope, flow_run_metrics, guarded_run, run_name
-# Lecture des sens de flux calculés (règle commune aux deux familles)
-from scripts.compute_trade_vulnerabilities import load_flows
-# Module de calcul des indicateurs
-from macroforecast.trade.vulnerabilities import (
-    DEFAULT_NETWORK_CONFIG,
-    DEFAULT_NETWORK_METRIC_CLASSES,
-    NetworkVulnerabilityConfig,
-)
-from macroforecast.trade.vulnerabilities.runner import (
-    compute_network_vintage,
-    read_previous_network_result,
-    write_network_vintage,
-)
+from scripts._run_report import script_runs, timestamp
 
 # Configuration de logging
 logging.basicConfig(
@@ -141,25 +81,12 @@ logging.basicConfig(
 # Initialisation du logger
 logger = logging.getLogger(__name__)
 
-# Clé racine du registre JSON des dates de dernier traitement BACI (écrit par
-# scripts/process_baci_hs.py, lu seulement ici)
-_PROCESSING_ROOT = "BACI"
-# Clé racine du registre JSON des dates de dernier calcul, tenu par ce script
-_REGISTRY_ROOT = "NETWORK_VULNERABILITIES"
-# Bloc de configuration dédié aux indicateurs de réseau
-_CONFIG_ROOT = "NETWORK_VULNERABILITIES"
-# Clé YAML portant le backend de calcul narwhals (hors NetworkVulnerabilityConfig)
-_BACKEND_KEY = "BACKEND"
-# Préfixe des métriques MLflow de l'étape (suivi du sens : network/import/...)
-_METRICS_FAMILY = "network"
-# Colonne du drapeau « millésime en vigueur l'année de la ligne » (fait de schéma,
-# lu par la couche de service)
-_IN_FORCE_COL = "in_force"
 
+# Fabrique de connecteur : identifiants lus dans l'environnement à la première connexion
+def _connector(location: DuckLakeLocation, pg: Any = None, s3: Any = None, **kwargs: Any) -> Any:
+    """Build the connector of a table, reading the credentials only when connecting."""
+    return build_connector(location, pg_credentials_from_env(), s3_credentials_from_env(), **kwargs)
 
-# ──────────────────────────────────────────────────────────────────────
-# Configuration
-# ──────────────────────────────────────────────────────────────────────
 
 # Fonction de chargement de la configuration associée à la base comtrade
 def load_comtrade_config(config_path: Optional[os.PathLike] = None) -> dict:
@@ -176,7 +103,6 @@ def load_comtrade_config(config_path: Optional[os.PathLike] = None) -> dict:
     if config_path is None:
         return load_parameters()["comtrade"]
     return read_config_file(config_path, "comtrade")
-
 
 # Fonction de chargement de la configuration du redressement BACI
 def load_baci_config(config_path: Optional[os.PathLike] = None) -> dict:
@@ -198,7 +124,6 @@ def load_baci_config(config_path: Optional[os.PathLike] = None) -> dict:
     if config_path is None:
         return load_parameters()["baci"]
     return read_config_file(config_path, "baci")
-
 
 # Fonction de chargement de la configuration dédiée au calcul des vulnérabilités
 def load_vulnerability_config(config_path: Optional[os.PathLike] = None) -> dict:
@@ -222,568 +147,6 @@ def load_vulnerability_config(config_path: Optional[os.PathLike] = None) -> dict
     return read_config_file(config_path, "vulnerabilities")
 
 
-# Fonction de construction de la configuration méthodologique des métriques de réseau
-def network_config_from_params(params: Optional[Dict]) -> NetworkVulnerabilityConfig:
-    """Build a ``NetworkVulnerabilityConfig`` from the YAML ``PARAMETERS`` section.
-
-    Generic construction, twin of ``vulnerability_config_from_params``: every key
-    matching a ``NetworkVulnerabilityConfig`` field name overrides the dataclass
-    default; unknown keys are ignored with a warning. YAML lists are coerced to
-    the tuple types the frozen dataclass expects, nested pairs included
-    (``metric_alert_thresholds``). The ``BACKEND`` key is skipped: it drives the
-    narwhals execution backend, not the methodology.
-
-    Args:
-        params: The ``NETWORK_VULNERABILITIES.PARAMETERS`` mapping of
-            the ``vulnerabilities`` parameters (or ``None``, meaning the default
-            BACI conventions).
-
-    Returns:
-        A ``NetworkVulnerabilityConfig`` reflecting the configured overrides.
-    """
-    # Aucune surcharge : configuration par défaut
-    if not params:
-        return DEFAULT_NETWORK_CONFIG
-
-    # Surcharge générique champ à champ, avec coercition listes → tuples
-    valid = {field.name for field in fields(NetworkVulnerabilityConfig)}
-    overrides: Dict[str, Any] = {}
-    for key, value in params.items():
-        # Backend d'exécution : lu à part, pas un paramètre méthodologique
-        if key == _BACKEND_KEY:
-            continue
-        if key not in valid:
-            # Logging
-            logger.warning(f"Paramètre de vulnérabilité réseau inconnu ignoré : {key}")
-            continue
-        default = getattr(DEFAULT_NETWORK_CONFIG, key)
-        if isinstance(default, tuple) and isinstance(value, (list, tuple)):
-            value = tuple(
-                tuple(item) if isinstance(item, (list, tuple)) else item
-                for item in value
-            )
-        overrides[key] = value
-
-    return replace(DEFAULT_NETWORK_CONFIG, **overrides)
-
-
-# ──────────────────────────────────────────────────────────────────────
-# Registres de fraîcheur : traitement BACI (lecture) et calcul (lecture/écriture)
-# ──────────────────────────────────────────────────────────────────────
-
-# Fonction auxiliaire : extraction des dates d'un registre indexé par schéma
-def _dates_by_schema(
-    registry: Mapping[str, Mapping[str, Any]],
-    field_name: str,
-) -> Dict[str, datetime]:
-    """Index the dated field of a registry by result schema.
-
-    Both registries confronted here share the same shape — one entry per result
-    schema, carrying an ISO instant — so they share the same reader; only the
-    name of the dated field changes.
-
-    Args:
-        registry: Entries of the registry, keyed by result schema.
-        field_name: Name of the field holding the ISO instant.
-
-    Returns:
-        Mapping ``result_schema -> instant`` (UTC-aware datetime), entries
-        without a parsable instant being dropped.
-
-    Examples:
-        >>> registry = {"baci_hs2017": {"last_processed": "2026-01-02T03:04:05+00:00"}}
-        >>> _dates_by_schema(registry, "last_processed")["baci_hs2017"].year
-        2026
-        >>> _dates_by_schema({"baci_hs2017": {}}, "last_processed")
-        {}
-    """
-    # Parcours des entrées, dates non exploitables écartées
-    dates: Dict[str, datetime] = {}
-    for schema, entry in registry.items():
-        when = _parse_iso(entry.get(field_name))
-        if when is not None:
-            dates[schema] = when
-    return dates
-
-
-# Fonction de lecture des dates de dernier traitement BACI, par schéma résultat
-def load_last_processing_dates(
-    last_processing_path: Path,
-    loader: Loader,
-    bucket: Optional[str],
-) -> Dict[str, datetime]:
-    """Read the BACI processing registry (empty when it does not exist yet).
-
-    Read-only: this script never writes into the registry of the BACI step, and
-    the BACI step never reads this one — the coupling between the two is that
-    single JSON file.
-
-    Args:
-        last_processing_path: Path to the ``LAST_PROCESSING_PATH`` registry
-            (cf. the ``baci`` parameters / ``process_baci_hs.py``).
-        loader: ``Loader`` instance.
-        bucket: S3 bucket holding the registry, or ``None`` for a local path.
-
-    Returns:
-        Mapping ``result_schema -> last_processed`` (UTC-aware datetime).
-    """
-    # Lecture du registre (racine "BACI") et indexation par schéma résultat
-    registry = (
-        loader.load(last_processing_path, bucket=bucket, missing_ok=True) or {}
-    ).get(_PROCESSING_ROOT, {})
-    return _dates_by_schema(registry, "last_processed")
-
-
-# Fonction de lecture des dates de dernier calcul, par schéma source
-def load_last_computation_dates(
-    last_computation_path: Path,
-    loader: Loader,
-    bucket: Optional[str],
-) -> Dict[str, datetime]:
-    """Read the network-computation registry (empty if it does not exist yet).
-
-    Args:
-        last_computation_path: Path to the network-computation registry.
-        loader: ``Loader`` instance.
-        bucket: S3 bucket holding the registry, or ``None`` for a local path.
-
-    Returns:
-        Mapping ``source_schema -> last_computed`` (UTC-aware datetime).
-    """
-    # Lecture du registre et indexation par schéma source
-    registry = (
-        loader.load(last_computation_path, bucket=bucket, missing_ok=True) or {}
-    ).get(_REGISTRY_ROOT, {})
-    return _dates_by_schema(registry, "last_computed")
-
-
-# Fonction de fusion et de sauvegarde des dates de calcul mises à jour
-def save_last_computation_dates(
-    last_computation_path: Path,
-    entries: Mapping[str, Dict[str, Any]],
-    loader: Loader,
-    saver: Saver,
-    bucket: Optional[str],
-) -> None:
-    """Merge the recomputed vintages into the registry and persist it.
-
-    Args:
-        last_computation_path: Path to the network-computation registry.
-        entries: Registry entries of the vintages just computed, keyed by source
-            schema. Merged into the existing registry; every other entry is
-            preserved untouched.
-        loader: ``Loader`` instance (to load the existing registry before merging).
-        saver: ``Saver`` instance.
-        bucket: S3 bucket holding the registry, or ``None`` for a local path.
-    """
-    # Fusion avec le registre existant : seules les entrées recalculées bougent
-    registry = (
-        loader.load(last_computation_path, bucket=bucket, missing_ok=True) or {}
-    ).get(_REGISTRY_ROOT, {})
-    registry.update(entries)
-    # Écriture du registre mis à jour
-    saver.save(
-        last_computation_path,
-        {_REGISTRY_ROOT: registry},
-        bucket=bucket,
-        indent=2,
-        ensure_ascii=False,
-    )
-    # Logging
-    logger.info(
-        f"{len(entries)} date(s) de calcul mise(s) à jour dans "
-        f"'{last_computation_path}'"
-    )
-
-
-# ──────────────────────────────────────────────────────────────────────
-# Détermination des millésimes à (re)calculer
-# ──────────────────────────────────────────────────────────────────────
-
-# Fonction de sélection des millésimes dont les scores sont périmés
-def vintages_to_recompute(
-    targets: Mapping[str, str],
-    last_processed: Mapping[str, datetime],
-    last_computed: Mapping[str, datetime],
-) -> List[Tuple[str, str]]:
-    """Select the HS vintages whose network scores are stale.
-
-    A vintage is selected when its BACI slice was never scored, or scored before
-    its most recent BACI pass. A vintage absent from the BACI registry has never
-    been produced and is skipped — there is nothing to read for it — rather than
-    scored on a table that may not exist.
-
-    Args:
-        targets: Configured vintages, mapping the label (``"HS2017"``) to its
-            BACI result schema (``"baci_hs2017"``).
-        last_processed: Last BACI processing date per source schema.
-        last_computed: Last network computation date per source schema.
-
-    Returns:
-        Sorted list of ``(label, source_schema)`` pairs to (re)compute.
-
-    Examples:
-        >>> from datetime import datetime, timezone
-        >>> old = datetime(2026, 1, 1, tzinfo=timezone.utc)
-        >>> new = datetime(2026, 6, 1, tzinfo=timezone.utc)
-        >>> targets = {"HS2017": "baci_hs2017", "HS2022": "baci_hs2022"}
-        >>> vintages_to_recompute(targets, {"baci_hs2017": new}, {})
-        [('HS2017', 'baci_hs2017')]
-        >>> vintages_to_recompute(
-        ...     targets, {"baci_hs2017": old}, {"baci_hs2017": new})
-        []
-    """
-    # Millésimes configurés mais jamais produits par BACI : rien à lire
-    unknown = sorted(label for label, schema in targets.items() if schema not in last_processed)
-    if unknown:
-        # Logging
-        logger.warning(
-            f"Millésime(s) absent(s) du registre de traitement BACI, ignoré(s) : "
-            f"{unknown}"
-        )
-
-    # Millésimes jamais calculés ou calculés avant la dernière passe BACI
-    return sorted(
-        (label, schema)
-        for label, schema in targets.items()
-        if schema in last_processed
-        and (
-            schema not in last_computed
-            or last_computed[schema] < last_processed[schema]
-        )
-    )
-
-
-# ──────────────────────────────────────────────────────────────────────
-# Registre de fraîcheur v2 : un fragment par millésime
-# ──────────────────────────────────────────────────────────────────────
-
-# Nom de l'étape (forçage FORCE_STEPS, champ « step » des fragments)
-STEP = "network"
-
-
-# Fonction de calcul des empreintes demandées des métriques de réseau
-def network_requested(
-    config: NetworkVulnerabilityConfig,
-    flows: Sequence[str] = ("import",),
-    metric_classes: Sequence[type] = DEFAULT_NETWORK_METRIC_CLASSES,
-) -> Dict[str, str]:
-    """Current methodological fingerprint of every network metric and direction.
-
-    Keyed by ``"<metric>/<flow>"``, like the partner step: two instances share
-    a column name, and adding a direction must only make that direction stale.
-    The orientation-invariant metrics (clustering, diameter) also get one key
-    per direction, their value being written on the rows of each.
-
-    Args:
-        config: Methodological configuration of the network metrics.
-        flows: Directions computed by the step.
-        metric_classes: Metric classes computed by the step (each in the
-            directions it supports).
-
-    Returns:
-        Mapping ``"<metric>/<flow>" -> fingerprint`` (name, result-shaping
-        configuration fields and direction).
-
-    Examples:
-        >>> "SPOF/import" in network_requested(NetworkVulnerabilityConfig())
-        True
-        >>> "SPOF/export" in network_requested(NetworkVulnerabilityConfig(), ("import", "export"))
-        True
-    """
-    metrics = [
-        cls(config, flow=flow)
-        for flow in flows
-        for cls in metric_classes
-        if flow in cls.supported_flows
-    ]
-    return {
-        metric.fingerprint_key: fingerprint(metric.name, metric.fingerprint_params())
-        for metric in metrics
-    }
-
-
-# Fonction de lecture du registre v1 du réseau en entrées héritées
-def _parse_legacy_network(data: Mapping[str, Any]) -> Iterator[RegistryEntry]:
-    """Turn the version-1 network registry (keyed by source schema) into legacy entries.
-
-    Args:
-        data: Version-1 document (``{"NETWORK_VULNERABILITIES": {schema: {...}}}``).
-
-    Yields:
-        One legacy entry per vintage recorded.
-    """
-    for item in (data.get(_REGISTRY_ROOT) or {}).values():
-        if not isinstance(item, Mapping) or not item.get("vintage"):
-            continue
-        yield legacy_entry(
-            Unit.of(vintage=item["vintage"]),
-            item.get("last_computed"),
-            n_cells=item.get("n_cells"),
-        )
-
-
-# Fonction de construction du registre de fraîcheur du réseau
-def network_registry(
-    network_config: Mapping[str, Any],
-    *,
-    loader: Optional[Loader] = None,
-    saver: Optional[Saver] = None,
-) -> FreshnessRegistry:
-    """Build the network freshness registry (one fragment per vintage).
-
-    Args:
-        network_config: ``NETWORK_VULNERABILITIES`` block of
-            the ``vulnerabilities`` parameters (``BUCKET``, ``STATE``,
-            ``PATHS.LAST_COMPUTATION_PATH`` read as the version-1 fallback).
-        loader: JSON loader (a fresh one by default).
-        saver: JSON saver (a fresh one by default).
-
-    Returns:
-        The registry.
-
-    Raises:
-        KeyError: If the block has no ``STATE.PATH_TEMPLATE``.
-    """
-    bucket = network_config.get("BUCKET")
-    legacy_path = (network_config.get("PATHS") or {}).get("LAST_COMPUTATION_PATH")
-    return FreshnessRegistry(
-        network_config["STATE"]["PATH_TEMPLATE"],
-        bucket,
-        STEP,
-        shard_of=lambda unit: unit.get("vintage"),
-        legacy=LegacySource(legacy_path, bucket, _parse_legacy_network) if legacy_path else None,
-        loader=loader,
-        saver=saver,
-    )
-
-
-# Fonction de construction des unités réseau et de leur watermark amont
-def network_upstream(
-    baci: FreshnessRegistry,
-    targets: Mapping[str, str],
-) -> Dict[Unit, datetime]:
-    """Vintages that can be scored, with the last BACI computation as watermark.
-
-    A vintage is left out (with a warning) when BACI never produced it, or
-    when its last BACI pass is incomplete (``years_written`` differs from
-    ``years_scope``): its table then mixes two estimation passes and must not
-    be scored before the pass is resumed.
-
-    Args:
-        baci: BACI freshness registry (read only).
-        targets: Configured vintages, label -> BACI result schema.
-
-    Returns:
-        Mapping ``Unit(vintage) -> last BACI computation``.
-    """
-    units: Dict[Unit, datetime] = {}
-    skipped: List[str] = []
-    for label in targets:
-        entry = baci.get(Unit.of(vintage=label))
-        if entry is None or entry.last_computed is None or not pass_is_complete(entry):
-            skipped.append(label)
-            continue
-        units[Unit.of(vintage=label)] = entry.last_computed
-    if skipped:
-        # Logging
-        logger.warning(
-            f"Millésime(s) sans passe BACI terminée, ignoré(s) : {sorted(skipped)}"
-        )
-    return units
-
-
-# Fonction de décision des millésimes à (re)calculer
-def plan_network_units(
-    registry: FreshnessRegistry,
-    units: Mapping[Unit, datetime],
-    requested: Mapping[str, str],
-    force: ForceSpec,
-    *,
-    adopt_legacy_fingerprints: bool = False,
-) -> Dict[Unit, UnitPlan]:
-    """Decide which vintages to (re)score.
-
-    Args:
-        registry: Network freshness registry.
-        units: Scorable vintages and their last BACI computation
-            (:func:`network_upstream`).
-        requested: Current metric fingerprints (:func:`network_requested`).
-        force: One-off forcing.
-        adopt_legacy_fingerprints: Deployment migration flag.
-
-    Returns:
-        Mapping ``unit -> plan``; every metric of a planned vintage is
-        recomputed.
-    """
-    return units_to_compute(
-        units, registry, units, requested, force,
-        step=STEP, adopt_legacy_fingerprints=adopt_legacy_fingerprints,
-    )
-
-
-# ──────────────────────────────────────────────────────────────────────
-# Calcul d'un millésime dans un worker
-# ──────────────────────────────────────────────────────────────────────
-
-# Tâche de calcul d'un millésime, envoyée à un worker
-@dataclass(frozen=True)
-class VintageTask:
-    """Everything a worker needs to score one HS vintage.
-
-    The worker opens the connections of its own through the readers and never
-    writes: the parent process is the only writer.
-
-    Attributes:
-        label: HS vintage label (``"HS2017"``).
-        source_schema: BACI schema holding the reconciled flows of the vintage.
-        source_catalog_alias: Alias of the BACI catalog.
-        source_reader: Opens the connection on the BACI catalog.
-        result_reader: Opens the connection on the result catalog (previous
-            result read for the drift); ``None`` when the drift is not measured.
-        result_catalog_alias: Alias of the result catalog.
-        result_schema: Schema of the network scores.
-        config: Network methodological configuration.
-        flows: Directions to recompute.
-        backend: Narwhals native backend.
-        log_artifacts: Whether the artifacts are recorded for the parent.
-        nomenclatures: Vintage label -> entry-into-force year (``in_force`` flag).
-    """
-    label: str
-    source_schema: str
-    source_catalog_alias: str
-    source_reader: Any
-    result_reader: Any
-    result_catalog_alias: str
-    result_schema: str
-    config: NetworkVulnerabilityConfig
-    flows: Tuple[str, ...]
-    backend: str
-    log_artifacts: bool
-    nomenclatures: Mapping[str, int]
-
-
-# Résultat du calcul d'un millésime, renvoyé au processus parent
-@dataclass
-class VintageOutcome:
-    """Outcome of one :class:`VintageTask`, picklable.
-
-    Attributes:
-        label: HS vintage label.
-        result: Scores as a native frame (``None`` on failure).
-        report: Network report of the vintage.
-        recorded: Tracker calls recorded by the worker.
-        cpu_seconds: CPU time spent by the task.
-        wall_seconds: Elapsed time of the task.
-        error: Serialisable exception of a failed vintage.
-    """
-    label: str
-    result: Any = None
-    report: Any = None
-    recorded: Optional[RecordingTracker] = None
-    cpu_seconds: float = 0.0
-    wall_seconds: float = 0.0
-    error: Optional[BaseException] = None
-
-
-# Fonction de calcul d'un millésime dans un worker (lecture et calcul, aucune écriture)
-def compute_vintage_task(task: VintageTask) -> VintageOutcome:
-    """Read, score and annotate one vintage with connections of its own.
-
-    Module-level function so that it can be sent to a worker process. The
-    failure is returned, not raised: one vintage must not stop the others.
-
-    Args:
-        task: Vintage to compute.
-
-    Returns:
-        The outcome of the task.
-    """
-    started_cpu, started_wall = time.process_time(), time.perf_counter()
-    outcome = VintageOutcome(label=task.label)
-    try:
-        recorder = RecordingTracker()
-        with task.source_reader() as source_conn:
-            # Résultat précédent du millésime pour la dérive : son absence ou la
-            # désactivation de la mesure la neutralise
-            df_previous = None
-            if task.result_reader is not None:
-                with task.result_reader() as result_conn:
-                    df_previous = read_previous_network_result(
-                        result_conn, task.result_catalog_alias, task.result_schema,
-                        classification=task.label, config=task.config,
-                    )
-            result, report = compute_network_vintage(
-                source_conn,
-                source_catalog_alias=task.source_catalog_alias,
-                source_schema=task.source_schema,
-                classification=task.label,
-                result_schema=task.result_schema,
-                config=task.config,
-                flows=task.flows,
-                backend=task.backend,
-                tracker=recorder,
-                log_artifacts=task.log_artifacts,
-                df_previous=df_previous,
-                annotate=partial(
-                    annotate_network_in_force, nomenclatures=task.nomenclatures,
-                    config=task.config,
-                ),
-            )
-        outcome.result = result.to_native()
-        outcome.report = report
-        outcome.recorded = recorder
-    except Exception as exc:
-        logger.exception(
-            f"Échec du calcul des vulnérabilités de réseau pour le millésime {task.label}"
-        )
-        outcome.error = serialisable_exception(exc)
-    outcome.cpu_seconds = time.process_time() - started_cpu
-    outcome.wall_seconds = time.perf_counter() - started_wall
-    return outcome
-
-
-# ──────────────────────────────────────────────────────────────────────
-# Point d'entrée
-# ──────────────────────────────────────────────────────────────────────
-
-# Préfixe du nœud du rapport de run : un run par millésime (clé « compute_network_vulnerabilities* »
-# de tracking.CHECKS)
-NODE = "compute_network_vulnerabilities"
-
-
-# Fonction d'ajout du drapeau « millésime en vigueur » aux scores de réseau
-def annotate_network_in_force(
-    result: nw.DataFrame,
-    *,
-    nomenclatures: Mapping[str, int],
-    config: NetworkVulnerabilityConfig,
-) -> nw.DataFrame:
-    """Add ``in_force``: whether the row's vintage is the one in force its year.
-
-    Args:
-        result: Network scores of one vintage (classification and year columns).
-        nomenclatures: Mapping vintage label -> entry-into-force year.
-        config: Column conventions (``classification_col``, ``period_col``).
-
-    Returns:
-        The scores with a boolean ``in_force`` column.
-
-    Examples:
-        >>> import pandas as pd
-        >>> frame = nw.from_native(pd.DataFrame({"classification": "HS2017", "year": [2019, 2023]}),
-        ...                        eager_only=True)
-        >>> annotate_network_in_force(frame, nomenclatures={"HS2017": 2017, "HS2022": 2022},
-        ...                           config=NetworkVulnerabilityConfig()).to_native()["in_force"].tolist()
-        [True, False]
-    """
-    years = result.get_column(config.period_col).cast(nw.Int64)
-    mapping = {year: vintage_in_force(year, nomenclatures) for year in years.unique().to_list()}
-    in_force_vintage = years.replace_strict(mapping, return_dtype=nw.String)
-    return result.with_columns(
-        (nw.col(config.classification_col) == in_force_vintage).alias(_IN_FORCE_COL)
-    )
-
 
 # Fonction principale de calcul des vulnérabilités de réseau
 def main() -> None:
@@ -793,269 +156,38 @@ def main() -> None:
         RuntimeError: If at least one vintage failed, once every stale vintage
             has been attempted.
     """
-    # Chargement des configurations : catalogue source, millésimes BACI, et
-    # paramètres propres au calcul des indicateurs de réseau
-    comtrade_config = load_comtrade_config()
-    baci_config = load_baci_config()
-    vulnerability_config = load_vulnerability_config()
+    comtrade_config, baci_config = load_comtrade_config(), load_baci_config()
+    vulnerability_config, runtime_config = load_vulnerability_config(), load_runtime_config()
     network_config = vulnerability_config[_CONFIG_ROOT]
-    runtime_config = load_runtime_config()
-
-    # Construction des paramètres méthodologiques (seuils, conventions de colonnes)
-    parameters = network_config.get("PARAMETERS") or {}
-    network_parameters = network_config_from_params(parameters)
-    backend = parameters.get(_BACKEND_KEY, "pandas")
-    # Sens de flux calculés (bloc réseau, même valeur que celle des partenaires)
-    flows = load_flows(network_config)
-
-    # Options de suivi d'exécution (un run par millésime, construit dans la boucle)
-    tracking_config = network_config.get("TRACKING") or {}
-    log_artifacts = bool(tracking_config.get("LOG_ARTIFACTS", True))
-    measure_drift = bool(tracking_config.get("DRIFT", True))
-    experiment = experiment_name("vulnerabilities")
-
-    # Dataflow COMTRADE dont sont issus les flux redressés
-    DATAFLOW = comtrade_config["DATAFLOW"]
-
-    # Millésimes configurés (cibles nulles désactivées écartées) : label → schéma
-    # source (résultat du redressement BACI)
-    configured = active_targets(baci_config["CLASSIFICATIONS"]["TARGETS"])
-    targets = {
-        label: _schema_name(target_cfg["RESULT_SCHEMA"])
-        for label, target_cfg in configured.items()
-    }
-
-    # Unités candidates : millésimes dont la dernière passe BACI est terminée,
-    # avec son dernier calcul comme watermark amont (lecture seule)
-    units = network_upstream(baci_registry(baci_config), targets)
-
-    # Registre de fraîcheur fragmenté, empreintes courantes et forçage ponctuel
-    registry = network_registry(network_config)
-    requested = network_requested(network_parameters, flows)
-    force = ForceSpec.from_runtime(runtime_config)
-    plans = plan_network_units(
-        registry, units, requested, force,
-        adopt_legacy_fingerprints=adopt_legacy_flag(network_config.get("STATE")),
-    )
-    stale = sorted((unit.get("vintage"), targets[unit.get("vintage")]) for unit in plans)
-
-    # Logging
-    logger.info(
-        f"{len(stale)} millésime(s) à recalculer : "
-        f"{ {unit.get('vintage'): plan.reason for unit, plan in plans.items()} }"
-    )
-
-    # Sortie anticipée : rien à recalculer (entrées v1 adoptées écrites malgré tout)
-    if not stale:
-        registry.save()
-        logger.info("Nothing to recompute, stop.")
-        return
-
-    # Instant de référence capturé avant le calcul : la date enregistrée
-    # correspond au début du traitement, jamais après, pour ne pas rater une
-    # mise à jour survenue pendant le calcul
-    computed_at = _now()
-
-    # Identifiants du catalogue et du stockage (lus une fois dans l'environnement)
-    pg_credentials = pg_credentials_from_env()
-    s3_credentials = s3_credentials_from_env()
-
-    # Connecteur DuckLake aux flux redressés (catalogue COMTRADE, un schéma par
-    # millésime — cf. scripts/process_baci_hs.py)
-    source_connector = build_connector(
-        DuckLakeLocation(
-            dbname=comtrade_config["DOWNLOADS"]["DBNAME"],
-            catalog_alias=comtrade_config["DOWNLOADS"]["CATALOG_ALIAS"],
-            schema=targets[stale[0][0]],
-            bucket=comtrade_config["DOWNLOADS"][DATAFLOW]["BUCKET"],
-            data_path=comtrade_config["DOWNLOADS"][DATAFLOW]["PATHS"]["DATA_PATH"],
-        ),
-        pg=pg_credentials,
-        s3=s3_credentials,
-    )
-
-    # Schéma résultat, commun à la relecture et à l'écriture
-    result_schema = _schema_name(network_config["RESULT_SCHEMA"])
-
-    # Connecteur DuckLake résultat : catalogue des vulnérabilités, partagé avec
-    # les indicateurs partenaires, positionné sur le schéma dédié au réseau
-    result_connector = build_connector(
-        DuckLakeLocation(
-            dbname=vulnerability_config["VULNERABILITIES"]["DBNAME"],
-            catalog_alias=vulnerability_config["VULNERABILITIES"]["CATALOG_ALIAS"],
-            schema=result_schema,
-            bucket=network_config["BUCKET"],
-            data_path=network_config["PATHS"]["DATA_PATH"],
-        ),
-        pg=pg_credentials,
-        s3=s3_credentials,
-    )
-
-    # Lecteurs des workers : chacun ouvre ses propres connexions (jamais partagées)
-    n_jobs = resolve_n_jobs(network_config.get("N_JOBS"))
-    source_location = DuckLakeLocation(
-        dbname=comtrade_config["DOWNLOADS"]["DBNAME"],
-        catalog_alias=comtrade_config["DOWNLOADS"]["CATALOG_ALIAS"],
-        schema=targets[stale[0][0]],
-        bucket=comtrade_config["DOWNLOADS"][DATAFLOW]["BUCKET"],
-        data_path=comtrade_config["DOWNLOADS"][DATAFLOW]["PATHS"]["DATA_PATH"],
-    )
-    result_location = DuckLakeLocation(
-        dbname=vulnerability_config["VULNERABILITIES"]["DBNAME"],
-        catalog_alias=vulnerability_config["VULNERABILITIES"]["CATALOG_ALIAS"],
-        schema=result_schema,
-        bucket=network_config["BUCKET"],
-        data_path=network_config["PATHS"]["DATA_PATH"],
-    )
-    source_reader = ConnectionReader(
-        partial(build_connector, source_location, pg=pg_credentials, s3=s3_credentials)
-    )
-    result_reader = ConnectionReader(
-        partial(build_connector, result_location, pg=pg_credentials, s3=s3_credentials)
-    )
-    tasks = [
-        VintageTask(
-            label=label, source_schema=source_schema,
-            source_catalog_alias=source_connector.catalog_alias,
-            source_reader=source_reader,
-            result_reader=result_reader if measure_drift else None,
-            result_catalog_alias=result_connector.catalog_alias,
-            result_schema=result_schema, config=network_parameters,
-            flows=tuple(qualifiers_to_compute({Unit.of(vintage=label): plans[Unit.of(vintage=label)]}, flows)),
-            backend=backend, log_artifacts=log_artifacts,
-            nomenclatures=runtime_config["NOMENCLATURES"]["HS"],
+    # Tables BACI des millésimes configurés (même catalogue que Comtrade) et table résultat
+    baci = {
+        label: DuckLakeTable.lazy(
+            download_location(comtrade_config, schema=schema), None, None, connector_factory=_connector
         )
-        for label, source_schema in stale
-    ]
-    schemas = dict(stale)
-
-    # Ouverture de la connexion d'écriture : son cycle de vie appartient au script
-    # (le runner ne l'ouvre ni ne la ferme), le parent est le seul écrivain
-    failures: Dict[str, Exception] = {}
-    result_conn = result_connector.connect()
-    try:
-        # Un millésime après l'autre à l'arrivée : l'échec de l'un n'emporte pas les autres
-        for _, result in parallel_map(compute_vintage_task, tasks, n_jobs):
-            label = result.label
-            try:
-                # Un run par millésime, taggé, comme dans process_baci_hs.py
-                node = f"{NODE}_{label}"
-                tracker = CapturingTracker(
-                    get_tracker(
-                        tracking_uri=None,
-                        experiment=experiment,
-                        run_name=run_name(
-                            f"network-vulnerabilities-{label}-{datetime.now():%Y%m%d-%H%M}", node
-                        ),
-                        tags={"vintage": label},
-                    )
-                )
-                scope = RunScope(node)
-                unit = Unit.of(vintage=label)
-                plan = plans[unit]
-                source_schema = schemas[label]
-                with tracker, guarded_run(scope, tracker):
-                    # Échec du worker : relevé dans le run du millésime puis propagé
-                    if result.error is not None:
-                        raise result.error
-                    # Fraîcheur : décision du millésime et tag de forçage
-                    tracker.log_metrics(plan_metrics({unit: plan}, n_candidates=len(units)))
-                    tracker.set_tags({"freshness_reason": plan.reason})
-                    if force.forces_step(STEP, requested):
-                        tracker.set_tags({"forced": force.describe()})
-                    # Paramètres et artefacts enregistrés par le worker
-                    result.recorded.replay(tracker)
-
-                    # Écriture du millésime et de l'issue sur ses rapports
-                    report = result.report
-                    write_network_vintage(
-                        nw.from_native(result.result, eager_only=True),
-                        report,
-                        classification=label,
-                        config=network_parameters,
-                        result_conn=result_conn,
-                        result_catalog_alias=result_connector.catalog_alias,
-                        result_schema=result_schema,
-                        writer=DuckLakeTable(
-                            result_conn, result_connector.catalog_alias, result_schema,
-                            label=label,
-                        ).writer(run_id=workflow_run_id(), commit_message=f"{NODE} {label}"),
-                    )
-
-                    # Envoi des métriques, préfixées par sens (le rapport
-                    # connaît sa mise en forme, le préfixe appartient à
-                    # l'appelant). Les paramètres sont journalisés par le
-                    # runner lui-même ; seuls les tags propres au script restent ici.
-                    tracker.log_metrics(flow_run_metrics(report, _METRICS_FAMILY))
-                    tracker.log_metrics(
-                        {
-                            "timing/wall_seconds": result.wall_seconds,
-                            "timing/cpu_seconds_sum": result.cpu_seconds,
-                            "parallel/n_jobs": float(n_jobs),
-                        }
-                    )
-                    tracker.set_tags(
-                        {
-                            "dataflow": DATAFLOW,
-                            "source_schema": source_schema,
-                            "result_schema": result_schema,
-                            "created": str(report.created),
-                            "n_cells": str(report.cells),
-                            "flows": ",".join(report.flows),
-                        }
-                    )
-
-                    # Rapport de run du millésime : contrôles, chiffres clés, sections,
-                    # publiés avant toute sortie en erreur
-                    scope.step = "rapport de run"
-                    run_report = scope.build(
-                        metrics=tracker.metrics,
-                        units=Units(planned=1, succeeded=1, planned_label=f"1 millésime ({label})"),
-                        key_figures=key_figures_network_vulnerabilities,
-                        sections=lambda m: sections_network_vulnerabilities(m, tracker.tables),
-                    )
-                    scope.publish(tracker, run_report)
-
-                # Entrée de registre du millésime calculé, écrite après succès
-                # du calcul et de l'écriture seulement (jamais de date avancée
-                # à tort) ; un fragment par millésime. La raison est conservée
-                # pour la cascade vers la synthèse
-                registry.upsert(
-                    RegistryEntry(
-                        unit=unit,
-                        last_computed=computed_at,
-                        upstream_watermark=units[unit],
-                        fingerprints=dict(requested),
-                        reason=plan.reason,
-                        extra={
-                            "source_schema": source_schema,
-                            "result_schema": result_schema,
-                            "n_cells": int(report.cells),
-                        },
-                    )
-                )
-                registry.save()
-
-                # Logging
-                logger.info(
-                    f"Vulnérabilités de réseau calculées pour {label} : {report}"
-                )
-            except Exception as exc:
-                # Journalisation de l'échec, poursuite avec les autres millésimes
-                logger.exception(
-                    f"Échec du calcul des vulnérabilités de réseau pour "
-                    f"le millésime {label}"
-                )
-                failures[label] = exc
-    finally:
-        result_conn.close()
-
-    # Échec global si au moins un millésime a échoué, une fois tous tentés
-    if failures:
-        raise RuntimeError(
-            f"{len(failures)} millésime(s) en échec sur {len(stale)} : "
-            f"{sorted(failures)}"
-        ) from next(iter(failures.values()))
+        for label, schema in baci_target_schemas(baci_config).items()
+    }
+    result = DuckLakeTable.lazy(
+        vulnerabilities_location(
+            vulnerability_config, schema=schema_name(network_config["RESULT_SCHEMA"]),
+            bucket=network_config["BUCKET"], data_path=network_config["PATHS"]["DATA_PATH"],
+        ),
+        None, None, connector_factory=_connector,
+    )
+    # Un run MLflow par millésime
+    runs = script_runs(
+        node_of=lambda label: f"{NODE}_{label}",
+        run_name_of=lambda label: f"network-vulnerabilities-{label}-{timestamp()}",
+        experiment=experiment_name("vulnerabilities"),
+    )
+    outcome = run_network_vulnerabilities(
+        baci, result, network_registry(network_config), baci_registry(baci_config),
+        params=vulnerability_config, runtime=runtime_config, dataflow=comtrade_config["DATAFLOW"],
+        runs=runs, n_jobs=resolve_n_jobs(network_config.get("N_JOBS")),
+        force=ForceSpec.from_runtime(runtime_config),
+        adopt_legacy_fingerprints=adopt_legacy_flag(network_config.get("STATE")),
+        run_id=workflow_run_id(),
+    )
+    outcome.raise_if_failed()
 
 
 # Exécution du script principal

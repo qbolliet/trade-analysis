@@ -1,23 +1,25 @@
-"""Glue between the pipeline scripts and the run report (ARCH PS-31, K-03d).
+"""Glue between the pipeline scripts and the MLflow run report.
 
 Transitional module: it holds what only scripts do (read the ``tracking`` parameters and
 the environment, measure the run, wrap the body of ``main()``). The pure logic lives in
 ``macroforecast.tracking`` and the publication in ``kedro_pipeline.io.tracking``, both
-reused as is by the Kedro nodes (K-13), which will make this module obsolete (K-18).
+reused as is by the Kedro nodes, which will make this module obsolete with the scripts.
 
 Typical use in a script::
 
     tracker = CapturingTracker(get_tracker(..., run_name=run_name(default, node)))
     scope = RunScope(node)
     with tracker, guarded_run(scope, tracker):
-        ...  # the computation, logging through ``tracker``
-        report = scope.build(metrics=tracker.metrics, units=Units(...), ...)
-        scope.publish(tracker, report)
-    # exits on error (aggregated RuntimeError, sys.exit...) come AFTER the ``with``
+        result = run_step(..., tracker=tracker, progress=scope)  # a StepResult
+        scope.publish_result(tracker, result)
+    result.raise_if_failed()  # exits on error come AFTER the ``with``
+
+Steps opening one run per unit (pass, vintage) receive :func:`script_runs` instead.
 """
 # Importation des modules
 # Modules de base
 from contextlib import contextmanager
+from datetime import datetime
 import logging
 import os
 import time
@@ -26,14 +28,16 @@ from typing import Any, Callable, Dict, Iterator, List, Mapping, Optional, Seque
 import pandas as pd
 # Modules du package
 from kedro_pipeline.config import load_parameters, read_config_file
-from kedro_pipeline.io.download_report import (
-    DownloadFailureError,
-    check_download_report,
-    download_run_metrics,
+from kedro_pipeline.io.tracking import (  # noqa: F401  (flow_run_metrics ré-exportée)
+    build_step_report,
+    flow_run_metrics,
+    peak_memory_mb,
+    publish_failure,
+    publish_run_report,
+    run_metrics,
 )
-from kedro_pipeline.io.tracking import peak_memory_mb, publish_failure, publish_run_report, run_metrics
-from macroforecast.tracking import RunTracker, rekey_metrics
-from macroforecast.tracking.figures import key_figures_downloads, sections_downloads
+from kedro_pipeline.steps.result import StepResult, UnitRun, UnitRuns
+from macroforecast.tracking import CapturingTracker, RunTracker, get_tracker
 from macroforecast.tracking.report import (
     Check,
     RunReport,
@@ -76,35 +80,6 @@ def load_tracking_config(config_path: Optional[str] = None) -> Dict[str, Any]:
         return {}
 
 
-# Métriques MLflow d'un calcul de vulnérabilités, préfixées par famille et par sens
-def flow_run_metrics(report: Any, family: str) -> Dict[str, float]:
-    """MLflow metrics of a vulnerability run, prefixed by family and direction.
-
-    The vulnerability runners diagnose each flow direction on its own
-    (``report.flows``); the prefix is applied here, by the caller, so that the
-    import and export distributions are never mixed:
-    ``partners/import/HHI/mean``, ``network/export/SPOF/mean``.
-
-    Args:
-        report: ``VulnerabilityReport`` or ``NetworkVulnerabilityReport`` whose
-            ``flows`` holds one sub-report per direction.
-        family: Family prefix (``"partners"`` or ``"network"``).
-
-    Returns:
-        Slash-separated metric names mapped to their values.
-
-    Examples:
-        >>> from macroforecast.trade.vulnerabilities import VulnerabilityReport
-        >>> report = VulnerabilityReport(flows={"export": VulnerabilityReport(cells=3)})
-        >>> flow_run_metrics(report, "partners")["partners/export/cells/n_total"]
-        3.0
-    """
-    metrics: Dict[str, float] = {}
-    for flow, sub in report.flows.items():
-        metrics.update(rekey_metrics(sub.to_metrics(prefix=f"{family}.{flow}")))
-    return metrics
-
-
 # Nom du run MLflow
 def run_name(default: str, node: str) -> str:
     """Return the name of the MLflow run.
@@ -115,7 +90,7 @@ def run_name(default: str, node: str) -> str:
 
     Returns:
         ``<node>-<WORKFLOW_ID>`` when the ``WORKFLOW_ID`` variable exists
-        (ARCH PD-13), ``default`` otherwise.
+        (runs of one workflow share it), ``default`` otherwise.
 
     Examples:
         >>> os.environ.pop("WORKFLOW_ID", None) and None
@@ -256,6 +231,36 @@ class RunScope:
         publish_run_report(tracker, report, self.params)
         self.published = True
 
+    # Garde d'échec du run (description réduite si une exception traverse le bloc)
+    def guard(self, tracker: RunTracker) -> Any:
+        """Return the failure guard of the run (see :func:`guarded_run`).
+
+        Args:
+            tracker: Tracker of the open run.
+
+        Returns:
+            The context manager.
+        """
+        return guarded_run(self, tracker)
+
+    # Publication du rapport construit depuis le résultat d'une étape
+    def publish_result(self, tracker: RunTracker, result: StepResult) -> None:
+        """Build the report of the run from a step result, then publish it, once.
+
+        Nothing is published when the result is not reportable (nothing was
+        stale).
+
+        Args:
+            tracker: Tracker of the open run.
+            result: Result returned by the step function.
+        """
+        if not result.reportable:
+            return
+        self.step = "rapport de run"
+        context = self.context()
+        report = build_step_report(result, node=self.node, params=self.params, context=context)
+        self.publish(tracker, report)
+
 
 # Garde du corps d'un script
 @contextmanager
@@ -284,59 +289,56 @@ def guarded_run(scope: RunScope, tracker: RunTracker) -> Iterator[RunScope]:
         raise
 
 
-# Rapport d'un run de téléchargement (Eurostat, Comtrade)
-def build_download_report(
-    scope: RunScope,
-    tracker: Any,
-    report: Any,
-    max_error_ratio: Optional[float],
+# Fabrique des runs d'unités des scripts : un run MLflow par passe ou millésime
+def script_runs(
     *,
-    log_artifacts: bool = True,
-    tags: Optional[Mapping[str, str]] = None,
-) -> RunReport:
-    """Log the run-level metrics of a download and build its report.
+    node_of: Callable[[str], str],
+    run_name_of: Callable[[str], str],
+    experiment: str,
+    params: Optional[Mapping[str, Any]] = None,
+) -> UnitRuns:
+    """Return the factory opening one MLflow run, with its report, per unit.
 
-    Units are the queries. Failed queries only make the run *fail* when their share
-    exceeds ``max_error_ratio`` (the very condition on which the process exits with an
-    error); below it they are tolerated and listed in ``tables/errors.csv`` and in the
-    ``download/error_share`` check.
+    Each unit gets a capturing tracker over ``get_tracker`` (a null tracker
+    without ``MLFLOW_TRACKING_URI``), a :class:`RunScope` and the failure guard:
+    an exception crossing the block publishes the reduced description and ends
+    the run failed.
 
     Args:
-        scope: Report scope of the run.
-        tracker: Capturing tracker of the open run.
-        report: ``statflows`` download report.
-        max_error_ratio: Tolerated share of failed queries (``MAX_ERROR_RATIO``).
-        log_artifacts: Whether to log the per-query table ``download/queries.csv``.
-        tags: Tags attached to the run.
+        node_of: Node name of a unit label (``"process_baci_HS2017"``…).
+        run_name_of: Default run name (outside a workflow) of a unit label.
+        experiment: MLflow experiment of the runs.
+        params: The ``tracking`` block; read from the Kedro parameters when ``None``.
 
     Returns:
-        The report to publish with :meth:`RunScope.publish`.
+        The factory.
     """
-    metrics = download_run_metrics(report)
-    tracker.log_metrics(metrics)
-    if tags:
-        tracker.set_tags(tags)
-    frame = report.to_frame()
-    if log_artifacts and report.queries:
-        tracker.log_table(frame, "download/queries.csv")
+    # Configuration lue une fois pour toutes les unités
+    tracking = dict(params) if params is not None else load_tracking_config()
 
-    # Échec du run : seulement au-delà de la part tolérée
-    failures: Dict[str, str] = {}
-    try:
-        check_download_report(report, max_error_ratio)
-    except DownloadFailureError as exc:
-        failures = {"téléchargement": str(exc)}
-    errors = frame[frame["error_type"].notna()] if "error_type" in frame else frame.iloc[0:0]
-    return scope.build(
-        metrics=metrics,
-        units=Units(
-            planned=int(report.n_queries_planned),
-            succeeded=len(report.queries) - int(report.errors),
-            failed=int(report.errors),
-            planned_label=f"{int(report.n_queries_planned)} requêtes",
-        ),
-        failures=failures,
-        key_figures=key_figures_downloads,
-        sections=lambda m: sections_downloads(m, {"download/queries.csv": frame}),
-        tables={"errors": errors} if len(errors) else {},
-    )
+    @contextmanager
+    def runs(label: str, tags: Mapping[str, str]) -> Iterator[UnitRun]:
+        node = node_of(label)
+        tracker = CapturingTracker(
+            get_tracker(
+                tracking_uri=None,
+                experiment=experiment,
+                run_name=run_name(run_name_of(label), node),
+                tags=dict(tags),
+            )
+        )
+        scope = RunScope(node, tracking)
+        with tracker, guarded_run(scope, tracker):
+            yield UnitRun(
+                tracker=tracker,
+                progress=scope,
+                publish=lambda result: scope.publish_result(tracker, result),
+            )
+
+    return runs
+
+
+# Horodatage des noms de run par défaut (hors workflow)
+def timestamp() -> str:
+    """Return the current local time as ``YYYYmmdd-HHMM`` (default run names)."""
+    return f"{datetime.now():%Y%m%d-%H%M}"

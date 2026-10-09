@@ -28,6 +28,7 @@ import pandas as pd
 
 # Modules internes
 from kedro_pipeline.config import classification_of, vintage_in_force
+from kedro_pipeline.steps.result import StepResult
 
 # Logger
 logger = logging.getLogger(__name__)
@@ -414,7 +415,7 @@ def _write_tables(
     step: str,
     prefix: str,
     conn: Any = None,
-) -> Dict[str, Any]:
+) -> StepResult:
     """Upsert reference tables, one schema each; a failure does not stop the others.
 
     Args:
@@ -426,8 +427,9 @@ def _write_tables(
         conn: Already open connection on that catalog (reused, not closed).
 
     Returns:
-        Result mapping ``{"step", "tables", "rows", "failures"}``; never
-        raises (a connection failure is reported under ``"connection"``).
+        Step result: one unit per table, ``outputs`` ``tables`` (written
+        names) and ``rows`` (per table), readable by key; never raises (a
+        connection failure is reported under ``"connection"``).
     """
     from statflows.storage.ducklake.tables import write_dataframe
 
@@ -455,7 +457,13 @@ def _write_tables(
     except Exception as exc:  # connexion impossible : rien n'est écrit, l'appelant continue
         logger.warning(f"Référentiels non publiés (connexion) : {exc}")
         result["failures"]["connection"] = str(exc)[:500]
-    return result
+    return StepResult(
+        step=step,
+        n_units_planned=len(frames),
+        n_units_succeeded=len(result["tables"]),
+        failures=result["failures"],
+        outputs={"tables": result["tables"], "rows": result["rows"]},
+    )
 
 
 # Fonction de publication des référentiels d'une source (PS-28.4)
@@ -466,7 +474,7 @@ def publish_reference(
     source: str,
     params: Mapping[str, Any],
     conn: Any = None,
-) -> Dict[str, Any]:
+) -> StepResult:
     """Publish the product and country reference tables of a source.
 
     Args:
@@ -482,8 +490,8 @@ def publish_reference(
         conn: Already open connection on the catalog (reused, not closed).
 
     Returns:
-        Result mapping ``{"step", "tables", "rows", "failures"}``; dimensions
-        without a codelist are skipped silently.
+        Step result (``outputs``: ``tables``, ``rows``; readable by key);
+        dimensions without a codelist are skipped silently.
 
     Raises:
         KeyError: If a dimension maps to an unknown reference table.
@@ -525,7 +533,7 @@ def publish_hs_reference(
     *,
     params: Mapping[str, Any],
     conn: Any = None,
-) -> Dict[str, Any]:
+) -> StepResult:
     """Publish ``hs_concordance`` (UNSD cache) and ``hs_vintages`` (runtime).
 
     Args:
@@ -536,7 +544,7 @@ def publish_hs_reference(
         conn: Already open connection on the catalog (reused, not closed).
 
     Returns:
-        Result mapping ``{"step", "tables", "rows", "failures"}``.
+        Step result (``outputs``: ``tables``, ``rows``; readable by key).
     """
     frames = {
         "hs_concordance": concordance_table(concordances),

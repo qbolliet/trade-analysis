@@ -31,6 +31,7 @@ from kedro_pipeline.config import nomenclature_macros_sql
 from kedro_pipeline.io.ducklake import DuckLakeLocation
 from kedro_pipeline.io.serving import ServingCatalog, ServingTableSpec
 from kedro_pipeline.steps.reference import REFERENCE_COLUMNS, reference_schema
+from kedro_pipeline.steps.result import StepResult, capturing
 
 # Logger
 logger = logging.getLogger(__name__)
@@ -553,7 +554,7 @@ def publish_serving(
     params: Mapping[str, Any],
     runtime: Mapping[str, Any],
     tracker: Any = None,
-) -> Dict[str, Any]:
+) -> StepResult:
     """Publish the serving tables in one transaction and report the outcome.
 
     Args:
@@ -566,11 +567,13 @@ def publish_serving(
         tracker: Run tracker receiving the metrics; inert by default.
 
     Returns:
-        ``StepResult``-like mapping: ``step``, ``mode``, ``tables`` (published
-        names), ``rows`` (per table), ``missing_sources``, ``failures``
-        (table or ``"publication"`` -> message) and ``metrics``. A failure
-        does not raise: the whole publication was rolled back and the caller
-        decides (non-zero exit code of the script).
+        Step result, one unit per configured table: ``failures`` (table or
+        ``"publication"`` -> message), ``metrics``, and the outputs ``mode``,
+        ``tables`` (published names), ``rows`` (per table) and
+        ``missing_sources``, all readable by key (``result["rows"]``). A
+        failure does not raise: the whole publication was rolled back (no
+        table succeeded) and the caller decides (:meth:`StepResult.raise_if_failed`,
+        non-zero exit code of the script).
 
     Examples:
         >>> result = publish_serving(tables, catalog, params=params,
@@ -578,10 +581,10 @@ def publish_serving(
         >>> result["rows"]["cell_scores"]  # doctest: +SKIP
         312480
     """
-    from macroforecast.tracking import NULL_TRACKER
     from kedro_pipeline.io.serving import ServingPublicationError
 
-    tracker = NULL_TRACKER if tracker is None else tracker
+    # Enregistrement de ce qui est journalisé (entrée du rapport de run)
+    tracker = capturing(tracker)
     mode, years = resolve_mode(params, runtime)
     result: Dict[str, Any] = {
         "step": "serving",
@@ -636,4 +639,25 @@ def publish_serving(
     metrics["serving/n_failures"] = float(len(result["failures"]))
     result["metrics"] = metrics
     tracker.log_metrics(metrics)
-    return result
+    planned = len(params["TABLES"])
+    failed = len(result["failures"])
+    return StepResult(
+        step="serving",
+        n_units_planned=planned,
+        # Publication atomique : une panne annule toutes les tables
+        n_units_succeeded=0 if failed else len(result["tables"]),
+        failures=result["failures"],
+        metrics=metrics,
+        artifacts=dict(tracker.tables),
+        tags={
+            "mode": mode,
+            "missing_sources": ",".join(result["missing_sources"]),
+        },
+        units_label=f"{planned} tables (mode {mode})",
+        outputs={
+            "mode": mode,
+            "tables": result["tables"],
+            "rows": result["rows"],
+            "missing_sources": result["missing_sources"],
+        },
+    )

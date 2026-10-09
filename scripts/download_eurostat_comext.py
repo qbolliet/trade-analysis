@@ -1,60 +1,50 @@
 """Script de téléchargement des données Comext (commerce extérieur) Eurostat.
 
-Télécharge le dataflow configuré (``DATAFLOW``, DS-045409) depuis l'API SDMX 3.0
-d'Eurostat en scindant les requêtes par code produit x pays reporter, toutes les
-années dans une même requête à partir de
-``runtime.ANALYSIS_START_YEAR.eurostat`` (PD-07, PD-08). La liste est
-**produit-majeure** (PS-12.2) : un produit est complet pour tous les reporters
-avant le suivant, maille utile aux indicateurs partenaires (couple reporter x
-produit). ``download_updates`` trie de façon stable les requêtes jamais
-téléchargées en tête : l'ordre de la liste fait donc foi pour le rattrapage.
+Enveloppe CLI de la fonction d'étape ``kedro_pipeline.steps.downloads.run_download``
+(source ``eurostat``) : le dataflow configuré (``DATAFLOW``, DS-045409) est
+téléchargé depuis l'API SDMX 3.0 d'Eurostat en scindant les requêtes par code
+produit x pays reporter, toutes les années dans une même requête à partir de
+``runtime.ANALYSIS_START_YEAR.eurostat``, dans un ordre **produit-majeur** (un
+produit complet pour tous les reporters avant le suivant, maille des
+indicateurs partenaires). ``download_updates`` traite d'abord les requêtes
+jamais téléchargées : l'ordre de la liste fait foi pour le rattrapage. Les
+codelists sont publiées en référentiels et la couverture de la source est
+auditée en fin de téléchargement.
 
 Configuration lue : blocs ``eurostat`` et ``runtime`` des paramètres Kedro
 (``config/<env>/parameters_*.yml``), environnement choisi par ``KEDRO_ENV``
-(``local`` par défaut, ``demo`` pour le périmètre de démonstration). Peut être ordonnancé (Argo, cron) ou intégré
-directement comme nœud Kedro via les fonctions exportées.
+(``local`` par défaut, ``demo`` pour le périmètre de démonstration).
 """
 # Importation des modules
 # Modules de base
 import os
-from datetime import datetime, timedelta
-import itertools
 import logging
-from typing import Any, Dict, List, Mapping, Optional, Sequence, TypeVar, Union
-
-# Modules de manipulation de données
-import pandas as pd
+from typing import Any, Optional
 
 # Importation des modules du package
-from statflows import (
-    EurostatClient,
-    DataflowStructure,
-    EurostatQueryRequestV30
-)
-from statflows.core.factory import (
-    codelist_frame,
-    filter_codes,
-)
-from statflows.core.download import download_updates, _schema_name
-from statflows.core.reports import QueryReport
-from statflows.core.registry import DEFAULT_SHARD
+from statflows import EurostatClient
 
 # Module de suivi d'exécution
-from macroforecast.tracking import CapturingTracker, get_tracker, rekey_metrics
+from macroforecast.tracking import CapturingTracker, get_tracker
 from kedro_pipeline.config import experiment_name, load_parameters, read_config_file
-
-# Fabrique de connecteur DuckLake (seul point de lecture des identifiants)
-from kedro_pipeline.io.download_report import check_download_report
-from scripts._run_report import RunScope, build_download_report, guarded_run, run_name
-from kedro_pipeline.io.registry_views import split_codes
-from kedro_pipeline.steps.reference import publish_reference
 from kedro_pipeline.io.ducklake import (
-    DuckLakeLocation,
+    DuckLakeTable,
     build_connector,
-    download_buffering_options,
     pg_credentials_from_env,
     s3_credentials_from_env,
 )
+from kedro_pipeline.steps._config import download_location
+# Fonctions de planification et étape de téléchargement (ré-exportées)
+from kedro_pipeline.steps.downloads import (  # noqa: F401
+    _PRODUCT_DIM,
+    _ordered_codes,
+    build_eurostat_queries as build_split_queries,
+    cap_queries,
+    eurostat_shard_key as registry_shard_key,
+    fetch_eurostat_codelist as fetch_dimension_codelists,
+    run_download,
+)
+from scripts._run_report import RunScope, guarded_run, run_name, timestamp
 
 
 # Configuration de logging
@@ -66,10 +56,14 @@ logging.basicConfig(
 # Initialisation du logger
 logger = logging.getLogger(__name__)
 
-# Dimension découpée en boucle externe (ordre produit-majeur)
-_PRODUCT_DIM = "product"
 
-T = TypeVar("T")
+# Fabrique de connecteur : identifiants lus dans l'environnement à la première connexion
+def _connector(location: Any, pg: Any = None, s3: Any = None, **kwargs: Any) -> Any:
+    """Build the connector of a table, reading the credentials only when connecting."""
+    return build_connector(location, pg_credentials_from_env(), s3_credentials_from_env(), **kwargs)
+
+# Nœud du rapport de run (clé de tracking.CHECKS)
+NODE = "download_eurostat"
 
 
 # Fonction de chargement de la configuration
@@ -106,236 +100,6 @@ def load_runtime_config(config_path: Optional[os.PathLike] = None) -> dict:
     return read_config_file(config_path, "runtime")
 
 
-# Fonction récupération des listes de codes associées à une dimension d'un dataflow
-def fetch_dimension_codelists(
-    structure: DataflowStructure,
-    dimension: str,
-    client: Optional[EurostatClient] = None,
-) -> pd.DataFrame:
-    """Fetch the codelist of one dimension of a Comext dataflow.
-
-    Deduces the codelist identifier of the requested dimension from the
-    dataflow's Data Structure Definition (DSD), then downloads and parses it
-    through ``statflows.codelist_frame``.
-
-    Args:
-        structure: Resolved dataflow structure (carries the dimension →
-            codelist mapping).
-        dimension: Name of the dimension to fetch the codelist of (e.g.
-            ``"reporter"``, ``"product"``).
-        client: ``EurostatClient`` instance; a new one is created if ``None``.
-
-    Returns:
-        DataFrame with columns ``(code, label, parent)`` for the requested dimension.
-
-    Examples:
-        >>> structure = client.get_dataflow_structure(
-        ...     dataflow="DS-045409",
-        ... )  # doctest: +SKIP
-        >>> reporter_codes = fetch_dimension_codelists(
-        ...     structure, "reporter",
-        ... )  # doctest: +SKIP
-        >>> "FR" in reporter_codes["code"].values  # doctest: +SKIP
-        True
-    """
-    # Initialisation du client s'il n'est pas spécifié
-    if client is None:
-        client = EurostatClient()
-
-    # Codelist de la dimension (identifiant déduit de la DSD) avec libellés et parents,
-    # mise en cache par le client : un seul appel réseau par codelist
-    dimension_codes = codelist_frame(client, dimension, structure)
-    # Logging
-    logger.info("%d codes %s", len(dimension_codes), dimension)
-
-    return dimension_codes
-
-
-# Fonction de plafonnement du nombre de requêtes
-def cap_queries(queries: Sequence[T], max_queries: Optional[int]) -> List[T]:
-    """Keep at most ``max_queries`` queries, in list order (C-01).
-
-    Args:
-        queries: Ordered queries.
-        max_queries: Maximum number of queries; ``None`` means no cap.
-
-    Returns:
-        The (possibly truncated) list of queries.
-
-    Examples:
-        >>> cap_queries([1, 2, 3], None)
-        [1, 2, 3]
-        >>> cap_queries([1, 2, 3], 1)
-        [1]
-    """
-    return list(itertools.islice(queries, max_queries))
-
-
-# Fonction de filtrage d'une codelist en conservant l'ordre de la liste d'inclusion
-def _ordered_codes(codes: pd.DataFrame, filters: Mapping[str, Any]) -> List[str]:
-    """Filter a codelist, keeping the order of the ``include`` list when given.
-
-    ``filter_codes`` returns sorted codes; the configured ``include`` order is
-    the query order of the dimension (e.g. reporters), so it is restored here.
-
-    Args:
-        codes: Codelist DataFrame with a ``code`` column.
-        filters: include/exclude filters forwarded to ``filter_codes``.
-
-    Returns:
-        Selected codes, in ``include`` order if set, else in natural order.
-    """
-    selected = filter_codes(codes["code"], **filters)
-    include = filters.get("include")
-    # Pas de liste d'inclusion : ordre naturel des codes
-    if include is None:
-        return selected
-    # Ordre de la liste d'inclusion (codes absents déjà signalés par filter_codes)
-    kept = set(selected)
-    return [code for code in dict.fromkeys(str(c) for c in include) if code in kept]
-
-
-# Fonction de construction des requêtes
-def build_split_queries(
-    dataflow: str,
-    dims_codes: Dict[str, pd.DataFrame],
-    fixed_dims: Dict[str, Union[List[str], str]] = {},
-    split_filters: Dict[str, Dict[str, Union[List[str], str]]] = {},
-    products_step: int = 1,
-    period_windows: Optional[Sequence[Sequence[Optional[int]]]] = None,
-    start_period: Optional[str] = None,
-) -> List[EurostatQueryRequestV30]:
-    """Build the split queries for a Comext dataflow, product-major.
-
-    Applies the include/exclude filters declared in the YAML configuration to
-    the split-dimension codelists, then returns one query per product and per
-    combination of the other split dimensions (typically reporters), every
-    period in a single query. Order (PS-12.2): outer loop over the products in
-    natural code order, inner loop over the other dimensions in the order of
-    their ``include`` list (natural order when unset).
-
-    Args:
-        dataflow: Eurostat dataflow identifier (e.g. ``"DS-045409"``).
-        dims_codes: Mapping of split-dimension name to its codelist DataFrame
-            (column ``code``), as returned by :func:`fetch_dimension_codelists`.
-            Must contain ``"product"``.
-        fixed_dims: Dimensions shared by every query (e.g. freq=A, partner=*,
-            flow=1, indicators=QUANTITY_IN_100KG), read from the YAML
-            ``fixed_dims`` section.
-        split_filters: Per split-dimension include/exclude filters (forwarded
-            to :func:`~statflows.core.factory.filter_codes`), read from
-            the YAML ``split_filters`` section. Must share the same keys as
-            ``dims_codes``.
-        products_step: Number of products per query; only ``1`` is supported
-            (product batches are an open risk, PR-03).
-        period_windows: Optional ordered period windows (PD-07); only ``None``
-            is supported.
-        start_period: First period requested (``startPeriod``, sent as
-            ``c[TIME_PERIOD]=ge:<start>`` by the SDMX 3.0 client); ``None``
-            requests every available period.
-
-    Returns:
-        List of ``EurostatQueryRequestV30`` objects, product-major.
-
-    Raises:
-        ValueError: If ``split_filters`` and ``dims_codes`` do not share the
-            same keys, or ``"product"`` is not a split dimension.
-        NotImplementedError: If ``products_step > 1`` or ``period_windows`` is
-            set.
-
-    Examples:
-        >>> queries = build_split_queries(
-        ...     "DS-045409",
-        ...     dims_codes={"reporter": pd.DataFrame({"code": ["DE", "FR"]}),
-        ...                 "product": pd.DataFrame({"code": ["01", "02"]})},
-        ...     fixed_dims={"freq": "A"},
-        ...     split_filters={"reporter": {"include": ["FR", "DE"]}, "product": {}},
-        ... )
-        >>> [(q.dimensions["product"], q.dimensions["reporter"]) for q in queries]
-        [('01', 'FR'), ('01', 'DE'), ('02', 'FR'), ('02', 'DE')]
-    """
-    # Paramètres non encore supportés (granularité inchangée tant que PR-03 est ouvert)
-    if products_step is not None and products_step > 1:
-        raise NotImplementedError(
-            f"products_step={products_step} is not supported yet: product batches "
-            "require measuring the Eurostat API limits first (PR-03). Use 1."
-        )
-    if period_windows is not None:
-        raise NotImplementedError(
-            "period_windows is not supported yet (PD-07): set it to null."
-        )
-
-    # Vérification que 'split_filters' et 'dims_codes' partagent les mêmes clés
-    if set(split_filters.keys()) != set(dims_codes.keys()):
-        raise ValueError(f"'split_filters' and 'dims_codes' should have similar keys. Found {split_filters.keys()} for 'split_filters' and {dims_codes.keys()} for 'dims_codes'")
-    if _PRODUCT_DIM not in split_filters:
-        raise ValueError(f"'{_PRODUCT_DIM}' must be a split dimension (product-major order)")
-
-    # Codes des dimensions scindées, dans l'ordre des requêtes
-    split_dims_codes = {
-        split_dim: (
-            filter_codes(dims_codes[split_dim]["code"], **filters)
-            if split_dim == _PRODUCT_DIM
-            else _ordered_codes(dims_codes[split_dim], filters)
-        )
-        for split_dim, filters in split_filters.items()
-    }
-    # Dimensions de la boucle interne (ordre de la configuration)
-    inner_dims = [dim for dim in split_filters if dim != _PRODUCT_DIM]
-
-    # Construction produit-majeure (l'ordre d'insertion des dimensions suit la
-    # configuration, comme auparavant)
-    queries = [
-        EurostatQueryRequestV30(
-            dataflow=dataflow,
-            dimensions={
-                **fixed_dims,
-                **{
-                    dim: (product if dim == _PRODUCT_DIM else inner[inner_dims.index(dim)])
-                    for dim in split_filters
-                },
-            },
-            start_period=start_period,
-        )
-        for product in split_dims_codes[_PRODUCT_DIM]
-        for inner in itertools.product(*(split_dims_codes[dim] for dim in inner_dims))
-    ]
-
-    # Logging
-    logger.info(f"Successfully built {len(queries)} splitted queries.")
-
-    return queries
-
-
-# Nœud du rapport de run (clé de tracking.CHECKS)
-NODE = "download_eurostat"
-
-
-# Fonction de clé de fragment du registre de téléchargement
-def registry_shard_key(query: EurostatQueryRequestV30) -> str:
-    """Name the registry fragment of a Comext query: its reporter.
-
-    A fragment per reporter keeps each registry flush small: the product-major
-    order touches every reporter, but a flush only rewrites the fragments
-    modified since the previous one.
-
-    Args:
-        query: Eurostat query, whose ``dimensions["reporter"]`` is a code, a
-            list of codes or a ``+`` / ``,`` separated string.
-
-    Returns:
-        Reporter code(s) joined by ``_`` (``statflows`` sanitises the file name),
-        or the default fragment when the query has no reporter.
-
-    Examples:
-        >>> registry_shard_key(
-        ...     EurostatQueryRequestV30(dataflow="DS-045409", dimensions={"reporter": "FR"})
-        ... )
-        'FR'
-    """
-    return "_".join(split_codes(query.dimensions.get("reporter"))) or DEFAULT_SHARD
-
-
 # Fonction principale de téléchargement
 def main() -> None:
     """CLI entry point for the Comext download script.
@@ -344,170 +108,27 @@ def main() -> None:
         DownloadFailureError: If the share of failed queries exceeds ``MAX_ERROR_RATIO``,
             after the run report was published.
     """
-    # Chargement des configurations
-    config = load_config()
-    runtime_config = load_runtime_config()
-    # Dataflow à télécharger (C-05)
-    DATAFLOW = config["DATAFLOW"]
-    downloads_config = config["DOWNLOADS"][DATAFLOW]
-
-    # Construction du suivi d'exécution : sans URI (MLFLOW_TRACKING_URI non définie,
-    # ou sans MLflow installé, ou serveur injoignable), get_tracker retourne un
-    # tracker inerte et l'exécution est strictement inchangée. Le run est ouvert dès
-    # le début pour que tout échec, y compris de planification, porte son rapport.
+    config, runtime_config = load_config(), load_runtime_config()
+    table = DuckLakeTable.lazy(download_location(config), None, None, connector_factory=_connector)
+    # Suivi d'exécution : sans URI MLflow, get_tracker retourne un tracker inerte ; le run
+    # est ouvert dès le début pour que tout échec, y compris de planification, porte son rapport
     tracker = CapturingTracker(
         get_tracker(
             tracking_uri=None,
             experiment=experiment_name("downloads"),
-            run_name=run_name(f"{DATAFLOW}-{datetime.now():%Y%m%d-%H%M}", NODE),
+            run_name=run_name(f"{config['DATAFLOW']}-{timestamp()}", NODE),
         )
     )
     scope = RunScope(NODE)
     with tracker, guarded_run(scope, tracker):
-        report = _download(config, runtime_config, tracker, scope)
-
-    # Statut de sortie : contrôle après la clôture du tracker, pour que le rapport de run
-    # soit publié avant l'échec de l'étape
-    check_download_report(report, downloads_config.get("MAX_ERROR_RATIO"))
-
-
-# Planification, téléchargement et rapport de run
-def _download(config: dict, runtime_config: dict, tracker: CapturingTracker, scope: RunScope):
-    """Plan the queries, download them and publish the run report.
-
-    Args:
-        config: Eurostat download configuration.
-        runtime_config: Shared runtime configuration.
-        tracker: Capturing tracker of the open run.
-        scope: Report scope of the run.
-
-    Returns:
-        The ``statflows`` download report.
-    """
-    DATAFLOW = config["DATAFLOW"]
-    parameters = config["parameters"][DATAFLOW]
-    downloads_config = config["DOWNLOADS"][DATAFLOW]
-    tracking_config = config.get("TRACKING") or {}
-    log_artifacts = bool(tracking_config.get("LOG_ARTIFACTS", True))
-
-    # Initialisation du client eurostat
-    scope.step = "planification des requêtes"
-    client = EurostatClient()
-    try:
-        # Téléchargement de la structure
-        structure = client.get_dataflow_structure(dataflow=DATAFLOW)
-        # Extraction des codes associés au reporter et au produit (qui sont les dimensions selon lesquelles on souhaite scinder les requêtes)
-        dims_codes = {split_dim: fetch_dimension_codelists(structure=structure, dimension=split_dim, client=client) for split_dim in config["split_filters"][DATAFLOW].keys()}
-        # Codelists publiées en référentiel (PS-28.4) : celles du découpage, plus les
-        # dimensions manquantes (partner : un appel SDMX de plus), non bloquant
-        reference_config = config["DOWNLOADS"]["REFERENCE"]
-        reference_codes = dict(dims_codes)
-        for dimension in reference_config["DIMENSIONS"]:
-            if dimension not in reference_codes:
-                try:
-                    reference_codes[dimension] = fetch_dimension_codelists(
-                        structure=structure, dimension=dimension, client=client
-                    )
-                except Exception as exc:
-                    logger.warning(f"Codelist '{dimension}' indisponible pour les référentiels : {exc}")
-
-        # Construction des requêtes produit-majeures, toutes années depuis la
-        # première année de l'analyse (PD-08)
-        queries = build_split_queries(
-            dataflow=DATAFLOW,
-            dims_codes=dims_codes,
-            fixed_dims=config["fixed_dims"][DATAFLOW],
-            split_filters=config["split_filters"][DATAFLOW],
-            products_step=parameters.get("products_step", 1),
-            period_windows=parameters.get("period_windows"),
-            start_period=str(runtime_config["ANALYSIS_START_YEAR"]["eurostat"]),
+        result = run_download(
+            EurostatClient, table, source="eurostat", params=config,
+            runtime=runtime_config, tracker=tracker, progress=scope,
         )
-        # Plafond optionnel (null = aucun, C-01)
-        queries = cap_queries(queries, parameters.get("max_queries"))
+        scope.publish_result(tracker, result)
+    # Statut de sortie : contrôle après la clôture du run, le rapport étant publié
+    result.raise_if_failed()
 
-        # Initialisation du connecteur au catalogue
-        connector = build_connector(
-            DuckLakeLocation(
-                dbname=config["DOWNLOADS"]["DBNAME"],
-                catalog_alias=config["DOWNLOADS"]["CATALOG_ALIAS"],
-                schema=_schema_name(DATAFLOW),
-                bucket=downloads_config["BUCKET"],
-                data_path=downloads_config["PATHS"]["DATA_PATH"],
-            ),
-            pg=pg_credentials_from_env(),
-            s3=s3_credentials_from_env(),
-        )
-
-        # Référentiels (libellés des pays, partenaires et produits, PS-28.4), avant le
-        # téléchargement ; non bloquant
-        reference = publish_reference(
-            reference_codes,
-            connector,
-            source="eurostat",
-            params={
-                **reference_config,
-                "NOMENCLATURES": runtime_config["NOMENCLATURES"]["HS"],
-                "YEAR": datetime.now().year,
-            },
-        )
-        logger.info(f"Référentiels Comext : {reference['rows']} ; échecs : {reference['failures']}")
-
-        # Suivi requête par requête : statflows ignore tout de MLflow,
-        # le rappel est le seul point de contact
-        def stream_query_metrics(query_report: QueryReport) -> None:
-            """Send one query's diagnostics to the tracker."""
-            tracker.log_metrics(
-                rekey_metrics(query_report.to_metrics()), step=len(streamed_queries)
-            )
-            streamed_queries.append(query_report)
-
-        streamed_queries: list[QueryReport] = []
-
-        # Téléchargement des données
-        scope.step = "téléchargement"
-        report = download_updates(
-            client=client,
-            queries=queries,
-            connector=connector,
-            structures_path=downloads_config["PATHS"]["STRUCTURES_PATH"],
-            last_download_path=downloads_config["PATHS"]["LAST_DOWNLOAD_PATH"],
-            n_observations=downloads_config["N_LAST_OBSERVATIONS"],
-            fresh_registry=False,
-            max_runtime=timedelta(
-                weeks=downloads_config["MAX_RUNTIME"]["WEEKS"],
-                days=downloads_config["MAX_RUNTIME"]["DAYS"],
-                hours=downloads_config["MAX_RUNTIME"]["HOURS"],
-                minutes=downloads_config["MAX_RUNTIME"]["MINUTES"],
-                seconds=downloads_config["MAX_RUNTIME"]["SECONDS"]
-            ),
-            categorical_threshold=None,  # A supprimer avec la nouvelle version de la base de données
-            bucket=downloads_config['BUCKET'],
-            storage_options=None,
-            on_query_complete=stream_query_metrics,
-            # Partition du registre et des écritures
-            **download_buffering_options(
-                downloads_config.get("BUFFERING"), shard_key=registry_shard_key
-            ),
-        )
-
-        # Rapport de run : métriques, table par requête, contrôles, description
-        scope.step = "rapport de run"
-        run_report = build_download_report(
-            scope, tracker, report, downloads_config.get("MAX_ERROR_RATIO"),
-            log_artifacts=log_artifacts,
-            tags={
-                "dataflow": DATAFLOW,
-                "stopped_early": str(report.stopped_early),
-                "n_queries_planned": str(report.n_queries_planned),
-            },
-        )
-        scope.publish(tracker, run_report)
-
-        # Logging
-        logger.info(f"Téléchargement terminé : {report.to_metrics()}")
-        return report
-    finally:
-        client.close()
 
 # Exécution du script principal
 if __name__ == "__main__":

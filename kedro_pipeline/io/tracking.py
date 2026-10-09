@@ -15,7 +15,7 @@ unreachable MLflow server cannot interrupt a computation nor mask its own error.
 import logging
 import os
 import re
-from typing import Any, Callable, Dict, Mapping, Optional
+from typing import Any, Callable, Dict, Mapping, Optional, Tuple
 # Modules de manipulation des données
 import pandas as pd
 # Modules du package
@@ -246,3 +246,129 @@ def publish_failure(
     if workflow_id:
         tags["workflow_id"] = str(workflow_id)
     _guarded("set_tags(failure)", lambda: tracker.set_tags(tags))
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Construction du rapport d'un run depuis le résultat d'une étape
+# ──────────────────────────────────────────────────────────────────────
+
+# Fonction des métriques d'un calcul de vulnérabilités, préfixées par famille et par sens
+def flow_run_metrics(report: Any, family: str) -> Dict[str, float]:
+    """MLflow metrics of a vulnerability run, prefixed by family and direction.
+
+    The vulnerability runners diagnose each flow direction on its own
+    (``report.flows``); the prefix is applied here, by the caller, so that the
+    import and export distributions are never mixed:
+    ``partners/import/HHI/mean``, ``network/export/SPOF/mean``.
+
+    Args:
+        report: ``VulnerabilityReport`` or ``NetworkVulnerabilityReport`` whose
+            ``flows`` holds one sub-report per direction.
+        family: Family prefix (``"partners"`` or ``"network"``).
+
+    Returns:
+        Slash-separated metric names mapped to their values.
+
+    Examples:
+        >>> from macroforecast.trade.vulnerabilities import VulnerabilityReport
+        >>> report = VulnerabilityReport(flows={"export": VulnerabilityReport(cells=3)})
+        >>> flow_run_metrics(report, "partners")["partners/export/cells/n_total"]
+        3.0
+    """
+    from macroforecast.tracking import rekey_metrics
+
+    metrics: Dict[str, float] = {}
+    for flow, sub in report.flows.items():
+        metrics.update(rekey_metrics(sub.to_metrics(prefix=f"{family}.{flow}")))
+    return metrics
+
+
+# Fonction de choix des chiffres clés et des sections d'une étape
+def report_layout(step: str) -> Tuple[Optional[Callable[..., Any]], Optional[Callable[..., Any]]]:
+    """Return the key-figure and section builders of a step's run report.
+
+    Args:
+        step: :attr:`StepResult.step` (``"download"``, ``"baci"``,
+            ``"partners"``, ``"network"``, ``"synthesis"``, ``"coherence"``,
+            ``"serving"``).
+
+    Returns:
+        Tuple ``(key_figures, sections)``; ``(None, None)`` for a step
+        without dedicated layout.
+
+    Examples:
+        >>> report_layout("baci")[0].__name__
+        'key_figures_baci'
+        >>> report_layout("unknown")
+        (None, None)
+    """
+    from macroforecast.tracking import figures
+
+    layouts = {
+        "download": (figures.key_figures_downloads, figures.sections_downloads),
+        "baci": (figures.key_figures_baci, figures.sections_baci),
+        "partners": (
+            figures.key_figures_partner_vulnerabilities,
+            figures.sections_partner_vulnerabilities,
+        ),
+        "network": (
+            figures.key_figures_network_vulnerabilities,
+            figures.sections_network_vulnerabilities,
+        ),
+        "synthesis": (figures.key_figures_synthesis, figures.sections_synthesis),
+        "coherence": (figures.key_figures_coherence, figures.sections_coherence),
+        "serving": (figures.key_figures_serving, figures.sections_serving),
+    }
+    return layouts.get(step, (None, None))
+
+
+# Fonction de construction du rapport d'un run à partir du résultat de son étape
+def build_step_report(
+    result: Any,
+    *,
+    node: str,
+    params: Mapping[str, Any],
+    context: Optional[Mapping[str, Any]] = None,
+    title: str = "",
+) -> RunReport:
+    """Evaluate the checks of a node and assemble its report from a step result.
+
+    Single construction of the run report, shared by the scripts and the Kedro
+    nodes. The ``run/*`` metrics of the context (duration, memory peak) are
+    added to the metrics of the step, so that the checks, the key figures and
+    the sections can use them.
+
+    Args:
+        result: :class:`~kedro_pipeline.steps.result.StepResult` of the run.
+        node: Node name; it selects the configured checks.
+        params: The ``tracking`` parameter block (``CHECKS``, ``REPORT``).
+        context: Execution context (``workflow_id``, ``env``, ``image``,
+            ``duration_s``, ``peak_memory_mb``, ``links``), read by the caller.
+        title: Heading; the node name when empty.
+
+    Returns:
+        The :class:`~macroforecast.tracking.report.RunReport`.
+    """
+    from macroforecast.tracking.report import Units, build_report, checks_for_node
+
+    context = dict(context or {})
+    metrics = {**result.metrics, **run_metrics(context)}
+    key_figures, sections = report_layout(result.step)
+    return build_report(
+        node,
+        metrics=metrics,
+        checks=checks_for_node(node, params),
+        units=Units(
+            planned=int(result.n_units_planned),
+            succeeded=int(result.n_units_succeeded),
+            failed=int(result.n_failed),
+            planned_label=result.units_label,
+        ),
+        failures=dict(result.failures),
+        title=title,
+        context=context,
+        key_figures=key_figures(metrics) if key_figures is not None else None,
+        sections=sections(metrics, result.artifacts) if sections is not None else None,
+        tables=dict(result.report_tables),
+        max_failures_listed=int((params.get("REPORT") or {}).get("MAX_FAILURES_LISTED", 20)),
+    )

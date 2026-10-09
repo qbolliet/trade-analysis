@@ -29,6 +29,7 @@ import logging
 import os
 from contextlib import contextmanager
 from dataclasses import dataclass
+from functools import partial
 from typing import Any, Callable, Dict, Iterable, Iterator, List, Mapping, Optional, Sequence
 
 # Initialisation du logger
@@ -609,6 +610,58 @@ class DuckLakeTable:
             self.conn = None
             conn.close()
 
+    # Connecteur non connecté de la poignée (bibliothèques attendant un connecteur)
+    def connector(self) -> Any:
+        """Return the unconnected connector of a lazy handle.
+
+        For the libraries that take a connector rather than a connection
+        (``statflows.download_updates``, the reference publication): its
+        ``connect()`` opens a connection positioned on the schema of the table.
+
+        Returns:
+            The connector built by the handle's factory (credentials checked
+            first by the default factory).
+
+        Raises:
+            RuntimeError: If the handle borrows a connection (no location).
+        """
+        if self.location is None:
+            raise RuntimeError(
+                f"DuckLakeTable '{self.schema}' borrows a connection: it has no connector"
+            )
+        factory = self.connector_factory or CheckedConnectorFactory()
+        return factory(self.location, self.pg, self.s3)
+
+    # Lecteur de connexion transmissible aux processus de calcul
+    def reader(self, setup_statements: Sequence[str] = ()) -> Any:
+        """Return a reader giving each worker a connection of its own.
+
+        Args:
+            setup_statements: SQL statements run on each new connection
+                (session macros).
+
+        Returns:
+            A picklable :class:`ConnectionReader` for a lazy handle; a
+            :class:`BorrowedReader` lending the bound connection otherwise
+            (usable in the calling process only, i.e. with one job).
+
+        Raises:
+            RuntimeError: If the handle has neither a connection nor a location.
+        """
+        if self.location is not None:
+            return ConnectionReader(
+                partial(
+                    self.connector_factory or CheckedConnectorFactory(),
+                    self.location, self.pg, self.s3,
+                ),
+                setup_statements,
+            )
+        if self.conn is None:
+            raise RuntimeError(
+                f"DuckLakeTable '{self.schema}' has neither an open connection nor a location"
+            )
+        return BorrowedReader(self.conn)
+
     # Connexion d'une opération : fournie, liée à la poignée, sinon ouverte pour elle
     @contextmanager
     def _session(self, conn: Any = None) -> Iterator[Any]:
@@ -1012,6 +1065,25 @@ class DuckLakeTable:
             )
 
         return write
+
+
+# Fonction de lecture de l'alias effectif du catalogue d'une poignée
+def attached_catalog_alias(table: Any) -> str:
+    """Return the alias under which the catalog of a table handle is attached.
+
+    The alias is the one of the connector actually built (the configured one
+    for the production factory), so that the qualified names of the writes
+    match the attached catalog; a handle borrowing a connection keeps its own.
+
+    Args:
+        table: :class:`DuckLakeTable`.
+
+    Returns:
+        The catalog alias.
+    """
+    if getattr(table, "location", None) is None:
+        return table.catalog_alias
+    return table.connector().catalog_alias
 
 
 # Fonction de construction des options d'écriture des étapes de calcul

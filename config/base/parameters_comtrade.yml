@@ -21,6 +21,20 @@ comtrade:
     # Publication de la table de diagnostic par requête
     LOG_ARTIFACTS: true
 
+  # Audit de couverture en fin de téléchargement (jamais bloquant) : requêtes planifiées
+  # jamais téléchargées, part téléchargée, première année en base, reporters attendus
+  # sur tout l'historique dont la première année stockée est postérieure à
+  # runtime.ANALYSIS_START_YEAR (rattrapage en cours, ou source plus courte). Une seule
+  # requête SQL agrégée par reporter sur la table téléchargée.
+  COVERAGE:
+    # Reporters attendus depuis la première année de l'analyse (codes de la table)
+    EXPECTED_FULL_HISTORY_REPORTERS: []
+    # Colonnes de la table téléchargée lues par l'audit
+    COLUMNS:
+      REPORTER: "reporterCode"
+      PERIOD: "period"
+      PRODUCT: "cmdCode"
+
   # Groupes de codes réutilisables
   code_groups:
     # Exemple de sélection de reporters par code M49 (à compléter selon le besoin).

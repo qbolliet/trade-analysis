@@ -1,7 +1,7 @@
 """BACI step: completeness gate, HS correspondence tables, chunked I/O of the passes.
 
-Pure functions and I/O adapters called by ``scripts/process_baci_hs.py`` (and, in
-time, by the Kedro nodes). The methodology lives in
+Pure functions, I/O adapters and step functions shared by the BACI script and the
+Kedro nodes. The methodology lives in
 ``macroforecast.trade.processing``; this module only moves data.
 
 * **Completeness gate** — :func:`completeness_by_year` and :func:`eligible_years`:
@@ -28,7 +28,8 @@ time, by the Kedro nodes). The methodology lives in
 """
 # Importation des modules
 # Modules de base
-from datetime import datetime, timezone
+from dataclasses import dataclass, field, replace
+from datetime import datetime, timedelta, timezone
 import hashlib
 import logging
 from pathlib import Path
@@ -37,10 +38,47 @@ import sys
 from typing import Any, Callable, Dict, Iterable, Iterator, List, Mapping, Optional, Sequence, Set, Tuple
 
 # Modules de manipulation de données
+import duckdb
 import pandas as pd
 
 # Stockage JSON (registre du cache)
 from statflows.storage.json import Loader as JsonLoader, Saver as JsonSaver
+from statflows.core.factory import filter_codes
+from statflows.storage.ducklake.tables import FACT_TABLE as _FACT_TABLE
+
+# Modules du package
+from kedro_pipeline.config import active_targets
+from kedro_pipeline.io.freshness import (
+    ForceSpec,
+    FreshnessRegistry,
+    LegacySource,
+    NewDataPredicate,
+    RegistryEntry,
+    Unit,
+    UnitPlan,
+    adopt_legacy_flag,
+    fingerprint,
+    format_instant,
+    legacy_entry,
+    plan_metrics,
+    units_to_compute,
+    upstream_is_newer,
+)
+from kedro_pipeline.io.ducklake import attached_catalog_alias
+from kedro_pipeline.io.registry_views import ProductsKey
+from kedro_pipeline.steps.result import (
+    StepProgress,
+    StepResult,
+    UnitRuns,
+    capturing,
+    failure_message,
+    mark,
+    shared_runs,
+)
+from macroforecast.trade.methodology import methodology_params
+from macroforecast.trade.processing import BACI_FINGERPRINT_EXCLUDED, BaciConfig
+from macroforecast.trade.processing import DEFAULT_CONFIG  # noqa: F401  (exemples des docstrings)
+from macroforecast.tracking import RunTracker, rekey_metrics
 
 # Initialisation du logger
 logger = logging.getLogger(__name__)
@@ -1069,3 +1107,1141 @@ class DuckLakeYearWriter:
         logger.info("Année %s écrite dans '%s' : %d lignes", year, self.schema, rows)
         if self.on_year_written is not None:
             self.on_year_written(int(year), rows)
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Lecture ponctuelle de Comtrade, périmètre provisoire et couverture
+# ──────────────────────────────────────────────────────────────────────
+
+# Fonction de lecture de la table de faits COMTRADE (schéma source du catalogue partagé)
+def _read_comtrade_fact_table(
+    conn: duckdb.DuckDBPyConnection,
+    source_schema: str,
+    columns: Sequence[str],
+    period_col: str,
+    years: Sequence[int],
+    period_start: Optional[int] = None,
+    period_end: Optional[int] = None,
+) -> pd.DataFrame:
+    """Read selected columns of the COMTRADE fact table for some years, read-only.
+
+    No longer used by :func:`main` (the passes read one year at a time, see
+    ``kedro_pipeline.steps.baci.read_comtrade_year``); kept for ad-hoc reads of a
+    few years (tests, notebooks).
+
+    Source and result live in two schemas of the same DuckLake catalog (cf.
+    module docstring), so a plain schema-qualified ``SELECT`` on the shared
+    connection is enough — no separate ``ATTACH`` is required. The year filter
+    is pushed down to SQL with bound parameters (identifiers — schema and
+    column names from the configuration — are quoted, never values).
+
+    Args:
+        conn: Open DuckLake connection (result-schema-bound connector).
+        source_schema: Schema holding the COMTRADE ``fact_table``.
+        columns: Columns to project.
+        period_col: Period column (year, or ``YYYYMM``, as text or integer).
+        years: Years to read (e.g. the years passing the completeness gate).
+        period_start: Lower bound (included), ``None`` for none.
+        period_end: Upper bound (included), ``None`` for none.
+
+    Returns:
+        A pandas DataFrame of the projected, year-filtered fact table.
+
+    Examples:
+        >>> df = _read_comtrade_fact_table(
+        ...     conn, "C_A_HS", ["period", "primaryValue"], "period", [2022, 2023],
+        ...     period_start=2017,
+        ... )  # doctest: +SKIP
+    """
+    # Construction de la clause de projection
+    col_list = ", ".join(f'"{c}"' for c in columns)
+    # Expression de l'année (les 4 premiers caractères de la période)
+    year_expr = f'CAST(substr(CAST("{period_col}" AS VARCHAR), 1, 4) AS INTEGER)'
+    return conn.execute(
+        f'SELECT {col_list} FROM "{source_schema}".{_FACT_TABLE} '
+        f"WHERE list_contains(?::INTEGER[], {year_expr}) "
+        f"AND (?::INTEGER IS NULL OR {year_expr} >= ?::INTEGER) "
+        f"AND (?::INTEGER IS NULL OR {year_expr} <= ?::INTEGER)",
+        [
+            [int(y) for y in years],
+            period_start, period_start,
+            period_end, period_end,
+        ],
+    ).df()
+
+# Fonction de détection d'un périmètre produit restreint
+def is_provisional_scope(
+    available_products: Iterable[str],
+    planned_products: Iterable[str],
+    full_product_regex: str,
+    exclude: Optional[Sequence[str]] = None,
+) -> bool:
+    """Tell whether the planned products are a strict subset of the full BACI scope.
+
+    A BACI computed on a product subset is not the full BACI (reporter quality
+    is estimated on every product): it is labelled provisional.
+
+    Args:
+        available_products: Product codelist of the source.
+        planned_products: Products actually planned for download.
+        full_product_regex: Pattern of the full product scope (HS6).
+        exclude: Codes excluded from the full scope (same deny-list as the
+            download filters).
+
+    Returns:
+        ``True`` when some code of the full scope is not planned.
+
+    Examples:
+        >>> is_provisional_scope(["010121", "854140"], ["854140"], r"^\\d{6}$")
+        True
+        >>> is_provisional_scope(["010121", "854140", "01"], ["010121", "854140"], r"^\\d{6}$")
+        False
+    """
+    full_scope = set(
+        filter_codes(available_products, include_regex=full_product_regex, exclude=exclude)
+    )
+    return not full_scope.issubset(set(map(str, planned_products)))
+
+# Fonction de calcul de la part minimale sur une plage d'années
+def _share_min(shares: Mapping[int, float], start: int, end: Optional[int]) -> float:
+    """Minimum download share over the planned years of ``[start, end]`` (0 if none)."""
+    values = [s for y, s in shares.items() if y >= start and (end is None or y <= end)]
+    return float(min(values)) if values else 0.0
+
+# Fonction de construction des métriques de couverture d'un millésime
+def coverage_metrics(
+    years_eligible: Sequence[int],
+    shares: Mapping[int, float],
+    start: int,
+    end: Optional[int],
+) -> Dict[str, float]:
+    """Coverage metrics of one vintage: eligible years and minimum download share.
+
+    Args:
+        years_eligible: Years passing the completeness gate.
+        shares: Download share of the planned batches, by year.
+        start: First year of the vintage.
+        end: Optional last year of the perimeter.
+
+    Returns:
+        ``coverage/years_eligible`` and ``coverage/share_min``.
+
+    Examples:
+        >>> coverage_metrics([2019, 2020, 2021], {2019: 1.0, 2020: 0.9, 2021: 1.0}, 2020, None)
+        {'coverage/years_eligible': 2.0, 'coverage/share_min': 0.9}
+    """
+    return {
+        "coverage/years_eligible": float(sum(y >= start for y in years_eligible)),
+        "coverage/share_min": _share_min(shares, start, end),
+    }
+
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Registre de fraîcheur : un fragment par millésime, cadence de réestimation
+# ──────────────────────────────────────────────────────────────────────
+
+# Clé racine du registre JSON (première version) des dates de dernier traitement BACI,
+# lu par l'étape réseau pour ne recalculer que les millésimes réécrits depuis son
+# dernier passage
+_PROCESSING_ROOT = "BACI"
+
+# Nom de l'étape (forçage FORCE_STEPS, champ « step » des fragments) et nom de
+# l'empreinte unique du millésime (toutes les étapes BACI sont couplées)
+STEP = "baci"
+
+# Fonction de construction de l'unité de fraîcheur d'un millésime
+def baci_unit(vintage: str) -> Unit:
+    """Freshness unit of a BACI vintage (the whole vintage, all its years).
+
+    Args:
+        vintage: HS vintage label (``"HS2017"``).
+
+    Returns:
+        ``Unit(vintage=...)``.
+
+    Examples:
+        >>> baci_unit("HS2017").key
+        'HS2017'
+    """
+    return Unit.of(vintage=vintage)
+
+# Fonction de calcul de l'empreinte méthodologique du redressement
+def baci_requested(config: BaciConfig) -> Dict[str, str]:
+    """Current methodological fingerprint of the BACI reconstruction.
+
+    A single fingerprint per vintage: the BACI steps are coupled (the gravity
+    fit uses the converted tonnes, the reconciliation the reporting-quality
+    sigmas…), so a vintage is always re-estimated as a whole. A fix in the
+    implementation of any step is signalled by invalidating the recorded
+    fingerprints (``scripts/invalidate_freshness.py --step baci``).
+
+    Args:
+        config: Methodological configuration of the reconstruction.
+
+    Returns:
+        ``{"baci": fingerprint}``.
+
+    Examples:
+        >>> list(baci_requested(DEFAULT_CONFIG))
+        ['baci']
+    """
+    params = methodology_params(config, BACI_FINGERPRINT_EXCLUDED)
+    return {STEP: fingerprint(STEP, params)}
+
+# Fonction de lecture du registre v1 des traitements BACI en entrées héritées
+def _parse_legacy_baci(data: Mapping[str, Any]) -> Iterator[RegistryEntry]:
+    """Turn the version-1 processing registry (``{"BACI": {schema: {...}}}``) into legacy entries.
+
+    Args:
+        data: Version-1 document.
+
+    Yields:
+        One legacy entry per vintage recorded.
+    """
+    for schema, item in (data.get(_PROCESSING_ROOT) or {}).items():
+        if not isinstance(item, Mapping) or not item.get("vintage"):
+            continue
+        yield legacy_entry(
+            baci_unit(item["vintage"]),
+            item.get("last_processed"),
+            result_schema=item.get("result_schema", schema),
+            n_rows=item.get("n_rows"),
+        )
+
+# Fonction de construction du registre de fraîcheur BACI
+def baci_registry(
+    baci_config: Mapping[str, Any],
+    *,
+    loader: Optional[JsonLoader] = None,
+    saver: Optional[JsonSaver] = None,
+) -> FreshnessRegistry:
+    """Build the BACI freshness registry (one fragment per vintage).
+
+    Also read by the network step: the ``last_computed`` of a vintage is the
+    upstream watermark of its network metrics.
+
+    Args:
+        baci_config: The ``baci`` parameter block (``BUCKET``, ``STATE``,
+            ``PATHS.LAST_PROCESSING_PATH`` read as the version-1 fallback).
+        loader: JSON loader (a fresh one by default).
+        saver: JSON saver (a fresh one by default).
+
+    Returns:
+        The registry.
+
+    Raises:
+        KeyError: If the configuration has no ``STATE.PATH_TEMPLATE``.
+    """
+    bucket = baci_config.get("BUCKET")
+    legacy_path = (baci_config.get("PATHS") or {}).get("LAST_PROCESSING_PATH")
+    return FreshnessRegistry(
+        baci_config["STATE"]["PATH_TEMPLATE"],
+        bucket,
+        STEP,
+        shard_of=lambda unit: unit.get("vintage"),
+        legacy=LegacySource(legacy_path, bucket, _parse_legacy_baci) if legacy_path else None,
+        loader=loader,
+        saver=saver,
+    )
+
+# Fonction de calcul des périmètres temporels des millésimes
+def vintage_scopes(
+    years_eligible: Sequence[int],
+    start_years: Mapping[str, int],
+) -> Dict[str, List[int]]:
+    """Years of each vintage passing the completeness gate.
+
+    Args:
+        years_eligible: Complete years (:func:`eligible_years`).
+        start_years: First year of each vintage
+            (:func:`resolve_target_start_years`).
+
+    Returns:
+        Mapping ``vintage -> sorted years``, vintages without any eligible
+        year left out.
+
+    Examples:
+        >>> vintage_scopes([2016, 2017, 2022], {"HS2022": 2022, "HS2017": 2017})
+        {'HS2022': [2022], 'HS2017': [2017, 2022]}
+    """
+    scopes = {
+        label: sorted(int(y) for y in years_eligible if int(y) >= int(start))
+        for label, start in start_years.items()
+    }
+    return {label: years for label, years in scopes.items() if years}
+
+# Fonction de calcul du watermark amont d'un millésime
+def vintage_watermark(
+    batches: Mapping[int, Mapping[ProductsKey, datetime]],
+    years: Iterable[int],
+) -> Optional[datetime]:
+    """Most recent download of the Comtrade batches of the years of a vintage.
+
+    Args:
+        batches: Downloaded batches by year
+            (:meth:`DownloadRegistryView.batches_by_year`).
+        years: Years of the vintage scope.
+
+    Returns:
+        The latest ``last_download``, or ``None`` when no batch is known.
+
+    Examples:
+        >>> from datetime import timezone
+        >>> t1, t2 = datetime(2026, 1, 1, tzinfo=timezone.utc), datetime(2026, 2, 1, tzinfo=timezone.utc)
+        >>> vintage_watermark({2022: {("a",): t1}, 2023: {("a",): t2}}, [2022]) == t1
+        True
+    """
+    dates = [when for year in years for when in (batches.get(int(year)) or {}).values()]
+    return max(dates) if dates else None
+
+# Fonction de calcul de l'identifiant d'une passe d'estimation
+def compute_fit_id(
+    vintage: str,
+    scope: Sequence[int],
+    watermark: Optional[datetime],
+    requested: Mapping[str, str],
+) -> str:
+    """Identifier of a BACI estimation pass.
+
+    Two passes on the same vintage, scope, upstream watermark and methodology
+    share their identifier, which makes the rewrite of an interrupted pass
+    idempotent.
+
+    Args:
+        vintage: Vintage label.
+        scope: Years of the pass.
+        watermark: Upstream watermark of the pass.
+        requested: Methodological fingerprint (:func:`baci_requested`).
+
+    Returns:
+        A 16-hex identifier.
+
+    Examples:
+        >>> compute_fit_id("HS2017", [2017], None, {"baci": "x"}) == compute_fit_id("HS2017", [2017], None, {"baci": "x"})
+        True
+    """
+    return fingerprint(
+        "fit",
+        {
+            "vintage": vintage,
+            "scope": sorted(int(y) for y in scope),
+            "watermark": format_instant(watermark),
+            "fingerprints": dict(requested),
+        },
+    )
+
+# Fonction de test de complétude de l'écriture d'une passe
+def pass_is_complete(entry: RegistryEntry) -> bool:
+    """Whether every year of the recorded pass was written.
+
+    A version-1 entry (no ``years_scope``) is deemed complete: version 1 only
+    recorded fully written vintages.
+
+    Args:
+        entry: Registry entry of a vintage.
+
+    Returns:
+        ``True`` when ``years_written`` covers ``years_scope``.
+
+    Examples:
+        >>> unit = baci_unit("HS2017")
+        >>> pass_is_complete(RegistryEntry(unit, extra={"years_scope": [2017], "years_written": []}))
+        False
+    """
+    scope = entry.extra.get("years_scope")
+    if scope is None:
+        return True
+    return sorted(entry.extra.get("years_written") or []) == sorted(scope)
+
+# Fabrique du prédicat de fraîcheur des millésimes BACI
+def baci_is_new_data(
+    scopes: Mapping[Unit, Sequence[int]],
+    refresh: Optional[Mapping[str, Any]],
+    now: datetime,
+) -> NewDataPredicate:
+    """Build the ``new_data`` rule of the BACI vintages (re-estimation cadence).
+
+    A pass on a computed vintage is due when:
+
+    - the previous pass was interrupted (``years_written`` differs from
+      ``years_scope``): it is resumed from the start of the vintage;
+    - a new complete year enters its scope, when ``ON_NEW_COMPLETE_YEAR`` is
+      true (immediate pass);
+    - its scope changed otherwise, or the Comtrade upstream was revised (more
+      recent watermark), **and** the last computation is at least
+      ``MIN_INTERVAL_DAYS`` old: revisions trigger at most one pass per
+      interval, so that seven vintages are not re-estimated every day during
+      the catch-up.
+
+    Never-computed, forced and fingerprint-changed vintages are handled by
+    :func:`kedro_pipeline.io.freshness.units_to_compute` itself.
+
+    Args:
+        scopes: Current scope of each vintage unit.
+        refresh: ``REFRESH`` block of the ``baci`` parameters
+            (``MIN_INTERVAL_DAYS``, default 7; ``ON_NEW_COMPLETE_YEAR``,
+            default true).
+        now: Decision instant.
+
+    Returns:
+        The predicate ``(unit, entry, watermark) -> bool``.
+    """
+    refresh = refresh or {}
+    min_interval = timedelta(days=float(refresh.get("MIN_INTERVAL_DAYS", 7)))
+    on_new_year = bool(refresh.get("ON_NEW_COMPLETE_YEAR", True))
+
+    def rule(unit: Unit, entry: RegistryEntry, watermark: Optional[datetime]) -> bool:
+        # Reprise d'une passe interrompue (table mixte entre deux ajustements)
+        if not pass_is_complete(entry):
+            return True
+        scope = {int(y) for y in scopes.get(unit, ())}
+        recorded = entry.extra.get("years_scope")
+        recorded_scope = {int(y) for y in recorded} if recorded is not None else None
+        # Nouvelle année complète : passe immédiate si la configuration le demande
+        if recorded_scope is not None and on_new_year and scope - recorded_scope:
+            return True
+        # Autres changements soumis à l'intervalle minimal entre deux passes
+        elapsed = entry.last_computed is not None and now - entry.last_computed >= min_interval
+        if not elapsed:
+            return False
+        if recorded_scope is not None and scope != recorded_scope:
+            return True
+        return upstream_is_newer(unit, entry, watermark)
+
+    return rule
+
+# Fonction de décision des millésimes à redresser
+def plan_baci_vintages(
+    registry: FreshnessRegistry,
+    scopes: Mapping[str, Sequence[int]],
+    watermarks: Mapping[str, Optional[datetime]],
+    requested: Mapping[str, str],
+    force: ForceSpec,
+    refresh: Optional[Mapping[str, Any]],
+    now: datetime,
+    *,
+    adopt_legacy_fingerprints: bool = False,
+) -> Dict[Unit, UnitPlan]:
+    """Decide which BACI vintages to re-estimate.
+
+    Args:
+        registry: BACI freshness registry.
+        scopes: Eligible years of each vintage (:func:`vintage_scopes`).
+        watermarks: Upstream watermark of each vintage
+            (:func:`vintage_watermark`).
+        requested: Current methodological fingerprint (:func:`baci_requested`).
+        force: One-off forcing (step ``baci``; the ``VINTAGES`` filter
+            applies, ``PERIODS`` does not since a vintage is always
+            re-estimated as a whole).
+        refresh: ``REFRESH`` block of the ``baci`` parameters.
+        now: Decision instant.
+        adopt_legacy_fingerprints: Deployment migration flag.
+
+    Returns:
+        Mapping ``unit -> plan`` for the vintages to re-estimate.
+    """
+    units = {baci_unit(label): years for label, years in scopes.items()}
+    upstream = {baci_unit(label): watermarks.get(label) for label in scopes}
+    return units_to_compute(
+        units,
+        registry,
+        upstream,
+        requested,
+        force,
+        step=STEP,
+        is_new_data=baci_is_new_data(units, refresh, now),
+        adopt_legacy_fingerprints=adopt_legacy_fingerprints,
+    )
+
+# Fonction de construction de l'entrée d'une passe démarrée (point de reprise)
+def started_entry(
+    previous: Optional[RegistryEntry],
+    unit: Unit,
+    plan: UnitPlan,
+    fit_id: str,
+    scope: Sequence[int],
+) -> RegistryEntry:
+    """Entry recorded before writing a vintage: the resume point of the pass.
+
+    The previous ``last_computed`` is kept, so the network step does not
+    recompute on a vintage whose rewrite has not completed, while
+    ``years_written=[]`` makes an interrupted pass detectable.
+
+    Args:
+        previous: Current entry of the vintage, if any.
+        unit: Vintage unit.
+        plan: Plan of the pass.
+        fit_id: Identifier of the pass (:func:`compute_fit_id`).
+        scope: Years of the pass.
+
+    Returns:
+        The entry to upsert before writing.
+    """
+    return RegistryEntry(
+        unit=unit,
+        last_computed=previous.last_computed if previous else None,
+        upstream_watermark=previous.upstream_watermark if previous else None,
+        fingerprints=dict(previous.fingerprints) if previous else {},
+        reason=plan.reason,
+        extra={
+            **(previous.extra if previous else {}),
+            "fit_id": fit_id,
+            "years_scope": sorted(int(y) for y in scope),
+            "years_written": [],
+        },
+    )
+
+# Fonction de construction de l'entrée d'une passe terminée
+def completed_entry(
+    unit: Unit,
+    plan: UnitPlan,
+    fit_id: str,
+    scope: Sequence[int],
+    processed_at: datetime,
+    watermark: Optional[datetime],
+    requested: Mapping[str, str],
+    **counters: Any,
+) -> RegistryEntry:
+    """Entry recorded once every year of the vintage was written.
+
+    Args:
+        unit: Vintage unit.
+        plan: Plan of the pass (its reason cascades downstream).
+        fit_id: Identifier of the pass.
+        scope: Years of the pass (all written).
+        processed_at: Instant captured before the pass started.
+        watermark: Upstream watermark taken into account.
+        requested: Current methodological fingerprint.
+        **counters: Extra fields (``n_rows``, ``result_schema``,
+            ``is_provisional``…).
+
+    Returns:
+        The entry to upsert after the write.
+    """
+    years = sorted(int(y) for y in scope)
+    return RegistryEntry(
+        unit=unit,
+        last_computed=processed_at,
+        upstream_watermark=watermark,
+        fingerprints=dict(requested),
+        reason=plan.reason,
+        extra={"fit_id": fit_id, "years_scope": years, "years_written": years, **counters},
+    )
+
+# Fonction de restriction des cibles configurées aux millésimes demandés
+def select_targets(
+    targets: Mapping[str, Mapping[str, Any]],
+    requested: Optional[Sequence[str]],
+) -> Dict[str, Mapping[str, Any]]:
+    """Restrict the configured targets to the requested vintages.
+
+    Args:
+        targets: ``CLASSIFICATIONS.TARGETS`` of the ``baci`` parameters; a
+            null entry (vintage disabled by an environment) is never selected.
+        requested: Requested labels (``None``: every enabled target).
+
+    Returns:
+        The selected targets, in configuration order.
+
+    Raises:
+        ValueError: If a requested label is not a configured target.
+
+    Examples:
+        >>> select_targets({"HS2022": {}, "HS2017": {}}, ["HS2017"])
+        {'HS2017': {}}
+        >>> select_targets({"HS2022": None, "HS2017": {}}, None)
+        {'HS2017': {}}
+    """
+    # Cibles désactivées par un environnement (entrée nulle) : jamais traitées
+    targets = active_targets(targets)
+    if requested is None:
+        return dict(targets)
+    unknown = sorted(set(requested) - set(targets))
+    if unknown:
+        raise ValueError(f"Unknown BACI targets {unknown}; configured: {sorted(targets)}")
+    return {label: cfg for label, cfg in targets.items() if label in set(requested)}
+
+# Fonction d'ajout d'une année écrite à l'entrée d'une passe démarrée
+def with_year_written(entry: RegistryEntry, year: int) -> RegistryEntry:
+    """Return the entry of a started pass with one more year written.
+
+    Args:
+        entry: Entry of the vintage (started pass).
+        year: Year just written.
+
+    Returns:
+        A copy whose ``years_written`` includes ``year`` (sorted, distinct).
+
+    Examples:
+        >>> entry = RegistryEntry(baci_unit("HS2017"), extra={"years_written": [2018]})
+        >>> with_year_written(entry, 2017).extra["years_written"]
+        [2017, 2018]
+    """
+    written = sorted({int(y) for y in entry.extra.get("years_written") or []} | {int(year)})
+    return replace(entry, extra={**entry.extra, "years_written": written})
+
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Fonctions d'étape : préparation du périmètre et redressement par millésime
+# ──────────────────────────────────────────────────────────────────────
+
+# Périmètre d'une exécution BACI, décidé avant tout redressement
+@dataclass
+class BaciScope:
+    """Everything decided before re-estimating the BACI vintages of one run.
+
+    Attributes:
+        processed_at: Reference instant, captured before the run (recorded as
+            ``last_computed``: an upstream update landing during the run is
+            never masked).
+        config: Methodological configuration (``APPLY_NES`` applied).
+        years_eligible: Years passing the completeness gate.
+        shares: Download share of the planned batches, by year.
+        start_years: First year of every selected target vintage.
+        scopes: Eligible years of every vintage.
+        watermarks: Upstream watermark of every vintage.
+        requested: Current methodological fingerprint.
+        force: One-off forcing.
+        plans: Plan of every vintage to re-estimate, by label.
+        targets: Vintages to re-estimate by this run, label -> target block,
+            in configuration order (empty: nothing to do).
+        is_provisional: Whether the planned product scope is a strict subset
+            of the full HS6 scope (restricted demonstration profile).
+        period_end: Optional last year of the perimeter.
+        source_schema: Schema of the Comtrade fact table.
+        concordances: Correspondence tables ``(source, target) -> table``.
+        classifications: Nomenclatures present in the source, by year.
+        dist: CEPII distances.
+        geo: CEPII geography.
+        reference: Result of the publication of the HS reference tables.
+    """
+
+    processed_at: datetime
+    config: Any
+    years_eligible: List[int]
+    shares: Dict[int, float]
+    start_years: Dict[str, int]
+    scopes: Dict[str, List[int]] = field(default_factory=dict)
+    watermarks: Dict[str, Optional[datetime]] = field(default_factory=dict)
+    requested: Dict[str, str] = field(default_factory=dict)
+    force: Any = None
+    plans: Dict[str, Any] = field(default_factory=dict)
+    targets: Dict[str, Mapping[str, Any]] = field(default_factory=dict)
+    is_provisional: bool = False
+    period_end: Optional[int] = None
+    source_schema: str = ""
+    concordances: Dict[Tuple[str, str], pd.DataFrame] = field(default_factory=dict)
+    classifications: Dict[int, List[str]] = field(default_factory=dict)
+    dist: Optional[pd.DataFrame] = None
+    geo: Optional[pd.DataFrame] = None
+    reference: Any = None
+
+
+# Fonction d'étape : porte de complétude, plans des millésimes et entrées communes
+def prepare_baci(
+    comtrade: Any,
+    state: FreshnessRegistry,
+    registry_view: Any,
+    planned: Sequence[Any],
+    available_products: Iterable[str],
+    *,
+    params: Mapping[str, Any],
+    comtrade_params: Mapping[str, Any],
+    runtime: Mapping[str, Any],
+    targets: Optional[Sequence[str]] = None,
+    force: Optional[ForceSpec] = None,
+    adopt_legacy_fingerprints: Optional[bool] = None,
+    now: Optional[datetime] = None,
+    loader: Any = None,
+    saver: Any = None,
+    concordance_client_factory: Optional[Callable[[], Any]] = None,
+    concordances_loader: Optional[Callable[..., Dict[Tuple[str, str], pd.DataFrame]]] = None,
+    reference_publisher: Optional[Callable[..., Any]] = None,
+) -> BaciScope:
+    """Decide which BACI vintages to re-estimate and prepare their shared inputs.
+
+    The planned Comtrade queries (built by the very function of the download
+    step) are confronted with the download registry: only the years whose
+    share of batches downloaded at least once reaches ``COMPLETENESS.MIN_SHARE``
+    are re-estimated. The freshness registry then decides which vintages are
+    due (never computed, interrupted pass, new complete year, upstream revision
+    after ``REFRESH.MIN_INTERVAL_DAYS``, fingerprint change, forcing). When at
+    least one vintage is due, the CEPII files are read and, on a connection of
+    ``comtrade``, the nomenclatures present each year, the correspondence
+    tables they need (shared Parquet cache, UNSD downloads on demand) and the HS
+    reference tables (never blocking).
+
+    Args:
+        comtrade: :class:`~kedro_pipeline.io.ducklake.DuckLakeTable` of the
+            Comtrade fact table (its catalog also holds the BACI schemas).
+        state: BACI freshness registry (one fragment per vintage).
+        registry_view: View of the Comtrade download registry
+            (``batches_by_year()``).
+        planned: Planned Comtrade queries (uncapped), as built by the download step.
+        available_products: Product codelist of the source (provisional scope).
+        params: The ``baci`` parameters.
+        comtrade_params: The ``comtrade`` parameters (dataflow, product filters).
+        runtime: The ``runtime`` parameters (``ANALYSIS_START_YEAR``,
+            ``NOMENCLATURES``, forcing).
+        targets: Vintages this run is restricted to; every enabled target when
+            ``None``.
+        force: One-off forcing; read from ``runtime`` alone when ``None``.
+        adopt_legacy_fingerprints: Deployment migration flag; read from
+            ``STATE`` alone when ``None``.
+        now: Reference instant; the current UTC instant when ``None``.
+        loader: Table loader of the CEPII files and of the correspondence cache.
+        saver: Table saver of the correspondence cache.
+        concordance_client_factory: Builds the UNSD client (missing tables only).
+        concordances_loader: Loads the correspondence tables
+            (:func:`prepare_concordances` by default).
+        reference_publisher: Publishes the HS reference tables
+            (``publish_hs_reference`` by default).
+
+    Returns:
+        The scope; ``targets`` is empty when no year is complete or no vintage
+        is due (in the latter case the migrated legacy entries are saved).
+
+    Raises:
+        ValueError: If a requested target is not configured.
+    """
+    from macroforecast.storage import Loader as TableLoader, Saver as TableSaver
+    from kedro_pipeline.steps._config import (
+        baci_config_from_params,
+        resolve_target_start_years,
+        schema_name,
+    )
+    from kedro_pipeline.steps.reference import publish_hs_reference
+
+    processed_at = now or datetime.now(timezone.utc)
+    config = replace(
+        baci_config_from_params(params.get("PARAMETERS")),
+        # Activation de la réallocation des zones « Areas NES » (clé racine, distincte
+        # de PARAMETERS.nes_partner_codes qui ne fait que déclarer les codes éligibles)
+        apply_nes=bool(params.get("APPLY_NES", True)),
+    )
+    classifications_config = params["CLASSIFICATIONS"]
+    targets_config = select_targets(classifications_config["TARGETS"], targets)
+    start_years = resolve_target_start_years(targets_config, runtime)
+    period_end = config.period_end
+    dataflow = comtrade_params["DATAFLOW"]
+    completeness = params.get("COMPLETENESS") or {}
+
+    # Porte de complétude : liste planifiée confrontée au registre de téléchargement
+    batches = registry_view.batches_by_year()
+    shares = completeness_by_year(planned, batches)
+    years_eligible = list(
+        eligible_years(
+            batches,
+            planned,
+            float(completeness.get("MIN_SHARE", 1.0)),
+            int(runtime["ANALYSIS_START_YEAR"]["comtrade"]),
+            period_end=period_end,
+        )
+    )
+    # Étiquette provisoire : périmètre produit planifié restreint (produits non
+    # restreints → None dans les requêtes : périmètre complet)
+    products_filters = comtrade_params["split_filters"][dataflow]["products"]
+    is_provisional = not any(q.products is None for q in planned) and is_provisional_scope(
+        available_products=available_products,
+        planned_products={str(p) for q in planned for p in q.products},
+        full_product_regex=completeness.get("FULL_PRODUCT_REGEX", r"^\d{6}$"),
+        exclude=products_filters.get("exclude"),
+    )
+    # Logging
+    logger.info(
+        "Porte de complétude : %d année(s) éligible(s) sur %d planifiée(s) %s "
+        "(seuil %s) ; périmètre provisoire : %s",
+        len(years_eligible), len(shares), years_eligible,
+        completeness.get("MIN_SHARE", 1.0), is_provisional,
+    )
+    scope = BaciScope(
+        processed_at=processed_at,
+        config=config,
+        years_eligible=years_eligible,
+        shares=shares,
+        start_years=start_years,
+        is_provisional=is_provisional,
+        period_end=period_end,
+        source_schema=schema_name(dataflow),
+    )
+
+    # Aucune année complète (rattrapage en cours) : rien à redresser
+    if not years_eligible:
+        logger.info("Aucune année complète : aucun millésime n'est redressé.")
+        return scope
+
+    # Fraîcheur : un fragment par millésime, l'unité étant le millésime entier (ses
+    # paramètres sont estimés sur toutes ses années) ; périmètre et watermark amont
+    scope.requested = baci_requested(config)
+    scope.force = force if force is not None else ForceSpec.from_runtime(runtime, environ={})
+    scope.scopes = vintage_scopes(years_eligible, start_years)
+    scope.watermarks = {label: vintage_watermark(batches, years) for label, years in scope.scopes.items()}
+    plans = plan_baci_vintages(
+        state, scope.scopes, scope.watermarks, scope.requested, scope.force,
+        params.get("REFRESH"), processed_at,
+        adopt_legacy_fingerprints=(
+            adopt_legacy_fingerprints
+            if adopt_legacy_fingerprints is not None
+            else adopt_legacy_flag(params.get("STATE"), environ={})
+        ),
+    )
+    scope.plans = {unit.get("vintage"): plan for unit, plan in plans.items()}
+    # Logging
+    logger.info(
+        "Millésimes à redresser : %s",
+        {label: plan.reason for label, plan in scope.plans.items()} or "aucun",
+    )
+    # Aucun millésime périmé : entrées v1 adoptées écrites malgré tout
+    if not plans:
+        state.save()
+        logger.info("Aucun millésime à redresser.")
+        return scope
+    # Millésimes redressés par cette exécution, dans l'ordre de la configuration
+    scope.targets = {
+        label: target for label, target in targets_config.items() if label in scope.plans
+    }
+
+    # Lecture des fichiers CEPII
+    loader = loader if loader is not None else TableLoader()
+    saver = saver if saver is not None else TableSaver()
+    bucket = params["BUCKET"]
+    scope.dist = loader.load(params["PATHS"]["DIST_CEPII"], bucket=bucket)
+    scope.geo = loader.load(params["PATHS"]["GEO_CEPII"], bucket=bucket)
+
+    # Nomenclatures présentes par année (SELECT DISTINCT, jamais la table entière),
+    # tables de correspondance nécessaires et référentiels de nomenclature
+    connector = comtrade.connector()
+    with comtrade.connect() as conn:
+        scope.classifications = classifications_by_year(
+            conn,
+            scope.source_schema,
+            years=sorted({y for label in scope.targets for y in scope.scopes.get(label, [])}),
+            classification_col=config.schema.classification_col,
+            period_col=config.schema.period_col,
+        )
+        pairs = concordance_pairs(
+            scope.classifications, {label: scope.scopes.get(label, []) for label in scope.targets}
+        )
+        if concordance_client_factory is None:
+            from statflows import UNSDClient as concordance_client_factory
+        scope.concordances = (concordances_loader or prepare_concordances)(
+            pairs,
+            client_factory=concordance_client_factory,
+            loader=loader,
+            saver=saver,
+            concordance_path=classifications_config["CONCORDANCE_PATH"],
+            bucket=bucket,
+            force_refresh=classifications_config.get("FORCE_REFRESH", False),
+        )
+        # Référentiels publiés dans le catalogue Comtrade ; non bloquant
+        scope.reference = (reference_publisher or publish_hs_reference)(
+            scope.concordances,
+            connector,
+            params={
+                "SCHEMA_PREFIX": comtrade_params["DOWNLOADS"]["REFERENCE"]["SCHEMA_PREFIX"],
+                "NOMENCLATURES": runtime["NOMENCLATURES"]["HS"],
+            },
+            conn=conn,
+        )
+        logger.info(f"Référentiels SH : {scope.reference['rows']} ; échecs : {scope.reference['failures']}")
+    return scope
+
+
+# Fonction d'étape : redressement d'un millésime par passes
+def run_baci_vintage(
+    vintage: str,
+    scope: BaciScope,
+    comtrade: Any,
+    state: FreshnessRegistry,
+    *,
+    params: Mapping[str, Any],
+    tracker: Optional[RunTracker] = None,
+    progress: Optional[StepProgress] = None,
+    run_id: Optional[str] = None,
+    passes_runner: Optional[Callable[..., Any]] = None,
+) -> StepResult:
+    """Re-estimate one BACI vintage pass by pass and write it year by year.
+
+    A "started" registry entry (pass identifier, years of the scope, no year
+    written) precedes any write and is the resume point of an interrupted pass;
+    each year written is added to it, and the completed entry is written only
+    once every year was written. The Comtrade fact table is never read whole:
+    the passes read one year at a time, harmonised to the vintage, and spill
+    their intermediate mirror flows to Parquet work files (deleted after a
+    successful pass unless ``PASSES.KEEP_WORK_FILES``).
+
+    The vintage is the whole unit of its run: a failure raises (after the
+    started entry was written), so that the run ends failed with its reduced
+    description; :func:`run_baci_vintages` isolates it from the other vintages.
+
+    Args:
+        vintage: Target vintage label (``"HS2017"``), planned in ``scope``.
+        scope: Scope prepared by :func:`prepare_baci`.
+        comtrade: :class:`~kedro_pipeline.io.ducklake.DuckLakeTable` of the
+            Comtrade fact table (the result schema lives in the same catalog).
+        state: BACI freshness registry.
+        params: The ``baci`` parameters (``PASSES``, ``TRACKING``, ``BUCKET``).
+        tracker: Tracker of the open run of the vintage (never entered here).
+        progress: Holder of the stage reached, named by a failure report.
+        run_id: Run identifier recorded on the DuckLake snapshots (workflow id).
+        passes_runner: Runner of the passes (``run_baci_passes`` by default).
+
+    Returns:
+        The step result of the vintage: metrics, artifacts (``tracker`` tables
+        plus ``output/rows_by_year.csv``), report tables, ``outputs`` ``report``
+        (BACI report) and ``fit_id``.
+
+    Raises:
+        Exception: Any failure of the pass, once the resume point is recorded.
+    """
+    from macroforecast.trade.processing import HsHarmonizer, run_baci_passes
+    from kedro_pipeline.steps._config import schema_name
+
+    tracker = capturing(tracker)
+    config = scope.config
+    schema = config.schema
+    target = scope.targets[vintage]
+    passes = params.get("PASSES") or {}
+    log_artifacts = bool((params.get("TRACKING") or {}).get("LOG_ARTIFACTS", True))
+    years = scope.scopes[vintage]
+
+    # Plan du millésime et identifiant de la passe d'estimation
+    mark(progress, "préparation de la passe")
+    unit, plan = baci_unit(vintage), scope.plans[vintage]
+    fit_id = compute_fit_id(vintage, years, scope.watermarks[vintage], scope.requested)
+    result_schema = schema_name(target["RESULT_SCHEMA"])
+
+    # Point de reprise : entrée « démarrée » écrite avant toute écriture de table, le
+    # dernier calcul réussi restant celui que lit l'étape réseau
+    state.upsert(started_entry(state.get(unit), unit, plan, fit_id, years))
+    state.save()
+    # Fraîcheur : décision du millésime et tag de forçage
+    tracker.log_metrics(plan_metrics({unit: plan}, n_candidates=len(scope.scopes)))
+    tracker.set_tags({"fit_id": fit_id, "freshness_reason": plan.reason})
+    if scope.force.forces_step(STEP, scope.requested):
+        tracker.set_tags({"forced": scope.force.describe()})
+
+    # Couverture du millésime : années éligibles et part minimale de lots téléchargés
+    n_years_eligible = sum(y >= scope.start_years[vintage] for y in scope.years_eligible)
+    tracker.log_metrics(
+        coverage_metrics(scope.years_eligible, scope.shares, scope.start_years[vintage], scope.period_end)
+    )
+
+    # Harmonisation de chaque tranche vers le millésime cible
+    def harmonizer_factory(label: str = vintage) -> Any:
+        return HsHarmonizer(
+            scope.concordances,
+            target_vintage=label,
+            classification_col=schema.classification_col,
+            product_col=schema.product_col,
+            period_col=schema.period_col,
+            value_cols=(schema.value_col, schema.cif_value_col, schema.fob_value_col),
+            weight_cols=(schema.netwgt_col,),
+            qty_col=schema.qty_col,
+            qty_unit_col=schema.qty_unit_col,
+        )
+
+    # Point de reprise mis à jour après chaque année écrite
+    def on_year_written(year: int, rows: int) -> None:
+        state.upsert(with_year_written(state.get(unit), year))
+        state.save()
+
+    with comtrade.connect() as conn:
+        writer = DuckLakeYearWriter(
+            conn,
+            catalog_alias=attached_catalog_alias(comtrade),
+            schema=result_schema,
+            primary_keys=config.primary_keys,
+            columns={"fit_id": fit_id, "is_provisional": bool(scope.is_provisional)},
+            run_id=run_id,
+            commit_message=f"process_baci_hs {vintage}",
+            on_year_written=on_year_written,
+        )
+        sources = sorted({c for y in years for c in scope.classifications.get(y, [])})
+        io = DuckDBPassIO(
+            conn,
+            source_schema=scope.source_schema,
+            years=years,
+            root=work_root(passes.get("WORK_PATH", "trade/work/baci"), vintage, fit_id, params["BUCKET"]),
+            writer=writer,
+            period_col=schema.period_col,
+            product_col=schema.product_col,
+            harmonizer_factory=harmonizer_factory,
+            links=chapter_links(scope.concordances, sources, vintage),
+            max_rows_per_chunk=passes.get("MAX_ROWS_PER_CHUNK"),
+        )
+
+        # Redressement par passes, écriture année par année
+        mark(progress, "redressement BACI")
+        report, rows_by_year = (passes_runner or run_baci_passes)(
+            io,
+            scope.dist,
+            scope.geo,
+            config=config,
+            tracker=tracker,
+            log_artifacts=log_artifacts,
+            memory_probe=peak_memory_mb,
+        )
+        report.created = writer.created
+
+        # Registre du millésime : entrée terminée écrite après succès seulement — une
+        # date avancée à tort ferait sauter le recalcul des vulnérabilités de réseau.
+        # Un fragment par millésime : aucune course entre pods de millésimes différents
+        mark(progress, "écriture du résultat")
+        state.upsert(
+            completed_entry(
+                unit, plan, fit_id, years, scope.processed_at, scope.watermarks[vintage],
+                scope.requested,
+                result_schema=result_schema,
+                n_rows=int(report.flows),
+                is_provisional=bool(scope.is_provisional),
+            )
+        )
+        state.save()
+        # Fichiers de travail supprimés en fin de passe réussie
+        if not bool(passes.get("KEEP_WORK_FILES", False)):
+            io.cleanup()
+
+        # Métriques du redressement et de l'harmonisation (noms séparés par « / »)
+        tracker.log_metrics(rekey_metrics(report.to_metrics()))
+        harmonization = io.harmonization_report()
+        if harmonization is not None:
+            tracker.log_metrics(rekey_metrics(harmonization.to_metrics()))
+        tracker.set_tags({"result_schema": result_schema, "created": str(report.created)})
+        # Répartition des relations de nomenclature : perte d'information à la conversion
+        if log_artifacts and harmonization is not None:
+            tracker.log_dict(
+                harmonization.relationship_distribution,
+                "classification/relationship_distribution.json",
+            )
+
+    # Tables du rapport de run, construites sur ce qui est déjà produit, sans relecture
+    coefficients = tracker.dicts.get("gravity/coefficients.json", {})
+    gravity_table = pd.DataFrame(
+        {
+            "coefficient": coefficients.get("coefficients", {}),
+            "std_error": coefficients.get("std_errors", {}),
+        }
+    ).rename_axis("variable").reset_index()
+    return StepResult(
+        step="baci",
+        n_units_planned=1,
+        n_units_succeeded=1,
+        metrics=dict(tracker.metrics),
+        artifacts={**tracker.tables, "output/rows_by_year.csv": rows_by_year},
+        tags=dict(tracker.tags),
+        units_label=f"1 millésime ({n_years_eligible} années éligibles)",
+        report_tables={
+            "conversion_rates": tracker.tables.get("tonnage/conversion_rates.csv", pd.DataFrame()),
+            "gravity_coefficients": gravity_table,
+            "sigma_by_country": tracker.tables.get("quality/sigma_by_country.csv", pd.DataFrame()),
+            "rows_by_year": rows_by_year,
+        },
+        outputs={"report": report, "fit_id": fit_id, "result_schema": result_schema},
+    )
+
+
+# Fonction d'étape : redressement de tous les millésimes planifiés, un run par millésime
+def run_baci_vintages(
+    scope: BaciScope,
+    comtrade: Any,
+    state: FreshnessRegistry,
+    *,
+    params: Mapping[str, Any],
+    runs: Optional[UnitRuns] = None,
+    run_id: Optional[str] = None,
+    passes_runner: Optional[Callable[..., Any]] = None,
+) -> StepResult:
+    """Re-estimate every planned vintage, each in its own tracked run.
+
+    The failure of one vintage does not prevent the others from running: it
+    crosses its own run (failed, with its reduced description), is logged and
+    recorded, and the step fails once every vintage was attempted.
+
+    Args:
+        scope: Scope prepared by :func:`prepare_baci` (``targets`` planned).
+        comtrade: :class:`~kedro_pipeline.io.ducklake.DuckLakeTable` of the
+            Comtrade fact table.
+        state: BACI freshness registry.
+        params: The ``baci`` parameters.
+        runs: Factory of the run of each vintage (tags ``vintage`` and
+            ``is_provisional``); every vintage in a null run when ``None``.
+        run_id: Run identifier recorded on the DuckLake snapshots.
+        passes_runner: Runner of the passes (``run_baci_passes`` by default).
+
+    Returns:
+        The step result: one unit per planned vintage, ``children`` holding the
+        result of each successful vintage; ``failures`` raised as
+        ``RuntimeError("<n> millésime(s) en échec sur <m> : [...]")`` chained to
+        the first error.
+    """
+    runs = runs if runs is not None else shared_runs()
+    children: Dict[str, StepResult] = {}
+    errors: Dict[str, BaseException] = {}
+    for label in scope.targets:
+        # Millésime sans année complète (rattrapage année-majeur en cours) : rien à
+        # redresser, ce n'est pas un échec
+        if not scope.scopes.get(label):
+            logger.info(
+                "Millésime %s : aucune année éligible >= %d, ignoré", label, scope.start_years[label]
+            )
+            continue
+        try:
+            with runs(label, {"vintage": label, "is_provisional": str(scope.is_provisional)}) as run:
+                child = run_baci_vintage(
+                    label, scope, comtrade, state, params=params, tracker=run.tracker,
+                    progress=run.progress, run_id=run_id, passes_runner=passes_runner,
+                )
+                run.publish(child)
+            children[label] = child
+            # Logging
+            logger.info("Redressement BACI terminé pour %s : %s", label, child.outputs["report"])
+        except Exception as exc:
+            # Journalisation de l'échec, poursuite avec les autres millésimes
+            logger.exception("Échec du redressement BACI pour le millésime %s", label)
+            errors[label] = exc
+    return _aggregate_units(
+        "baci", children, errors, n_planned=len(scope.targets), noun="millésime",
+    )
+
+
+# Fonction d'agrégation des résultats des runs d'unités
+def _aggregate_units(
+    step: str,
+    children: Mapping[str, StepResult],
+    errors: Mapping[str, BaseException],
+    *,
+    n_planned: int,
+    noun: str,
+) -> StepResult:
+    """Aggregate the results of per-unit runs, with the error raised on failure.
+
+    Args:
+        step: Step name.
+        children: Result of every successful unit.
+        errors: Exception of every failed unit.
+        n_planned: Units planned.
+        noun: Unit noun of the error message (``"millésime"``).
+
+    Returns:
+        The aggregated result; its ``failure_exception`` is
+        ``RuntimeError("<n> <noun>(s) en échec sur <m> : [...]")`` chained to
+        the first error.
+    """
+    failure: Optional[BaseException] = None
+    if errors:
+        failure = RuntimeError(
+            f"{len(errors)} {noun}(s) en échec sur {n_planned} : {sorted(errors)}"
+        )
+        failure.__cause__ = next(iter(errors.values()))
+    return StepResult(
+        step=step,
+        n_units_planned=n_planned,
+        n_units_succeeded=len(children),
+        failures={label: failure_message(exc) for label, exc in errors.items()},
+        children=dict(children),
+        reportable=False,
+        failure_exception=failure,
+    )
