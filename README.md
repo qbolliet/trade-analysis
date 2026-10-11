@@ -124,6 +124,25 @@ docker build -f docker/Dockerfile --build-arg GIT_SHA=$(git rev-parse HEAD) -t t
 > settings* → *Change visibility* → *Public*) pour permettre le `docker pull` sans
 > authentification.
 
+## Documentation
+
+Site de documentation (architecture, exploitation, supervision MLflow, tableaux de bord,
+référence de la configuration, méthodologie, visualisation interactive du pipeline avec
+kedro-viz) : <https://qbolliet.github.io/trade-analysis/>.
+
+Il est publié sur GitHub Pages par `.github/workflows/docs.yml` à chaque push sur `main`.
+Construction locale (aucun secret requis) :
+
+```bash
+uv run --extra docs bash tools/build_docs.sh
+# puis, pour le consulter :
+python -m http.server --directory site 8000
+```
+
+Le script génère `docs/configuration.md` (`kedro trade docs-config`), construit kedro-viz
+(`kedro viz build`), puis les pages (`mkdocs build --strict`) et copie le rendu kedro-viz
+dans `site/pipeline/`.
+
 ## Feuille de route
 
 Migration des étapes de `scripts/` vers Kedro (kedro-viz pour la documentation,

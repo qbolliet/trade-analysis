@@ -1,0 +1,81 @@
+# Site de documentation statique (GitHub Pages) : pages mkdocs-material + rendu statique de
+# kedro-viz copié dans `site/pipeline/` par `tools/build_docs.sh`.
+#
+# Construction complète : `uv run --extra docs bash tools/build_docs.sh`
+# (mkdocs seul : `kedro trade docs-config` puis `mkdocs build`).
+site_name: trade-analysis
+site_description: Pipeline de calcul de scores de vulnérabilité du commerce international
+site_url: https://qbolliet.github.io/trade-analysis/
+repo_url: https://github.com/qbolliet/trade-analysis
+repo_name: qbolliet/trade-analysis
+edit_uri: ""
+
+# Les sources Markdown sont dans docs/ ; les snippets lisent aussi la racine du dépôt
+docs_dir: docs
+site_dir: site
+
+# Pas d'URL « en répertoire » : la page `pipeline.md` est rendue en `pipeline.html` et ne
+# masque donc pas le dossier `pipeline/` (rendu kedro-viz) copié à côté. Le site reste en
+# outre consultable sans serveur (ouverture directe des fichiers).
+use_directory_urls: false
+
+theme:
+  name: material
+  language: fr
+  features:
+    - navigation.sections
+    - navigation.top
+    - navigation.footer
+    - toc.follow
+    - search.suggest
+    - search.highlight
+    - content.code.copy
+  palette:
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      toggle:
+        icon: material/weather-night
+        name: Passer au thème sombre
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      toggle:
+        icon: material/weather-sunny
+        name: Passer au thème clair
+
+plugins:
+  - search:
+      lang: fr
+
+markdown_extensions:
+  - admonition
+  - attr_list
+  - tables
+  # Ancres conservant les accents, comme GitHub : le sommaire de l'architecture y renvoie
+  - toc:
+      permalink: true
+      slugify: !!python/object/apply:pymdownx.slugs.slugify
+        kwds:
+          case: lower
+  - pymdownx.details
+  - pymdownx.highlight:
+      anchor_linenums: true
+  - pymdownx.superfences:
+      custom_fences:
+        - name: mermaid
+          class: mermaid
+          format: !!python/name:pymdownx.superfences.fence_code_format
+  # Inclusion de fichiers du dépôt (README, architecture) ou de leurs sections balisées
+  - pymdownx.snippets:
+      base_path: ["."]
+      check_paths: true
+
+nav:
+  - Accueil: index.md
+  - Architecture: architecture.md
+  - Exploitation: exploitation.md
+  - Supervision: supervision.md
+  - Tableaux de bord: dashboards.md
+  - Configuration: configuration.md
+  # Page de présentation du rendu kedro-viz (copié dans site/pipeline/ après `mkdocs build`,
+  # d'où un lien HTML brut que mkdocs ne cherche pas dans docs/)
+  - Pipeline interactif: pipeline.md

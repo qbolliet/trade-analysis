@@ -1,0 +1,66 @@
+name: docs
+
+# Site de documentation (mkdocs-material + rendu kedro-viz) publié sur GitHub Pages.
+# Aucun secret : la construction n'ouvre aucune connexion (jeux de données paresseux).
+# Prérequis unique : Settings → Pages → Source « GitHub Actions » (dépôt public ; un dépôt
+# privé exige une offre payante, sinon télécharger l'artefact `github-pages` du run).
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - "docs/**"
+      - "mkdocs.yml"
+      - "kedro_pipeline/**"
+      - "macroforecast/**"
+      - "config/base/**"
+      # Sources incluses dans les pages (README, architecture, tableaux de bord)
+      - "README.md"
+      - "PIPELINE_ARCHITECTURE.md"
+      - "superset/README.md"
+      - "tools/build_docs.sh"
+      - "pyproject.toml"
+      - "uv.lock"
+      - ".github/workflows/docs.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# Une seule publication à la fois, sans interrompre celle en cours
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: astral-sh/setup-uv@v10
+        with:
+          enable-cache: true
+
+      - run: uv sync --frozen --extra docs
+
+      # kedro viz build → mkdocs build → copie dans site/pipeline/
+      - run: uv run bash tools/build_docs.sh
+
+      - uses: actions/configure-pages@v6
+
+      - uses: actions/upload-pages-artifact@v5
+        with:
+          path: site
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v5

@@ -1,0 +1,1 @@
+--8<-- "PIPELINE_ARCHITECTURE.md"

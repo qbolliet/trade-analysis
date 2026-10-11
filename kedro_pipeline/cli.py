@@ -194,3 +194,76 @@ def render_argo(env: str, image_tag: Optional[str], output_dir: Optional[Path], 
         return
     for path in write_manifests(manifests, folder):
         click.echo(f"Written {path}")
+
+
+# Commande de génération de la page de référence des paramètres
+@trade.command(name="docs-config")
+@click.option(
+    "--source-dir", "source_dir", default=None, type=click.Path(file_okay=False, path_type=Path),
+    help="Folder holding the parameters_*.yml files (config/base at the repository root when omitted).",
+)
+@click.option(
+    "--output", "output", default=None, type=click.Path(dir_okay=False, path_type=Path),
+    help="Markdown file to write (docs/configuration.md at the repository root when omitted).",
+)
+@click.option(
+    "--max-value-length", "max_value_length", default=160, show_default=True, type=click.IntRange(min=10),
+    help="Maximum number of characters displayed for a value (longer values are cut).",
+)
+def docs_config(source_dir: Optional[Path], output: Optional[Path], max_value_length: int) -> None:
+    """Generate the parameter reference page of the documentation site.
+
+    Reads the ``parameters_*.yml`` files of the base configuration and writes
+    a Markdown page with one table per root key: dotted key, value and the YAML
+    comment written above the key. Needs the ``docs`` extra (``ruamel.yaml``,
+    to read the comments).
+
+    Args:
+        source_dir: Folder of the parameter files.
+        output: Markdown file to write.
+        max_value_length: Maximum displayed length of a value.
+
+    Raises:
+        click.ClickException: If the folder holds no parameter file or ``ruamel.yaml`` is missing.
+
+    Examples:
+        $ kedro trade docs-config
+        $ kedro trade docs-config --source-dir config/demo --output /tmp/configuration.md
+    """
+    from kedro_pipeline.config import conf_source_path
+    from kedro_pipeline.docs_config import build_configuration_page
+
+    root = conf_source_path().parent
+    folder = source_dir if source_dir is not None else conf_source_path() / "base"
+    target = output if output is not None else root / "docs" / "configuration.md"
+    try:
+        page = build_configuration_page(
+            folder, max_value_length=max_value_length, source_label=_relative_label(folder, root)
+        )
+    except (FileNotFoundError, ImportError) as error:
+        raise click.ClickException(str(error)) from error
+    target.parent.mkdir(parents=True, exist_ok=True)
+    # Fins de ligne LF : sortie identique sous Windows et sous Linux
+    target.write_text(page, encoding="utf-8", newline="\n")
+    click.echo(f"Written {target}")
+
+
+# Libellé relatif d'un dossier (affichage dans la page générée)
+def _relative_label(folder: Path, root: Path) -> str:
+    """Return ``folder`` relative to ``root`` (POSIX separators), else as given.
+
+    Args:
+        folder: Folder to display.
+        root: Repository root.
+
+    Returns:
+        The displayed folder path.
+
+    Examples:
+        >>> _relative_label(Path("/repo/config/base"), Path("/repo"))
+        'config/base'
+    """
+    try:
+        return folder.resolve().relative_to(root.resolve()).as_posix()
+    except ValueError:
+        return folder.as_posix()

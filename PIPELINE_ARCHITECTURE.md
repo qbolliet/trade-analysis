@@ -4390,6 +4390,7 @@ année et par déclarant des téléchargements exigeraient une lecture du regist
 
 ---
 
+<!-- --8<-- [start:exploitation] -->
 ## 5. Runbooks d'exploitation
 
 ### 5.1 Exécution quotidienne (rien à faire)
@@ -4527,6 +4528,7 @@ BACI**, préférer l'invalidation (§5.3) : `invalidate-freshness-script --step 
 [--vintages HS2017]`, reprise par l'exécution `weekly` suivante sans attendre
 `REFRESH.MIN_INTERVAL_DAYS`. Durée indicative à consigner après la
 première passe complète (K-17).
+<!-- --8<-- [end:exploitation] -->
 
 ---
 

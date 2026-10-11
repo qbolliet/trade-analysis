@@ -59,6 +59,8 @@ viz = [
 docs = [
     "mkdocs-material>=9.5",
     "kedro-viz==12.4.0",
+    # Lecture des commentaires YAML des paramètres (`kedro trade docs-config`)
+    "ruamel.yaml>=0.18",
 ]
 
 [project.scripts]

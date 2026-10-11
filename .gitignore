@@ -166,6 +166,10 @@ venv.bak/
 
 # mkdocs documentation
 /site
+# Page générée par `kedro trade docs-config` (reconstruite à chaque construction du site)
+/docs/configuration.md
+# Captures du navigateur de test
+.playwright-mcp/
 
 # mypy
 .mypy_cache/
