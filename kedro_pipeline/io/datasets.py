@@ -32,8 +32,10 @@ from typing import Any, Dict, List, Mapping, Optional
 # Kedro
 from kedro.io import AbstractDataset, DatasetError
 
+# Fabrique de clients (acquisition des données brutes)
+from statflows import ClientFactory
+
 # Modules internes
-from kedro_pipeline.io.clients import ClientFactory
 from kedro_pipeline.io.ducklake import (
     DuckLakeLocation,
     DuckLakeTable,
@@ -499,8 +501,9 @@ class ClientFactoryDataset(AbstractDataset[ClientFactory, None]):
     """Read-only dataset handing out the factory of one API client.
 
     Args:
-        factory: Dotted path of the client class (``"statflows.EurostatClient"``,
-            a network-free class in the ``test`` environment).
+        factory: Provider alias (``"eurostat"``, ``"comtrade"``, ``"unsd"``,
+            ``"oecd"``) or dotted path of the client class (a network-free class
+            in the ``test`` environment).
         options: Public keyword arguments of the client.
         credentials: Secret keyword arguments (``comtrade_api`` entry:
             ``subscription_key``); empty values are dropped, the client then
@@ -524,14 +527,20 @@ class ClientFactoryDataset(AbstractDataset[ClientFactory, None]):
     ) -> None:
         self._path = str(factory)
         # Valeurs secrètes vides (variable d'environnement absente) écartées
-        secrets = {key: value for key, value in (credentials or {}).items() if value not in ("", None)}
-        self._options = {**dict(options or {}), **secrets}
-        self._public = sorted((options or {}).keys())
+        self._secrets = {key: value for key, value in (credentials or {}).items() if value not in ("", None)}
+        self._options = dict(options or {})
+        self._public = sorted(self._options)
         self.metadata = metadata
 
     def load(self) -> ClientFactory:
-        """Return the client factory (no client built here)."""
-        return ClientFactory(self._path, self._options)
+        """Return the client factory (no client built here).
+
+        Raises:
+            TypeError: If the client does not accept an option or a credential.
+            ValueError: If an option is not a valid enum value of the client.
+        """
+        # Secrets passés en credentials : masqués par le repr de la fabrique
+        return ClientFactory(self._path, options=self._options, credentials=self._secrets)
 
     def save(self, data: Any) -> None:
         """Refuse any write: the factory is an input only.

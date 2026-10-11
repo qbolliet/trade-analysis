@@ -11,7 +11,7 @@ import pytest
 from kedro.io import DatasetError
 
 from kedro_pipeline.hooks import TradeRunHooks, with_resolved_n_jobs
-from kedro_pipeline.io.clients import ClientFactory
+from statflows import ClientFactory
 from kedro_pipeline.io.datasets import (
     ClientFactoryDataset,
     ConcordanceCache,
@@ -166,6 +166,19 @@ def test_client_factory_dataset_drops_empty_secrets_and_never_describes_them() -
     assert pickle.loads(pickle.dumps(factory))() == factory()
     with pytest.raises(DatasetError):
         dataset.save(factory)
+
+
+def test_client_factory_dataset_validates_at_load_and_accepts_provider_aliases() -> None:
+    # Option inconnue : refusée au chargement du catalogue, pas au premier appel du nœud
+    with pytest.raises(DatasetError, match="unexpected keyword argument 'timeot'"):
+        ClientFactoryDataset(factory="unsd", options={"timeot": 30}).load()
+    # Alias de fournisseur et clé d'abonnement transmise en credentials (jamais affichée)
+    factory = ClientFactoryDataset(
+        factory="comtrade", credentials={"subscription_key": "secret"}
+    ).load()
+    assert factory.path == "statflows.sources.comtrade.client.ComtradeClient"
+    assert "secret" not in repr(factory)
+    assert pickle.loads(pickle.dumps(factory)) == factory
 
 
 def test_connector_factory_follows_the_credentials(tmp_path) -> None:

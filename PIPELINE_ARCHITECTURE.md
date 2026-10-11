@@ -2218,7 +2218,10 @@ serving.tables:                        # poignée du catalogue DuckLake `serving
   `<root>/<dbname>_data/`) pour toutes les poignées ;
 - **`clients.eurostat` / `clients.comtrade` / `clients.unsd`** (`ClientFactoryDataset`) :
   classe du client (`statflows.*` en base, clients factices en `test`) et clé Comtrade
-  depuis `credentials.comtrade_api` (valeurs vides écartées) ;
+  depuis `credentials.comtrade_api` (valeurs vides écartées). La fabrique est
+  `statflows.ClientFactory` (≥ 0.2.0) : alias de fournisseur acceptés (`eurostat`,
+  `comtrade`, `unsd`, `oecd`), options validées contre la signature du client dès le
+  chargement du catalogue, secrets passés en `credentials` (masqués dans le `repr`) ;
 - **`eurostat.download_plan` / `comtrade.download_plan`** : `MemoryDataset`
   (`copy_mode: assign`), internes aux tâches fusionnées de téléchargement ;
 - **`baci.scope`** : `PickleDataset` (S3, nouvelle entrée de credentials **`s3fs`** au

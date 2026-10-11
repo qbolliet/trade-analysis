@@ -903,8 +903,10 @@ class DuckLakeTable:
             existing = set(updater._get_fact_table_columns())
             missing = [column for column in frame.columns if column not in existing]
             if missing:
-                # Routine d'ajout de colonnes de la bibliothèque (celle de l'upsert)
-                updater._add_new_columns_from_update(frame, missing, None)
+                # Routine d'ajout de colonnes de la bibliothèque (celle de l'upsert) ;
+                # dès dt-ducklake-manager 0.4, le 3e argument est un dictionnaire de
+                # métadonnées d'interface déjà normalisé (vide : aucun champ d'interface)
+                updater._add_new_columns_from_update(frame, missing, {})
                 updater._invalidate_metadata_cache()
             return missing
 

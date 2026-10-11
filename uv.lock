@@ -14,7 +14,7 @@ resolution-markers = [
 ]
 
 [manifest]
-overrides = [{ name = "dt-ducklake-manager", git = "https://github.com/qbolliet/dt-ducklake-manager?tag=v0.3.1" }]
+overrides = [{ name = "dt-ducklake-manager", git = "https://github.com/qbolliet/dt-ducklake-manager?tag=v0.4.1" }]
 
 [[package]]
 name = "absl-py"
@@ -754,8 +754,8 @@ wheels = [
 
 [[package]]
 name = "dt-ducklake-manager"
-version = "0.3.1"
-source = { git = "https://github.com/qbolliet/dt-ducklake-manager?tag=v0.3.1#0af27c23b229cec07036a75ea383aa62edfc0148" }
+version = "0.4.1"
+source = { git = "https://github.com/qbolliet/dt-ducklake-manager?tag=v0.4.1#f02a2898b1401ac9576d089493c9e3274914d937" }
 dependencies = [
     { name = "duckdb" },
     { name = "narwhals" },
@@ -1871,7 +1871,7 @@ requires-dist = [
     { name = "s3fs", specifier = ">=0.4.2" },
     { name = "scikit-learn", specifier = ">=1.5" },
     { name = "scipy", specifier = ">=1.18.0" },
-    { name = "statflows", extras = ["s3", "ducklake"], git = "https://github.com/qbolliet/statflows?branch=main" },
+    { name = "statflows", extras = ["s3", "ducklake"], git = "https://github.com/qbolliet/statflows?tag=v0.2.0" },
     { name = "statsmodels", specifier = ">=0.14.6" },
     { name = "threadpoolctl", specifier = ">=3.1" },
     { name = "tqdm", specifier = ">=4.67" },
@@ -3723,8 +3723,8 @@ wheels = [
 
 [[package]]
 name = "statflows"
-version = "0.1.1"
-source = { git = "https://github.com/qbolliet/statflows?branch=main#ca0d316423477c151205b2642ced24ea24fec597" }
+version = "0.2.0"
+source = { git = "https://github.com/qbolliet/statflows?tag=v0.2.0#7e93531130554aff9ef2e93e3105778a0da58e1a" }
 dependencies = [
     { name = "pandas" },
     { name = "pyarrow" },
