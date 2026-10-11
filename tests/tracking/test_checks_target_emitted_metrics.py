@@ -47,6 +47,8 @@ def _nodes() -> Dict[str, str]:
         "synthesis": synthesis.NODE,
         "coherence": coherence.NODE,
         "serving": serving.NODE,
+        # Nœud Kedro sans script : la maintenance des catalogues
+        "maintenance": "maintain_ducklake",
     }
 
 
@@ -89,6 +91,19 @@ def test_every_configured_check_is_well_formed() -> None:
     assert report["PLOTLY_JS"] in ("inline", "cdn")
     # Sous la limite de longueur d'un tag MLflow (PQ-19)
     assert 0 < report["MAX_DESCRIPTION_CHARS"] <= 8000
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Maintenance des catalogues
+# ──────────────────────────────────────────────────────────────────────
+
+
+def test_maintenance_checks_target_emitted_metrics() -> None:
+    from kedro_pipeline.steps.maintenance import run_maintenance
+
+    # Aucun catalogue : la métrique du contrôle est émise malgré tout (valeur 0)
+    result = run_maintenance(None, params={"CATALOGS": []})
+    assert_checks_target_emitted(_nodes()["maintenance"], result.metrics)
 
 
 # ──────────────────────────────────────────────────────────────────────

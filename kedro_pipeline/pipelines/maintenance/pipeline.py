@@ -38,7 +38,11 @@ def create_pipeline(parameters: Optional[Mapping[str, Any]] = None, **kwargs: An
         [
             Node(
                 maintain_ducklake,
-                inputs={"maintenance": "params:maintenance", "tracking": "params:tracking"},
+                inputs={
+                    "catalogs": "ducklake.catalogs",
+                    "maintenance": "params:maintenance",
+                    "tracking": "params:tracking",
+                },
                 outputs={"metrics": reporting_outputs("maintain_ducklake")["metrics"]},
                 name="maintain_ducklake",
                 tags=[EXPERIMENT_MAINTENANCE, ON_EXIT, MUTEX_MAINTENANCE],

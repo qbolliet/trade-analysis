@@ -1,0 +1,9 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# ENVIRONNEMENT TEST — SURCHARGES du bloc de base uniquement (fusion récursive des
+# mappings, remplacement des listes). Les catalogues de base portent sur des catalogues
+# fichiers vides sous la racine de test : la maintenance les traverse sans effet.
+# ─────────────────────────────────────────────────────────────────────────────
+maintenance:
+  STALE_RUNS:
+    # Les runs orphelins fabriqués par les tests sont tout juste créés : aucune marge d'âge
+    MIN_AGE_MINUTES: 0

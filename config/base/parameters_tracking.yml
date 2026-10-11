@@ -64,6 +64,9 @@ tracking:
     publish_serving:
       - {metric: serving/cell_scores/rows,                 op: ">",  threshold: 0,    severity: error,   label: "Table cell_scores non vide"}
       - {metric: serving/countries/rows,                   op: ">",  threshold: 0,    severity: error,   label: "Table countries non vide"}
+    # Seuil aligné sur maintenance.MAX_FILES_PER_TABLE (la maintenance émet aussi un avertissement)
+    maintain_ducklake:
+      - {metric: ducklake/max_files_per_table,             op: "<=", threshold: 2000, severity: warning, label: "Fichiers par table après maintenance"}
   # Runs orphelins : à la fin de chaque exécution, la maintenance passe en FAILED les runs
   # de l'exécution (tag workflow_id) restés RUNNING dans ces expériences — tâche tuée par
   # un manque de mémoire ou une échéance avant d'avoir fermé son run. Les expériences sont

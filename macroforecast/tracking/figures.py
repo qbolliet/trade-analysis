@@ -1109,3 +1109,105 @@ def sections_serving(
                                  {"Tables": table}))
     timing = _timing_section(metrics)
     return sections + ([timing] if timing else [])
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Maintenance des catalogues DuckLake
+# ──────────────────────────────────────────────────────────────────────
+
+# Somme des métriques d'un suffixe de maintenance, par schéma
+def _maintenance_totals(metrics: Mapping[str, float], suffix: str) -> Optional[float]:
+    """Sum the per-schema ``ducklake/<catalog>/<schema>/<suffix>`` metrics.
+
+    Args:
+        metrics: Metrics of the run.
+        suffix: Metric suffix (``files_before``…).
+
+    Returns:
+        The sum, ``None`` when no schema reports the metric.
+
+    Examples:
+        >>> _maintenance_totals({"ducklake/c/s1/files_before": 3.0, "ducklake/c/s2/files_before": 4.0},
+        ...                     "files_before")
+        7.0
+        >>> _maintenance_totals({}, "files_before") is None
+        True
+    """
+    values = [
+        value for name, value in _under(metrics, "ducklake").items()
+        if name.count("/") == 2 and name.endswith("/" + suffix)
+    ]
+    return float(sum(values)) if values else None
+
+
+# Chiffres clés de la maintenance
+def key_figures_maintenance(metrics: Mapping[str, float]) -> List[str]:
+    """Key figures of the DuckLake maintenance.
+
+    Args:
+        metrics: Metrics of the run (``ducklake/*``, ``mlflow/stale_runs_closed``).
+
+    Returns:
+        Tables maintained, data files before and after, snapshots expired,
+        backups (done and failed), orphan runs closed.
+
+    Examples:
+        >>> key_figures_maintenance({"ducklake/tables_maintained": 3.0,
+        ...     "ducklake/c/s/files_before": 200.0, "ducklake/c/s/files_after": 2.0})
+        ['3 tables maintenues', 'fichiers : 200 → 2']
+    """
+    before = _maintenance_totals(metrics, "files_before")
+    after = _maintenance_totals(metrics, "files_after")
+    backups = metrics.get("ducklake/backups_done"), metrics.get("ducklake/backups_failed")
+    backup_text = None
+    if backups[0] is not None and (backups[0] or backups[1]):
+        backup_text = f"sauvegardes : {format_number(backups[0])} réussie(s), {format_number(backups[1] or 0.0)} en échec"
+    return _figs(
+        _fig("tables maintenues", metrics.get("ducklake/tables_maintained")),
+        f"fichiers : {format_number(before)} → {format_number(after)}" if before is not None and after is not None else None,
+        _fig("snapshots expirés", metrics.get("ducklake/snapshots_expired")),
+        backup_text,
+        _fig("runs orphelins clos", metrics.get("mlflow/stale_runs_closed")),
+    )
+
+
+# Sections de la maintenance
+def sections_maintenance(
+    metrics: Mapping[str, float], artifacts: Mapping[str, pd.DataFrame]
+) -> List[Section]:
+    """HTML sections of the DuckLake maintenance.
+
+    Args:
+        metrics: Metrics of the run (``ducklake/<catalog>/<schema>/files_{before,after}``).
+        artifacts: Artifact tables (unused, kept for the common signature).
+
+    Returns:
+        Data files per schema, before and after the maintenance.
+
+    Examples:
+        >>> sections_maintenance({"ducklake/c/s/files_before": 9.0, "ducklake/c/s/files_after": 1.0}, {})[0].title
+        'Fichiers par schéma avant / après'
+    """
+    per_schema: Dict[str, Dict[str, float]] = {}
+    for name, value in _under(metrics, "ducklake").items():
+        parts = name.split("/")
+        if len(parts) == 3 and parts[2] in ("files_before", "files_after"):
+            per_schema.setdefault(f"{parts[0]}/{parts[1]}", {})[parts[2]] = value
+    sections: List[Section] = []
+    if per_schema:
+        table = (
+            pd.DataFrame.from_dict(per_schema, orient="index")
+            .reindex(columns=["files_before", "files_after"])
+            .rename_axis("schéma")
+            .reset_index()
+        )
+        after = {name: values.get("files_after", 0.0) for name, values in per_schema.items()}
+        sections.append(
+            _section(
+                "Fichiers par schéma avant / après",
+                [_bar("Fichiers après maintenance", list(after), list(after.values()))],
+                {"Fichiers": table},
+            )
+        )
+    timing = _timing_section(metrics)
+    return sections + ([timing] if timing else [])

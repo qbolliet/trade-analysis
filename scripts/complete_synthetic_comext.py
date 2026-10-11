@@ -211,6 +211,7 @@ def main() -> None:
                 write_dataframe(
                     conn, data, _primary_keys(structure, list(data.columns)),
                     catalog_alias=connector.catalog_alias, schema=schema, label=DATAFLOW,
+                    update_options={"compact_after_update": False},
                 )
                 written_rows += len(data)
             # Registre écrit APRÈS les données (même ordre que statflows) et marqué fictif

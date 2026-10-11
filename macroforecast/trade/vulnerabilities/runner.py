@@ -129,13 +129,16 @@ def _write_result(
     """
     if writer is not None:
         return bool(writer(result, list(primary_keys)))
+    # Compactage laissé à la maintenance quotidienne, sauf option contraire explicite
+    options = dict(write_options or {})
+    options["update_options"] = {"compact_after_update": False, **dict(options.get("update_options") or {})}
     return write_dataframe(
         conn,
         result,
         list(primary_keys),
         catalog_alias=catalog_alias,
         schema=schema,
-        **(write_options or {}),
+        **options,
     )
 
 

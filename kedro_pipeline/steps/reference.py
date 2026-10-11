@@ -454,6 +454,8 @@ def _write_tables(
                         catalog_alias=table.catalog_alias,
                         schema=reference_schema(prefix, name),
                         label=f"reference/{name}",
+                        # Compactage laissé à la maintenance quotidienne
+                        update_options={"compact_after_update": False},
                     )
                     result["tables"].append(name)
                     result["rows"][name] = int(len(df))

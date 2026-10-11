@@ -943,6 +943,8 @@ class DuckLakeTable:
             schema=self.schema,
             categorical_threshold=self.categorical_threshold,
             label=self.label,
+            # Écriture seule : le compactage est laissé à la maintenance quotidienne
+            update_options={"compact_after_update": False},
             build_options=build_options,
             run_id=run_id,
             commit_message=commit_message,

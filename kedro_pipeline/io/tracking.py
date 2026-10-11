@@ -314,7 +314,7 @@ def report_layout(step: str) -> Tuple[Optional[Callable[..., Any]], Optional[Cal
     Args:
         step: :attr:`StepResult.step` (``"download"``, ``"baci"``,
             ``"partners"``, ``"network"``, ``"synthesis"``, ``"coherence"``,
-            ``"serving"``).
+            ``"serving"``, ``"maintenance"``).
 
     Returns:
         Tuple ``(key_figures, sections)``; ``(None, None)`` for a step
@@ -342,6 +342,7 @@ def report_layout(step: str) -> Tuple[Optional[Callable[..., Any]], Optional[Cal
         "synthesis": (figures.key_figures_synthesis, figures.sections_synthesis),
         "coherence": (figures.key_figures_coherence, figures.sections_coherence),
         "serving": (figures.key_figures_serving, figures.sections_serving),
+        "maintenance": (figures.key_figures_maintenance, figures.sections_maintenance),
     }
     return layouts.get(step, (None, None))
 

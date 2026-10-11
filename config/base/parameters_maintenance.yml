@@ -16,15 +16,20 @@ maintenance:
   ONLY_TABLES_WRITTEN_WITHIN_HOURS: 24
   # Part de lignes supprimées au-delà de laquelle les fichiers d'une table sont réécrits
   DELETE_RATIO_THRESHOLD: 0.1
-  # Jour des opérations hebdomadaires (0 = lundi … 6 = dimanche, heure de Paris)
+  # Jour des opérations hebdomadaires (0 = lundi … 6 = dimanche) : réécriture des fichiers
+  # de toutes les tables récentes, VACUUM (ANALYZE) du PostgreSQL des catalogues
   WEEKLY_DAY: 6
+  # Fuseau horaire dans lequel le jour de la semaine est lu
+  TIMEZONE: Europe/Paris
   # Durée de conservation des snapshots (jours) avant expiration
   SNAPSHOT_RETENTION_DAYS: 7
   # Âge minimal (jours) des fichiers orphelins supprimés par le nettoyage
   CLEANUP_OLDER_THAN_DAYS: 7
   # Nombre de fichiers par table au-delà duquel un avertissement est émis
   MAX_FILES_PER_TABLE: 2000
-  # Seuil d'inlining des petites écritures dans le catalogue ; null → désactivé
+  # Vidage (flush) des petites écritures inlinées dans le catalogue vers des fichiers, si
+  # non nul. Seule la maintenance lit cette valeur : les connecteurs d'écriture gardent le
+  # seuil d'inlining par défaut de la librairie. null ou 0 → pas de vidage
   DATA_INLINING_ROW_LIMIT: 1000
   # Colonnes de partitionnement par table (les jokers `*` sont acceptés). Les tables du
   # catalogue `serving` sont partitionnées par la publication elle-même, à leur création

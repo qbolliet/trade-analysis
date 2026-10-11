@@ -46,6 +46,7 @@
 | 2026-10-09 (K-11) | **Fonctions d'étape partagées, scripts en enveloppes minces** : `kedro_pipeline/steps/{result,_config,downloads,coverage,partners,network,synthesis,coherence}.py` (nouveaux), `baci.py` (fraîcheur, `prepare_baci`, `run_baci_vintage(s)`), `reference.py` et `serving.py` (retour `StepResult`) ; `StepResult` étendu (unités en échec, libellé, tables du rapport, `reportable`, `outputs` lisibles par clé, `children`, `failure_exception`) ; runs par unité par fabrique `UnitRuns` (un run par passe partenaires, par millésime BACI et réseau) ; construction unique du rapport `kedro_pipeline.io.tracking.build_step_report` ; `DuckLakeTable.connector()` / `.reader()`, `attached_catalog_alias` ; scripts : chargement, poignées paresseuses (identifiants lus à la première connexion), tracker, appel, rapport, `raise_if_failed` ; ré-exports des symboles importés par les tests et `tools/`. **Audit de couverture implémenté** et branché, non bloquant, dans les téléchargements (bloc `COVERAGE`). Écarts : arguments résolus par l'appelant (`force`, `adopt_legacy_fingerprints`, `run_id`, `n_jobs`), `prepare_baci` reçoit les requêtes planifiées, injection des collaborateurs BACI (client UNSD, cache, référentiels, passes), une ligne d'import de test modifiée (`test_scripts_synthesis_parallel_e2e.py`) | PD-02, PS-08, PS-13 |
 | 2026-10-09 (K-12) | **Pipelines et nœuds Kedro, deux cadences, test de bout en bout** : `kedro_pipeline/pipelines/{downloads,baci,vulnerabilities,synthesis,serving,maintenance}/` (nœuds `argo_kedro.pipeline.Node`, téléchargements en `FusedPipeline`), `__default__` par `sum_pipelines` (16 tâches en base), `daily` (4) et `weekly` (12) filtrés par tag ; `kedro_pipeline/pipelines/_common.py` (sorties de suivi, ordre registres → échec) ; hook `TradeRunHooks` (`N_JOBS`, `context.argo` par défaut, métriques d'un nœud en échec) ; datasets `ducklake.catalogs`, `clients.*`, `baci.scope`, `baci.concordances`, `mlflow.metrics.{node}` / `mlflow.artifacts.{node}` (fichiers locaux) ; catalogues DuckLake fichiers (`FileConnectorFactory`, métadonnées SQLite) choisis par `credentials.ducklake.file_root` ; `run_download` découpé en phases ; étape `maintenance` minimale ; environnement `config/test/` (résolveur `trade.test_root`, clients factices `tests/pipeline/fakes.py`). Écarts : tags en `famille.valeur` (Kedro refuse `:`), registres en entrée seulement, `state.baci` unique, diagnostics `fit` hors sorties de la synthèse, `baci.scope` en pickle. Constats : `kedro run` est la commande d'argo-kedro (FusedRunner) et **ignore `--params`** ; un téléchargement sans nouvelle donnée avance `last_download` (PQ-22) | PD-14, PS-07, PS-08, PS-09, PS-11, PS-18, §6, PQ-22 |
 | 2026-10-09 (K-13) | **Suivi MLflow du pipeline Kedro** : `config/{base,test}/mlflow.yml` (résolveur `trade.env` limité à `MLFLOW_TRACKING_URI`, `MLFLOW_EXPERIMENT_NAME`, `WORKFLOW_ID`) ; hook kedro-mlflow **gardé** `kedro_pipeline/mlflow_hook.py::GuardedMlflowHook` (sonde du serveur, aucune erreur de suivi ne remonte au runner, plus de réouverture du run avant chaque nœud) à la place de celui du plugin ; `ActiveRunTracker` ; `build_tracker`, `node_unit_runs` (unités d'un nœud au `step` de leur millésime), `build_node_report` (contrôles par unité, runs inactifs), `close_stale_runs`, `tag_active_experiment` (`kedro_pipeline/io/tracking.py`) ; datasets `MlflowRunMetricsDataset` (sans doublon) et `MlflowTablesDataset` (`kedro_pipeline/io/mlflow_datasets.py`) ; `TradeRunHooks` (tags, nom de run, contexte injecté dans `params:tracking`, description réduite) ; `finish_step` : registres → rapport → échec ; **sections PD-13** des métriques BACI (`output/`, `conversion/`, `gravity/`, `valuation/`, `reconciliation/`, `quality/{value,quantity}/`, `nes/`, `harmonization/`) et des requêtes (`download/query/`, `download/fetch/`, `http/`, `rate_limit/`), `CHECKS` renommés ; couverture et tables PS-31.4 dans le rapport des téléchargements ; clôture des runs orphelins par `maintain_ducklake`. Écarts : `trade.env` au lieu d'`oc.env`, datasets projet au lieu de `MlflowArtifactDataset`, expériences typées « Model training » (interface MLflow 3). Constats : métriques système actives par la seule variable ; la réouverture du run par kedro-mlflow démarrait un moniteur de plus par nœud | C-19, PD-13, PD-16, PS-07, PS-08, PS-19, PS-31, §5.1, §5.8, PR-19, PR-20, PQ-19 |
+| 2026-10-11 (K-14) | **Maintenance DuckLake implémentée** : `kedro_pipeline/io/maintenance.py` (métadonnées, procédures en SQL direct à horloge injectée, `VACUUM`, `pg_dump | gzip` vers S3, rétention), `kedro_pipeline/steps/maintenance.py::run_maintenance(catalogs, *, params, tracker, now)`, nœud `maintain_ducklake` (entrée `ducklake.catalogs`, clôture des runs orphelins conditionnée par `maintenance.STALE_RUNS`), `DuckLakeCatalogs.connector` / `has_postgres`, rapport (chiffres clés, section, `maintenance.csv`), contrôle `maintain_ducklake` ; `compact_after_update=False` explicite partout (test d'analyse du code) ; paramètre `TIMEZONE`. Résultats de vérification sur DuckDB 1.5.3 consignés en PS-24 : seuil d'inlining par défaut de 10 lignes (suppressions comprises, mesurer après `flush`), `DuckLakeMaintenance` avale ses erreurs et lit l'horloge système, mesure de `compact_after_update` (`True` : 586 snapshots contre 202). `dt-ducklake-manager` était déjà en 0.4.1 | C-08, PD-16, PD-21, PS-24, PS-31.4, PS-31.5, PR-07, PR-20 |
 
 ## Sommaire
 
@@ -1139,8 +1140,10 @@ fonctions.
 1. **Écriture** : `compact_after_update` devient configurable et vaut `False` pendant les
    téléchargements (C-08). Les écritures du téléchargement sont **tamponnées** (flush
    toutes les N requêtes ou T secondes, PS-27). L'inlining des petites écritures dans le
-   catalogue (`DATA_INLINING_ROW_LIMIT`) est activé si la version DuckLake embarquée le
-   supporte (à vérifier sur DuckDB 1.5.3).
+   catalogue (`DATA_INLINING_ROW_LIMIT`) est supporté par DuckDB 1.5.3 (vérifié en K-14,
+   PS-24) ; la maintenance vide ces lignes en fichiers (`flush`) si le paramètre est non
+   nul, les écritures gardent le seuil par défaut. `compact_after_update=False` est posé
+   explicitement partout (mesure en PS-24).
 2. **Nœud `maintain_ducklake`** (`onExit`, chaque jour), par catalogue (`eurostat`,
    `comtrade`, `vulnerabilities`, `serving`) et pour **chaque table écrite dans les 24 h** (d'après
    les snapshots) :
@@ -2403,8 +2406,8 @@ lus par le rendu (PD-14).
 > - **Synthèse** : écrit aussi la famille `fit` de `synthesis_diagnostics` par une poignée
 >   construite dans le nœud, **non déclarée** en sortie (deux producteurs d'un dataset
 >   sont refusés, et la cohérence en dépendrait d'elle-même). `cadence_check=False`.
-> - **Maintenance** : `kedro_pipeline/steps/maintenance.py::run_maintenance` renvoie un
->   `StepResult` vide (K-14).
+> - **Maintenance** : `kedro_pipeline/steps/maintenance.py::run_maintenance` renvoyait un
+>   `StepResult` vide ; implémentée en K-14 (PS-24).
 > - **`kedro run`** est la commande globale d'argo-kedro (FusedRunner, seul runner qui
 >   exécute un `FusedNode`, dont la fonction est un `lambda` vide) ; elle lit
 >   `context.argo.runner`, que `TradeRunHooks.after_context_created` fournit par défaut
@@ -3452,11 +3455,12 @@ maintenance:
     - {dbname: serving,         catalog_alias: serving,         bucket: qbollietdgddi, data_path: trade/datasets/serving/}   # PD-21
   ONLY_TABLES_WRITTEN_WITHIN_HOURS: 24
   DELETE_RATIO_THRESHOLD: 0.1
-  WEEKLY_DAY: 6                       # 0 = lundi … 6 = dimanche (Europe/Paris)
+  WEEKLY_DAY: 6                       # 0 = lundi … 6 = dimanche, lu dans TIMEZONE
+  TIMEZONE: Europe/Paris
   SNAPSHOT_RETENTION_DAYS: 7
   CLEANUP_OLDER_THAN_DAYS: 7
   MAX_FILES_PER_TABLE: 2000
-  DATA_INLINING_ROW_LIMIT: 1000       # null → désactivé
+  DATA_INLINING_ROW_LIMIT: 1000       # vidage (flush) par la maintenance si non nul ; null → désactivé
   PARTITIONS:
     comtrade.C_A_HS: ["refYear"]
     comtrade.baci_hs*: ["year"]
@@ -3486,14 +3490,114 @@ maintenance:
 > partition et par publication), davantage en `by_year`.
 
 Ordre par table : `flush_inlined` → `merge_adjacent_files` → `rewrite_data_files`
-(conditionnel) ; puis par catalogue : `expire_snapshots` → `cleanup_old_files` ; puis
-`VACUUM ANALYZE` et la sauvegarde si c'est le jour hebdomadaire ; enfin la clôture des
-runs orphelins du workflow (`STALE_RUNS`). Le catalogue `serving` est entièrement
-réécrit à chaque publication en mode `full` : `expire_snapshots` et `cleanup_old_files`
-y sont ce qui borne le stockage. Les requêtes
-d'inspection lisent les tables de métadonnées DuckLake (`ducklake_data_file`,
-`ducklake_delete_file`, `ducklake_snapshot`) : leurs noms exacts sont **à vérifier sur
-la version DuckLake embarquée** (K-14).
+(conditionnel) ; puis par catalogue : `expire_snapshots` → `cleanup_old_files` (+ fichiers
+orphelins) ; puis `VACUUM ANALYZE` et la sauvegarde si c'est le jour hebdomadaire ; enfin
+la clôture des runs orphelins du workflow (`STALE_RUNS`, appelée par le nœud). Le
+catalogue `serving` est entièrement réécrit à chaque publication en mode `full` :
+`expire_snapshots` et `cleanup_old_files` y sont ce qui borne le stockage (test `slow` :
+cinq publications `full` successives, fichiers des publications précédentes supprimés après
+rétention). Seules les tables écrites dans les `ONLY_TABLES_WRITTEN_WITHIN_HOURS`
+dernières heures sont compactées ; le partitionnement, lui, est contrôlé sur toutes les
+tables de faits.
+
+> **Vérifié (K-14, 2026-10-11) — DuckDB 1.5.3, extension `ducklake` e6a3bd0a, format
+> DuckLake 1.0**, par script jetable sur catalogue fichier (SQLite et `.ducklake`) :
+>
+> - **Procédures disponibles** (fonctions de table) :
+>   `ducklake_merge_adjacent_files(catalogue, table, [min_file_size, max_file_size,
+>   max_compacted_files], schema := …)` ; `ducklake_rewrite_data_files(catalogue, table,
+>   delete_threshold := …, schema := …)` — sans seuil explicite elle ne réécrit rien ;
+>   `ducklake_expire_snapshots(catalogue, older_than := TIMESTAMPTZ, versions := UBIGINT[],
+>   dry_run := BOOLEAN)` ; `ducklake_cleanup_old_files(catalogue, older_than :=,
+>   cleanup_all :=, dry_run :=)` ; `ducklake_delete_orphaned_files` (mêmes paramètres) ;
+>   `ducklake_flush_inlined_data(catalogue, table_name :=, schema_name :=)` (sans
+>   argument : tout le catalogue) ; `CHECKPOINT [catalogue]` ; `ducklake_list_files(
+>   catalogue, table, schema :=)` ; `ducklake_table_info`, `ducklake_snapshots`,
+>   `ducklake_options`, `ducklake_table_changes/insertions/deletions`.
+> - **Option d'ATTACH** `DATA_INLINING_ROW_LIMIT n` acceptée ; **par défaut le seuil est
+>   de 10 lignes** : un petit upsert (≤ 10 lignes) ne produit aucun fichier, les lignes
+>   (et les suppressions de quelques lignes d'un fichier) restent dans le catalogue
+>   (`ducklake_inlined_data_*`) jusqu'au `flush`. Le test `slow` fixe donc le seuil à 0
+>   pour observer des fichiers. Le flush produit aussi les fichiers de suppression des
+>   suppressions inlinées : la part de lignes supprimées est donc **mesurée après le
+>   flush**.
+> - **Tables de métadonnées** (préfixe `__ducklake_metadata_<alias>`, requêtées depuis la
+>   connexion attachée) : `ducklake_data_file` (`table_id`, `begin_snapshot`,
+>   `end_snapshot`, `record_count`, `file_size_bytes`), `ducklake_delete_file`
+>   (`table_id`, `data_file_id`, `delete_count`, `end_snapshot`), `ducklake_snapshot`
+>   (`snapshot_time` y est un VARCHAR : utiliser la fonction `ducklake_snapshots`, qui le
+>   renvoie en `TIMESTAMPTZ`), `ducklake_snapshot_changes`, `ducklake_table`,
+>   `ducklake_schema`, `ducklake_column`, `ducklake_partition_info` /
+>   `ducklake_partition_column` (partitionnement courant, `transform = 'identity'` pour
+>   une colonne simple), `ducklake_files_scheduled_for_deletion`. Un objet vivant a
+>   `end_snapshot IS NULL`.
+> - **Tables écrites depuis N heures** : la colonne `changes` de `ducklake_snapshots` est
+>   une `MAP(VARCHAR, VARCHAR[])` ; les clés d'écriture sont `tables_created` (valeur
+>   `schéma.table`), `tables_inserted_into`, `tables_deleted_from`, `inlined_insert`,
+>   `inlined_delete`, `tables_altered` (valeur : identifiant de table). Les snapshots de la
+>   maintenance (`merge_adjacent`, `rewrite_delete`, `flushed_inlined`) sont écartés, sans
+>   quoi un second passage retrouverait les tables « récentes ».
+> - **Horloge** : `expire_snapshots` conserve toujours le dernier snapshot ; les fichiers
+>   remplacés sont planifiés à l'**horloge réelle** de l'expiration
+>   (`ducklake_files_scheduled_for_deletion.schedule_start`), `cleanup_old_files` supprime
+>   ceux dont la planification précède `older_than`. Avec une horloge injectée `now`, les
+>   deux seuils sont `now − rétention` (littéral `TIMESTAMPTZ`) : en production `now` est
+>   l'instant réel ; dans les tests, un `now` 30 jours plus tard fait expirer tout ce qui
+>   précède.
+> - **`DuckLakeMaintenance` (`dt-ducklake-manager` 0.4.1)** : `merge_files`,
+>   `rewrite_data_files`, `flush_inlined_data`, `expire_snapshots`, `cleanup_files` et
+>   `delete_orphaned_files` **avalent leurs erreurs** (WARNING, résultat vide) : un échec est
+>   indiscernable d'une opération sans objet, ce qui interdit la règle « le nœud échoue
+>   si toutes les opérations d'un catalogue échouent » ; `expire_snapshots` y lit
+>   l'horloge système et `cleanup_files` n'a pas d'`older_than`. La maintenance exécute donc
+>   ces procédures **en SQL direct** (`kedro_pipeline/io/maintenance.py`) ;
+>   `DuckLakeMaintenance.repartition` n'est que cité dans la commande manuelle journalisée
+>   (elle écrit un fichier de journal dans le répertoire courant).
+> - **Ordre fusion → réécriture** : après un `merge_adjacent_files`, un `rewrite_data_files`
+>   crée un fichier de plus ; le passage suivant les fusionne (convergence en deux
+>   passages, sans perte de données).
+
+**Écritures et compactage (K-14).** Toutes les écritures du pipeline posent
+explicitement `compact_after_update=False` (téléchargements par `COMPACT_AFTER_UPDATE`,
+`DuckLakeTable.upsert` / `upsert_many`, référentiels, runners, scripts ; un test d'analyse du
+code le vérifie). Mesure sur jeu fictif (200 petits upserts de 5 lignes sur un catalogue
+fichier, seuil d'inlining 0) :
+
+| Mode | Durée des écritures | Fichiers de données | Snapshots |
+|---|---|---|---|
+| `compact_after_update=True` | 88,6 s | 16 | 586 |
+| `False` | 80,1 s | 201 | 202 |
+| `False` + maintenance (0,4 s) | 83,0 s + 0,4 s | 2 | 204 |
+
+`True` triple le nombre de snapshots, ne réduit pas la durée et rend chaque lot dépendant
+du volume déjà stocké ; la maintenance quotidienne, un seul passage sur les tables écrites,
+ramène les fichiers au même niveau pour 0,4 s. Valeur retenue : **`False` partout, la
+maintenance seule compacte** (les étapes de calcul écrivent peu de lots : `True` n'y est
+pas nécessaire). Avec le seuil d'inlining par défaut (10 lignes), les mêmes 200 upserts ne
+produisent aucun fichier (202 snapshots) et la maintenance les regroupe en un seul.
+`DATA_INLINING_ROW_LIMIT` est lu **par la maintenance seule** (il déclenche le `flush`) ; les
+connecteurs d'écriture gardent le seuil par défaut de la bibliothèque.
+
+**Implémentation (K-14, 2026-10-11).** `kedro_pipeline/io/maintenance.py` (requêtes de
+métadonnées, procédures, `VACUUM`, `pg_dump`) ; `kedro_pipeline/steps/maintenance.py::
+run_maintenance(catalogs, *, params, tracker, now)` ; nœud `maintain_ducklake` (entrée
+`ducklake.catalogs`, puis `close_stale_runs` si `maintenance.STALE_RUNS.ENABLED`, âge
+minimal `maintenance.STALE_RUNS.MIN_AGE_MINUTES`). Une unité = un catalogue, en échec si
+toutes ses opérations échouent. Métriques : `ducklake/<catalogue>/<schéma>/<mesure>_{before,
+after}` (`files`, `avg_file_mb`, `delete_files`, `deleted_rows`, `rows`, agrégées par schéma ;
+les lignes encore inlinées ne sont pas comptées), `ducklake/<catalogue>/snapshots`,
+`ducklake/max_files_per_table` (contrôle `maintain_ducklake` de `parameters_tracking.yml` +
+avertissement, tag `alert=max_files_per_table`), `ducklake/{tables_maintained,
+snapshots_expired,files_cleaned,backups_done,backups_failed}` ; une sauvegarde en échec
+pose `ducklake/<catalogue>/backup_failed` et le tag `alert=backup_failed` sans faire
+échouer le nœud. Le partitionnement de `PARTITIONS` est posé une fois (`ALTER TABLE … SET
+PARTITIONED BY`, contrôle des métadonnées) sur la table de faits des schémas concernés ; il
+ne vaut que pour les écritures suivantes, et si la table contient déjà des fichiers la
+commande `DuckLakeMaintenance(…).repartition(…)` à lancer à la main est journalisée. Les
+opérations sur PostgreSQL (`VACUUM (ANALYZE)` par `psycopg2`, déjà installé par
+`dt-ducklake-manager` ; `pg_dump | gzip` vers S3 par `subprocess` et `boto3`, mot de passe
+dans l'environnement du processus) ne s'appliquent qu'aux catalogues PostgreSQL, jamais aux
+catalogues fichiers.
 
 ### PS-25 — Documentation
 
@@ -4581,7 +4685,7 @@ accepté.
   `DatabaseUpdater.add_columns`, `delete_rows`, `run_id`/`commit_message` sur snapshot.
 - DuckLake : procédures `ducklake_merge_adjacent_files`, `ducklake_rewrite_data_files`,
   `ducklake_expire_snapshots`, `ducklake_cleanup_old_files`, `ducklake_flush_inlined_data`
-  (disponibilité à vérifier sur la version embarquée par DuckDB 1.5.3).
+  (disponibilité vérifiée en K-14 sur DuckDB 1.5.3, PS-24).
 - Superset : documentation *Creating your first dashboard*, *Cross-filtering*,
   *Native filters*, *Importing and exporting datasources and dashboards*
   (<https://superset.apache.org/docs/>), page *Connecting to Databases → DuckDB* ;

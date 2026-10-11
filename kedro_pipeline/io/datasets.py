@@ -39,6 +39,7 @@ from statflows import ClientFactory
 from kedro_pipeline.io.ducklake import (
     DuckLakeLocation,
     DuckLakeTable,
+    FileConnectorFactory,
     connector_factory_for,
 )
 from kedro_pipeline.io.freshness import FreshnessRegistry, Unit
@@ -437,6 +438,37 @@ class DuckLakeCatalogs:
             The handle.
         """
         return DuckLakeTable.lazy(location, self.pg, self.s3, connector_factory=self.connector_factory)
+
+    # Connecteur non connecté d'un catalogue
+    def connector(self, location: DuckLakeLocation, *, create_db_if_missing: bool = False) -> Any:
+        """Return the unconnected connector of the catalog at ``location``.
+
+        Used by the maintenance, which works on a whole catalog rather than on
+        one fact table. The catalog database is never created: maintaining a
+        catalog that does not exist is an error, not a reason to create it.
+
+        Args:
+            location: Catalog identity and data path (the schema is the one the
+                connection is positioned on).
+            create_db_if_missing: Whether the catalog database is created when
+                absent.
+
+        Returns:
+            The connector; its ``connect()`` opens a connection.
+        """
+        return self.connector_factory(
+            location, self.pg, self.s3, create_db_if_missing=create_db_if_missing
+        )
+
+    # Propriété : présence d'un serveur PostgreSQL derrière les catalogues
+    @property
+    def has_postgres(self) -> bool:
+        """Whether the catalogs live in a reachable PostgreSQL (false for local file catalogs).
+
+        Gates the operations that target the metadata server itself (vacuum,
+        backup): local file catalogs and credential-less handles have none.
+        """
+        return bool(self.pg.get("host")) and not isinstance(self.connector_factory, FileConnectorFactory)
 
     # Poignée du catalogue de restitution
     def serving(

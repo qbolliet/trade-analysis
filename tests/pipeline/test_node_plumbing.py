@@ -213,11 +213,31 @@ def test_concordance_cache_dataset_checks_identity() -> None:
 def test_maintenance_node_reports_an_empty_result() -> None:
     from kedro_pipeline.pipelines.maintenance.nodes import maintain_ducklake
 
-    # Hors workflow (aucun identifiant dans le contexte) : aucun run orphelin recherché
-    outputs = maintain_ducklake({"CATALOGS": [{"dbname": "eurostat"}]}, {})
+    # Aucun catalogue configuré, hors workflow (aucun identifiant dans le contexte) :
+    # aucun run orphelin recherché
+    outputs = maintain_ducklake(None, {"CATALOGS": [], "WEEKLY_DAY": 6}, {})
     assert outputs == {
         "metrics": {
             "units/planned": 0.0, "units/succeeded": 0.0, "units/failed": 0.0,
+            "ducklake/max_files_per_table": 0.0, "ducklake/tables_maintained": 0.0,
+            "ducklake/snapshots_expired": 0.0, "ducklake/files_cleaned": 0.0,
+            "ducklake/backups_failed": 0.0, "ducklake/backups_done": 0.0,
             "mlflow/stale_runs_closed": 0.0,
         }
     }
+
+
+def test_maintenance_node_skips_the_stale_runs_when_disabled(monkeypatch) -> None:
+    from kedro_pipeline.pipelines.maintenance import nodes
+
+    calls = []
+    monkeypatch.setattr(nodes, "close_stale_runs", lambda *args, **kwargs: calls.append(args) or 3)
+    tracking = {"CONTEXT": {"workflow_id": "wf-1"}, "STALE_RUNS": {"EXPERIMENTS": ["e"]}}
+    off = nodes.maintain_ducklake(None, {"CATALOGS": [], "STALE_RUNS": {"ENABLED": False}}, tracking)
+    assert off["metrics"]["mlflow/stale_runs_closed"] == 0.0 and not calls
+    on = nodes.maintain_ducklake(
+        None, {"CATALOGS": [], "STALE_RUNS": {"ENABLED": True, "MIN_AGE_MINUTES": 10}}, tracking
+    )
+    assert on["metrics"]["mlflow/stale_runs_closed"] == 3.0
+    # Âge minimal de la maintenance (10 minutes), non celui du suivi
+    assert calls[0][0] == "wf-1" and calls[0][2].total_seconds() == 600

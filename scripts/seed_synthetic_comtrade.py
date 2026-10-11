@@ -178,6 +178,8 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
             categorical_threshold=None,
             bucket=downloads_config["BUCKET"],
             storage_options=None,
+            # Compactage laissé à la maintenance quotidienne
+            update_options={"compact_after_update": False},
         )
         logger.info("Remplissage terminé : %s", report.to_metrics())
         # Marquage des entrées de registre écrites par ce run
