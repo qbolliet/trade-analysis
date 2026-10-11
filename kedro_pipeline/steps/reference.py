@@ -196,9 +196,12 @@ def normalize_products(
         else pd.Series(pd.NA, index=codelist.index, dtype="string")
     )
     # Libellés Comtrade préfixés par le code (« 854110 - Diodes… ») : préfixe retiré
+    # (code manquant laissé manquant par astype(str) sous pandas 3 : libellé conservé)
     labels = pd.Series(
         [
-            re.sub(rf"^\s*{re.escape(code)}\s*-\s*", "", label) if isinstance(label, str) else label
+            re.sub(rf"^\s*{re.escape(code)}\s*-\s*", "", label)
+            if isinstance(code, str) and isinstance(label, str)
+            else label
             for code, label in zip(codes, labels)
         ],
         index=codelist.index,
@@ -213,7 +216,8 @@ def normalize_products(
             return None
         return code[: 6 if len(code) == 8 else len(code) - 2]
 
-    parent = codes.map(_derived_parent)
+    # Code manquant (pandas 3 : NaN conservé par astype(str)) : ni parent ni nomenclature
+    parent = codes.map(_derived_parent, na_action="ignore")
     # Colonne « parent » intégralement vide (codelist sans hiérarchie, ex. Comext) :
     # on conserve le parent déduit plutôt que d'effacer toute la hiérarchie
     if "parent" in codelist.columns and codelist["parent"].notna().any():
@@ -221,7 +225,9 @@ def normalize_products(
         # Parents non numériques (« TOTAL », « # ») : pas de code parent
         parent = given.where(given.str.fullmatch(r"\d+").fillna(False), None)
 
-    classification = codes.map(lambda code: classification_of(code, year, nomenclatures))
+    classification = codes.map(
+        lambda code: classification_of(code, year, nomenclatures), na_action="ignore"
+    )
     classification = classification.where(
         is_numeric, vintage_in_force(year, nomenclatures)
     )

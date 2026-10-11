@@ -97,7 +97,8 @@ class S3Loader(S3Connection):
             engine = _EXCEL_ENGINES[extension]
             if self.s3_package == "boto3":
                 s3_file = self.s3.get_object(Bucket=bucket, Key=key)["Body"]
-                return pd.read_excel(s3_file.read(), engine=engine, **kwargs)
+                # Contenu enveloppé dans un tampon : pandas 3 refuse les octets bruts
+                return pd.read_excel(BytesIO(s3_file.read()), engine=engine, **kwargs)
             elif self.s3_package == "s3fs":
                 with self.s3.open(f"{bucket}/{key}", "rb") as s3_file:
                     return pd.read_excel(s3_file, engine=engine, **kwargs)

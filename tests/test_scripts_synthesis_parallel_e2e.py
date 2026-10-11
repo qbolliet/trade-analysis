@@ -182,7 +182,12 @@ def _table(sources, schema: str) -> pd.DataFrame:
     frame = sources.conn.execute(
         f'SELECT * FROM "{sources.catalog_alias}"."{schema}"."fact_table"'
     ).df()
-    keys = [column for column in frame.columns if frame[column].dtype == object or column == "flow"]
+    # Colonnes textuelles (dtype object ou str de pandas 3) comme clés de tri
+    keys = [
+        column
+        for column in frame.columns
+        if pd.api.types.is_string_dtype(frame[column].dtype) or column == "flow"
+    ]
     return frame.sort_values(keys, kind="mergesort").reset_index(drop=True)
 
 

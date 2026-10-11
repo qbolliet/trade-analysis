@@ -714,7 +714,9 @@ class AbsorbedWLSAccumulator:
         for name, levels in self.factors.items():
             if name not in df_factors.columns:
                 raise ValueError(f"Factor column {name!r} is missing from the chunk.")
-            code = pd.Categorical(df_factors[name], categories=levels).codes
+            # Position de chaque libellé parmi les niveaux fixés (-1 : inconnu), sans
+            # Categorical, dont la construction avec des valeurs hors catégories est dépréciée
+            code = pd.Index(levels).get_indexer(pd.Index(df_factors[name]))
             if (code < 0).any():
                 unknown = sorted(set(df_factors.loc[code < 0, name].astype(str)))[:5]
                 raise ValueError(

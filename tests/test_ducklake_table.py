@@ -118,6 +118,26 @@ def test_upsert_many_replaces_a_slice_atomically(ducklake_conn) -> None:
     pd.testing.assert_frame_equal(_read(conn, alias), before)
 
 
+
+def test_str_columns_round_trip(ducklake_conn) -> None:
+    """pandas 3 : colonnes de dtype ``str`` (Arrow) écrites puis relues intactes.
+
+    Le dtype ``str`` par défaut de pandas 3 transite par Arrow (``large_string``) :
+    les valeurs et les manquants (ni ``"None"`` ni ``"nan"``) survivent à l'écriture.
+    """
+    conn, alias = ducklake_conn
+    table = DuckLakeTable(conn, alias, "s1")
+    df = _frame(["FR", "DE"], ["01"], label=["Diodes", None])
+    assert df["label"].dtype == "str" and df["reporter"].dtype == "str"
+    table.upsert(df, KEYS)
+
+    stored = _read(conn, alias)
+    assert stored["label"].dtype == "str" and stored["reporter"].dtype == "str"
+    assert stored.set_index("reporter")["label"].to_dict().get("FR") == "Diodes"
+    assert pd.isna(stored.set_index("reporter").loc["DE", "label"])
+    assert not stored["label"].isin(["None", "nan", "<NA>"]).any()
+
+
 def test_upsert_with_delete_where_creates_missing_table(ducklake_conn) -> None:
     conn, alias = ducklake_conn
     table = DuckLakeTable(conn, alias, "s1")

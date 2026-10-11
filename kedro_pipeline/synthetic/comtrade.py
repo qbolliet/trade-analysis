@@ -388,7 +388,8 @@ def build_tariffline(
     )
 
     # Filtres de la requête (flux, déclarants, partenaires), en un seul masque
-    keep = rows["flow"].isin(list(flows)).to_numpy()
+    # (copie inscriptible : sous Copy-on-Write, to_numpy() renvoie une vue en lecture seule)
+    keep = rows["flow"].isin(list(flows)).to_numpy(copy=True)
     if reporters is not None:
         keep &= np.isin(reporter_code, list(reporters))
     if partners is not None:

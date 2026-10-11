@@ -49,6 +49,23 @@ def test_normalize_products_comtrade_strips_code_prefix() -> None:
     assert row["level"] == 6
 
 
+
+def test_normalize_products_missing_code_stays_missing() -> None:
+    """pandas 3 : ``astype(str)`` garde un code manquant manquant (et non ``"None"``).
+
+    Sous pandas 2, le code devenait la chaîne ``"None"`` ; sous pandas 3 il reste
+    manquant et le retrait du préfixe du libellé ne doit pas lever d'exception.
+    """
+    codelist = pd.DataFrame(
+        {"id": ["854110", None], "text": ["854110 - Diodes, other", "Orphan label"]}
+    )
+    out = normalize_products(codelist, year=2024, nomenclatures=HS)
+    assert out["code"].iloc[0] == "854110"
+    assert out["label"].tolist() == ["Diodes, other", "Orphan label"]
+    assert pd.isna(out["code"].iloc[1])
+    assert "None" not in out["code"].dropna().tolist()
+
+
 def test_normalize_countries_comtrade_and_eurostat() -> None:
     comtrade = pd.DataFrame(
         {"reporterCode": [251, 97], "reporterDesc": ["France", "EU"],
@@ -66,6 +83,27 @@ def test_normalize_countries_comtrade_and_eurostat() -> None:
     assert out["is_aggregate"].to_dict() == {"FR": False, "EU27_2020": True, "QW": True}
     assert out["m49"].isna().all()
     assert set(out.reset_index().columns) == set(REFERENCE_COLUMNS["partners"])
+
+
+
+def test_normalize_countries_missing_code_is_na() -> None:
+    """pandas 3 : un ``reporterCode`` manquant donne ``code``/``m49`` manquants.
+
+    Sous pandas 2, ``astype(str)`` produisait la chaîne littérale ``"<NA>"``.
+    """
+    comtrade = pd.DataFrame(
+        {
+            "reporterCode": pd.array([251, None], dtype="Int64"),
+            "reporterDesc": ["France", "Unknown"],
+            "reporterCodeIsoAlpha3": ["FRA", None],
+        }
+    )
+    out = normalize_countries(comtrade, source="comtrade")
+    known = out[out["iso3"] == "FRA"].iloc[0]
+    assert known["code"] == "251" and known["m49"] == "251"
+    unknown = out[out["label"] == "Unknown"].iloc[0]
+    assert pd.isna(unknown["code"]) and pd.isna(unknown["m49"])
+    assert "<NA>" not in out["m49"].dropna().tolist()
 
 
 def test_concordance_relationships_and_checksum() -> None:
