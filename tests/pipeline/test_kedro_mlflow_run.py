@@ -237,3 +237,21 @@ def test_kedro_run_command_logs_its_task(workflow) -> None:
     assert completed.returncode == 0, completed.stdout[-4000:] + completed.stderr[-4000:]
     run = _runs_of(workflow.client, "wf-cli")[MAINTENANCE]
     assert run.info.run_name == f"{MAINTENANCE}-wf-cli" and run.data.tags["health"] == "ok"
+
+
+def test_project_run_command_passes_the_runtime_parameters(workflow) -> None:
+    # Commande des pods Argo : `kedro run` (argo-kedro) ignorerait --params ; la commande du
+    # projet les transmet à la session, hooks d'argo-kedro, kedro-mlflow et projet actifs
+    env = {**os.environ, "WORKFLOW_ID": "wf-project-run"}
+    completed = subprocess.run(
+        [
+            sys.executable, "-m", "kedro_pipeline", "--pipeline=__default__", "--env=test",
+            f"--nodes={MAINTENANCE}",
+            "--params=runtime.FORCE_STEPS=partners;synthesis,runtime.FORCE_METRICS=,runtime.FORCE_METHODS=",
+        ],
+        cwd=PROJECT, env=env, capture_output=True, text=True, encoding="utf-8", errors="replace",
+    )
+    assert completed.returncode == 0, completed.stdout[-4000:] + completed.stderr[-4000:]
+    run = _runs_of(workflow.client, "wf-project-run")[MAINTENANCE]
+    assert run.info.run_name == f"{MAINTENANCE}-wf-project-run" and run.data.tags["health"] == "ok"
+    assert run.data.tags["forced"] == "steps=partners,synthesis"

@@ -1,0 +1,183 @@
+# Fichier généré par `kedro trade render-argo --env cloud` : ne pas modifier à la main.
+# Source : pipelines Kedro (tags des nœuds) et config/base/argo.yml (bloc `workflow`).
+apiVersion: argoproj.io/v1alpha1
+kind: WorkflowTemplate
+metadata:
+  name: trade-pipeline
+  namespace: user-qbollietdgddi
+  labels:
+    app: "trade-analysis"
+    generated-by: kedro_pipeline.deploy.render
+  annotations:
+    trade-analysis/kedro-env: "cloud"
+spec:
+  # Point d'entrée par défaut ; chaque CronWorkflow impose le sien
+  entrypoint: daily
+  serviceAccountName: workflow
+  # Maintenance DuckLake en fin d'exécution, quelle qu'en soit l'issue
+  onExit: exit-handler
+  # Borne la plus large des points d'entrée ; chaque CronWorkflow impose la sienne
+  activeDeadlineSeconds: 518400
+  ttlStrategy: {secondsAfterSuccess: 259200, secondsAfterFailure: 604800}
+  podGC: {strategy: OnPodSuccess}
+  parallelism: 8
+  arguments:
+    parameters:
+      # Étiquette de l'image ghcr (sha-<SHA court> immuable de préférence)
+      - name: image-tag
+        value: "qb-vulnerabilities"
+      # Forçage ponctuel (vide = aucun) : plusieurs valeurs séparées par « ; », jamais par
+      # « , » (Kedro découpe --params sur les virgules), ex. "partners;synthesis"
+      - name: force-steps
+        value: ""
+      - name: force-metrics
+        value: ""
+      - name: force-methods
+        value: ""
+      # Paires clé=valeur supplémentaires transmises à --params, séparées par « , »,
+      # ex. "runtime.FORCE_SCOPE.VINTAGES=HS2017,runtime.FORCE_SCOPE.PERIODS=2020;2021"
+      - name: extra-params
+        value: ""
+  templates:
+    # Point d'entrée daily : nœuds tagués cadence.daily (4 tâches)
+    - name: daily
+      dag:
+        tasks:
+          - name: download-comtrade
+            template: kedro
+            arguments: {parameters: [ {name: kedro-node, value: "download_comtrade"}, {name: experiment, value: "trade-01-downloads"}, {name: cpu, value: "1"}, {name: mem, value: "2"}, {name: retries, value: "0"} ]}
+          - name: download-eurostat
+            template: kedro
+            arguments: {parameters: [ {name: kedro-node, value: "download_eurostat"}, {name: experiment, value: "trade-01-downloads"}, {name: cpu, value: "1"}, {name: mem, value: "2"}, {name: retries, value: "0"} ]}
+          - name: compute-partner-vulnerabilities
+            depends: "(download-eurostat.Succeeded || download-eurostat.Failed)"
+            template: kedro
+            arguments: {parameters: [ {name: kedro-node, value: "compute_partner_vulnerabilities"}, {name: experiment, value: "trade-03-vulnerabilities"}, {name: cpu, value: "4"}, {name: mem, value: "16"}, {name: retries, value: "1"} ]}
+          - name: publish-serving
+            depends: "(compute-partner-vulnerabilities.Succeeded || compute-partner-vulnerabilities.Failed) && (download-comtrade.Succeeded || download-comtrade.Failed) && (download-eurostat.Succeeded || download-eurostat.Failed)"
+            template: locked-trade-serving
+            arguments: {parameters: [ {name: kedro-node, value: "publish_serving"}, {name: experiment, value: "trade-04-serving"}, {name: cpu, value: "4"}, {name: mem, value: "16"}, {name: retries, value: "1"} ]}
+    # Point d'entrée weekly : nœuds tagués cadence.weekly (12 tâches)
+    - name: weekly
+      dag:
+        tasks:
+          - name: prepare-baci
+            template: kedro
+            arguments: {parameters: [ {name: kedro-node, value: "prepare_baci"}, {name: experiment, value: "trade-02-baci"}, {name: cpu, value: "4"}, {name: mem, value: "16"}, {name: retries, value: "1"} ]}
+          - name: process-baci-hs1992
+            depends: "prepare-baci.Succeeded"
+            template: kedro
+            arguments: {parameters: [ {name: kedro-node, value: "process_baci_hs1992"}, {name: experiment, value: "trade-02-baci"}, {name: cpu, value: "4"}, {name: mem, value: "32"}, {name: retries, value: "1"} ]}
+          - name: process-baci-hs1996
+            depends: "prepare-baci.Succeeded"
+            template: kedro
+            arguments: {parameters: [ {name: kedro-node, value: "process_baci_hs1996"}, {name: experiment, value: "trade-02-baci"}, {name: cpu, value: "4"}, {name: mem, value: "32"}, {name: retries, value: "1"} ]}
+          - name: process-baci-hs2002
+            depends: "prepare-baci.Succeeded"
+            template: kedro
+            arguments: {parameters: [ {name: kedro-node, value: "process_baci_hs2002"}, {name: experiment, value: "trade-02-baci"}, {name: cpu, value: "4"}, {name: mem, value: "32"}, {name: retries, value: "1"} ]}
+          - name: process-baci-hs2007
+            depends: "prepare-baci.Succeeded"
+            template: kedro
+            arguments: {parameters: [ {name: kedro-node, value: "process_baci_hs2007"}, {name: experiment, value: "trade-02-baci"}, {name: cpu, value: "4"}, {name: mem, value: "32"}, {name: retries, value: "1"} ]}
+          - name: process-baci-hs2012
+            depends: "prepare-baci.Succeeded"
+            template: kedro
+            arguments: {parameters: [ {name: kedro-node, value: "process_baci_hs2012"}, {name: experiment, value: "trade-02-baci"}, {name: cpu, value: "4"}, {name: mem, value: "32"}, {name: retries, value: "1"} ]}
+          - name: process-baci-hs2017
+            depends: "prepare-baci.Succeeded"
+            template: kedro
+            arguments: {parameters: [ {name: kedro-node, value: "process_baci_hs2017"}, {name: experiment, value: "trade-02-baci"}, {name: cpu, value: "4"}, {name: mem, value: "32"}, {name: retries, value: "1"} ]}
+          - name: process-baci-hs2022
+            depends: "prepare-baci.Succeeded"
+            template: kedro
+            arguments: {parameters: [ {name: kedro-node, value: "process_baci_hs2022"}, {name: experiment, value: "trade-02-baci"}, {name: cpu, value: "4"}, {name: mem, value: "32"}, {name: retries, value: "1"} ]}
+          - name: compute-network-vulnerabilities
+            depends: "(process-baci-hs1992.Succeeded || process-baci-hs1992.Failed) && (process-baci-hs1996.Succeeded || process-baci-hs1996.Failed) && (process-baci-hs2002.Succeeded || process-baci-hs2002.Failed) && (process-baci-hs2007.Succeeded || process-baci-hs2007.Failed) && (process-baci-hs2012.Succeeded || process-baci-hs2012.Failed) && (process-baci-hs2017.Succeeded || process-baci-hs2017.Failed) && (process-baci-hs2022.Succeeded || process-baci-hs2022.Failed)"
+            template: kedro
+            arguments: {parameters: [ {name: kedro-node, value: "compute_network_vulnerabilities"}, {name: experiment, value: "trade-03-vulnerabilities"}, {name: cpu, value: "4"}, {name: mem, value: "16"}, {name: retries, value: "1"} ]}
+          - name: compute-synthetic-scores
+            depends: "(compute-network-vulnerabilities.Succeeded || compute-network-vulnerabilities.Failed)"
+            template: kedro
+            arguments: {parameters: [ {name: kedro-node, value: "compute_synthetic_scores"}, {name: experiment, value: "trade-03-vulnerabilities"}, {name: cpu, value: "8"}, {name: mem, value: "32"}, {name: retries, value: "1"} ]}
+          - name: compute-synthesis-coherence
+            depends: "(compute-network-vulnerabilities.Succeeded || compute-network-vulnerabilities.Failed) && (compute-synthetic-scores.Succeeded || compute-synthetic-scores.Failed)"
+            template: kedro
+            arguments: {parameters: [ {name: kedro-node, value: "compute_synthesis_coherence"}, {name: experiment, value: "trade-03-vulnerabilities"}, {name: cpu, value: "8"}, {name: mem, value: "32"}, {name: retries, value: "1"} ]}
+          - name: publish-serving
+            depends: "(compute-network-vulnerabilities.Succeeded || compute-network-vulnerabilities.Failed) && (compute-synthesis-coherence.Succeeded || compute-synthesis-coherence.Failed) && (compute-synthetic-scores.Succeeded || compute-synthetic-scores.Failed) && (prepare-baci.Succeeded || prepare-baci.Failed)"
+            template: locked-trade-serving
+            arguments: {parameters: [ {name: kedro-node, value: "publish_serving"}, {name: experiment, value: "trade-04-serving"}, {name: cpu, value: "4"}, {name: mem, value: "16"}, {name: retries, value: "1"} ]}
+    # Tâche sérialisée par le mutex trade-serving, y compris entre exécutions concurrentes
+    - name: locked-trade-serving
+      inputs:
+        parameters: [{name: kedro-node}, {name: experiment}, {name: cpu}, {name: mem}, {name: retries}]
+      synchronization: {mutex: {name: trade-serving}}
+      steps:
+        - - name: run
+            template: kedro
+            arguments:
+              parameters:
+                - {name: kedro-node, value: "{{inputs.parameters.kedro-node}}"}
+                - {name: experiment, value: "{{inputs.parameters.experiment}}"}
+                - {name: cpu, value: "{{inputs.parameters.cpu}}"}
+                - {name: mem, value: "{{inputs.parameters.mem}}"}
+                - {name: retries, value: "{{inputs.parameters.retries}}"}
+    # Gestionnaire de fin : maintain_ducklake, sérialisé par le mutex trade-maintenance
+    - name: exit-handler
+      synchronization: {mutex: {name: trade-maintenance}}
+      steps:
+        - - name: maintain-ducklake
+            template: kedro
+            arguments: {parameters: [ {name: kedro-node, value: "maintain_ducklake"}, {name: experiment, value: "trade-00-maintenance"}, {name: cpu, value: "1"}, {name: mem, value: "2"}, {name: retries, value: "1"} ]}
+    # Template conteneur générique : un nœud Kedro du pipeline __default__ par pod
+    - name: kedro
+      inputs:
+        parameters:
+          - name: kedro-node
+          - name: experiment
+          - name: cpu
+          - name: mem
+          - name: retries
+      # Reprises sur erreur d'infrastructure uniquement (pod évincé, nœud perdu)
+      retryStrategy: {limit: "{{inputs.parameters.retries}}", retryPolicy: OnError}
+      # Requêtes = limites : un dépassement mémoire est prévisible et isolé à la tâche
+      podSpecPatch: |
+        containers:
+          - name: main
+            resources:
+              requests: {cpu: "{{inputs.parameters.cpu}}", memory: "{{inputs.parameters.mem}}Gi"}
+              limits:   {cpu: "{{inputs.parameters.cpu}}", memory: "{{inputs.parameters.mem}}Gi"}
+      container:
+        image: "ghcr.io/qbolliet/trade-analysis:{{workflow.parameters.image-tag}}"
+        imagePullPolicy: Always
+        # Commande `run` du projet : `kedro run` est celle d'argo-kedro, qui ignore --params
+        command: [python, -m, kedro_pipeline]
+        args:
+          - --pipeline=__default__
+          - --env=cloud
+          - --nodes={{inputs.parameters.kedro-node}}
+          - --params=runtime.FORCE_STEPS={{workflow.parameters.force-steps}},runtime.FORCE_METRICS={{workflow.parameters.force-metrics}},runtime.FORCE_METHODS={{workflow.parameters.force-methods}},{{workflow.parameters.extra-params}}
+        env:
+          # Environnement Kedro figé : les tâches BACI du DAG suivent ses millésimes cibles
+          - {name: KEDRO_ENV, value: "cloud"}
+          - {name: IMAGE_TAG, value: "{{workflow.parameters.image-tag}}"}
+          - {name: MLFLOW_EXPERIMENT_NAME, value: "{{inputs.parameters.experiment}}"}
+          - {name: WORKFLOW_ID, valueFrom: {fieldRef: {fieldPath: "metadata.labels['workflows.argoproj.io/workflow']"}}}
+          # Parallélisme intra-pod : CPU du pod (os.cpu_count() verrait ceux du nœud)
+          - {name: NUM_CPU, value: "{{inputs.parameters.cpu}}"}
+          # Métriques système des runs MLflow (onglet « System metrics »)
+          - {name: MLFLOW_ENABLE_SYSTEM_METRICS_LOGGING, value: "true"}
+          - {name: MLFLOW_SYSTEM_METRICS_SAMPLING_INTERVAL, value: "30"}
+          - {name: AWS_S3_ENDPOINT, value: "minio.lab.sspcloud.fr"}
+          - {name: AWS_DEFAULT_REGION, value: "us-east-1"}
+          - {name: MLFLOW_S3_ENDPOINT_URL, value: "https://minio.lab.sspcloud.fr"}
+          - {name: AWS_SESSION_TOKEN, value: ""}
+          - {name: PYTHONUNBUFFERED, value: "1"}
+          - {name: AWS_ACCESS_KEY_ID, valueFrom: {secretKeyRef: {name: trade-s3-credentials, key: S3_ACCESS_KEY}}}
+          - {name: AWS_SECRET_ACCESS_KEY, valueFrom: {secretKeyRef: {name: trade-s3-credentials, key: S3_SECRET_KEY}}}
+          - {name: COMTRADE_FREE_SUBSCRIPTION_KEY, valueFrom: {secretKeyRef: {name: comtrade-api-credentials, key: COMTRADE_FREE_SUBSCRIPTION_KEY}}}
+          - {name: COMTRADE_PREMIUM_INSTITUTIONNAL_SUBSCRIPTION_KEY, valueFrom: {secretKeyRef: {name: comtrade-api-credentials, key: COMTRADE_PREMIUM_INSTITUTIONNAL_SUBSCRIPTION_KEY}}}
+        envFrom:
+          - secretRef: {name: trade-postgres-credentials}
+          - secretRef: {name: trade-mlflow-credentials}

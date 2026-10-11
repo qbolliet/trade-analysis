@@ -21,3 +21,8 @@ jobs:
       - run: uv sync --frozen --group dev --extra tracking
 
       - run: uv run pytest -m "not slow"
+
+      # Manifestes Argo versionnés à jour avec les pipelines, argo.yml et les gabarits
+      - run: uv run kedro trade render-argo --check
+        env:
+          KEDRO_DISABLE_TELEMETRY: "true"

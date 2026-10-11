@@ -47,10 +47,9 @@ CONFIG_LOADER_ARGS = {
 # ne l'étiquette (TradeRunHooks.before_pipeline_run est en outre déclaré `trylast`)
 HOOKS = (TradeRunHooks(), GuardedMlflowHook())
 
-# Hooks de plugins désactivés :
-# - kedro-mlflow : remplacé par GuardedMlflowHook (même comportement, mais aucune
-#   erreur de suivi n'interrompt le calcul : serveur injoignable → avertissement) ;
-# - argo-kedro : sans config/base/argo.yml, il valide une configuration vide (namespace,
-#   machines, runner obligatoires) et fait échouer toute session ; à réactiver avec
-#   l'ajout d'argo.yml. Noms de distribution tels que déclarés dans les métadonnées.
-DISABLE_HOOKS_FOR_PLUGINS = ("kedro_mlflow", "argo-kedro")
+# Hook de plugin désactivé : kedro-mlflow, remplacé par GuardedMlflowHook (même
+# comportement, mais aucune erreur de suivi n'interrompt le calcul : serveur injoignable →
+# avertissement). Nom de distribution tel que déclaré dans les métadonnées. Le hook
+# d'argo-kedro reste actif : il valide config/base/argo.yml et en expose le contenu
+# (`context.argo`), dont les réglages du runner des tâches fusionnées.
+DISABLE_HOOKS_FOR_PLUGINS = ("kedro_mlflow",)

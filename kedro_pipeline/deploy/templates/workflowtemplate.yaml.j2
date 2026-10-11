@@ -1,0 +1,146 @@
+[#
+  WorkflowTemplate du pipeline : un template DAG par point d'entrée, un template conteneur
+  générique, une enveloppe sérialisée par mutex et le gestionnaire de fin (onExit).
+  Délimiteurs Jinja en crochets ; les accolades doubles sont des expressions Argo.
+#]
+[% macro task_parameters(task) %]
+{name: kedro-node, value: [[ task.node | q ]]}, {name: experiment, value: [[ task.experiment | q ]]}, {name: cpu, value: [[ task.cpu | q ]]}, {name: mem, value: [[ task.mem | q ]]}, {name: retries, value: [[ task.retries | q ]]}
+[%- endmacro %]
+# Fichier généré par `kedro trade render-argo --env [[ config.env ]]` : ne pas modifier à la main.
+# Source : pipelines Kedro (tags des nœuds) et config/base/argo.yml (bloc `workflow`).
+apiVersion: argoproj.io/v1alpha1
+kind: WorkflowTemplate
+metadata:
+  name: [[ config.name ]]
+  namespace: [[ config.namespace ]]
+  labels:
+[% for key, value in config.labels.items() %]
+    [[ key ]]: [[ value | q ]]
+[% endfor %]
+    generated-by: kedro_pipeline.deploy.render
+  annotations:
+    trade-analysis/kedro-env: [[ config.env | q ]]
+spec:
+  # Point d'entrée par défaut ; chaque CronWorkflow impose le sien
+  entrypoint: [[ entry_points[0].settings.name ]]
+  serviceAccountName: [[ config.service_account ]]
+[% if exit %]
+  # Maintenance DuckLake en fin d'exécution, quelle qu'en soit l'issue
+  onExit: [[ exit_template ]]
+[% endif %]
+  # Borne la plus large des points d'entrée ; chaque CronWorkflow impose la sienne
+  activeDeadlineSeconds: [[ active_deadline_seconds ]]
+  ttlStrategy: {secondsAfterSuccess: [[ config.ttl_seconds_after_success ]], secondsAfterFailure: [[ config.ttl_seconds_after_failure ]]}
+  podGC: {strategy: [[ config.pod_gc ]]}
+  parallelism: [[ config.parallelism ]]
+  arguments:
+    parameters:
+      # Étiquette de l'image ghcr (sha-<SHA court> immuable de préférence)
+      - name: image-tag
+        value: [[ config.image_tag | q ]]
+      # Forçage ponctuel (vide = aucun) : plusieurs valeurs séparées par « ; », jamais par
+      # « , » (Kedro découpe --params sur les virgules), ex. "partners;synthesis"
+      - name: force-steps
+        value: ""
+      - name: force-metrics
+        value: ""
+      - name: force-methods
+        value: ""
+      # Paires clé=valeur supplémentaires transmises à --params, séparées par « , »,
+      # ex. "runtime.FORCE_SCOPE.VINTAGES=HS2017,runtime.FORCE_SCOPE.PERIODS=2020;2021"
+      - name: extra-params
+        value: ""
+  templates:
+[% for spec in entry_points %]
+    # Point d'entrée [[ spec.settings.name ]] : nœuds tagués [[ spec.settings.tag ]] ([[ spec.tasks | length ]] tâches)
+    - name: [[ spec.settings.name ]]
+      dag:
+        tasks:
+[% for task in spec.tasks %]
+          - name: [[ task.name ]]
+[% if task.depends %]
+            depends: [[ task.depends | q ]]
+[% endif %]
+            template: [[ task.template ]]
+            arguments: {parameters: [ [[ task_parameters(task) ]] ]}
+[% endfor %]
+[% endfor %]
+[% for mutex in mutexes %]
+    # Tâche sérialisée par le mutex [[ mutex ]], y compris entre exécutions concurrentes
+    - name: [[ locked_prefix ]][[ mutex ]]
+      inputs:
+        parameters: [{name: kedro-node}, {name: experiment}, {name: cpu}, {name: mem}, {name: retries}]
+      synchronization: {mutex: {name: [[ mutex ]]}}
+      steps:
+        - - name: run
+            template: [[ kedro_template ]]
+            arguments:
+              parameters:
+                - {name: kedro-node, value: "{{inputs.parameters.kedro-node}}"}
+                - {name: experiment, value: "{{inputs.parameters.experiment}}"}
+                - {name: cpu, value: "{{inputs.parameters.cpu}}"}
+                - {name: mem, value: "{{inputs.parameters.mem}}"}
+                - {name: retries, value: "{{inputs.parameters.retries}}"}
+[% endfor %]
+[% if exit %]
+    # Gestionnaire de fin : [[ exit.node ]][% if exit.mutex %], sérialisé par le mutex [[ exit.mutex ]][% endif +%]
+    - name: [[ exit_template ]]
+[% if exit.mutex %]
+      synchronization: {mutex: {name: [[ exit.mutex ]]}}
+[% endif %]
+      steps:
+        - - name: [[ exit.name ]]
+            template: [[ kedro_template ]]
+            arguments: {parameters: [ [[ task_parameters(exit) ]] ]}
+[% endif %]
+    # Template conteneur générique : un nœud Kedro du pipeline [[ pod_pipeline ]] par pod
+    - name: [[ kedro_template ]]
+      inputs:
+        parameters:
+          - name: kedro-node
+          - name: experiment
+          - name: cpu
+          - name: mem
+          - name: retries
+      # Reprises sur erreur d'infrastructure uniquement (pod évincé, nœud perdu)
+      retryStrategy: {limit: "{{inputs.parameters.retries}}", retryPolicy: OnError}
+      # Requêtes = limites : un dépassement mémoire est prévisible et isolé à la tâche
+      podSpecPatch: |
+        containers:
+          - name: main
+            resources:
+              requests: {cpu: "{{inputs.parameters.cpu}}", memory: "{{inputs.parameters.mem}}Gi"}
+              limits:   {cpu: "{{inputs.parameters.cpu}}", memory: "{{inputs.parameters.mem}}Gi"}
+      container:
+        image: "[[ config.image ]]:{{workflow.parameters.image-tag}}"
+        imagePullPolicy: [[ config.image_pull_policy ]]
+        # Commande `run` du projet : `kedro run` est celle d'argo-kedro, qui ignore --params
+        command: [python, -m, kedro_pipeline]
+        args:
+          - --pipeline=[[ pod_pipeline ]]
+          - --env=[[ config.env ]]
+          - --nodes={{inputs.parameters.kedro-node}}
+          - --params=runtime.FORCE_STEPS={{workflow.parameters.force-steps}},runtime.FORCE_METRICS={{workflow.parameters.force-metrics}},runtime.FORCE_METHODS={{workflow.parameters.force-methods}},{{workflow.parameters.extra-params}}
+        env:
+          # Environnement Kedro figé : les tâches BACI du DAG suivent ses millésimes cibles
+          - {name: KEDRO_ENV, value: [[ config.env | q ]]}
+          - {name: IMAGE_TAG, value: "{{workflow.parameters.image-tag}}"}
+          - {name: MLFLOW_EXPERIMENT_NAME, value: "{{inputs.parameters.experiment}}"}
+          - {name: WORKFLOW_ID, valueFrom: {fieldRef: {fieldPath: "metadata.labels['workflows.argoproj.io/workflow']"}}}
+          # Parallélisme intra-pod : CPU du pod (os.cpu_count() verrait ceux du nœud)
+          - {name: NUM_CPU, value: "{{inputs.parameters.cpu}}"}
+          # Métriques système des runs MLflow (onglet « System metrics »)
+          - {name: MLFLOW_ENABLE_SYSTEM_METRICS_LOGGING, value: [[ ("true" if config.system_metrics_enabled else "false") | q ]]}
+          - {name: MLFLOW_SYSTEM_METRICS_SAMPLING_INTERVAL, value: [[ config.system_metrics_sampling_seconds | q ]]}
+[% for name, value in config.environment.items() %]
+          - {name: [[ name ]], value: [[ value | q ]]}
+[% endfor %]
+[% for name, ref in config.secret_environment.items() %]
+          - {name: [[ name ]], valueFrom: {secretKeyRef: {name: [[ ref.secret ]], key: [[ ref.key ]]}}}
+[% endfor %]
+[% if config.secret_environment_from %]
+        envFrom:
+[% for secret in config.secret_environment_from %]
+          - secretRef: {name: [[ secret ]]}
+[% endfor %]
+[% endif %]

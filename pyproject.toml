@@ -98,6 +98,7 @@ source_dir = "."
 dev = [
     "duckdb-engine>=0.17.0",
     "ipykernel>=7.1.0",
+    "jsonschema>=4.23",
     "moto[s3]>=5.2.3",
     "mypy>=1.18",
     "pandas-stubs>=3.0",

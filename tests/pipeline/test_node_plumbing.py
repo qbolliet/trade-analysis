@@ -123,14 +123,12 @@ def test_before_node_run_overrides_the_runtime_input_only() -> None:
     assert override == {"params:runtime": {"N_JOBS": 4}}
 
 
-def test_argo_runner_settings_are_given_only_when_missing() -> None:
+def test_the_project_hook_only_remembers_the_environment() -> None:
     hooks = TradeRunHooks()
-    context = SimpleNamespace()
+    context = SimpleNamespace(env="test")
     hooks.after_context_created(context)
-    assert context.argo.runner.use_memory_datasets is False
-    configured = SimpleNamespace(argo="from argo.yml")
-    hooks.after_context_created(configured)
-    assert configured.argo == "from argo.yml"
+    # Les réglages du runner (context.argo) viennent du hook d'argo-kedro (argo.yml)
+    assert hooks._env == "test" and not hasattr(context, "argo")
 
 
 def test_on_node_error_saves_the_reporting_outputs_of_the_failed_step() -> None:

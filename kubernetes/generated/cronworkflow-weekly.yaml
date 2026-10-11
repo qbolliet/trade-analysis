@@ -1,0 +1,28 @@
+# Fichier généré par `kedro trade render-argo --env cloud` : ne pas modifier à la main.
+# Source : pipelines Kedro (tags des nœuds) et config/base/argo.yml (bloc `workflow`).
+apiVersion: argoproj.io/v1alpha1
+kind: CronWorkflow
+metadata:
+  name: trade-pipeline-weekly
+  namespace: user-qbollietdgddi
+  labels:
+    app: "trade-analysis"
+    generated-by: kedro_pipeline.deploy.render
+  annotations:
+    trade-analysis/kedro-env: "cloud"
+spec:
+  schedules: [ "0 2 * * 6" ]
+  timezone: Europe/Paris
+  # Une exécution à la fois par point d'entrée ; les deux cadences peuvent se recouvrir
+  concurrencyPolicy: Forbid
+  startingDeadlineSeconds: 21600
+  successfulJobsHistoryLimit: 4
+  failedJobsHistoryLimit: 4
+  workflowMetadata:
+    labels:
+      trade-analysis/entry-point: weekly
+  workflowSpec:
+    workflowTemplateRef: {name: trade-pipeline}
+    # Surcharge du point d'entrée et de la durée maximale du template
+    entrypoint: weekly
+    activeDeadlineSeconds: 518400

@@ -4,14 +4,13 @@ The MLflow run of a task is opened by :class:`~kedro_pipeline.mlflow_hook.Guarde
 (kedro-mlflow behind a guard), registered just after these hooks in the
 settings: pluggy calls the hooks registered last first, so the run is open
 when these hooks tag it. The hook of argo-kedro registers itself through its
-entry point once enabled.
+entry point and exposes ``config/base/argo.yml`` as ``context.argo``.
 """
 # Importation des modules
 # Modules de base
 import logging
 import os
 import time
-from types import SimpleNamespace
 from typing import Any, Dict, Mapping, Optional
 
 # Kedro
@@ -37,9 +36,7 @@ LOCAL_RUN_SUFFIX = "local"
 class TradeRunHooks:
     """Project-level Kedro hooks (run tags, run context, parallelism, failures).
 
-    * ``after_context_created``: gives the context the runner settings that
-      the ``kedro run`` command of argo-kedro reads (``context.argo``), as long
-      as the argo-kedro hook is disabled, and remembers the environment;
+    * ``after_context_created``: remembers the environment;
     * ``before_pipeline_run`` (after the run is opened): tags the MLflow run of
       the task — ``workflow_id``, ``git_sha``, ``image_tag``, ``kedro_env``,
       ``node``, ``forced`` —, names it ``<task>-<WORKFLOW_ID>`` and marks its
@@ -66,27 +63,25 @@ class TradeRunHooks:
         self._context: Dict[str, Any] = {}
         self._tracking: Dict[str, Any] = {}
 
-    # Paramètres du runner d'argo-kedro, tant que son hook est désactivé
+    # Mémorisation de l'environnement de la session
     @hook_impl
     def after_context_created(self, context: Any) -> None:
-        """Remember the environment and set ``context.argo`` when absent.
+        """Remember the environment of the session.
 
-        The ``kedro run`` command of argo-kedro (it replaces Kedro's own and
-        runs the fused tasks) reads ``context.argo.runner.use_memory_datasets``.
-        The hook of argo-kedro sets it from ``argo.yml``, but it is disabled
-        until that file exists; the defaults are then given here.
+        The runner settings of the fused tasks (``context.argo``) are given by
+        the hook of argo-kedro, from ``config/base/argo.yml``.
 
         Args:
             context: The Kedro context just created.
+
+        Examples:
+            >>> from types import SimpleNamespace
+            >>> hooks = TradeRunHooks()
+            >>> hooks.after_context_created(SimpleNamespace(env="test"))
+            >>> hooks._env
+            'test'
         """
         self._env = getattr(context, "env", None)
-        if hasattr(context, "argo"):
-            return
-        try:
-            from argo_kedro.config.kedro_argo_config import RunnerConfig
-        except ImportError:
-            return
-        context.__setattr__("argo", SimpleNamespace(runner=RunnerConfig()))
 
     # Étiquetage du run de la tâche, une fois ouvert par kedro-mlflow
     @hook_impl(trylast=True)

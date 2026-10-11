@@ -47,6 +47,7 @@
 | 2026-10-09 (K-12) | **Pipelines et nœuds Kedro, deux cadences, test de bout en bout** : `kedro_pipeline/pipelines/{downloads,baci,vulnerabilities,synthesis,serving,maintenance}/` (nœuds `argo_kedro.pipeline.Node`, téléchargements en `FusedPipeline`), `__default__` par `sum_pipelines` (16 tâches en base), `daily` (4) et `weekly` (12) filtrés par tag ; `kedro_pipeline/pipelines/_common.py` (sorties de suivi, ordre registres → échec) ; hook `TradeRunHooks` (`N_JOBS`, `context.argo` par défaut, métriques d'un nœud en échec) ; datasets `ducklake.catalogs`, `clients.*`, `baci.scope`, `baci.concordances`, `mlflow.metrics.{node}` / `mlflow.artifacts.{node}` (fichiers locaux) ; catalogues DuckLake fichiers (`FileConnectorFactory`, métadonnées SQLite) choisis par `credentials.ducklake.file_root` ; `run_download` découpé en phases ; étape `maintenance` minimale ; environnement `config/test/` (résolveur `trade.test_root`, clients factices `tests/pipeline/fakes.py`). Écarts : tags en `famille.valeur` (Kedro refuse `:`), registres en entrée seulement, `state.baci` unique, diagnostics `fit` hors sorties de la synthèse, `baci.scope` en pickle. Constats : `kedro run` est la commande d'argo-kedro (FusedRunner) et **ignore `--params`** ; un téléchargement sans nouvelle donnée avance `last_download` (PQ-22) | PD-14, PS-07, PS-08, PS-09, PS-11, PS-18, §6, PQ-22 |
 | 2026-10-09 (K-13) | **Suivi MLflow du pipeline Kedro** : `config/{base,test}/mlflow.yml` (résolveur `trade.env` limité à `MLFLOW_TRACKING_URI`, `MLFLOW_EXPERIMENT_NAME`, `WORKFLOW_ID`) ; hook kedro-mlflow **gardé** `kedro_pipeline/mlflow_hook.py::GuardedMlflowHook` (sonde du serveur, aucune erreur de suivi ne remonte au runner, plus de réouverture du run avant chaque nœud) à la place de celui du plugin ; `ActiveRunTracker` ; `build_tracker`, `node_unit_runs` (unités d'un nœud au `step` de leur millésime), `build_node_report` (contrôles par unité, runs inactifs), `close_stale_runs`, `tag_active_experiment` (`kedro_pipeline/io/tracking.py`) ; datasets `MlflowRunMetricsDataset` (sans doublon) et `MlflowTablesDataset` (`kedro_pipeline/io/mlflow_datasets.py`) ; `TradeRunHooks` (tags, nom de run, contexte injecté dans `params:tracking`, description réduite) ; `finish_step` : registres → rapport → échec ; **sections PD-13** des métriques BACI (`output/`, `conversion/`, `gravity/`, `valuation/`, `reconciliation/`, `quality/{value,quantity}/`, `nes/`, `harmonization/`) et des requêtes (`download/query/`, `download/fetch/`, `http/`, `rate_limit/`), `CHECKS` renommés ; couverture et tables PS-31.4 dans le rapport des téléchargements ; clôture des runs orphelins par `maintain_ducklake`. Écarts : `trade.env` au lieu d'`oc.env`, datasets projet au lieu de `MlflowArtifactDataset`, expériences typées « Model training » (interface MLflow 3). Constats : métriques système actives par la seule variable ; la réouverture du run par kedro-mlflow démarrait un moniteur de plus par nœud | C-19, PD-13, PD-16, PS-07, PS-08, PS-19, PS-31, §5.1, §5.8, PR-19, PR-20, PQ-19 |
 | 2026-10-11 (K-14) | **Maintenance DuckLake implémentée** : `kedro_pipeline/io/maintenance.py` (métadonnées, procédures en SQL direct à horloge injectée, `VACUUM`, `pg_dump | gzip` vers S3, rétention), `kedro_pipeline/steps/maintenance.py::run_maintenance(catalogs, *, params, tracker, now)`, nœud `maintain_ducklake` (entrée `ducklake.catalogs`, clôture des runs orphelins conditionnée par `maintenance.STALE_RUNS`), `DuckLakeCatalogs.connector` / `has_postgres`, rapport (chiffres clés, section, `maintenance.csv`), contrôle `maintain_ducklake` ; `compact_after_update=False` explicite partout (test d'analyse du code) ; paramètre `TIMEZONE`. Résultats de vérification sur DuckDB 1.5.3 consignés en PS-24 : seuil d'inlining par défaut de 10 lignes (suppressions comprises, mesurer après `flush`), `DuckLakeMaintenance` avale ses erreurs et lit l'horloge système, mesure de `compact_after_update` (`True` : 586 snapshots contre 202). `dt-ducklake-manager` était déjà en 0.4.1 | C-08, PD-16, PD-21, PS-24, PS-31.4, PS-31.5, PR-07, PR-20 |
+| 2026-10-11 (K-15) | **Rendu Argo implémenté** : `config/base/argo.yml` (partie argo-kedro + bloc projet `workflow` : service account, `parallelism: 8`, planifications, délais, reprises par motif, dépendances strictes, environnement et secrets), `kedro_pipeline/deploy/{config,render}.py` (`build_dag` seul appelant de `get_argo_dag`, `TaskSpec`, `exit_task`, `cron_schedule`, `schedule_field`, `render_manifests`, `diff_manifests`), gabarits `kedro_pipeline/deploy/templates/*.yaml.j2` (délimiteurs Jinja en crochets), `kedro trade render-argo [--env] [--image-tag] [--output-dir] [--check]`, `kubernetes/generated/` (3 manifestes + README), contrôle en CI, tests `tests/deploy/` (fichiers de référence jouets, pipeline réel, schéma JSON minimal, `jsonschema` en groupe `dev`). Constats : `kedro run` est **toujours** la commande d'argo-kedro (les commandes globales de plugin passent avant les commandes projet) et ignore `--params` ; `python -m kedro_pipeline` était cassé (`find_run_command` cherche `kedro_pipeline.cli.run`) → **commande `run` projet** (FusedRunner + `runtime_params`), appelée par les pods ; hook argo-kedro réactivé, repli `context.argo` de `TradeRunHooks` retiré ; surcharge d'`entrypoint` / `activeDeadlineSeconds` par `workflowSpec` avec `workflowTemplateRef` confirmée sur le source v3.6.10 (`JoinWorkflowSpec` : Workflow > WorkflowTemplate > défauts). Écarts : **`KEDRO_ENV` figé** à l'environnement du rendu (plus de paramètre `kedro-env` : le fan-out BACI en dépend ; démo rendue hors dépôt), paramètre **`extra-params`** au lieu de `max-runtime-hours`, mutex portés par des enveloppes `steps` (motif validé par la transition), `emph_storage` non rendu, étiquette d'image par défaut `qb-vulnerabilities` (`imagePullPolicy: Always`) à épingler en K-17, pas d'annotation de SHA (sortie indépendante du commit) | PD-14, PS-03, PS-11, PS-20, PS-21 |
 
 ## Sommaire
 
@@ -1112,6 +1113,12 @@ pour toute une exécution.
   argo-kedro) complétée de `--env` et `--params`. **À vérifier dans K-15** : argo-kedro
   enregistre une commande globale `run` qui remplace `kedro run` par sa version
   `FusedRunner` ; il faut confirmer qu'elle coexiste avec les hooks kedro-mlflow.
+  *(K-15, 2026-10-11 : elle coexiste avec les hooks kedro-mlflow et projet, mais ignore
+  `--params` et ne peut pas être masquée par une commande projet (les commandes globales
+  de plugin sont résolues en premier). Le pod appelle donc la commande `run` du projet :
+  `python -m kedro_pipeline --pipeline=__default__ --env=<env> --nodes=<nœud> --params=…`
+  (`kedro_pipeline/cli.py::run`, FusedRunner d'argo-kedro, `runtime_params` transmis à la
+  session ; aussi `kedro trade run`).)*
 
 **Justification.** Un seul workflow, voulu par l'utilisateur ; kedro reste la source de
 vérité du DAG ; la planification quotidienne et les exécutions ponctuelles partagent le
@@ -3384,6 +3391,28 @@ argo submit --from workflowtemplate/trade-pipeline --entrypoint daily  -p kedro-
 argo submit --from workflowtemplate/trade-pipeline --entrypoint weekly -p kedro-env=demo --watch
 ```
 
+> **Implémentation (K-15, 2026-10-11)** — `kedro_pipeline/deploy/`, `config/base/argo.yml`,
+> `kubernetes/generated/` (README : régénération, application, exécutions ponctuelles par
+> `kubectl create`, remplacement de la transition). Écarts aux extraits ci-dessus :
+>
+> - commande `python -m kedro_pipeline` (et non `kedro`) ; séparateur `;` à l'intérieur des
+>   valeurs de forçage ; paramètre `extra-params` (paires `clé=valeur` ajoutées à `--params`,
+>   ex. `FORCE_SCOPE`) ; `IMAGE_TAG`, `AWS_SESSION_TOKEN=""` et les deux clés Comtrade
+>   injectés comme dans la transition ;
+> - **`KEDRO_ENV` figé** à l'environnement du rendu, sans paramètre `kedro-env` : le DAG
+>   `weekly` compte un `process_baci_<v>` par cible de cet environnement (7 en `cloud`,
+>   1 en `demo`). `kubernetes/generated/` est le rendu `cloud` ; une démo se rend par
+>   `render-argo --env demo --output-dir <hors dépôt>` (mêmes noms de ressources) ;
+> - mutex portés par des enveloppes `steps` (`locked-<mutex>`, `exit-handler`) et
+>   `retryStrategy.limit` paramétré par tâche, motifs déjà validés sur le cluster ;
+> - dépendances calculées sur les datasets : `publish-serving` dépend aussi des
+>   téléchargements (`daily`, référentiels) et de `prepare-baci` (`weekly`, concordances) ;
+>   `compute-synthesis-coherence` dépend aussi du réseau ;
+> - `schedules:` (Argo 3.6.10) ; jour hebdomadaire = `(runtime.WEEKLY_DAY + 1) % 7` ;
+>   `workflowMetadata.labels.trade-analysis/entry-point` sur les exécutions planifiées ;
+> - surcharge de `entrypoint` / `activeDeadlineSeconds` confirmée sur le source v3.6.10
+>   (`JoinWorkflowSpec`) ; validation réelle (`kubectl apply --dry-run=server`) en K-17.
+
 ### PS-22 — `docker/Dockerfile`
 
 ```dockerfile
@@ -4325,7 +4354,7 @@ fictif de `process_baci_hs.main()` piloté dans un Chromium sans tête ; test
    d'échantillonnage : un run plus court n'en a aucun. *K-13* : vérifié sur les runs ouverts
    par kedro-mlflow (`MLFLOW_SYSTEM_METRICS_SAMPLING_INTERVAL=1`, huit métriques `system/*`
    par run), à condition de ne pas rouvrir le run avant chaque nœud (PS-19,
-   implémentation). *À revérifier* : `psutil` dans l'image (K-15).
+   implémentation). *K-15* : `psutil` est installé dans l'image (extra `tracking` de `UV_EXTRAS`, `docker/Dockerfile`) ; variables injectées par le rendu depuis `tracking.SYSTEM_METRICS`.
 4. **Description dans *Overview*** — elle est affichée **sous** « About this run », les tags
    et les jeux de données (pas « en tête de page »), **repliée** sur environ quatre lignes
    avec un lien *Show more* : le titre (verdict) et la ligne d'exécution sont visibles, le

@@ -1,0 +1,111 @@
+# Ordonnancement Argo du pipeline : configuration lue par argo-kedro (DAG, types de
+# machines, runner des tâches fusionnées) et par le rendu des manifestes de production
+# (`kedro trade render-argo`, bloc `workflow`).
+#
+# Les manifestes rendus (kubernetes/generated/) sont versionnés et vérifiés en CI : toute
+# modification de ce fichier se répercute par `uv run kedro trade render-argo`.
+
+# Namespace Onyxia du projet
+namespace: user-qbollietdgddi
+
+# Image exécutée par les pods. `tag` est la valeur par défaut du paramètre de workflow
+# `image-tag` (surchargée au rendu par `--image-tag`). Étiquette de branche publiée par
+# image.yml à chaque push ; à épingler sur une étiquette immuable `sha-<SHA court>` au
+# déploiement (une étiquette mobile impose `image_pull_policy: Always`). Pas de variable
+# d'environnement ici : Kedro n'autorise `oc.env` que dans les credentials.
+deployment:
+  image: ghcr.io/qbolliet/trade-analysis
+  tag: qb-vulnerabilities
+  target_platform: linux/amd64
+  context: ./
+  dockerfile: docker/Dockerfile
+
+# Runner des tâches fusionnées (téléchargements) : jeux intermédiaires en mémoire,
+# uniquement à l'intérieur d'une tâche fusionnée
+runner:
+  use_memory_datasets: true
+
+# Types de machine des tâches (`machine_type` des nœuds). Limites par pod constatées sur
+# Onyxia : au plus 100 pods simultanés, de 0,1 à 30 CPU et de 1 à 200 Gi par pod, délai de
+# démarrage croissant avec la demande → tailles modestes. `mem` et `emph_storage` en Gi.
+# `emph_storage` n'est pas rendu dans les manifestes (aucun volume de travail local : les
+# fichiers de travail BACI sont sur S3) ; il reste requis par le schéma d'argo-kedro.
+# BACI : une tranche annuelle tient en quelques Gi, mémoire à relever ici si le pic mesuré
+# (`memory/peak_mb` dans MLflow) s'approche de la limite.
+machine_types:
+  io-small:       {mem: 2,  cpu: 1, num_gpu: 0, emph_storage: 5}
+  compute-medium: {mem: 16, cpu: 4, num_gpu: 0, emph_storage: 20}
+  baci-large:     {mem: 32, cpu: 4, num_gpu: 0, emph_storage: 80}
+  synthesis-cpu:  {mem: 32, cpu: 8, num_gpu: 0, emph_storage: 20}
+default_machine_type: io-small
+
+# Rendu des manifestes de production (bloc propre au projet, ignoré par argo-kedro)
+workflow:
+  # Nom du WorkflowTemplate ; les CronWorkflow s'appellent <name>-<point d'entrée>
+  name: trade-pipeline
+  # Version du contrôleur Argo Workflows déployé (choix de `schedules` / `schedule`)
+  argo_version: "3.6.10"
+  service_account: workflow
+  labels: {app: trade-analysis}
+  # Tâches simultanées d'une exécution : sept millésimes BACI + une. Le namespace ne borne
+  # ni le CPU ni la mémoire au total (seulement 100 pods) : seules les limites par pod
+  # contraignent
+  parallelism: 8
+  # Conservation des workflows terminés (3 jours réussis, 7 jours en échec)
+  ttl_seconds_after_success: 259200
+  ttl_seconds_after_failure: 604800
+  pod_gc: OnPodSuccess
+  image_pull_policy: Always
+  timezone: Europe/Paris
+  concurrency_policy: Forbid
+  # Reprises sur erreur d'infrastructure (pod évincé, nœud perdu), par motif de nom de
+  # nœud ; aucune pour les téléchargements, dont une reprise dépasserait le budget horaire
+  retries:
+    default: 1
+    nodes:
+      "download_*": 0
+  # Dépendances strictes (Succeeded) : sans périmètre BACI valide, aucun millésime n'est
+  # calculable. Toutes les autres sont tolérantes à l'échec amont (Succeeded || Failed) :
+  # les étapes ne lisent que des données commitées et décident seules, par leurs
+  # registres de fraîcheur, de ce qui est à recalculer
+  strict_dependencies:
+    "process_baci_*": [prepare_baci]
+  # Points d'entrée : tag de cadence des nœuds, planification (heure locale de `timezone`),
+  # durée maximale et historique des exécutions. `weekly: true` → jour de la semaine lu
+  # dans runtime.WEEKLY_DAY (0 = lundi)
+  entry_points:
+    daily:
+      tag: cadence.daily
+      minute: 0
+      hour: 1
+      weekly: false
+      active_deadline_seconds: 82800        # 23 h
+      starting_deadline_seconds: 3600
+      history_limit: 7
+    weekly:
+      tag: cadence.weekly
+      minute: 0
+      hour: 2
+      weekly: true
+      active_deadline_seconds: 518400       # 6 jours
+      starting_deadline_seconds: 21600
+      history_limit: 4
+  # Variables non secrètes des pods. AWS_SESSION_TOKEN vide : clés Minio permanentes, et
+  # statflows lit encore cette variable sans valeur par défaut
+  environment:
+    AWS_S3_ENDPOINT: minio.lab.sspcloud.fr
+    AWS_DEFAULT_REGION: us-east-1
+    MLFLOW_S3_ENDPOINT_URL: "https://minio.lab.sspcloud.fr"
+    AWS_SESSION_TOKEN: ""
+    PYTHONUNBUFFERED: "1"
+  # Variables tirées d'une clé de secret : variable → {secret, clé}
+  secret_environment:
+    AWS_ACCESS_KEY_ID: {secret: trade-s3-credentials, key: S3_ACCESS_KEY}
+    AWS_SECRET_ACCESS_KEY: {secret: trade-s3-credentials, key: S3_SECRET_KEY}
+    COMTRADE_FREE_SUBSCRIPTION_KEY: {secret: comtrade-api-credentials, key: COMTRADE_FREE_SUBSCRIPTION_KEY}
+    COMTRADE_PREMIUM_INSTITUTIONNAL_SUBSCRIPTION_KEY: {secret: comtrade-api-credentials, key: COMTRADE_PREMIUM_INSTITUTIONNAL_SUBSCRIPTION_KEY}
+  # Secrets exposés en entier (une variable par clé) : PostgreSQL des catalogues DuckLake
+  # (PGHOST, PGPORT, PGUSER, PGPASSWORD, PGDATABASE, PGADMINUSER) et serveur MLflow
+  secret_environment_from:
+    - trade-postgres-credentials
+    - trade-mlflow-credentials
