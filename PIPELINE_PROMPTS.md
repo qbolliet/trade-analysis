@@ -2367,11 +2367,11 @@ avant exécution.
 ÉTAPES
 1. Pré-vol (lecture seule) : contexte kubectl, secrets présents avec les bonnes clés
    (noms de clés seulement : `kubectl get secret X -o jsonpath='{.data}' | jq 'keys'`),
-   image `ghcr.io/qbolliet/trade-analysis:<sha>` du HEAD publiée et publique, service
+   image `ghcr.io/qbolliet/trade-analysis:sha-2b6894c` du HEAD publiée et publique, service
    MLflow joignable depuis un pod (`kubectl run --rm -it curl --image=curlimages/curl --
    curl -s $MLFLOW_TRACKING_URI/health` en utilisant l'URL depuis le secret dans le pod,
    sans l'afficher), Argo opérationnel, état des derniers runs de transition.
-2. `uv run kedro trade render-argo --env cloud --image-tag <sha>` ; `--check` ; diff.
+2. `uv run kedro trade render-argo --env cloud --image-tag sha-2b6894c` ; `--check` ; diff.
 3. Déploiement (après confirmation) : `kubectl apply -f kubernetes/generated/` ;
    suspension du CronWorkflow de transition (`argo cron suspend` ou patch
    `spec.suspend: true`).
