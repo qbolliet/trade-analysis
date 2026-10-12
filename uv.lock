@@ -1903,7 +1903,7 @@ requires-dist = [
     { name = "s3fs", specifier = ">=0.4.2" },
     { name = "scikit-learn", specifier = ">=1.5" },
     { name = "scipy", specifier = ">=1.18.0" },
-    { name = "statflows", extras = ["s3", "ducklake"], git = "https://github.com/qbolliet/statflows?tag=v0.2.0" },
+    { name = "statflows", extras = ["s3", "ducklake"], git = "https://github.com/qbolliet/statflows?tag=v0.2.1" },
     { name = "statsmodels", specifier = ">=0.14.6" },
     { name = "threadpoolctl", specifier = ">=3.1" },
     { name = "tqdm", specifier = ">=4.67" },
@@ -3868,8 +3868,8 @@ wheels = [
 
 [[package]]
 name = "statflows"
-version = "0.2.0"
-source = { git = "https://github.com/qbolliet/statflows?tag=v0.2.0#7e93531130554aff9ef2e93e3105778a0da58e1a" }
+version = "0.2.1"
+source = { git = "https://github.com/qbolliet/statflows?tag=v0.2.1#759b2bff53e683cef552e342bbee80e3b6cc111b" }
 dependencies = [
     { name = "pandas" },
     { name = "pyarrow" },
