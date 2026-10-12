@@ -98,3 +98,21 @@ def test_expected_locations_are_ducklake_locations() -> None:
     expected = expected_datasets(load_parameters("base"))
     tables = {name: value for name, value in expected.items() if isinstance(value, DuckLakeLocation)}
     assert {"vulnerabilities.partners", "vulnerabilities.network", "synthesis.diagnostics"} <= set(tables)
+
+
+@pytest.mark.parametrize("env", ["base", "demo"])
+def test_maintenance_targets_the_source_catalogs_written_by_the_environment(env: str) -> None:
+    """La maintenance vise les catalogues bruts de l'environnement, pas ceux de la production.
+
+    En ``demo`` les sources sont isolées (``demo_comtrade``, ``demo_eurostat``) : une liste
+    de catalogues héritée de la base ferait échouer la connexion à une base inexistante.
+    """
+    parameters = load_parameters(env)
+    maintained = {(c["dbname"], c["data_path"]) for c in parameters["maintenance"]["CATALOGS"]}
+    comtrade = parameters["comtrade"]["DOWNLOADS"]
+    eurostat = parameters["eurostat"]["DOWNLOADS"]
+    written = {
+        (comtrade["DBNAME"], comtrade["C_A_HS"]["PATHS"]["DATA_PATH"]),
+        (eurostat["DBNAME"], eurostat["DS-045409"]["PATHS"]["DATA_PATH"]),
+    }
+    assert written <= maintained

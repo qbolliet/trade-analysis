@@ -1,0 +1,13 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# ENVIRONNEMENT DEMO — PÉRIMÈTRE PROVISOIRE : la maintenance doit viser les catalogues réellement écrits par
+# l'environnement : les sources brutes sont isolées (demo_eurostat, demo_comtrade, chemins
+# S3 sous trade/demo/), alors que les catalogues `vulnerabilities` et `serving` sont
+# partagés avec la production (un catalogue DuckLake n'a qu'un seul chemin de données).
+# La liste est remplacée en entier : la fusion de configuration ne combine pas les listes.
+# ─────────────────────────────────────────────────────────────────────────────
+maintenance:
+  CATALOGS:
+    - {dbname: demo_eurostat,   catalog_alias: eurostat,        bucket: qbollietdgddi, data_path: trade/demo/datasets/comext}
+    - {dbname: demo_comtrade,   catalog_alias: comtrade,        bucket: qbollietdgddi, data_path: trade/demo/datasets/comtrade}
+    - {dbname: vulnerabilities, catalog_alias: vulnerabilities, bucket: qbollietdgddi, data_path: trade/datasets/vulnerabilities/}
+    - {dbname: serving,         catalog_alias: serving,         bucket: qbollietdgddi, data_path: trade/datasets/serving/}
