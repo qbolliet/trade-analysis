@@ -111,8 +111,12 @@ def test_maintenance_targets_the_source_catalogs_written_by_the_environment(env:
     maintained = {(c["dbname"], c["data_path"]) for c in parameters["maintenance"]["CATALOGS"]}
     comtrade = parameters["comtrade"]["DOWNLOADS"]
     eurostat = parameters["eurostat"]["DOWNLOADS"]
+    vulnerabilities = parameters["vulnerabilities"]["VULNERABILITIES"]
     written = {
         (comtrade["DBNAME"], comtrade["C_A_HS"]["PATHS"]["DATA_PATH"]),
         (eurostat["DBNAME"], eurostat["DS-045409"]["PATHS"]["DATA_PATH"]),
+        # Catalogue des résultats : le chemin de données est celui du bloc partenaires
+        (vulnerabilities["DBNAME"], vulnerabilities["DS-045409"]["PATHS"]["DATA_PATH"]),
+        (parameters["serving"]["DBNAME"], parameters["serving"]["DATA_PATH"]),
     }
     assert written <= maintained

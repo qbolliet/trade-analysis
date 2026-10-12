@@ -296,6 +296,34 @@ def migrate_indicators(
     return MigrationReport("migrated", n_rows, len(batches), backup_kept, new_keys)
 
 
+# Fonction d'alignement de la table de méta-données sur le schéma courant du gestionnaire
+def ensure_metadata_label_for(conn: Any, *, catalog_alias: str, schema: str) -> bool:
+    """Add the ``label_for`` column to a schema's ``metadata`` table when it is missing.
+
+    Tables created by an older ``dt_ducklake_manager`` have no such column, yet every
+    update or column addition reads it to check the code/label dependency: without it
+    the operation fails on a ``Binder Error``. The column is nullable and only means
+    something for label columns, so adding it empty keeps the table's behaviour.
+    Idempotent.
+
+    Args:
+        conn: Open connection on the result catalog.
+        catalog_alias: Alias of the result catalog.
+        schema: Schema whose ``metadata`` table is aligned.
+
+    Returns:
+        True when the column was added, False when it was already there.
+
+    Examples:
+        >>> ensure_metadata_label_for(conn, catalog_alias="v", schema="demo_network_indicators")  # doctest: +SKIP
+        True
+    """
+    if "label_for" in table_columns(conn, catalog_alias, schema, "metadata"):
+        return False
+    conn.execute(f'ALTER TABLE {_qualified(catalog_alias, schema, "metadata")} ADD COLUMN label_for VARCHAR')
+    return True
+
+
 # Fonction d'ajout du drapeau « millésime en vigueur » à la table réseau
 def backfill_network_in_force(
     conn: Any,
@@ -329,6 +357,8 @@ def backfill_network_in_force(
         return 0
     if NETWORK_IN_FORCE_COL in table_columns(conn, catalog_alias, schema):
         return 0
+    # Méta-données d'une version antérieure du gestionnaire : colonne lue par add_columns
+    ensure_metadata_label_for(conn, catalog_alias=catalog_alias, schema=schema)
     for statement in nomenclature_macros_sql(nomenclatures):
         conn.execute(statement)
     keys = primary_keys(conn, catalog_alias, schema)

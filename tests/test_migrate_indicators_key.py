@@ -149,3 +149,26 @@ def test_backfill_network_in_force_and_drop_dependent(ducklake_conn) -> None:
     dropped = migrate.drop_schema_tables(conn, alias, "synthesis")
     assert "fact_table" in dropped
     assert migrate.schema_tables(conn, alias, "synthesis") == []
+
+
+def test_backfill_aligns_the_metadata_of_a_legacy_network_table(ducklake_conn) -> None:
+    """Une table de méta-données sans ``label_for`` (ancien gestionnaire) ne bloque plus le remplissage."""
+    from statflows.storage.ducklake.tables import write_dataframe
+
+    conn, alias = ducklake_conn
+    df_network = pd.DataFrame(
+        {"classification": ["HS2017", "HS2022"], "product": ["854110"] * 2,
+         "year": [2019, 2023], "flow": [1, 1], "SPOF": [0.1, 0.3]}
+    )
+    write_dataframe(conn, df_network, ["classification", "product", "year", "flow"],
+                    catalog_alias=alias, schema="network_indicators")
+    # Simulation d'une table créée avant l'ajout de la colonne par le gestionnaire
+    conn.execute(f'ALTER TABLE "{alias}"."network_indicators"."metadata" DROP COLUMN label_for')
+    assert "label_for" not in migrate.table_columns(conn, alias, "network_indicators", "metadata")
+
+    assert migrate.backfill_network_in_force(
+        conn, catalog_alias=alias, schema="network_indicators", nomenclatures=HS
+    ) == 2
+    assert "label_for" in migrate.table_columns(conn, alias, "network_indicators", "metadata")
+    # Idempotence de l'alignement
+    assert migrate.ensure_metadata_label_for(conn, catalog_alias=alias, schema="network_indicators") is False
