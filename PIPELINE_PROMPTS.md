@@ -71,7 +71,9 @@
 | K-15 | Rendu Argo (argo-kedro → WorkflowTemplate + 2 CronWorkflow) | 4 | **Opus** | **Oui** | K-13, K-14 | trade-analysis |
 | K-16 | Site de documentation (mkdocs + kedro-viz) | 4 | Sonnet | Non | K-12 | trade-analysis |
 | K-17 🔌 | Déploiement, recette sur Onyxia et runbooks | 4 | Sonnet | **Oui** | K-15, K-16 | trade-analysis |
-| K-17b 🔌 | Retrait des données de démonstration et fictives sur le cluster (inventaire, non-contamination, suppression confirmée) | 4 | Sonnet | **Oui** | K-17, **données réelles complètes** (PQ-20) | trade-analysis |
+| K-17c | Nettoyage des compatibilités avec d'anciennes bases et filigrane de données (`statflows` corrigé) | 4 | Sonnet | **Oui** | K-17 (étapes 1 à 4), nouvelle version de `statflows` | trade-analysis |
+| K-17d 🔌 | Validation du déploiement sur bases vierges (recette demo complète, idempotence, MLflow, données, bascule, runbooks) | 4 | Sonnet | **Oui** | K-17c | trade-analysis |
+| K-17b 🔌 | Retrait des données de démonstration et fictives sur le cluster (inventaire, non-contamination, suppression confirmée) | 4 | Sonnet | **Oui** | K-17d, **données réelles complètes** (PQ-20) | trade-analysis |
 | K-18 | Nettoyage final : suppression des scripts, du code fictif et des fichiers de démonstration, documentation | 4 | Sonnet | Non | K-17b | trade-analysis |
 
 ```mermaid
@@ -87,7 +89,7 @@ flowchart LR
   K12 --> K13 --> K15
   K12 --> K14 --> K15
   K12 --> K16 --> K17
-  K15 --> K17 --> K17b --> K18
+  K15 --> K17 --> K17c --> K17d --> K17b --> K18
 ```
 
 Justification des choix de modèle : **Opus** pour les prompts qui demandent des arbitrages
@@ -2420,9 +2422,203 @@ CRITÈRES D'ACCEPTATION
 
 ---
 
+## K-17c — Nettoyage des compatibilités avec d'anciennes bases et filigrane de données
+
+- **Modèle** : Sonnet · **Mode plan** : Oui (suppression transversale dans plusieurs modules, contrat de tests à préserver) · **Phase** : 4 · **Dépend de** : K-17 (étapes 1 à 4 réalisées), nouvelle version de `statflows` publiée par l'utilisateur (date du dernier téléchargement ayant réellement ramené des données)
+- **Dépôt** : `trade-analysis` — pas d'accès `kubectl` requis
+
+````text
+CONVENTIONS DE RÉDACTION DU CODE (à appliquer à tout le code écrit ou modifié)
+- Commentaires internes en FRANÇAIS, à formulation nominale (ex. `# Vérification des
+  arguments`, pas `# Vérifier les arguments`) ; expliquer le « pourquoi » plutôt que le
+  « quoi » quand le code est clair.
+- Docstrings en ANGLAIS, selon la convention Google Style : description concise, puis
+  `Args:` (noms, types et descriptions), `Returns:` (type et description), `Raises:`
+  (exceptions possibles) et `Examples:` (cas d'usage concrets, doctest quand possible).
+- Ne cite dans le code, les commentaires et les docstrings aucun identifiant ni paragraphe
+  d'un document d'architecture ou de spécification : décris explicitement toute
+  l'information utile (règle, motivation, valeurs attendues) à l'endroit où elle sert.
+
+Dépôt `trade-analysis`. Contexte : la production repart de bases de données VIERGES. Tout
+code ajouté pour faire cohabiter la version courante avec d'anciennes bases (registres,
+tables, métadonnées d'une version antérieure) est donc inutile et doit disparaître avant
+le lancement, pour livrer le code le plus simple possible. Lis `CLAUDE.md` (s'il existe),
+`PIPELINE_ARCHITECTURE.md` (§2.3, PD-13, PD-14, §5, §8) et `kubernetes/generated/README.md`.
+
+OBJECTIF : (A) retirer les compatibilités avec d'anciennes bases ; (B) adopter la nouvelle
+version de `statflows` pour que la fraîcheur des unités partenaires ne dépende plus de la
+date d'exécution des requêtes de téléchargement.
+
+A. NETTOYAGE (pour chaque élément : supprimer le code, les paramètres, les tests, la
+   documentation et les mentions du `Dockerfile` ; vérifier avec `grep` qu'il ne reste
+   aucune référence)
+   1. `tools/migrate_indicators_key.py`, `tests/test_migrate_indicators_key.py` et la ligne
+      `COPY tools/ tools/` de `docker/Dockerfile` (le dossier `tools/` disparaît s'il ne
+      contient plus rien d'autre ; sinon seule la partie migration est retirée).
+   2. Alignement de la colonne `label_for` d'anciennes tables de métadonnées :
+      `DuckLakeTable._ensure_label_for` et son appel dans `_updater`
+      (`kedro_pipeline/io/ducklake.py`), test
+      `test_upsert_many_aligns_the_metadata_of_a_legacy_table`.
+   3. Registre de fraîcheur v1 (`kedro_pipeline/io/freshness.py`) : `LegacySource`,
+      `legacy_entry`, `adopt_legacy`, `adopt_legacy_flag`, `ADOPT_ENV_VARIABLE`, le champ
+      `RegistryEntry.legacy` (et sa sérialisation), la lecture d'un document v1 au chemin
+      d'un fragment v2 ; leurs branchements : `pipelines/_common.adopt_legacy`, le
+      paramètre `adopt_legacy_fingerprints` (`pipelines/vulnerabilities/nodes.py`,
+      `pipelines/baci/nodes.py`, `steps/coherence.py`, `steps/network.py`),
+      `_parse_legacy_network` et `legacy_path` (`steps/network.py`), `LegacySource` dans
+      `steps/baci.py`, et la clé `STATE` des fichiers de configuration qui ne sert qu'à
+      cela. Adapter `tests/test_freshness*.py` et `tests/test_invalidate_freshness.py`.
+   4. Toute autre mention héritée que le `grep` (`legacy`, `ancien`, `antérieur`,
+      `migrat`, `rétro`, `v1`) fait remonter dans `kedro_pipeline/`, `config/`,
+      `kubernetes/`, `docker/` et les README : classe-la en « compatibilité d'anciennes
+      bases » (à retirer) ou « comportement permanent » (à garder) et justifie chaque
+      choix dans le rapport.
+   À GARDER (corrections de vrais bugs, pas de la compatibilité) : dépendance `pytz`,
+   détection d'existence d'un fichier S3 sans caractère générique
+   (`DuckDBPassIO._exists`) et son test, config `config/demo/parameters_maintenance.yml`
+   et son test de cohérence.
+
+B. FILIGRANE DE DONNÉES
+   1. Mets à jour la dépendance `statflows` (tag fourni par l'utilisateur) et lis sa
+      documentation : le registre de téléchargement distingue désormais la date
+      d'exécution de la requête de la date du dernier téléchargement ayant ramené des
+      données.
+   2. `DownloadRegistryView` (`kedro_pipeline/io/registry_views.py`) et les unités
+      partenaires (`steps/partners.py`, filigrane amont d'une unité) lisent la date de
+      DONNÉES et non plus la date d'exécution. Les unités de BACI, de réseau, de synthèse
+      et de cohérence héritent déjà du filigrane de leur amont : vérifie qu'aucune ne lit
+      la date d'exécution.
+   3. Tests : une requête rejouée sans nouvelles données ne rend aucune unité partenaire
+      périmée ; une requête rejouée avec de nouvelles observations rend périmées les
+      seules unités concernées ; cascade vers synthèse/cohérence.
+
+RÈGLES : pas de commit sans demande ; `uv run pytest` complet (hors tests nécessitant S3,
+déjà en échec pour clés d'accès invalides : le signaler sans le corriger) et doctests des
+modules modifiés ; mets à jour `PIPELINE_ARCHITECTURE.md` (§2.3, §5, §8) pour qu'il ne
+décrive plus de compatibilité avec d'anciennes bases.
+
+CRITÈRES D'ACCEPTATION
+- `grep -rniE "legacy|adopt_legacy|migrate_indicators" kedro_pipeline config tests docker
+  kubernetes tools` ne remonte rien d'inattendu (liste commentée de ce qui reste).
+- Tests verts ; rapport : fichiers supprimés, fonctions retirées, éléments gardés et
+  pourquoi, version de `statflows` adoptée.
+- Demande-moi ensuite le commit/push et le tag d'image `sha-<court>` résultant.
+````
+
+---
+
+## K-17d 🔌 — Validation du déploiement sur bases vierges avant la production
+
+- **Modèle** : Sonnet · **Mode plan** : Oui (opérations cluster, suppressions de données de recette, bascule de production) · **Phase** : 4 · **Dépend de** : K-17c (code épuré, image publiée, tag `sha-<court>` fourni)
+- **Dépôt** : `trade-analysis` — **session lancée depuis un terminal avec accès `kubectl`** (nouvelle session, sans l'historique de K-17)
+
+````text
+CONVENTIONS DE RÉDACTION DU CODE (à appliquer à tout le code écrit ou modifié)
+- Commentaires internes en FRANÇAIS, à formulation nominale (ex. `# Vérification des
+  arguments`, pas `# Vérifier les arguments`) ; expliquer le « pourquoi » plutôt que le
+  « quoi » quand le code est clair.
+- Docstrings en ANGLAIS, selon la convention Google Style : description concise, puis
+  `Args:` (noms, types et descriptions), `Returns:` (type et description), `Raises:`
+  (exceptions possibles) et `Examples:` (cas d'usage concrets, doctest quand possible).
+- Ne cite dans le code, les commentaires et les docstrings aucun identifiant ni paragraphe
+  d'un document d'architecture ou de spécification : décris explicitement toute
+  l'information utile (règle, motivation, valeurs attendues) à l'endroit où elle sert.
+
+Dépôt `trade-analysis`, branche `qb-vulnerabilities`. Lis `CLAUDE.md` (s'il existe),
+`PIPELINE_ARCHITECTURE.md` (§2.3, PD-13, PD-14, PD-16, PD-18, PS-21, §5, §7, §8, §9),
+`kubernetes/generated/README.md`, `kubernetes/transition/README.md` et
+`config/demo/parameters_maintenance.yml`.
+
+OBJECTIF : terminer la recette de K-17 (ses étapes 5 à 9) sur des bases demo VIERGES avec
+le code épuré, puis préparer la bascule de production.
+
+RÈGLES (reprises à l'identique) : ne JAMAIS afficher ni recopier la valeur d'un secret
+(clés seulement) ; toute commande qui modifie le cluster ou les données (`apply`,
+`delete`, `suspend`, `create` d'un Workflow, `DROP`) est annoncée et CONFIRMÉE par moi
+avant exécution. Pas de commit sans demande ; si une republication d'image est nécessaire,
+demande-moi l'autorisation de commiter/pousser et le tag.
+
+ACQUIS DE LA RECETTE PRÉCÉDENTE (déjà fait, à ne pas refaire)
+- Pas de CLI `argo` dans le pod : on soumet par `kubectl create -f` d'un `Workflow` avec
+  `workflowTemplateRef: {name: trade-pipeline}`, `entrypoint: daily|weekly`,
+  `activeDeadlineSeconds: 518400`. `KEDRO_ENV` est figé au rendu : la recette demo se fait
+  avec `uv run kedro trade render-argo --env demo --image-tag <tag> --output-dir
+  <hors dépôt>` (mêmes noms de ressources que le cloud), puis `kubectl apply` du seul
+  `workflowtemplate.yaml`. Il faudra RE-RENDRE puis réappliquer `--env cloud` à la bascule.
+- Accès PostgreSQL/S3 en lecture ou écriture depuis le pod : charger les identifiants des
+  secrets `trade-*` dans l'environnement SANS les afficher (script du scratchpad de la
+  session précédente à recréer), puis scripts Python via
+  `kedro_pipeline.io.ducklake.build_connector`.
+- Incidents déjà corrigés (pour mémoire dans le rapport) : module `downloads` exclu par
+  `.gitignore` ; clé primaire Comtrade contenant une colonne de libellé nulle (`statflows`
+  0.2.1) ; tables partenaires/réseau à l'ancienne clé ; `pytz` manquant ; maintenance demo
+  visant des catalogues non écrits en demo ; `DATA_PATH` du catalogue `vulnerabilities`
+  (un catalogue n'en admet qu'un) ; `glob()` DuckDB renvoyant « présent » pour un fichier
+  S3 absent (état P0 fantôme) ; colonne `label_for` absente d'anciennes tables.
+- Durées observées (demo, 1 millésime BACI) : `weekly` ≈ 28 min (BACI 2 min, réseau
+  1,5 min, scores 9 min, cohérence 10 min, serving 2 min, maintenance 1 min) ; `daily` ≈
+  2 h 40 (téléchargement Comtrade ≈ 1 h 20, Eurostat ≈ 2 h 30, partenaires 3 min).
+- Défaut d'idempotence découvert : la date `last_download` de `statflows` avance à chaque
+  exécution d'une requête même sans nouvelle donnée, donc toutes les unités partenaires
+  étaient recalculées (`freshness/units_new_data` = 17 752 à chaque `daily`). Corrigé en
+  K-17c : à CONFIRMER ici par la seconde exécution (étape 3).
+
+ÉTAPES
+1. Pré-vol (lecture seule) : contexte `kubectl`, secrets (clés), image `sha-<tag fourni>`
+   publique, MLflow joignable, état des `CronWorkflow` (le cron de transition
+   `trade-pipeline-transition-daily` doit rester SUSPENDU pendant toute la recette ; le
+   vérifier), rendu demo + `--check` + `kubectl apply --dry-run=server`.
+2. Bases vierges (suppressions, après confirmation explicite listant chaque cible) :
+   inventorier d'abord (lecture seule) les catalogues, schémas `demo_*` et préfixes S3
+   demo (`trade/demo/…`, y compris `trade/demo/work/` et le cache de structures
+   `trade/demo/datasets/structures/`), puis les supprimer. NE PAS toucher aux données de
+   production (`trade/datasets/…` hors `demo`) ni au catalogue `serving` partagé sans me
+   le demander. Statuer avec moi sur le conflit de `DATA_PATH` du catalogue
+   `vulnerabilities` entre demo et cloud (aligner demo sur le chemin de production, ou
+   nom de catalogue distinct pour la demo), le corriger, tester, puis recréer.
+3. Recette demo complète sur bases vierges : `daily`, `weekly`, `daily` puis `weekly`
+   (les unités partenaires du `daily` alimentent la synthèse du `weekly`). Critères : toutes
+   tâches `Succeeded` (maintenance comprise) ; à la 2ᵉ exécution de chaque cadence,
+   métriques `freshness/*` : zéro unité planifiée (`freshness/units_planned` absent ou 0)
+   sur partenaires, BACI, réseau, synthèse, cohérence. Pour chaque échec : diagnostic
+   (logs `-c main`, premières exceptions, events, OOM), correction avec tests, republication
+   d'image sur demande. Relève pour chaque tâche BACI la durée par passe et
+   `memory/peak_mb` (métriques MLflow), et le tableau durée/ressources de chaque tâche.
+4. Vérifications MLflow : cinq expériences peuplées, mêmes `workflow_id` sur les runs d'un
+   workflow, description (verdict, contrôles), `health`, métriques `checks/*`, onglet
+   System metrics, `report/report.html` lisible ; URL réelle de la liste filtrée par
+   `workflow_id` (compléter ARCH §5.1). OOM contrôlé (mémoire volontairement basse sur une
+   tâche, après confirmation) : la maintenance clôt le run orphelin. Calibrage des seuils de
+   `config/base/parameters_tracking.yml` : propose les changements puis applique-les après
+   mon accord.
+5. Vérifications données (DuckLake en lecture) : tables écrites, comptes de lignes,
+   registres de fraîcheur v2 fragmentés sur S3, catalogue `serving` (un snapshot par
+   publication, fichiers obsolètes nettoyés), tableau de bord « Vulnérabilités »
+   cohérent (rangs, libellés, `in_force`), latence à froid des graphiques en `cloud`.
+6. Forçage : `weekly` avec `force-steps=synthesis` → seuls synthèse et cohérence recalculent.
+7. Bascule de production (après confirmation) : fixer `deployment.tag` sur le tag
+   immuable `sha-<court>` avec `image_pull_policy: IfNotPresent` dans `config/base/argo.yml`,
+   `render-argo --env cloud` puis `--check`, `kubectl apply` de `kubernetes/generated/`,
+   les deux `CronWorkflow` actifs en env `cloud` ; suppression du workflow de transition
+   (cron, template, dossier `kubernetes/transition/`) seulement après une exécution
+   réussie de chaque cadence, sinon laisser suspendu et me le signaler.
+8. Runbooks : mets à jour ARCH §5, §7, §8 et `kubernetes/generated/README.md` avec les
+   commandes EXACTES qui ont fonctionné (soumission par `kubectl create`, chargement des
+   identifiants sans les afficher, restauration PostgreSQL testée sur une base temporaire
+   si possible sinon « non testée »).
+
+CRITÈRES D'ACCEPTATION
+- Une exécution demo complète réussie sur bases vierges et une seconde exécution de chaque
+  cadence idempotente (aucun recalcul).
+- Rapport final : tableau des tâches (durée, ressources max), incidents et corrections, état
+  MLflow, décisions de bascule, questions restantes.
+````
+
+---
+
 ## K-17b 🔌 — Retrait des données de démonstration et fictives sur le cluster
 
-- **Modèle** : Sonnet · **Mode plan** : Oui · **Phase** : 4 · **Dépend de** : K-17 (production en `cloud` : les deux `CronWorkflow` générés actifs), **données réelles complètes** (ARCH PQ-20)
+- **Modèle** : Sonnet · **Mode plan** : Oui · **Phase** : 4 · **Dépend de** : K-17d (production en `cloud` : les deux `CronWorkflow` générés actifs), **données réelles complètes** (ARCH PQ-20)
 - **Dépôt** : `trade-analysis` — **session lancée depuis un service VSCode Onyxia** (accès `kubectl`, PostgreSQL, S3, MLflow, Superset). **Toutes les suppressions sont irréversibles.**
 
 ````text
