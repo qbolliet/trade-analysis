@@ -119,6 +119,22 @@ def test_upsert_many_replaces_a_slice_atomically(ducklake_conn) -> None:
 
 
 
+def test_upsert_many_aligns_the_metadata_of_a_legacy_table(ducklake_conn) -> None:
+    """Une table de méta-données sans ``label_for`` (ancien gestionnaire) reste modifiable."""
+    conn, alias = ducklake_conn
+    table = DuckLakeTable(conn, alias, "s1")
+    table.upsert(_frame(["FR"], ["01"], HHI=[0.1]), KEYS)
+    conn.execute(f'ALTER TABLE "{alias}"."s1"."metadata" DROP COLUMN label_for')
+
+    table.upsert_many([_frame(["FR"], ["01"], HHI=[0.5])], KEYS, delete_where="\"reporter\" = 'FR'")
+
+    columns = conn.execute(
+        "SELECT column_name FROM information_schema.columns WHERE table_schema = 's1' AND table_name = 'metadata'"
+    ).df()["column_name"].tolist()
+    assert "label_for" in columns
+    assert _read(conn, alias)["HHI"].tolist() == [0.5]
+
+
 def test_str_columns_round_trip(ducklake_conn) -> None:
     """pandas 3 : colonnes de dtype ``str`` (Arrow) écrites puis relues intactes.
 

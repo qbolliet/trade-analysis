@@ -911,10 +911,32 @@ class DuckLakeTable:
             return missing
 
     # Gestionnaire de mise à jour de la bibliothèque
+    def _ensure_label_for(self, conn: Any) -> None:
+        """Add the ``label_for`` column to the ``metadata`` table when an older manager omitted it.
+
+        Every update reads that column to check the code/label dependency; without it the
+        operation fails after its audit. The column is nullable, so adding it empty keeps
+        the table behaviour. Idempotent; a schema without metadata table is left alone.
+
+        Args:
+            conn: Open connection on the catalog.
+        """
+        columns = conn.execute(
+            "SELECT column_name FROM information_schema.columns "
+            "WHERE table_catalog = ? AND table_schema = ? AND table_name = 'metadata'",
+            [self.catalog_alias, self.schema],
+        ).fetchall()
+        if columns and "label_for" not in {name for (name,) in columns}:
+            conn.execute(
+                f'ALTER TABLE "{self.catalog_alias}"."{self.schema}"."metadata" ADD COLUMN label_for VARCHAR'
+            )
+
     def _updater(self, conn: Any) -> Any:
         """Build the ``DatabaseUpdater`` of the schema."""
         from dt_ducklake_manager import DatabaseUpdater
 
+        # Méta-données d'une version antérieure du gestionnaire : colonne ajoutée avant toute mise à jour
+        self._ensure_label_for(conn)
         return DatabaseUpdater(
             connection=conn,
             categorical_threshold=self.categorical_threshold,
