@@ -847,6 +847,28 @@ class DuckDBPassIO:
 
     # Existence d'un fichier ou d'un motif (local comme S3)
     def _exists(self, pattern: str) -> bool:
+        """Tell whether a file or a glob pattern matches at least one existing file.
+
+        Args:
+            pattern: Local or ``s3://`` path, possibly with wildcards.
+
+        Returns:
+            ``True`` when at least one file matches.
+
+        Examples:
+            >>> import duckdb, tempfile, pathlib
+            >>> folder = pathlib.Path(tempfile.mkdtemp())
+            >>> (folder / "done.parquet").touch()
+            >>> io = DuckDBPassIO.__new__(DuckDBPassIO)
+            >>> io.conn = duckdb.connect()
+            >>> io._exists(f"{folder}/done.parquet"), io._exists(f"{folder}/absent.parquet")
+            (True, False)
+        """
+        # Chemin sans caractère générique : sur S3, glob() le renvoie sans vérifier son
+        # existence ; une classe de caractères sur la première lettre du nom force le listage
+        if not any(char in pattern for char in "*?["):
+            folder, _, name = pattern.rpartition("/")
+            pattern = f"{folder}/[{name[0]}]{name[1:]}"
         return bool(self.conn.execute("SELECT count(*) FROM glob(?)", [pattern]).fetchone()[0])
 
     def comtrade_chunks(self, columns: Sequence[str]) -> Iterator[Tuple[Any, pd.DataFrame]]:

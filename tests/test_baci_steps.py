@@ -305,3 +305,15 @@ def test_memory_of_the_passes_is_bounded_by_one_chunk(tmp_path) -> None:
     assert peaks[12][0] > 2.5 * peaks[4][0]
     assert peaks[12][1] < 1.5 * peaks[4][1]
     assert peaks[12][1] < 0.4 * peaks[12][0]
+
+
+def test_exists_distinguishes_a_present_file_from_an_absent_one(tmp_path) -> None:
+    """Un chemin sans caractère générique n'est signalé présent que s'il existe réellement."""
+    import duckdb
+
+    (tmp_path / "done.parquet").touch()
+    io = DuckDBPassIO.__new__(DuckDBPassIO)
+    io.conn = duckdb.connect()
+    assert io._exists(f"{tmp_path}/done.parquet")
+    assert not io._exists(f"{tmp_path}/absent.parquet")
+    assert io._exists(f"{tmp_path}/*.parquet")
