@@ -40,6 +40,7 @@ def create_pipeline(parameters: Optional[Mapping[str, Any]] = None, **kwargs: An
                 maintain_ducklake,
                 inputs={
                     "catalogs": "ducklake.catalogs",
+                    "cursors": "state.cursors",
                     "maintenance": "params:maintenance",
                     "tracking": "params:tracking",
                 },

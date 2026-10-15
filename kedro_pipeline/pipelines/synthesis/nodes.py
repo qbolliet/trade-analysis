@@ -8,7 +8,7 @@ here.
 # Importation des modules
 from __future__ import annotations
 # Modules de base
-from typing import Any, Dict, Mapping
+from typing import Any, Dict, Mapping, Optional
 
 # Modules du package
 from kedro_pipeline.io.datasets import DuckLakeCatalogs
@@ -62,6 +62,7 @@ def compute_synthetic_scores(
     eurostat: Mapping[str, Any],
     runtime: Mapping[str, Any],
     tracking: Mapping[str, Any],
+    cursors: Optional[FreshnessRegistry] = None,
 ) -> Dict[str, Any]:
     """Compute the synthetic scores of the stale contexts.
 
@@ -82,6 +83,10 @@ def compute_synthetic_scores(
         eurostat: The ``eurostat`` parameters (default recent periods).
         runtime: ``runtime`` parameters (``N_JOBS`` resolved).
         tracking: ``tracking`` parameters (report of the run).
+        cursors: Registry of the cursors (``state.cursors``), read and written
+            by the step itself (two-phase protocol, saved before the
+            computation): it is not an output, so that the maintenance keeps
+            no dependency on this node.
 
     Returns:
         ``table`` (handle of the scores), ``metrics`` and ``artifacts``.
@@ -97,7 +102,7 @@ def compute_synthetic_scores(
         params=synthesis, vulnerability_params=vulnerabilities, runtime=runtime,
         n_jobs=n_jobs_of(synthesis["SYNTHESIS"], runtime), eurostat=eurostat,
         force=force_spec(runtime), cadence_check=False, run_id=run_id(),
-        tracker=reporting.step_tracker,
+        tracker=reporting.step_tracker, cursors=cursors,
     )
     return finish_step(result, state, outputs={"table": scores}, reporting=reporting)
 

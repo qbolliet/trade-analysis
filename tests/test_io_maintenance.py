@@ -255,3 +255,26 @@ def test_expire_and_cleanup_use_the_injected_clock(lake) -> None:
     assert ops.cleanup_old_files(lake, ALIAS, later, 7) == 0
     assert ops.delete_orphaned_files(lake, ALIAS, later, 7) == 0
     assert lake.execute(f"SELECT count(*) FROM {ALIAS}.{SCHEMA}.t").fetchone()[0] == 120
+
+
+def test_expiration_never_passes_the_oldest_cursor_within_the_ceiling(lake) -> None:
+    snapshots = [row[0] for row in lake.execute(
+        f"SELECT snapshot_id FROM ducklake_snapshots('{ALIAS}') ORDER BY snapshot_id"
+    ).fetchall()]
+    cursor = snapshots[-2]
+    later = datetime.now(timezone.utc) + timedelta(days=30)
+
+    # Curseur conservé : seuls les snapshots qui le précèdent expirent
+    expired = ops.expire_snapshots(lake, ALIAS, later, 7, keep_from=cursor, max_retention_days=60)
+    remaining = [row[0] for row in lake.execute(
+        f"SELECT snapshot_id FROM ducklake_snapshots('{ALIAS}') ORDER BY snapshot_id"
+    ).fetchall()]
+    assert remaining == [cursor, snapshots[-1]]
+    assert expired == len(snapshots) - 2
+
+    # Plafond dépassé : le curseur abandonné ne bloque plus l'expiration
+    much_later = later + timedelta(days=60)
+    assert ops.expire_snapshots(lake, ALIAS, much_later, 7, keep_from=cursor, max_retention_days=35) == 1
+    # Curseur disparu : rétention simple
+    cutoff = ops.expiration_cutoff(lake, ALIAS, much_later, 7, keep_from=cursor)
+    assert cutoff == much_later - timedelta(days=7)

@@ -4,9 +4,10 @@ from __future__ import annotations
 # Modules de base
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
-from typing import Any, Dict, Mapping
+from typing import Any, Dict, Mapping, Optional
 
 # Modules du package
+from kedro_pipeline.io.freshness import FreshnessRegistry
 from kedro_pipeline.io.tracking import (
     CONTEXT_KEY,
     DEFAULT_STALE_DESCRIPTION,
@@ -22,7 +23,10 @@ STALE_RUNS_METRIC = "mlflow/stale_runs_closed"
 
 # Nœud : maintenance des catalogues
 def maintain_ducklake(
-    catalogs: Any, maintenance: Mapping[str, Any], tracking: Mapping[str, Any]
+    catalogs: Any,
+    maintenance: Mapping[str, Any],
+    tracking: Mapping[str, Any],
+    cursors: Optional[FreshnessRegistry] = None,
 ) -> Dict[str, Any]:
     """Maintain the DuckLake catalogs listed in the parameters, then close the stale runs.
 
@@ -40,6 +44,10 @@ def maintain_ducklake(
 
     Args:
         catalogs: Factory of the catalog connectors (``ducklake.catalogs``).
+        cursors: Registry of the cursors of the downstream steps
+            (``state.cursors``, read only: no step outputs it, so the node
+            keeps no upstream dependency); the expiry of a catalog never
+            passes its oldest cursor.
         maintenance: The ``maintenance`` parameters (``STALE_RUNS.ENABLED`` and
             ``STALE_RUNS.MIN_AGE_MINUTES`` included).
         tracking: The ``tracking`` parameters (``STALE_RUNS``; the workflow
@@ -62,6 +70,7 @@ def maintain_ducklake(
         params=maintenance,
         tracker=reporting.step_tracker,
         now=datetime.now(timezone.utc),
+        cursors=cursors,
     )
 
     # Runs orphelins de l'exécution : tâches tuées avant d'avoir fermé leur run

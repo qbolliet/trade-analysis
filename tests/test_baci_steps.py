@@ -317,3 +317,84 @@ def test_exists_distinguishes_a_present_file_from_an_absent_one(tmp_path) -> Non
     assert io._exists(f"{tmp_path}/done.parquet")
     assert not io._exists(f"{tmp_path}/absent.parquet")
     assert io._exists(f"{tmp_path}/*.parquet")
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Décision sur les données modifiées (statflows >= 0.2.2) et lectures épinglées
+# ──────────────────────────────────────────────────────────────────────
+
+
+def test_vintage_mark_keeps_the_fit_id_stable_while_data_does_not_change() -> None:
+    from kedro_pipeline.io.freshness import UpstreamMark, parse_instant
+    from kedro_pipeline.steps.baci import vintage_mark
+
+    t1 = parse_instant("2026-10-01")
+    marks = {2018: {("a",): UpstreamMark(t1, 4)}, 2019: {("a",): UpstreamMark(t1, 9), ("b",): UpstreamMark()}}
+    mark = vintage_mark(marks, [2018, 2019])
+    assert mark.snapshot == 9 and vintage_mark(marks, [2030]) is None
+    requested = baci_requested(BaciConfig())
+    # Re-téléchargement sans modification : même marque, même fit_id (reprise idempotente)
+    assert compute_fit_id("HS2017", [2018, 2019], mark, requested) == compute_fit_id(
+        "HS2017", [2018, 2019], vintage_mark(marks, [2019, 2018]), requested
+    )
+    revised = {**marks, 2019: {("a",): UpstreamMark(t1, 10)}}
+    assert compute_fit_id("HS2017", [2018, 2019], vintage_mark(revised, [2018, 2019]), requested) != (
+        compute_fit_id("HS2017", [2018, 2019], mark, requested)
+    )
+
+
+def test_baci_inputs_cover_cepii_and_the_concordances_actually_used(tmp_path) -> None:
+    from kedro_pipeline.io.freshness import FreshnessRegistry, RegistryEntry
+    from kedro_pipeline.steps.baci import baci_inputs, concordance_checksums, stale_concordance_vintages
+
+    dist, geo = cepii_tables()
+    # Nouveau fichier de distances : une paire de moins, nouvelle empreinte
+    assert baci_requested(BaciConfig(), baci_inputs(dist, geo)) != baci_requested(
+        BaciConfig(), baci_inputs(dist.iloc[1:], geo)
+    )
+
+    # Tables de passage : seules celles utilisées par la passe du millésime comptent
+    registry = {"HS2022-HS2017": {"checksum": "x"}}
+    state = FreshnessRegistry(f"{tmp_path.as_posix()}/{{vintage}}.json", None, "baci", lambda u: u.key)
+    state.upsert(RegistryEntry(baci_unit("HS2017"), extra={
+        "concordance_checksums": concordance_checksums(registry, [("HS2022", "HS2017")]),
+    }))
+    state.upsert(RegistryEntry(baci_unit("HS2012"), extra={"concordance_checksums": {}}))
+    # Table téléchargée pour une autre étape : aucun millésime n'est réestimé
+    assert stale_concordance_vintages(state, ["HS2017", "HS2012"], {**registry, "HS2022-HS2012": {"checksum": "z"}}) == []
+    # Table utilisée rafraîchie : réestimation du seul millésime concerné
+    assert stale_concordance_vintages(state, ["HS2017", "HS2012"], {"HS2022-HS2017": {"checksum": "y"}}) == ["HS2017"]
+
+
+def test_baci_rule_on_marks_respects_the_refresh_interval() -> None:
+    from datetime import timedelta
+
+    from kedro_pipeline.io.freshness import UpstreamMark, parse_instant, upstream_mark_is_newer
+    from kedro_pipeline.steps.baci import baci_is_new_data, completed_entry
+
+    unit, now = baci_unit("HS2017"), parse_instant("2026-10-15")
+    mark = UpstreamMark(parse_instant("2026-10-01"), 12, None)
+    plan = SimpleNamespace(reason="first")
+    entry = completed_entry(unit, plan, "f", [2018], now - timedelta(days=8), mark, {"baci": "x"})
+    assert entry.extra["upstream_snapshot"] == 12
+    rule = baci_is_new_data({unit: [2018]}, {"MIN_INTERVAL_DAYS": 7}, now, upstream_mark_is_newer)
+    assert not rule(unit, entry, mark)
+    assert rule(unit, entry, UpstreamMark(mark.modified, 13, None))
+    # Intervalle minimal non écoulé : la révision attend la passe suivante
+    recent = completed_entry(unit, plan, "f", [2018], now - timedelta(days=2), mark, {"baci": "x"})
+    assert not rule(unit, recent, UpstreamMark(mark.modified, 13, None))
+
+
+def test_comtrade_reads_can_be_pinned_at_a_snapshot(comtrade_catalog) -> None:
+    from kedro_pipeline.io.cursors import current_snapshot
+    from kedro_pipeline.steps.baci import classifications_by_year, read_comtrade_year, rows_by_chapter
+
+    conn, alias, df = comtrade_catalog
+    conn.execute(f"USE {alias}")
+    pinned = current_snapshot(conn, alias)
+    conn.execute(f'DELETE FROM {alias}."C_A_HS".fact_table WHERE CAST(substr(CAST("period" AS VARCHAR), 1, 4) AS INTEGER) = 2019')
+
+    assert 2019 in classifications_by_year(conn, "C_A_HS", years=[2019], at_snapshot=pinned)
+    assert classifications_by_year(conn, "C_A_HS", years=[2019]) == {}
+    assert sum(rows_by_chapter(conn, "C_A_HS", year=2019, at_snapshot=pinned).values()) > 0
+    assert len(read_comtrade_year(conn, "C_A_HS", ["period"], year=2019, at_snapshot=pinned)) > 0

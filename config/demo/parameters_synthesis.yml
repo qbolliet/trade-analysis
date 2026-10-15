@@ -40,6 +40,19 @@ synthesis:
             # Même sens : une ligne export reçoit les métriques du graphe transposé
             # (concentration de la demande mondiale), une ligne import celles de l'offre
             - 'n."flow" = p."flow"'
+        # Lecture des changements de cette source par le curseur de la synthèse
+        # (STATE.DECISION_MODE shadow / snapshot) : colonnes des lignes modifiées lues
+        # (KEYS) et conditions les rattachant aux contextes de la grille p (ON, sous
+        # l'alias de la source). Toute modification d'une ligne (millésime, année,
+        # sens) touche les contextes qu'elle peut joindre, quel que soit le produit :
+        # normalisation et rangs portent sur tout le contexte. Sans CHANGE, toute
+        # modification de la source touche tous les contextes.
+        CHANGE:
+          KEYS: ["classification", "year", "flow"]
+          "ON":
+            - 'n."classification" = p."hs_vintage"'
+            - 'n."year" = CAST(substr(CAST(p."TIME_PERIOD" AS VARCHAR), 1, 4) AS INTEGER)'
+            - 'n."flow" = p."flow"'
 
     PARAMETERS:
       # Groupes plus petits sur le périmètre réduit

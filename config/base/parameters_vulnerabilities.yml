@@ -64,6 +64,14 @@ vulnerabilities:
         # fragments ; à false sinon (empreinte manquante = jamais calculé avec la
         # méthodologie courante). Surchargeable par ADOPT_LEGACY_FINGERPRINTS
         ADOPT_LEGACY_FINGERPRINTS: false
+        # Décision « amont modifié » d'un couple :
+        #   - legacy   : couple re-téléchargé (last_download), même sans changement ;
+        #   - shadow   : décision legacy exécutée, décision sur les données réellement
+        #                modifiées (last_modified_snapshot) comparée (freshness/shadow_*) ;
+        #   - snapshot : couple dont les données ont été modifiées (statflows >= 0.2.2).
+        # Les entrées calculées enregistrent le snapshot amont dans tous les modes.
+        # Bascule après la synthèse (AUDIT_WATERMARKS_AVAL.md §5.7)
+        DECISION_MODE: "shadow"
 
   # Suivi d'exécution MLflow (l'URI du serveur vient de la variable
   # MLFLOW_TRACKING_URI, le nom d'expérience de experiments.yml). Dépendance

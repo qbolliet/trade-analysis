@@ -9,16 +9,31 @@ The registry is always read through ``statflows.iter_registry_entries``, which
 hides its physical layout (single file or per-shard fragments, PS-27): this
 module is the only place of the repository that knows the shape of a registry
 entry, and it never reads the registry root key by hand.
+
+Two readings of each unit are offered:
+
+- ``last_download`` (:meth:`DownloadRegistryView.pairs_last_download`,
+  :meth:`DownloadRegistryView.batches_by_year`): moves at every successful
+  download, even when nothing changed. It tells whether a unit was downloaded
+  at least once (coverage, BACI completeness gate);
+- ``last_modified`` / ``last_modified_snapshot``
+  (:meth:`DownloadRegistryView.pairs_last_modified`,
+  :meth:`DownloadRegistryView.batches_marks_by_year`), as an
+  :class:`~kedro_pipeline.io.freshness.UpstreamMark`: moves only when the data
+  actually changed. It decides the downstream recomputations.
 """
 # Importation des modules
 # Modules de base
 import logging
 import re
 from datetime import datetime
-from typing import Any, Dict, Iterable, Iterator, Mapping, Optional, Tuple
+from typing import Any, Callable, Dict, Iterable, Iterator, Mapping, Optional, Tuple, TypeVar
 
 # Lecture du registre indépendante de son format physique
 from statflows import RegistryEntry, iter_registry_entries
+
+# Marque amont « données modifiées » (last_modified, last_modified_snapshot)
+from kedro_pipeline.io.freshness import UpstreamMark
 
 # Initialisation du logger
 logger = logging.getLogger(__name__)
@@ -28,6 +43,31 @@ _PRODUCT_SEPARATORS = re.compile(r"[+,]")
 
 # Clé d'un lot de produits Comtrade : codes triés, ou None si non restreint
 ProductsKey = Optional[Tuple[str, ...]]
+
+# Valeur associée à une unité : date de dernier téléchargement ou marque amont
+V = TypeVar("V")
+
+
+# Fonction de lecture de la date de dernier téléchargement d'une entrée
+def _last_download(entry: RegistryEntry) -> datetime:
+    """Return the ``last_download`` of an entry."""
+    return entry.last_download
+
+
+# Fonction de lecture de la marque « données modifiées » d'une entrée
+def _modified_mark(entry: RegistryEntry) -> UpstreamMark:
+    """Return the :class:`UpstreamMark` of an entry (statflows >= 0.2.2 fields)."""
+    return UpstreamMark.of_entry(
+        getattr(entry, "last_modified", None), getattr(entry, "last_modified_snapshot", None)
+    )
+
+
+# Fonction de combinaison de deux valeurs d'une même unité
+def _latest(left: Any, right: Any) -> Any:
+    """Combine two values of a unit: the latest date, or the field-wise maximum mark."""
+    if isinstance(left, UpstreamMark):
+        return UpstreamMark.combine([left, right])
+    return right if right > left else left
 
 
 # Fonction d'éclatement d'une valeur de dimension en codes
@@ -150,6 +190,31 @@ class DownloadRegistryView:
             if self.dataflow is None or entry.dataflow == self.dataflow:
                 yield entry
 
+    # Valeurs par couple reporter x produit (Eurostat), lecture générique
+    def _pairs(self, value_of: Callable[[RegistryEntry], V]) -> Dict[Tuple[str, str], V]:
+        """Explode the entries into (reporter, product) pairs, combining their values.
+
+        Args:
+            value_of: Value of an entry (date or mark).
+
+        Returns:
+            Mapping ``(reporter, product) -> combined value``.
+        """
+        values: Dict[Tuple[str, str], V] = {}
+        for entry in self.entries():
+            # Dimensions SDMX de la requête (à plat si absentes)
+            params = entry.params or {}
+            dims = params.get("dimensions") or params
+            reporters = split_codes(dims.get("reporter"))
+            products = split_codes(dims.get("product"))
+            value = value_of(entry)
+            # Éclatement en couples reporter x produit
+            for reporter in reporters:
+                for product in products:
+                    pair = (reporter, product)
+                    values[pair] = _latest(values[pair], value) if pair in values else value
+        return values
+
     # Dates de dernier téléchargement par couple reporter x produit (Eurostat)
     def pairs_last_download(self) -> Dict[Tuple[str, str], datetime]:
         """Last-download date per (reporter, product) pair — Eurostat layout.
@@ -162,20 +227,58 @@ class DownloadRegistryView:
         Returns:
             Mapping ``(reporter, product) -> last_download`` (UTC-aware).
         """
-        dates: Dict[Tuple[str, str], datetime] = {}
+        return self._pairs(_last_download)
+
+    # Marques « données modifiées » par couple reporter x produit (Eurostat)
+    def pairs_last_modified(self) -> Dict[Tuple[str, str], UpstreamMark]:
+        """Data-modification mark per (reporter, product) pair — Eurostat layout.
+
+        Same pairs as :meth:`pairs_last_download` (a pair downloaded but never
+        written gets an empty mark); the marks of the entries covering a pair
+        are combined field by field (:meth:`UpstreamMark.combine`).
+
+        Returns:
+            Mapping ``(reporter, product) -> UpstreamMark``.
+        """
+        return self._pairs(_modified_mark)
+
+    # Valeurs par lot de produits et par année (Comtrade), lecture générique
+    def _batches(self, value_of: Callable[[RegistryEntry], V]) -> Dict[int, Dict[ProductsKey, V]]:
+        """Map the entries to their (year, product batch) units, combining their values.
+
+        Args:
+            value_of: Value of an entry (date or mark).
+
+        Returns:
+            Mapping ``year -> {products key -> combined value}``.
+        """
+        batches: Dict[int, Dict[ProductsKey, V]] = {}
         for entry in self.entries():
-            # Dimensions SDMX de la requête (à plat si absentes)
             params = entry.params or {}
-            dims = params.get("dimensions") or params
-            reporters = split_codes(dims.get("reporter"))
-            products = split_codes(dims.get("product"))
-            # Éclatement en couples reporter x produit
-            for reporter in reporters:
-                for product in products:
-                    pair = (reporter, product)
-                    if pair not in dates or entry.last_download > dates[pair]:
-                        dates[pair] = entry.last_download
-        return dates
+            periods = params.get("periods")
+            if periods is None:
+                continue
+            key = products_key(params.get("products"))
+            value = value_of(entry)
+            periods_list: Iterable[Any] = (
+                periods if isinstance(periods, (list, tuple)) else [periods]
+            )
+            for period in periods_list:
+                year_batches = batches.setdefault(period_year(period), {})
+                year_batches[key] = _latest(year_batches[key], value) if key in year_batches else value
+        return batches
+
+    # Marques « données modifiées » par lot de produits et par année (Comtrade)
+    def batches_marks_by_year(self) -> Dict[int, Dict[ProductsKey, UpstreamMark]]:
+        """Data-modification mark per product batch, by year — Comtrade layout.
+
+        Same units as :meth:`batches_by_year`, valued by the combined
+        :class:`UpstreamMark` of their entries.
+
+        Returns:
+            Mapping ``year -> {products key -> UpstreamMark}``.
+        """
+        return self._batches(_modified_mark)
 
     # Lots de produits téléchargés par année (Comtrade)
     def batches_by_year(self) -> Dict[int, Dict[ProductsKey, datetime]]:
@@ -194,18 +297,4 @@ class DownloadRegistryView:
             >>> view.batches_by_year()  # doctest: +SKIP
             {2024: {('854140', '854150'): datetime.datetime(2026, 9, 16, ...)}}
         """
-        batches: Dict[int, Dict[ProductsKey, datetime]] = {}
-        for entry in self.entries():
-            params = entry.params or {}
-            periods = params.get("periods")
-            if periods is None:
-                continue
-            key = products_key(params.get("products"))
-            periods_list: Iterable[Any] = (
-                periods if isinstance(periods, (list, tuple)) else [periods]
-            )
-            for period in periods_list:
-                year_batches = batches.setdefault(period_year(period), {})
-                if key not in year_batches or entry.last_download > year_batches[key]:
-                    year_batches[key] = entry.last_download
-        return batches
+        return self._batches(_last_download)

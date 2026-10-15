@@ -1,0 +1,119 @@
+# Verrou méthodologique : NE PAS ÉDITER À LA MAIN.
+# Généré par `python -m kedro_pipeline.methodology lock`. Pour chaque nom méthodologique :
+#   - code_hash : empreinte de l'arbre syntaxique de son code (sans commentaires ni
+#     docstrings), contrôlée par tests/test_methodology_lock.py ;
+#   - revision : incrémentée par `lock --bump <nom>` quand une modification du code change
+#     les valeurs ; elle entre dans les empreintes de fraîcheur, ce qui recalcule le nom
+#     partout à la passe planifiée suivante. `lock --accept <nom>` (modification sans effet
+#     sur les valeurs) ne met à jour que code_hash.
+CDI2:
+  revision: 0
+  code_hash: d3d7a49b062a5a51
+  sources:
+  - macroforecast/trade/vulnerabilities/metrics.py::ConcentrationDependencyIndex2
+  - macroforecast/trade/vulnerabilities/base.py
+  - macroforecast/trade/vulnerabilities/runner.py
+  - macroforecast/trade/methodology.py
+CDI3:
+  revision: 0
+  code_hash: 2edade5d965e560a
+  sources:
+  - macroforecast/trade/vulnerabilities/metrics.py::ConcentrationDependencyIndex3
+  - macroforecast/trade/vulnerabilities/base.py
+  - macroforecast/trade/vulnerabilities/runner.py
+  - macroforecast/trade/methodology.py
+CENTRALITY_RISK:
+  revision: 0
+  code_hash: 4c5310be86e4fe96
+  sources:
+  - macroforecast/trade/vulnerabilities/network_metrics.py::WeightedOutdegreeCentralityRisk
+  - macroforecast/trade/vulnerabilities/base.py
+  - macroforecast/trade/vulnerabilities/runner.py
+  - macroforecast/trade/methodology.py
+  - macroforecast/trade/vulnerabilities/graph.py
+CLUSTERING_W:
+  revision: 0
+  code_hash: cc70c1e3fd97bc4e
+  sources:
+  - macroforecast/trade/vulnerabilities/network_metrics.py::WeightedClusteringCoefficient
+  - macroforecast/trade/vulnerabilities/base.py
+  - macroforecast/trade/vulnerabilities/runner.py
+  - macroforecast/trade/methodology.py
+  - macroforecast/trade/vulnerabilities/graph.py
+DIAMETER:
+  revision: 0
+  code_hash: 76fdd90f2b3de30f
+  sources:
+  - macroforecast/trade/vulnerabilities/network_metrics.py::NetworkDiameter
+  - macroforecast/trade/vulnerabilities/base.py
+  - macroforecast/trade/vulnerabilities/runner.py
+  - macroforecast/trade/methodology.py
+  - macroforecast/trade/vulnerabilities/graph.py
+HHI:
+  revision: 0
+  code_hash: 91b6bcd5adc64ecd
+  sources:
+  - macroforecast/trade/vulnerabilities/metrics.py::HerfindahlHirschmanIndex
+  - macroforecast/trade/vulnerabilities/base.py
+  - macroforecast/trade/vulnerabilities/runner.py
+  - macroforecast/trade/methodology.py
+SPOF:
+  revision: 0
+  code_hash: 3550776fadea7288
+  sources:
+  - macroforecast/trade/vulnerabilities/network_metrics.py::SinglePointOfFailureRisk
+  - macroforecast/trade/vulnerabilities/base.py
+  - macroforecast/trade/vulnerabilities/runner.py
+  - macroforecast/trade/methodology.py
+  - macroforecast/trade/vulnerabilities/graph.py
+SPOF_DECILE:
+  revision: 0
+  code_hash: 377d8736412082f3
+  sources:
+  - macroforecast/trade/vulnerabilities/network_metrics.py::SinglePointOfFailureDecile
+  - macroforecast/trade/vulnerabilities/base.py
+  - macroforecast/trade/vulnerabilities/runner.py
+  - macroforecast/trade/methodology.py
+  - macroforecast/trade/vulnerabilities/graph.py
+WORLD_HHI:
+  revision: 0
+  code_hash: 42c44fb2db6ed912
+  sources:
+  - macroforecast/trade/vulnerabilities/network_metrics.py::WorldExportConcentration
+  - macroforecast/trade/vulnerabilities/base.py
+  - macroforecast/trade/vulnerabilities/runner.py
+  - macroforecast/trade/methodology.py
+  - macroforecast/trade/vulnerabilities/graph.py
+baci:
+  revision: 0
+  code_hash: 012f71b3470cd36a
+  sources:
+  - macroforecast/trade/processing/baci.py
+  - macroforecast/trade/processing/streaming.py
+  - macroforecast/trade/processing/aggregation.py
+  - macroforecast/trade/processing/classification.py
+coherence:
+  revision: 0
+  code_hash: 2629f8862819e6b4
+  sources:
+  - macroforecast/trade/aggregation/coherence.py
+  - macroforecast/trade/aggregation/diagnostics.py
+concordance:
+  revision: 0
+  code_hash: 4b0eea71dcdd472b
+  sources:
+  - macroforecast/trade/processing/classification.py
+synthesis:
+  revision: 0
+  code_hash: 59faabb0106ef567
+  sources:
+  - macroforecast/trade/aggregation/base.py
+  - macroforecast/trade/aggregation/estimators.py
+  - macroforecast/trade/aggregation/functions.py
+  - macroforecast/trade/aggregation/methods.py
+  - macroforecast/trade/aggregation/optimal_transport.py
+  - macroforecast/trade/aggregation/pareto.py
+  - macroforecast/trade/aggregation/preprocessing.py
+  - macroforecast/trade/aggregation/runner.py
+  - macroforecast/trade/aggregation/synthesis.py
+  - macroforecast/trade/aggregation/weights.py

@@ -408,18 +408,96 @@ def rewrite_data_files(
     return int(sum(row[0] for row in rows)), int(sum(row[1] for row in rows))
 
 
+# Lecture de l'instant d'un snapshot
+def snapshot_time(conn: Any, alias: str, snapshot_id: int) -> Optional[datetime]:
+    """Return the commit instant of a snapshot (UTC), ``None`` when it no longer exists.
+
+    Args:
+        conn: Open DuckDB connection with the catalog attached.
+        alias: Catalog alias.
+        snapshot_id: Snapshot id.
+
+    Returns:
+        The instant.
+    """
+    row = conn.execute(
+        "SELECT snapshot_time FROM ducklake_snapshots(?) WHERE snapshot_id = ?",
+        [alias, int(snapshot_id)],
+    ).fetchone()
+    if row is None or row[0] is None:
+        return None
+    instant = row[0]
+    return instant.replace(tzinfo=timezone.utc) if instant.tzinfo is None else instant.astimezone(timezone.utc)
+
+
+# Calcul de la date limite d'expiration des snapshots
+def expiration_cutoff(
+    conn: Any,
+    alias: str,
+    now: datetime,
+    retention_days: float,
+    *,
+    keep_from: Optional[int] = None,
+    max_retention_days: Optional[float] = None,
+) -> datetime:
+    """Return the instant before which the snapshots of a catalog expire.
+
+    The retention cutoff (``now - retention_days``) moves back to the commit
+    instant of ``keep_from`` when that one is older, within the ceiling
+    ``now - max_retention_days``. A snapshot exactly at the cutoff is kept.
+
+    Args:
+        conn: Open DuckDB connection with the catalog attached.
+        alias: Catalog alias.
+        now: Reference instant.
+        retention_days: Base retention, in days.
+        keep_from: Oldest snapshot a cursor still needs, or ``None``.
+        max_retention_days: Ceiling of the extended retention, or ``None``.
+
+    Returns:
+        The cutoff instant.
+    """
+    cutoff = now - _days(retention_days)
+    if keep_from is None:
+        return cutoff
+    kept = snapshot_time(conn, alias, keep_from)
+    if kept is None or kept >= cutoff:
+        return cutoff
+    if max_retention_days is not None:
+        kept = max(kept, now - _days(max_retention_days))
+    return min(cutoff, kept)
+
+
 # Procédure : expiration des snapshots
-def expire_snapshots(conn: Any, alias: str, now: datetime, retention_days: float) -> int:
+def expire_snapshots(
+    conn: Any,
+    alias: str,
+    now: datetime,
+    retention_days: float,
+    *,
+    keep_from: Optional[int] = None,
+    max_retention_days: Optional[float] = None,
+) -> int:
     """Expire the snapshots older than the retention, relative to ``now``.
 
     The cutoff is derived from the injected instant (the library wrapper reads
-    the system clock). The most recent snapshot is always kept.
+    the system clock). The most recent snapshot is always kept. With
+    ``keep_from`` (the oldest cursor of a downstream step on this catalog,
+    :func:`kedro_pipeline.io.cursors.oldest_cursors`), the cutoff never passes
+    that snapshot, so the changes a step has not read yet stay readable; the
+    ``max_retention_days`` ceiling still applies, so that an abandoned cursor
+    never blocks the expiration forever (that step then falls back to a full
+    recomputation).
 
     Args:
         conn: Open DuckDB connection with the catalog attached.
         alias: Catalog alias.
         now: Reference instant.
         retention_days: Age in days beyond which a snapshot expires.
+        keep_from: Snapshot kept, together with every later one; ``None``
+            when no cursor reads the catalog.
+        max_retention_days: Ceiling of the retention extended by
+            ``keep_from``; ``None`` for no ceiling.
 
     Returns:
         The number of snapshots expired.
@@ -427,7 +505,10 @@ def expire_snapshots(conn: Any, alias: str, now: datetime, retention_days: float
     Raises:
         duckdb.Error: If the procedure fails.
     """
-    cutoff = now - _days(retention_days)
+    cutoff = expiration_cutoff(
+        conn, alias, now, retention_days,
+        keep_from=keep_from, max_retention_days=max_retention_days,
+    )
     rows = conn.execute(
         f"SELECT snapshot_id FROM ducklake_expire_snapshots(?, older_than := {timestamptz_literal(cutoff)})",
         [alias],

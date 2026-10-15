@@ -117,7 +117,7 @@ dev = [
 override-dependencies = ["dt-ducklake-manager"]
 
 [tool.uv.sources]
-statflows = { git = "https://github.com/qbolliet/statflows", tag = "v0.2.1" }
+statflows = { git = "https://github.com/qbolliet/statflows", tag = "v0.3.0" }
 dt-ducklake-manager = { git = "https://github.com/qbolliet/dt-ducklake-manager", tag = "v0.4.1" }
 
 [tool.pytest.ini_options]
@@ -134,3 +134,6 @@ filterwarnings = [
     "error::pandas.errors.PandasChangeWarning",
     "error::pandas.errors.ChainedAssignmentError",
 ]
+
+[tool.kedro_telemetry]
+project_id = "a549bd5ccda8411fb4d90ccceef8668f"

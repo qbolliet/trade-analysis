@@ -106,6 +106,14 @@ state.coherence:
   step: coherence
   path_template: "trade/state/coherence/{TIME_PERIOD}.json"
 
+# Curseurs DuckLake des étapes aval (un fichier par étape) : snapshot jusqu'auquel chaque
+# étape a pris en compte les changements d'une table amont. Lus par la maintenance, qui
+# n'expire jamais un snapshot encore nécessaire à un curseur
+state.cursors:
+  <<: *registry
+  step: cursors
+  path_template: "trade/state/cursors/{step}.json"
+
 # ── Restitution : catalogue DuckLake `serving`, lu directement par Superset ──
 # Écrit en une transaction par publication ; catalogues sources attachés en lecture
 # seule pour les requêtes de parameters_serving.yml

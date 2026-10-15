@@ -8,8 +8,10 @@ keeps the catalogs fast and their storage bounded, without human intervention:
   merge of the adjacent files, rewrite of the files carrying many deleted rows
   (every day when the deleted share exceeds a threshold, otherwise on the weekly
   day);
-* per catalog: expiry of the old snapshots, then deletion of the files no
-  snapshot references any more (and of the orphan files);
+* per catalog: expiry of the old snapshots — never past the oldest cursor of
+  a downstream step on the catalog (:mod:`kedro_pipeline.io.cursors`), within
+  ``MAX_SNAPSHOT_RETENTION_DAYS`` —, then deletion of the files no snapshot
+  references any more (and of the orphan files);
 * on the weekly day: ``VACUUM (ANALYZE)`` of the PostgreSQL database of each
   catalog, then a logical backup (``pg_dump``) to object storage;
 * once per table: the configured partitioning is set (it never rewrites the
@@ -35,8 +37,9 @@ import pandas as pd
 
 # Modules du package
 from kedro_pipeline.io import maintenance as ops
+from kedro_pipeline.io.cursors import oldest_cursors
 from kedro_pipeline.io.ducklake import DuckLakeLocation
-from kedro_pipeline.io.freshness import utc_now
+from kedro_pipeline.io.freshness import FreshnessRegistry, utc_now
 from kedro_pipeline.steps.result import StepResult, capturing, failure_message
 from macroforecast.tracking import RunTracker
 
@@ -51,6 +54,8 @@ DEFAULT_TIMEZONE = "Europe/Paris"
 CONNECTION_SCHEMA = "main"
 # Tag d'alerte posé sur le run
 ALERT_TAG = "alert"
+# Part du plafond de rétention au-delà de laquelle un curseur ancien lève une alerte
+CURSOR_ALERT_SHARE = 0.8
 # Mesures relevées par schéma, avant et après la maintenance
 MEASURES = ("files", "avg_file_mb", "delete_files", "deleted_rows", "rows")
 
@@ -115,6 +120,7 @@ def run_maintenance(
     params: Mapping[str, Any],
     tracker: Optional[RunTracker] = None,
     now: Optional[datetime] = None,
+    cursors: Optional[FreshnessRegistry] = None,
 ) -> StepResult:
     """Maintain the DuckLake catalogs listed in the parameters.
 
@@ -127,23 +133,30 @@ def run_maintenance(
         params: The ``maintenance`` parameters (``CATALOGS``,
             ``ONLY_TABLES_WRITTEN_WITHIN_HOURS``, ``DELETE_RATIO_THRESHOLD``,
             ``WEEKLY_DAY``, ``SNAPSHOT_RETENTION_DAYS``,
-            ``CLEANUP_OLDER_THAN_DAYS``, ``MAX_FILES_PER_TABLE``,
+            ``CLEANUP_OLDER_THAN_DAYS``, ``MAX_SNAPSHOT_RETENTION_DAYS``,
+            ``MAX_FILES_PER_TABLE``,
             ``DATA_INLINING_ROW_LIMIT``, ``PARTITIONS``, ``BACKUP``,
             ``TIMEZONE``). The ``STALE_RUNS`` block belongs to the caller.
         tracker: Tracker of the open run (never entered here).
         now: Reference instant, which dates the weekly day and the cutoffs of
             the expiry and cleanup; the current UTC instant when ``None``.
+        cursors: Registry of the cursors of every step; the expiry of a
+            catalog never passes its oldest cursor. ``None`` (or an unreadable
+            registry, logged) applies the plain retention.
 
     Returns:
         One unit per catalog. ``failures`` names the catalogs whose every
         operation failed. Metrics: ``ducklake/<catalog>/<schema>/<measure>_before``
         and ``_after`` (``files``, ``avg_file_mb``, ``delete_files``,
         ``deleted_rows``, ``rows``), ``ducklake/<catalog>/snapshots``,
-        ``ducklake/max_files_per_table`` and the totals ``ducklake/tables_maintained``,
+        ``ducklake/<catalog>/oldest_cursor_age_days`` (catalogs read through a
+        cursor), ``ducklake/max_files_per_table`` and the totals ``ducklake/tables_maintained``,
         ``ducklake/snapshots_expired``, ``ducklake/files_cleaned``. The
         ``maintenance`` report table has one row per maintained table. The tag
         ``alert`` lists the alerts raised (``backup_failed``,
-        ``max_files_per_table``).
+        ``max_files_per_table``, ``cursor_retention``: a cursor older than
+        80 % of ``MAX_SNAPSHOT_RETENTION_DAYS``, its step will soon fall back to
+        a full recomputation).
 
     Examples:
         >>> result = run_maintenance(None, params={"CATALOGS": []})
@@ -156,9 +169,17 @@ def run_maintenance(
     outcomes: Dict[str, _CatalogOutcome] = {}
     failures: Dict[str, str] = {}
 
+    # Plus ancien curseur de chaque catalogue : jamais expiré (dans la limite du plafond)
+    oldest: Dict[str, int] = {}
+    if cursors is not None:
+        try:
+            oldest = oldest_cursors(cursors)
+        except Exception as exc:  # lecture non bloquante : rétention simple
+            logger.warning(f"Curseurs illisibles, rétention simple appliquée : {exc}")
+
     for entry in entries:
         alias = str(entry["catalog_alias"])
-        outcome = _maintain_catalog(catalogs, entry, params, instant)
+        outcome = _maintain_catalog(catalogs, entry, params, instant, oldest.get(alias))
         outcomes[alias] = outcome
         # Un catalogue est en échec si toutes ses opérations ont échoué
         if outcome.attempted and outcome.failed == outcome.attempted:
@@ -219,7 +240,11 @@ _REPORT_COLUMNS = [
 
 # Maintenance d'un catalogue
 def _maintain_catalog(
-    catalogs: Any, entry: Mapping[str, Any], params: Mapping[str, Any], now: datetime
+    catalogs: Any,
+    entry: Mapping[str, Any],
+    params: Mapping[str, Any],
+    now: datetime,
+    keep_from: Optional[int] = None,
 ) -> _CatalogOutcome:
     """Run every maintenance operation on one catalog, none of them fatal.
 
@@ -229,6 +254,7 @@ def _maintain_catalog(
             ``data_path``, optionally ``schema`` and ``table``).
         params: The ``maintenance`` parameters.
         now: Reference instant.
+        keep_from: Oldest cursor snapshot of the catalog, or ``None``.
 
     Returns:
         The outcome of the catalog.
@@ -245,7 +271,7 @@ def _maintain_catalog(
         return outcome
     try:
         _maintain_tables(conn, alias, location, params, now, weekly, outcome)
-        _maintain_catalog_storage(conn, alias, params, now, outcome)
+        _maintain_catalog_storage(conn, alias, params, now, outcome, keep_from)
     finally:
         try:
             conn.close()
@@ -328,7 +354,12 @@ def _maintain_tables(
 
 # Maintenance du stockage du catalogue : snapshots et fichiers
 def _maintain_catalog_storage(
-    conn: Any, alias: str, params: Mapping[str, Any], now: datetime, outcome: _CatalogOutcome
+    conn: Any,
+    alias: str,
+    params: Mapping[str, Any],
+    now: datetime,
+    outcome: _CatalogOutcome,
+    keep_from: Optional[int] = None,
 ) -> None:
     """Expire the old snapshots, then delete the files nothing references.
 
@@ -338,11 +369,33 @@ def _maintain_catalog_storage(
         params: The ``maintenance`` parameters.
         now: Reference instant.
         outcome: Outcome updated in place.
+        keep_from: Oldest cursor snapshot of the catalog, never expired
+            within ``MAX_SNAPSHOT_RETENTION_DAYS``; ``None`` for none.
     """
     retention = float(params["SNAPSHOT_RETENTION_DAYS"])
+    ceiling = params.get("MAX_SNAPSHOT_RETENTION_DAYS")
+    max_retention = float(ceiling) if ceiling is not None else None
     cleanup_age = float(params["CLEANUP_OLDER_THAN_DAYS"])
+
+    # Âge du plus ancien curseur : alerte avant que le plafond ne le rattrape
+    if keep_from is not None:
+        ok, kept = outcome.attempt(
+            f"{alias}: oldest_cursor", lambda: ops.snapshot_time(conn, alias, keep_from)
+        )
+        if ok and kept is not None:
+            age = (now - kept).total_seconds() / 86400.0
+            outcome.metrics[f"ducklake/{alias}/oldest_cursor_age_days"] = age
+            if max_retention is not None and age > CURSOR_ALERT_SHARE * max_retention:
+                logger.warning(
+                    f"Alerte : le plus ancien curseur de {alias} (snapshot {keep_from}) date "
+                    f"de {age:.1f} j, plafond de rétention {max_retention:g} j."
+                )
+                outcome.alerts.append("cursor_retention")
     ok, expired = outcome.attempt(
-        f"{alias}: expire_snapshots", lambda: ops.expire_snapshots(conn, alias, now, retention)
+        f"{alias}: expire_snapshots",
+        lambda: ops.expire_snapshots(
+            conn, alias, now, retention, keep_from=keep_from, max_retention_days=max_retention,
+        ),
     )
     outcome.expired += int(expired or 0) if ok else 0
     ok, cleaned = outcome.attempt(

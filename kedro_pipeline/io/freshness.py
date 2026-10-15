@@ -12,20 +12,24 @@ reporter x product triple, a synthesis context…). Each registry entry records:
 - ``fingerprints``: one digest per metric or method, built from its name and
   the parameters that shape its values;
 - ``reason``: why the unit was last computed (``first``, ``forced``,
-  ``new_data`` or ``fingerprint``), which the downstream steps read to cascade
-  a methodological change;
+  ``pending``, ``new_data`` or ``fingerprint``), which the downstream steps
+  read to cascade a methodological change;
+- ``pending_since``: set when an upstream change touching the unit was read
+  from a DuckLake cursor (:mod:`kedro_pipeline.io.cursors`) but the unit was
+  not recomputed yet; the next successful computation clears it;
 - free counters (``n_rows``…) and step-specific fields (``fit_id``,
   ``years_scope``, ``years_written`` for BACI).
 
 A unit is recomputed when at least one of the following holds, the first
-matching reason winning (``first`` > ``forced`` > ``new_data`` >
+matching reason winning (``first`` > ``forced`` > ``pending`` > ``new_data`` >
 ``fingerprint``):
 
 1. it was never computed (``first``);
 2. it falls within the scope of a one-off forcing (``forced``), given by the
    run-time parameters or the ``FORCE_*`` environment variables;
-3. its upstream is more recent than its ``upstream_watermark`` (``new_data``);
-4. the fingerprint of a requested metric or method differs from the recorded
+3. an upstream change read from a cursor touched it (``pending``);
+4. its upstream is more recent than its ``upstream_watermark`` (``new_data``);
+5. the fingerprint of a requested metric or method differs from the recorded
    one, or is missing (``fingerprint``): the metric was added, or its
    parameters changed, or its recorded fingerprint was **invalidated**.
 
@@ -83,6 +87,7 @@ from typing import (
     Literal,
     Mapping,
     Optional,
+    Sequence,
     Set,
     Tuple,
 )
@@ -98,8 +103,8 @@ logger = logging.getLogger(__name__)
 SCHEMA_VERSION = 2
 
 # Raisons de calcul d'une unité, de la plus prioritaire à la moins prioritaire
-Reason = Literal["first", "forced", "new_data", "fingerprint"]
-REASONS: Tuple[str, ...] = ("first", "forced", "new_data", "fingerprint")
+Reason = Literal["first", "forced", "pending", "new_data", "fingerprint"]
+REASONS: Tuple[str, ...] = ("first", "forced", "pending", "new_data", "fingerprint")
 
 # Valeur de FORCE_STEPS forçant toutes les étapes
 FORCE_ALL = "all"
@@ -133,8 +138,14 @@ _SCOPE_DIMENSIONS: Mapping[str, Tuple[str, ...]] = {
 
 # Clés réservées d'une entrée de fragment (le reste est rangé dans ``extra``)
 _ENTRY_KEYS = frozenset(
-    {"unit", "last_computed", "upstream_watermark", "fingerprints", "reason", "legacy"}
+    {
+        "unit", "last_computed", "upstream_watermark", "fingerprints", "reason", "legacy",
+        "pending_since",
+    }
 )
+
+# Champ libre d'une entrée portant le snapshot amont pris en compte (UpstreamMark)
+UPSTREAM_SNAPSHOT_KEY = "upstream_snapshot"
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -400,7 +411,8 @@ class UnitPlan:
     """Why a unit is (re)computed, and which metrics or methods are concerned.
 
     Args:
-        reason: One of ``first``, ``forced``, ``new_data``, ``fingerprint``.
+        reason: One of ``first``, ``forced``, ``pending``, ``new_data``,
+            ``fingerprint``.
         names: Metrics or methods to recompute (a subset of the requested
             ones). Wide-table steps (partners, network) still recompute every
             metric of a planned unit; ``names`` matters to long tables.
@@ -427,6 +439,10 @@ class RegistryEntry:
             of the JSON entry.
         legacy: Whether the entry comes from a version-1 registry and has not
             been migrated yet.
+        pending_since: Snapshot of the upstream change, read from a cursor,
+            that made the unit stale while it is not recomputed yet; ``None``
+            when nothing is pending. A new entry recorded after a successful
+            computation clears it.
 
     Examples:
         >>> entry = RegistryEntry(Unit.of(vintage="HS2017"), parse_instant("2026-01-01"),
@@ -443,6 +459,7 @@ class RegistryEntry:
     reason: str = "first"
     extra: Dict[str, Any] = field(default_factory=dict)
     legacy: bool = False
+    pending_since: Optional[int] = None
 
     # Sérialisation JSON (format d'un fragment v2)
     def to_json(self) -> Dict[str, Any]:
@@ -464,6 +481,8 @@ class RegistryEntry:
                 payload[key] = value
         if self.legacy:
             payload["legacy"] = True
+        if self.pending_since is not None:
+            payload["pending_since"] = int(self.pending_since)
         return payload
 
     # Désérialisation JSON
@@ -488,6 +507,9 @@ class RegistryEntry:
             reason=str(payload.get("reason") or "first"),
             extra={k: v for k, v in payload.items() if k not in _ENTRY_KEYS},
             legacy=bool(payload.get("legacy", False)),
+            pending_since=(
+                int(payload["pending_since"]) if payload.get("pending_since") is not None else None
+            ),
         )
 
 
@@ -1242,7 +1264,7 @@ def adopt_legacy_flag(
 # ──────────────────────────────────────────────────────────────────────
 
 # Signature du prédicat « amont nouveau » (surchargeable par étape)
-NewDataPredicate = Callable[[Unit, RegistryEntry, Optional[datetime]], bool]
+NewDataPredicate = Callable[[Unit, RegistryEntry, Any], bool]
 
 
 # Prédicat par défaut : amont plus récent que le watermark enregistré
@@ -1263,11 +1285,213 @@ def upstream_is_newer(unit: Unit, entry: RegistryEntry, watermark: Optional[date
     return entry.upstream_watermark is None or watermark > entry.upstream_watermark
 
 
+# Classe de marque amont issue du registre de téléchargement (statflows >= 0.2.2)
+@dataclass(frozen=True)
+class UpstreamMark:
+    """What the download registry says about the data a unit reads.
+
+    Built from the ``last_modified`` / ``last_modified_snapshot`` fields of
+    the registry entries covering the unit (statflows >= 0.2.2): unlike
+    ``last_download``, they only move when the data actually changed.
+
+    Args:
+        modified: Most recent ``last_modified`` of the covering entries
+            (``None`` when no data was ever written).
+        snapshot: Most recent ``last_modified_snapshot`` (``None`` when no
+            covering entry knows its snapshot).
+        legacy: Most recent ``last_modified`` among the covering entries
+            whose snapshot is unknown (entries written before statflows 0.2.2,
+            or catalogs without snapshots), ``None`` when there is none.
+
+    Examples:
+        >>> mark = UpstreamMark.combine([
+        ...     UpstreamMark.of_entry(parse_instant("2026-01-02"), 12),
+        ...     UpstreamMark.of_entry(parse_instant("2026-01-01"), None),
+        ... ])
+        >>> mark.snapshot, mark.modified.day, mark.legacy.day
+        (12, 2, 1)
+    """
+
+    modified: Optional[datetime] = None
+    snapshot: Optional[int] = None
+    legacy: Optional[datetime] = None
+
+    # Marque d'une seule entrée de registre
+    @classmethod
+    def of_entry(cls, modified: Any, snapshot: Optional[int]) -> "UpstreamMark":
+        """Build the mark of one registry entry.
+
+        Args:
+            modified: Its ``last_modified`` (datetime or ISO text).
+            snapshot: Its ``last_modified_snapshot``.
+
+        Returns:
+            The mark; a dated entry without snapshot is a legacy one.
+        """
+        instant = parse_instant(modified)
+        return cls(
+            modified=instant,
+            snapshot=int(snapshot) if snapshot is not None else None,
+            legacy=instant if snapshot is None else None,
+        )
+
+    # Combinaison des marques de plusieurs entrées (maximum champ par champ)
+    @classmethod
+    def combine(cls, marks: Iterable["UpstreamMark"]) -> "UpstreamMark":
+        """Combine the marks of several registry entries covering one unit.
+
+        Args:
+            marks: Marks to combine.
+
+        Returns:
+            The field-wise maximum (``None`` ignored).
+        """
+        modified: Optional[datetime] = None
+        snapshot: Optional[int] = None
+        legacy: Optional[datetime] = None
+        for mark in marks:
+            modified = _max_optional(modified, mark.modified)
+            snapshot = _max_optional(snapshot, mark.snapshot)
+            legacy = _max_optional(legacy, mark.legacy)
+        return cls(modified, snapshot, legacy)
+
+    # Absence de toute donnée écrite
+    @property
+    def is_empty(self) -> bool:
+        """Whether no covering entry ever wrote data."""
+        return self.modified is None and self.snapshot is None
+
+    # Champs enregistrés dans une entrée calculée sur cette marque
+    def recorded(self) -> Tuple[Optional[datetime], Dict[str, Any]]:
+        """Return the ``upstream_watermark`` and the extra fields to record.
+
+        Returns:
+            ``(modified, {"upstream_snapshot": snapshot})``; the mapping is
+            empty when the snapshot is unknown.
+
+        Examples:
+            >>> UpstreamMark(None, 5, None).recorded()
+            (None, {'upstream_snapshot': 5})
+        """
+        extra = {UPSTREAM_SNAPSHOT_KEY: int(self.snapshot)} if self.snapshot is not None else {}
+        return self.modified, extra
+
+    # Représentation JSON (identifiant de passe BACI, journalisation)
+    def to_json(self) -> Dict[str, Any]:
+        """Serialise the mark (instants as ISO text)."""
+        return {
+            "modified": format_instant(self.modified),
+            "snapshot": self.snapshot,
+            "legacy": format_instant(self.legacy),
+        }
+
+
+# Fonction de maximum tolérant les valeurs absentes
+def _max_optional(left: Any, right: Any) -> Any:
+    """Return the maximum of two values, ``None`` being ignored."""
+    if left is None:
+        return right
+    if right is None:
+        return left
+    return max(left, right)
+
+
+# Prédicat « amont modifié » fondé sur les marques du registre de téléchargement
+def upstream_mark_is_newer(unit: Unit, entry: RegistryEntry, mark: Any) -> bool:
+    """``new_data`` rule on :class:`UpstreamMark` values (statflows >= 0.2.2).
+
+    Snapshots are compared whenever the recorded entry knows one: they follow
+    the commit order, so two overlapping queries committed in an order
+    different from their capture order cannot hide each other. Dates are the
+    fallback:
+
+    - entry recorded without snapshot (computed before the switch, its
+      ``upstream_watermark`` being a ``last_download``): stale when
+      ``mark.modified`` is more recent. Since ``last_modified <=
+      last_download``, the switch never recomputes a unit whose data did not
+      change since its computation;
+    - entry recorded with a snapshot: stale when ``mark.snapshot`` is greater,
+      or when a covering entry without snapshot (legacy) is more recent than
+      the recorded instant.
+
+    Args:
+        unit: The unit (unused).
+        entry: Its registry entry.
+        mark: Its current :class:`UpstreamMark` (``None``: unknown, never
+            stale).
+
+    Returns:
+        Whether the data read by the unit changed since its computation.
+
+    Examples:
+        >>> t1, t2 = parse_instant("2026-01-01"), parse_instant("2026-01-02")
+        >>> old = RegistryEntry(Unit.of(v="a"), t2, upstream_watermark=t2)
+        >>> upstream_mark_is_newer(old.unit, old, UpstreamMark(t1, 7, None))
+        False
+        >>> new = RegistryEntry(Unit.of(v="a"), t2, upstream_watermark=t1,
+        ...                     extra={"upstream_snapshot": 7})
+        >>> upstream_mark_is_newer(new.unit, new, UpstreamMark(t1, 8, None))
+        True
+    """
+    if mark is None or mark.is_empty:
+        return False
+    recorded = entry.extra.get(UPSTREAM_SNAPSHOT_KEY)
+    if recorded is None:
+        return mark.modified is not None and (
+            entry.upstream_watermark is None or mark.modified > entry.upstream_watermark
+        )
+    if mark.snapshot is not None and mark.snapshot > int(recorded):
+        return True
+    return mark.legacy is not None and (
+        entry.upstream_watermark is None or mark.legacy > entry.upstream_watermark
+    )
+
+
+# Fonction de marquage des unités touchées par un changement amont
+def mark_pending(
+    registry: "FreshnessRegistry", units: Iterable[Unit], snapshot: Optional[int]
+) -> int:
+    """Flag units as pending (in memory until ``registry.save()``).
+
+    First phase of the cursor protocol (:mod:`kedro_pipeline.io.cursors`):
+    the units touched by the changes just read are flagged and the registry
+    saved **before** the cursor moves forward, so that a failed, interrupted
+    or budget-limited run loses nothing. A unit never computed gets an entry
+    without ``last_computed`` (planned ``first``).
+
+    Args:
+        registry: Freshness registry of the step.
+        units: Units touched.
+        snapshot: Snapshot the changes were read up to (recorded in
+            ``pending_since``); ``-1`` is recorded when unknown.
+
+    Returns:
+        Number of units newly flagged (already pending units are left as is).
+
+    Examples:
+        >>> registry = FreshnessRegistry("{v}.json", None, "demo", lambda u: u.key,
+        ...                              loader=_EmptyLoader())
+        >>> mark_pending(registry, [Unit.of(v="a")], 12), registry.get(Unit.of(v="a")).pending_since
+        (1, 12)
+    """
+    value = int(snapshot) if snapshot is not None else -1
+    flagged = 0
+    for unit in units:
+        entry = registry.get(unit)
+        if entry is not None and entry.pending_since is not None:
+            continue
+        if entry is None:
+            entry = RegistryEntry(unit=unit, last_computed=None, reason="first")
+        registry.upsert(replace(entry, pending_since=value))
+        flagged += 1
+    return flagged
+
+
 # Fonction de décision des unités à (re)calculer
 def units_to_compute(
     planned: Iterable[Unit],
     registry: FreshnessRegistry,
-    upstream: Mapping[Unit, Optional[datetime]],
+    upstream: Mapping[Unit, Any],
     requested: Mapping[str, str],
     force: ForceSpec,
     *,
@@ -1283,6 +1507,8 @@ def units_to_compute(
       completed (``last_computed`` is ``None``) → every requested name;
     - ``forced``: within the forcing scope → the forced names among
       ``requested``, or all of them;
+    - ``pending``: an upstream change read from a cursor touched it
+      (``pending_since`` set) → every requested name;
     - ``new_data``: ``is_new_data(unit, entry, upstream[unit])`` → every name;
     - ``fingerprint``: the names whose fingerprint differs from, or is missing
       in, the recorded ones → those names only.
@@ -1290,7 +1516,9 @@ def units_to_compute(
     Args:
         planned: Candidate units (the units that exist upstream).
         registry: Freshness registry of the step.
-        upstream: Current upstream instant per unit (missing → ``None``).
+        upstream: Current upstream mark per unit (missing → ``None``): an
+            instant for the default rule, any value understood by
+            ``is_new_data`` otherwise (e.g. an :class:`UpstreamMark`).
         requested: Current fingerprint per metric or method name.
         force: One-off forcing.
         step: Step name (matched against the forcing).
@@ -1323,6 +1551,8 @@ def units_to_compute(
             plans[unit] = UnitPlan("first", all_names)
         elif force.covers(step, unit, requested):
             plans[unit] = UnitPlan("forced", force.names_for(requested))
+        elif entry.pending_since is not None:
+            plans[unit] = UnitPlan("pending", all_names)
         elif rule(unit, entry, upstream.get(unit)):
             plans[unit] = UnitPlan("new_data", all_names)
         else:

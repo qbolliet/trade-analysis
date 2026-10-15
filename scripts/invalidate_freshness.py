@@ -35,6 +35,15 @@ Exemples::
     invalidate-freshness-script --step synthesis --metrics critic_sum
     # Toute la synthèse, sur une seule période
     invalidate-freshness-script --step synthesis --periods 2023
+    # Curseurs DuckLake de la synthèse réinitialisés : relecture complète de ses
+    # sources au passage suivant (tous les contextes recalculés), empreintes intactes
+    invalidate-freshness-script --step synthesis --reset-cursor
+
+Depuis l'introduction du verrou méthodologique (``kedro_pipeline/methodology.lock``),
+une correction de formule sur **toutes** les unités se signale plutôt par
+``python -m kedro_pipeline.methodology lock --bump <nom>`` au moment du commit : la
+passe planifiée suivante recalcule sans aucune action en production. Ce script reste
+l'outil des recalculs **restreints à un périmètre** (reporters, millésimes, périodes).
 
 Les registres sont lus et écrits avec les paramètres Kedro de l'environnement
 choisi par ``KEDRO_ENV`` (``local`` par défaut, ``demo`` pour le périmètre de
@@ -319,6 +328,43 @@ def build_registry(step: str) -> FreshnessRegistry:
     raise ValueError(f"Unknown step '{step}', expected one of {list(STEPS)}")
 
 
+# Fonction de construction du registre des curseurs (entrée state.cursors du catalogue)
+def build_cursors() -> FreshnessRegistry:
+    """Build the registry of the DuckLake cursors from the Kedro catalog.
+
+    Returns:
+        The registry (``state.cursors`` of the environment's catalog).
+    """
+    from kedro_pipeline.config import load_config_section
+    from kedro_pipeline.io.datasets import FreshnessRegistryDataset
+
+    entry = load_config_section("catalog")["state.cursors"]
+    return FreshnessRegistryDataset(
+        path_template=entry["path_template"], step=entry["step"], bucket=entry.get("bucket"),
+    ).load()
+
+
+# Fonction de réinitialisation des curseurs d'une étape
+def reset_cursors(registry: FreshnessRegistry, step: str, *, dry_run: bool = False) -> List[Unit]:
+    """Invalidate the cursors of a step: its next run re-reads all its sources.
+
+    Args:
+        registry: Registry of the cursors.
+        step: Step name.
+        dry_run: When true, nothing is written.
+
+    Returns:
+        The cursors invalidated.
+    """
+    from kedro_pipeline.io.cursors import StepCursors
+
+    cursors = StepCursors(registry, step)
+    units = cursors.invalidate()
+    if not dry_run:
+        cursors.save()
+    return units
+
+
 # Fonction d'invalidation d'une étape
 def invalidate_step(
     registry: FreshnessRegistry,
@@ -370,6 +416,11 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     parser.add_argument("--periods", default="", help="Periods (units carrying a period: synthesis, coherence).")
     parser.add_argument("--vintages", default="", help="Vintages, classifications or HS vintages of a context.")
     parser.add_argument("--dry-run", action="store_true", help="List the units without writing.")
+    parser.add_argument(
+        "--reset-cursor", action="store_true",
+        help="Invalidate the DuckLake cursors of the step instead of fingerprints: "
+             "its next run re-reads all its sources (full recomputation).",
+    )
     return parser.parse_args(argv)
 
 
@@ -377,6 +428,7 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
 def main(
     argv: Optional[Sequence[str]] = None,
     registry_factory: Callable[[str], FreshnessRegistry] = build_registry,
+    cursors_factory: Callable[[], FreshnessRegistry] = build_cursors,
 ) -> int:
     """CLI entry point of the invalidation.
 
@@ -384,11 +436,21 @@ def main(
         argv: Command-line arguments (``sys.argv[1:]`` by default).
         registry_factory: Builder of the step registry (the configuration-based
             one by default; replaced in tests).
+        cursors_factory: Builder of the cursors registry (``--reset-cursor``).
 
     Returns:
         Exit code: ``0`` on success, ``2`` on an invalid argument.
     """
     args = parse_args(argv)
+    if args.reset_cursor:
+        cursors = reset_cursors(cursors_factory(), args.step, dry_run=args.dry_run)
+        # Logging
+        logger.info(
+            "%s%d curseur(s) réinitialisé(s) pour l'étape '%s' : %s",
+            "[aperçu, rien n'est écrit] " if args.dry_run else "",
+            len(cursors), args.step, ", ".join(unit.get("schema") or "" for unit in cursors) or "aucun",
+        )
+        return 0
     try:
         requested_names = parse_force_list(args.metrics)
         # Méthodes de synthèse configurées : lues seulement si des noms sont demandés

@@ -88,6 +88,14 @@ state.coherence:
   step: coherence
   path_template: "trade/demo/state/coherence/{TIME_PERIOD}.json"
 
+# Curseurs DuckLake des étapes aval (un fichier par étape) : snapshot jusqu'auquel chaque
+# étape a pris en compte les changements d'une table amont. Lus par la maintenance, qui
+# n'expire jamais un snapshot encore nécessaire à un curseur
+state.cursors:
+  <<: *registry
+  step: cursors
+  path_template: "trade/demo/state/cursors/{step}.json"
+
 # Même catalogue `serving` qu'en production, schéma demo_dashboard ; sources demo_*
 serving.tables:
   type: kedro_pipeline.io.datasets.ServingCatalogDataset

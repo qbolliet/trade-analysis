@@ -31,6 +31,16 @@ baci:
     # Migration : à true pour UN run au déploiement (même règle que les registres
     # des vulnérabilités, parameters_vulnerabilities.yml)
     ADOPT_LEGACY_FINGERPRINTS: false
+    # Décision « amont modifié » d'un millésime (révisions Comtrade, soumises à
+    # REFRESH.MIN_INTERVAL_DAYS) :
+    #   - legacy   : lots des années du millésime re-téléchargés (last_download) ;
+    #   - shadow   : décision legacy exécutée, décision sur les données réellement
+    #                modifiées (last_modified_snapshot) comparée (freshness/shadow_*) ;
+    #   - snapshot : lots dont les données ont été modifiées (statflows >= 0.2.2) ; le
+    #                fit_id reste alors stable tant que rien ne change.
+    # La porte de complétude reste fondée sur last_download (téléchargé au moins une fois).
+    # Bascule en dernier (AUDIT_WATERMARKS_AVAL.md §5.7)
+    DECISION_MODE: "shadow"
 
   # Cadence de réestimation d'un millésime. Une passe réestime et réécrit TOUT le
   # millésime (gravité et qualité des déclarants sont estimées sur toutes ses

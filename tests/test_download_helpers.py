@@ -102,7 +102,10 @@ def test_json_safe_primitives_unchanged(value) -> None:
 
 
 def _structure(*names: str) -> SimpleNamespace:
-    return SimpleNamespace(dimensions=[SimpleNamespace(name=n) for n in names])
+    # Dimensions sans libellé associé (attribute_of nul, statflows >= 0.2.1)
+    return SimpleNamespace(
+        dimensions=[SimpleNamespace(name=n, attribute_of=None) for n in names]
+    )
 
 
 def test_primary_keys_case_insensitive_match_keeps_df_casing() -> None:

@@ -787,9 +787,24 @@ de réestimer sept millésimes chaque jour pendant le rattrapage (PS-14.6).
   `fingerprint` (cascade vers l'aval). On peut aussi, ponctuellement, forcer une étape
   entière via les paramètres d'exécution (PS-11).
 
+> **Révision (2026-10-15, parcimonie aval, `AUDIT_WATERMARKS_AVAL.md`).** Trois
+> compléments, sans changer le format des fragments :
+> - **raison `pending`** (champ `pending_since`) : unité touchée par un changement lu
+>   dans le flux DuckLake (curseur, `kedro_pipeline/io/cursors.py`) et pas encore
+>   recalculée ; priorité `first > forced > pending > new_data > fingerprint` ;
+> - **marques « données modifiées »** (`UpstreamMark`, statflows ≥ 0.2.2) : les
+>   partenaires et BACI peuvent décider sur `last_modified_snapshot` au lieu de
+>   `last_download` (`STATE.DECISION_MODE`), le snapshot amont étant enregistré dans
+>   `upstream_snapshot` ;
+> - **verrou méthodologique** (`kedro_pipeline/methodology.lock`) : le code entre
+>   finalement dans les empreintes, sous la forme d'une **révision** décidée au commit
+>   (`lock --bump` / `--accept`, contrôlé en CI), et non d'un hachage brut du source.
+
 **Alternatives écartées.**
 - Hacher le *code source* des classes : trop sensible (un commentaire modifié
-  recalculerait tout), et invisible pour l'utilisateur.
+  recalculerait tout), et invisible pour l'utilisateur. *(Le verrou méthodologique
+  hache l'arbre syntaxique normalisé, mais ne fait que forcer une décision explicite :
+  seul `--bump` recalcule.)*
 - Une **version déclarée** dans le code (`version: ClassVar[str]`, retenue en K-05 puis
   retirée) : la notion est trompeuse ici, une modification de la formule d'une métrique
   n'ayant jamais d'autre objet que la correction d'une erreur d'implémentation.
@@ -916,6 +931,15 @@ de la décision ci-dessus :
   historique de `V`, les contextes historiques de `V` ; une unité réseau de `V`, tous
   les contextes de `V`. Sans `hs_vintage` parmi les colonnes de contexte, tout
   changement concerne tous les contextes.
+
+> **Révision (2026-10-15).** `SYNTHESIS.STATE.DECISION_MODE: snapshot` remplace les
+> marques des registres amont et l'approximation `RECENT_PERIODS` par des **curseurs
+> DuckLake** sur `indicators` et `network_indicators` (`state.cursors`) : les contextes
+> touchés par des lignes réellement modifiées (bloc `CHANGE` de chaque source jointe)
+> sont marqués `pending` avant l'avancement des curseurs, toutes périodes, et toutes les
+> lectures du run sont épinglées au snapshot du début (`AT (VERSION => n)`). Corrige
+> deux faux négatifs (marque globale comparée par clé, révision ancienne) :
+> `AUDIT_WATERMARKS_AVAL.md` §3.1. Mode `shadow` par défaut pendant l'observation.
 
 **Justification.** Sur toute la période, avec 15 méthodes (SMAA 2 000 tirages, bootstrap,
 Kantorovitch), une synthèse complète ne tient pas dans 24 h ; plutôt que d'approximer
@@ -1159,7 +1183,7 @@ fonctions.
    | `ducklake_flush_inlined_data` | quotidienne | si l'inlining est actif |
    | `ducklake_merge_adjacent_files` | quotidienne | — |
    | `ducklake_rewrite_data_files` | quotidienne **si** part de lignes supprimées > seuil, sinon hebdomadaire | `DELETE_RATIO_THRESHOLD: 0.1`, `WEEKLY_DAY: 6` |
-   | `ducklake_expire_snapshots` | quotidienne | `SNAPSHOT_RETENTION_DAYS: 7` |
+   | `ducklake_expire_snapshots` | quotidienne, **jamais au-delà du plus ancien curseur aval** du catalogue (dans la limite du plafond) | `SNAPSHOT_RETENTION_DAYS: 7`, `MAX_SNAPSHOT_RETENTION_DAYS: 35` |
    | `ducklake_cleanup_old_files` (+ fichiers orphelins) | quotidienne | `CLEANUP_OLDER_THAN_DAYS: 7` |
    | `VACUUM (ANALYZE)` du PostgreSQL du catalogue | hebdomadaire | `WEEKLY_DAY` |
    | Sauvegarde logique `pg_dump` du catalogue vers S3 | hebdomadaire, rétention 4 | `BACKUP.*` |
@@ -4433,8 +4457,32 @@ point 8).
 
 ### 5.3 Corriger une formule (métrique, méthode, cohérence, étape BACI)
 
-1. Corriger le code (aucune version à incrémenter : le code n'entre pas dans les
-   empreintes).
+**Depuis le verrou méthodologique** (`kedro_pipeline/methodology.lock`,
+`AUDIT_WATERMARKS_AVAL.md` §7), la correction se signale **au commit**, la CI l'exige,
+et la production n'a rien à faire :
+
+1. Corriger le code. Le test `tests/test_methodology_lock.py` échoue et nomme les noms
+   méthodologiques dont le code a changé (commentaires, docstrings et mise en forme ne
+   comptent pas).
+2. Trancher, pour chacun :
+   ```bash
+   python -m kedro_pipeline.methodology lock --bump HHI      # les valeurs changent
+   python -m kedro_pipeline.methodology lock --accept CDI2   # aucune valeur ne change
+   ```
+   `--bump` incrémente la révision du nom, qui entre dans ses empreintes de fraîcheur.
+3. Committer le verrou avec la correction, publier l'image, appliquer le template.
+4. La prochaine exécution planifiée recalcule le nom sur **toutes** ses unités (raison
+   `fingerprint`), puis l'aval en cascade ; une exécution en échec est reprise à la
+   suivante, rien à resoumettre.
+
+Le tableau « que faire selon le type d'erreur » (paramètre, périmètre restreint,
+concordance, donnée source, curseur) est au §7.2 de `AUDIT_WATERMARKS_AVAL.md`.
+
+**Recalcul restreint à un périmètre** (erreur ne touchant que certaines unités), ou
+procédure antérieure au verrou :
+
+1. Corriger le code (et trancher le verrou par `--accept` si la correction ne doit pas
+   tout recalculer).
 2. Publier l'image et appliquer le template.
 3. **Invalider** l'empreinte des noms corrigés, **entre deux exécutions de l'étape**
    (un pod en cours réécrirait les fragments qu'il a chargés, et l'invalidation serait
@@ -4456,12 +4504,16 @@ point 8).
 5. Pour un recalcul **immédiat**, ou pour une correction **qui ne change pas le code**
    (donnée amont corrigée à la main) : forcer
    `argo submit … -p force-steps=partners,synthesis,coherence` (PS-11).
-6. Renommer ou supprimer une colonne de métrique : **opération manuelle**, jamais
+6. Curseurs DuckLake d'une étape (synthèse en mode `snapshot`) : en cas de doute sur
+   ce qu'elle a pris en compte, `invalidate-freshness-script --step synthesis
+   --reset-cursor` force la relecture complète de ses sources à la passe suivante,
+   sans toucher aux empreintes.
+7. Renommer ou supprimer une colonne de métrique : **opération manuelle**, jamais
    automatique. Faire `ALTER TABLE … RENAME COLUMN` dans une session DuckDB, puis mettre
    à jour la configuration, puis forcer l'étape.
-7. Diffuser une colonne calculée à part sur des lignes existantes (migration
+8. Diffuser une colonne calculée à part sur des lignes existantes (migration
    ponctuelle) : `DuckLakeTable.add_columns(df)` (PD-11), depuis un service Onyxia.
-8. Changer la **clé primaire** d'une table (ex. ajout de `classification` à
+9. Changer la **clé primaire** d'une table (ex. ajout de `classification` à
    `indicators`, PD-20) : script de migration dans `tools/` qui recrée la table à partir
    de l'ancienne (testé sur catalogue fichier), exécuté depuis Onyxia (§12), puis
    forçage de l'étape pour les colonnes nouvelles.

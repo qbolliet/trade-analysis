@@ -23,6 +23,11 @@ maintenance:
   TIMEZONE: Europe/Paris
   # Durée de conservation des snapshots (jours) avant expiration
   SNAPSHOT_RETENTION_DAYS: 7
+  # Plafond de rétention (jours) : un snapshot encore nécessaire au curseur d'une étape
+  # aval (state.cursors) n'expire pas avant ce délai, même au-delà de
+  # SNAPSHOT_RETENTION_DAYS. Au-delà, l'étape retardataire repart d'un recalcul complet ;
+  # alerte « cursor_retention » à 80 % du plafond. null : aucun plafond
+  MAX_SNAPSHOT_RETENTION_DAYS: 35
   # Âge minimal (jours) des fichiers orphelins supprimés par le nettoyage
   CLEANUP_OLDER_THAN_DAYS: 7
   # Nombre de fichiers par table au-delà duquel un avertissement est émis

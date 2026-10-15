@@ -45,6 +45,7 @@ def create_pipeline(parameters: Optional[Mapping[str, Any]] = None, **kwargs: An
                     "partners_state": "state.partners",
                     "network_state": "state.network",
                     "state": "state.synthesis",
+                    "cursors": "state.cursors",
                     "catalogs": "ducklake.catalogs",
                     "synthesis": "params:synthesis",
                     "vulnerabilities": "params:vulnerabilities",

@@ -50,6 +50,8 @@ import narwhals as nw
 from statflows.storage.json import Loader, Saver
 # Poignées DuckLake
 from kedro_pipeline.io.ducklake import DuckLakeTable, attached_catalog_alias
+# Révision méthodologique du verrou (recalcul après correction d'une formule)
+from kedro_pipeline.methodology import revised
 # Parallélisme intra-pod (carte parallèle, erreurs transmissibles)
 from kedro_pipeline.parallel import parallel_map, serialisable_exception
 # Module d'utilitaires de téléchargement
@@ -336,7 +338,9 @@ def network_requested(
         if flow in cls.supported_flows
     ]
     return {
-        metric.fingerprint_key: fingerprint(metric.name, metric.fingerprint_params())
+        metric.fingerprint_key: fingerprint(
+            metric.name, revised(metric.name, metric.fingerprint_params())
+        )
         for metric in metrics
     }
 

@@ -32,6 +32,15 @@ The ``MAX_CONTEXTS_PER_RUN`` budget only serves the catch-up. The recorded
 instant is captured before the computation. The failure of a context does not
 interrupt the others; only the successful contexts are written and recorded.
 
+Decision modes (``STATE.DECISION_MODE``). The rules above (``legacy``) compare
+instants of the upstream registries. With ``snapshot``, the upstream changes are
+read from the DuckLake change feed instead, through one cursor per source table
+(:mod:`kedro_pipeline.io.cursors`): every read is pinned at one snapshot, the
+contexts touched by the changed rows (and only them, whatever their period)
+are flagged ``pending`` before the cursors move, and the ``RECENT_PERIODS``
+approximation disappears. ``shadow`` executes the legacy decision and logs the
+comparison with the cursor decision, before switching.
+
 No environment variable and no YAML path are read here.
 """
 # Importation des modules
@@ -57,6 +66,7 @@ from typing import (
     Mapping,
     Optional,
     Sequence,
+    Set,
     Tuple,
 )
 
@@ -64,6 +74,8 @@ from typing import (
 from statflows.storage.json import Loader, Saver
 # Poignées DuckLake et lecteurs de connexion des workers
 from kedro_pipeline.io.ducklake import BorrowedReader, DuckLakeTable, attached_catalog_alias
+# Révision méthodologique du verrou (recalcul après correction d'une formule)
+from kedro_pipeline.methodology import revised
 # Module d'écriture des tables de faits DuckLake (upsert par clé primaire)
 from statflows.storage.ducklake.tables import FACT_TABLE
 # Module d'utilitaires de téléchargement (instants, parsing ISO)
@@ -79,9 +91,21 @@ from kedro_pipeline.io.freshness import (
     UpstreamSummary,
     fingerprint,
     legacy_entry,
+    mark_pending,
     plan_metrics,
     summarize_upstream,
     units_to_compute,
+)
+# Curseurs DuckLake (changements des sources depuis le dernier passage)
+from kedro_pipeline.io.cursors import (
+    FALLBACK_ABSENT,
+    CursorRead,
+    StepCursors,
+    current_snapshot,
+    cursor_fingerprint,
+    decision_mode,
+    shadow_metrics,
+    time_travel,
 )
 # Registres amont (partenaires et réseau), lus seulement
 from kedro_pipeline.steps.partners import partner_classification, partner_registry
@@ -176,6 +200,23 @@ _FULL_CHANGE_REASONS = frozenset({"first", "fingerprint", "forced"})
 # Construction de la requête source (fonction pure, testable sans base)
 # ──────────────────────────────────────────────────────────────────────
 
+# Fonction de la clause de lecture à un snapshot (time travel DuckLake)
+def _at(snapshot: Optional[int]) -> str:
+    """Return the time-travel clause reading a table at a snapshot.
+
+    Args:
+        snapshot: Snapshot id, or ``None`` for the current state.
+
+    Returns:
+        `` AT (VERSION => <snapshot>)``, or an empty string.
+
+    Examples:
+        >>> _at(12), _at(None)
+        (' AT (VERSION => 12)', '')
+    """
+    return time_travel(snapshot)
+
+
 # Fonction de construction de la requête DuckDB combinant les sources
 def build_source_query(
     sources: Sequence[Mapping[str, Any]],
@@ -185,6 +226,7 @@ def build_source_query(
     vintages: Optional[str] = None,
     contexts: Optional[Sequence[Sequence[Any]]] = None,
     context_columns: Optional[Sequence[str]] = None,
+    at_snapshot: Optional[int] = None,
 ) -> str:
     """Build the single DuckDB query reading and joining the source tables.
 
@@ -227,6 +269,9 @@ def build_source_query(
             ``None`` adds no predicate.
         context_columns: Ordered context key columns, required with
             ``contexts``.
+        at_snapshot: Snapshot every source table is read at (DuckLake time
+            travel), so that a run computes on one consistent state even
+            while an upstream step writes; ``None`` reads the current state.
 
     Returns:
         The SQL query as a string.
@@ -277,7 +322,7 @@ def build_source_query(
         )
 
     lines: List[str] = [f'SELECT {", ".join(projection)}']
-    lines.append(f'FROM {_table(grid["SCHEMA"])} AS {grid["ALIAS"]}')
+    lines.append(f'FROM {_table(grid["SCHEMA"])} AS {grid["ALIAS"]}{_at(at_snapshot)}')
 
     # Jointures gauches : ON = conjonction des expressions JOIN.ON et de JOIN.WHERE
     for source in joined:
@@ -290,13 +335,13 @@ def build_source_query(
                 f"La source jointe {source['ALIAS']!r} n'a aucune condition "
                 f"de jointure (JOIN.ON / JOIN.WHERE)."
             )
-        lines.append(f'LEFT JOIN {_table(source["SCHEMA"])} AS {source["ALIAS"]}')
+        lines.append(f'LEFT JOIN {_table(source["SCHEMA"])} AS {source["ALIAS"]}{_at(at_snapshot)}')
         lines.append(f'  ON {conditions[0]}')
         lines.extend(f'  AND {condition}' for condition in conditions[1:])
 
     # Clause WHERE : prédicat des FILTERS puis, optionnellement, restriction aux
     # N dernières périodes distinctes de la grille et aux contextes demandés
-    where_parts = _grid_where_parts(grid, filters, catalog_alias, flow_codes, vintages)
+    where_parts = _grid_where_parts(grid, filters, catalog_alias, flow_codes, vintages, at_snapshot)
     if contexts is not None:
         if context_columns is None:
             raise ValueError("`contexts` requires `context_columns`.")
@@ -314,6 +359,7 @@ def _grid_where_parts(
     catalog_alias: str,
     flow_codes: Optional[Sequence[int]],
     vintages: Optional[str],
+    at_snapshot: Optional[int] = None,
 ) -> List[str]:
     """Build the predicates on the grid shared by the source and context queries.
 
@@ -323,6 +369,7 @@ def _grid_where_parts(
         catalog_alias: DuckLake catalog alias.
         flow_codes: Flow codes of the synthesised directions, or ``None``.
         vintages: ``"in_force"``, ``"all"`` or ``None``.
+        at_snapshot: Snapshot the grid is read at (last periods sub-query).
 
     Returns:
         The predicates, in order: ``FILTERS.WHERE``, the flow list, the
@@ -343,7 +390,7 @@ def _grid_where_parts(
         where_parts.append(
             f'{alias}."{_PERIOD_COLUMN}" IN (\n'
             f'    SELECT DISTINCT "{_PERIOD_COLUMN}"\n'
-            f'    FROM {table}\n'
+            f'    FROM {table}{_at(at_snapshot)}\n'
             f'    ORDER BY 1 DESC\n'
             f'    LIMIT {int(last_n_periods)}\n'
             f'  )'
@@ -435,6 +482,7 @@ def build_contexts_query(
     context_columns: Sequence[str],
     flow_codes: Optional[Sequence[int]] = None,
     vintages: Optional[str] = None,
+    at_snapshot: Optional[int] = None,
 ) -> str:
     """Build the query listing the distinct contexts of the filtered grid.
 
@@ -449,6 +497,7 @@ def build_contexts_query(
         context_columns: Ordered context key columns.
         flow_codes: Flow codes of the synthesised directions, or ``None``.
         vintages: ``"in_force"``, ``"all"`` or ``None``.
+        at_snapshot: Snapshot the grid is read at, or ``None``.
 
     Returns:
         The SQL query, one row per distinct context.
@@ -473,9 +522,9 @@ def build_contexts_query(
     columns = ", ".join(f'{alias}."{column}"' for column in context_columns)
     lines = [
         f"SELECT DISTINCT {columns}",
-        f'FROM "{catalog_alias}"."{grid["SCHEMA"]}"."{FACT_TABLE}" AS {alias}',
+        f'FROM "{catalog_alias}"."{grid["SCHEMA"]}"."{FACT_TABLE}" AS {alias}{_at(at_snapshot)}',
     ]
-    where_parts = _grid_where_parts(grid, filters, catalog_alias, flow_codes, vintages)
+    where_parts = _grid_where_parts(grid, filters, catalog_alias, flow_codes, vintages, at_snapshot)
     if where_parts:
         lines.append(f"WHERE {where_parts[0]}")
         lines.extend(f"  AND {part}" for part in where_parts[1:])
@@ -1162,18 +1211,24 @@ def synthesis_context_requested(
         raise ValueError(
             f"Method names must be unique and differ from {sorted(reserved)}: {names}"
         )
-    requested = {spec.name: fingerprint(spec.name, method_fingerprint_params(spec, config))
-                 for spec in config.methods}
+    # Révision « synthesis » du verrou méthodologique : méthodes et consensus
+    requested = {
+        spec.name: fingerprint(spec.name, revised(STEP, method_fingerprint_params(spec, config)))
+        for spec in config.methods
+    }
     if config.consensus:
         requested[CONSENSUS_FINGERPRINT] = fingerprint(
             CONSENSUS_FINGERPRINT,
-            {
-                "rules": list(config.consensus),
-                "top_n": config.consensus_top_n,
-                "rank_ties": config.rank_ties,
-                "levels": list(config.levels),
-                "methods": sorted(names),
-            },
+            revised(
+                STEP,
+                {
+                    "rules": list(config.consensus),
+                    "top_n": config.consensus_top_n,
+                    "rank_ties": config.rank_ties,
+                    "levels": list(config.levels),
+                    "methods": sorted(names),
+                },
+            ),
         )
     requested[INPUTS_FINGERPRINT] = fingerprint(
         INPUTS_FINGERPRINT,
@@ -1570,6 +1625,395 @@ def plan_synthesis_contexts(
         unit: UnitPlan(plan.reason, expand_synthesis_names(plan.names, requested, method_names))
         for unit, plan in plans.items()
     }
+
+# ──────────────────────────────────────────────────────────────────────
+# Fraîcheur par curseurs DuckLake : contextes touchés par les lignes modifiées
+# ──────────────────────────────────────────────────────────────────────
+
+# Spécification du curseur d'une source de la synthèse
+@dataclass(frozen=True)
+class SourceCursor:
+    """What the synthesis reads of the changes of one source table.
+
+    The grid (first source) is read on the context columns themselves: a
+    changed row touches its own context. A joined source declares, in its
+    ``CHANGE`` block, the columns read (``KEYS``) and the conditions relating
+    them to the grid (``ON``, aliases of the configuration): a changed row
+    touches every grid context it can join. Without ``CHANGE``, any change of
+    the source touches every context (conservative).
+
+    Attributes:
+        schema: Schema of the source.
+        alias: Alias of the source in the configuration.
+        key_columns: Columns whose changed values are read.
+        join: Conditions relating the keys to the grid (empty for the grid,
+            and for a joined source without ``CHANGE``).
+        grid: Whether the source is the grid.
+        fingerprint: Fingerprint of the cursor (schema, keys, conditions).
+    """
+
+    schema: str
+    alias: str
+    key_columns: Tuple[str, ...]
+    join: Tuple[str, ...]
+    grid: bool
+    fingerprint: str
+
+    # Lecture de toutes les modifications sans clé (source sans bloc CHANGE)
+    @property
+    def coarse(self) -> bool:
+        """Whether any change of the source touches every context."""
+        return not self.grid and not self.key_columns
+
+
+# Fonction de construction des curseurs des sources
+def source_cursors(
+    sources: Sequence[Mapping[str, Any]], context_columns: Sequence[str]
+) -> List[SourceCursor]:
+    """Build the cursor specification of every source of the synthesis.
+
+    Args:
+        sources: The ``SOURCES`` list (grid first).
+        context_columns: Ordered context key columns.
+
+    Returns:
+        One specification per source, in configuration order.
+
+    Raises:
+        ValueError: If a ``CHANGE`` block has keys without conditions.
+
+    Examples:
+        >>> specs = source_cursors(
+        ...     [{"SCHEMA": "indicators", "ALIAS": "p"},
+        ...      {"SCHEMA": "network_indicators", "ALIAS": "n",
+        ...       "CHANGE": {"KEYS": ["year"], "ON": ['n."year" = 2020']}}],
+        ...     ["TIME_PERIOD"],
+        ... )
+        >>> [(spec.schema, spec.key_columns, spec.grid) for spec in specs]
+        [('indicators', ('TIME_PERIOD',), True), ('network_indicators', ('year',), False)]
+    """
+    specs: List[SourceCursor] = []
+    for rank, source in enumerate(sources):
+        schema, alias = str(source["SCHEMA"]), str(source["ALIAS"])
+        if rank == 0:
+            keys, join = tuple(context_columns), ()
+        else:
+            change = source.get("CHANGE") or {}
+            keys = tuple(change.get("KEYS") or ())
+            join = tuple(change.get("ON") or ())
+            if keys and not join:
+                raise ValueError(f"CHANGE of source {alias!r} has KEYS without ON conditions.")
+            if not keys:
+                # Logging
+                logger.warning(
+                    f"Source {alias!r} sans bloc CHANGE : toute modification de "
+                    f"{schema} touchera tous les contextes."
+                )
+        specs.append(
+            SourceCursor(
+                schema=schema, alias=alias, key_columns=keys, join=join, grid=rank == 0,
+                fingerprint=cursor_fingerprint(schema, keys, on=list(join), grid=rank == 0),
+            )
+        )
+    return specs
+
+
+# Fonction de lecture des contextes joints à des clés modifiées d'une source jointe
+def contexts_joined_to(
+    conn: Any,
+    spec: SourceCursor,
+    keys: Iterable[Tuple[Any, ...]],
+    *,
+    sources: Sequence[Mapping[str, Any]],
+    filters: Mapping[str, Any],
+    catalog_alias: str,
+    context_columns: Sequence[str],
+    flow_codes: Optional[Sequence[int]] = None,
+    vintages: Optional[str] = None,
+    at_snapshot: Optional[int] = None,
+) -> List[Tuple[Any, ...]]:
+    """Return the grid contexts a set of changed keys of a joined source touches.
+
+    The changed keys are registered as a relation named by the source alias
+    and joined to the filtered grid on ``CHANGE.ON``.
+
+    Args:
+        conn: Open connection.
+        spec: Cursor of the joined source.
+        keys: Changed key tuples (order of ``spec.key_columns``).
+        sources: ``SOURCES`` block (grid first).
+        filters: ``FILTERS`` block.
+        catalog_alias: DuckLake catalog alias.
+        context_columns: Ordered context key columns.
+        flow_codes: Flow codes of the synthesised directions.
+        vintages: ``SYNTHESIS.VINTAGES``.
+        at_snapshot: Snapshot the grid is read at.
+
+    Returns:
+        The distinct context tuples touched.
+    """
+    frame = pd.DataFrame(list(keys), columns=list(spec.key_columns))
+    if frame.empty:
+        return []
+    grid = sources[0]
+    alias = grid["ALIAS"]
+    relation = f"_synthesis_changed_{spec.alias}"
+    columns = ", ".join(f'{alias}."{column}"' for column in context_columns)
+    lines = [
+        f"SELECT DISTINCT {columns}",
+        f'FROM "{catalog_alias}"."{grid["SCHEMA"]}"."{FACT_TABLE}" AS {alias}{_at(at_snapshot)}',
+        f"JOIN {relation} AS {spec.alias}",
+        f"  ON {spec.join[0]}",
+        *(f"  AND {condition}" for condition in spec.join[1:]),
+    ]
+    where_parts = _grid_where_parts(grid, filters, catalog_alias, flow_codes, vintages, at_snapshot)
+    if where_parts:
+        lines.append(f"WHERE {where_parts[0]}")
+        lines.extend(f"  AND {part}" for part in where_parts[1:])
+    conn.register(relation, frame)
+    try:
+        return [tuple(row) for row in conn.execute("\n".join(lines)).fetchall()]
+    finally:
+        conn.unregister(relation)
+
+
+# Décision issue des curseurs
+@dataclass
+class CursorDecision:
+    """Contexts touched since the cursors of the synthesis.
+
+    Attributes:
+        touched: Grid contexts touched by a change (all of them on fallback).
+        reads: Read of each source cursor.
+        adoption: Whether a cursor was absent while the registry already holds
+            computed contexts: the legacy rule decides once (migration).
+    """
+
+    touched: Set[Unit]
+    reads: List[CursorRead]
+    adoption: bool = False
+
+
+# Fonction de lecture des curseurs et des contextes touchés
+def read_synthesis_cursors(
+    conn: Any,
+    cursors: StepCursors,
+    specs: Sequence[SourceCursor],
+    units: Sequence[Unit],
+    typed_registry: FreshnessRegistry,
+    *,
+    pinned: int,
+    sources: Sequence[Mapping[str, Any]],
+    filters: Mapping[str, Any],
+    catalog_alias: str,
+    context_columns: Sequence[str],
+    flow_codes: Optional[Sequence[int]] = None,
+    vintages: Optional[str] = None,
+) -> CursorDecision:
+    """Read the changes of every source since its cursor and map them to contexts.
+
+    Args:
+        conn: Open connection (catalog attached).
+        cursors: Cursors of the synthesis.
+        specs: Cursors of the sources (:func:`source_cursors`).
+        units: Contexts of the grid (read at ``pinned``).
+        typed_registry: Per-context registry (tells a first run from an
+            adoption).
+        pinned: Snapshot every read is pinned at.
+        sources: ``SOURCES`` block.
+        filters: ``FILTERS`` block.
+        catalog_alias: DuckLake catalog alias.
+        context_columns: Ordered context key columns.
+        flow_codes: Flow codes of the synthesised directions.
+        vintages: ``SYNTHESIS.VINTAGES``.
+
+    Returns:
+        The decision: touched contexts (restricted to the grid), reads,
+        adoption flag.
+    """
+    grid_units = set(units)
+    touched: Set[Unit] = set()
+    reads: List[CursorRead] = []
+    adoption = False
+    for spec in specs:
+        read = cursors.read(
+            conn, catalog_alias, spec.schema,
+            fingerprint=spec.fingerprint, key_columns=spec.key_columns, until_snapshot=pinned,
+        )
+        reads.append(read)
+        if read.fallback == FALLBACK_ABSENT:
+            # Premier passage du curseur : adoption si l'étape a déjà calculé des contextes
+            adoption = adoption or any(
+                (entry := typed_registry.get(unit)) is not None and entry.last_computed is not None
+                for unit in units
+            )
+            continue
+        if read.full or (spec.coarse and read.modified):
+            touched = set(grid_units)
+            continue
+        if spec.grid:
+            touched |= {context_unit(context_columns, key) for key in read.changed_keys or ()}
+        elif read.changed_keys:
+            touched |= {
+                context_unit(context_columns, context)
+                for context in contexts_joined_to(
+                    conn, spec, read.changed_keys, sources=sources, filters=filters,
+                    catalog_alias=catalog_alias, context_columns=context_columns,
+                    flow_codes=flow_codes, vintages=vintages, at_snapshot=pinned,
+                )
+            }
+    return CursorDecision(touched=touched & grid_units, reads=reads, adoption=adoption)
+
+
+# Fonction de décision des contextes à (re)calculer à partir du registre seul
+def plan_pending_contexts(
+    units: Sequence[Unit],
+    registry: FreshnessRegistry,
+    requested: Mapping[str, str],
+    force: ForceSpec,
+    *,
+    method_names: Sequence[str],
+    adopt_legacy_fingerprints: bool = False,
+) -> Dict[Unit, UnitPlan]:
+    """Decide the contexts to compute once the touched ones are flagged ``pending``.
+
+    The upstream changes are carried by the ``pending`` flags
+    (:func:`kedro_pipeline.io.freshness.mark_pending`): no ``new_data`` rule
+    remains. The other reasons (``first``, ``forced``, ``fingerprint``) are
+    unchanged.
+
+    Args:
+        units: Contexts of the grid.
+        registry: Per-context registry of the synthesis.
+        requested: Current fingerprints.
+        force: One-off forcing.
+        method_names: Configured method names.
+        adopt_legacy_fingerprints: Deployment migration flag.
+
+    Returns:
+        Mapping ``unit -> UnitPlan`` of the stale contexts.
+    """
+    plans = units_to_compute(
+        units, registry, {}, requested, force, step=STEP,
+        is_new_data=lambda unit, entry, mark: False,
+        adopt_legacy_fingerprints=adopt_legacy_fingerprints,
+    )
+    return {
+        unit: UnitPlan(plan.reason, expand_synthesis_names(plan.names, requested, method_names))
+        for unit, plan in plans.items()
+    }
+
+
+# Fonction de décision par curseurs (modes shadow et snapshot)
+def decide_with_cursors(
+    conn: Any,
+    *,
+    mode: str,
+    cursors: StepCursors,
+    registry: FreshnessRegistry,
+    units: Sequence[Unit],
+    legacy_plans: Mapping[Unit, UnitPlan],
+    requested: Mapping[str, str],
+    force: ForceSpec,
+    method_names: Sequence[str],
+    pinned: int,
+    sources: Sequence[Mapping[str, Any]],
+    filters: Mapping[str, Any],
+    catalog_alias: str,
+    context_columns: Sequence[str],
+    flow_codes: Optional[Sequence[int]] = None,
+    vintages: Optional[str] = None,
+    adopt_legacy_fingerprints: bool = False,
+    tracker: Any = None,
+) -> Dict[Unit, UnitPlan]:
+    """Read the cursors, flag the touched contexts and return the plans to execute.
+
+    ``snapshot`` mode, two phases: the touched contexts are flagged
+    ``pending`` and the registry saved, then the cursors move to ``pinned``
+    and are saved; the plans come from the registry alone. A cursor absent
+    while contexts were already computed means the step switches to cursors:
+    the legacy rule decides one last time (its ``new_data`` contexts are
+    flagged too).
+
+    ``shadow`` mode: the legacy plans are executed; the decision the cursors
+    would have taken is compared (metrics ``freshness/shadow_*``) and the
+    cursors move forward, so that the switch to ``snapshot`` starts from them.
+
+    Args:
+        conn: Open connection (catalog attached).
+        mode: ``shadow`` or ``snapshot``.
+        cursors: Cursors of the synthesis.
+        registry: Per-context registry.
+        units: Contexts of the grid (read at ``pinned``).
+        legacy_plans: Plans of the legacy rule (:func:`plan_synthesis_contexts`).
+        requested: Current fingerprints.
+        force: One-off forcing.
+        method_names: Configured method names.
+        pinned: Snapshot every read is pinned at.
+        sources: ``SOURCES`` block.
+        filters: ``FILTERS`` block.
+        catalog_alias: DuckLake catalog alias.
+        context_columns: Ordered context key columns.
+        flow_codes: Flow codes of the synthesised directions.
+        vintages: ``SYNTHESIS.VINTAGES``.
+        adopt_legacy_fingerprints: Deployment migration flag.
+        tracker: Tracker receiving the ``cursor/*`` and ``freshness/*`` metrics.
+
+    Returns:
+        The plans to execute.
+    """
+    specs = source_cursors(sources, context_columns)
+    decision = read_synthesis_cursors(
+        conn, cursors, specs, units, registry, pinned=pinned, sources=sources,
+        filters=filters, catalog_alias=catalog_alias, context_columns=context_columns,
+        flow_codes=flow_codes, vintages=vintages,
+    )
+    metrics: Dict[str, float] = {"freshness/units_touched": float(len(decision.touched))}
+    for read in decision.reads:
+        metrics.update(read.metrics("cursor"))
+
+    if mode == "shadow":
+        # Décision qu'auraient prise les curseurs : contextes touchés et raisons hors new_data
+        new_units = set(decision.touched) | {
+            unit for unit, plan in legacy_plans.items() if plan.reason != "new_data"
+        }
+        if decision.adoption:
+            new_units |= set(legacy_plans)
+        comparison = shadow_metrics(legacy_plans, new_units)
+        metrics.update(comparison)
+        missed = sorted(unit.key for unit in new_units - set(legacy_plans))
+        if missed:
+            # Logging
+            logger.warning(
+                f"Mode shadow : {len(missed)} contexte(s) touché(s) que la règle actuelle "
+                f"ne recalcule pas (ex. {missed[:5]})."
+            )
+        plans = dict(legacy_plans)
+    else:
+        touched = set(decision.touched)
+        if decision.adoption:
+            touched |= {unit for unit, plan in legacy_plans.items() if plan.reason == "new_data"}
+        # Phase 1 : contextes touchés marqués en attente, registre écrit
+        flagged = mark_pending(registry, touched, pinned)
+        registry.save()
+        metrics["freshness/units_flagged"] = float(flagged)
+        plans = plan_pending_contexts(
+            units, registry, requested, force, method_names=method_names,
+            adopt_legacy_fingerprints=adopt_legacy_fingerprints,
+        )
+
+    # Phase 2 : curseurs avancés au snapshot épinglé, puis écrits
+    for spec, read in zip(specs, decision.reads):
+        cursors.advance(read, fingerprint=spec.fingerprint)
+    cursors.save()
+    if tracker is not None:
+        tracker.log_metrics(metrics)
+    # Logging
+    logger.info(
+        f"Curseurs ({mode}) au snapshot {pinned} : {len(decision.touched)} contexte(s) touché(s)"
+        f"{' (adoption)' if decision.adoption else ''}, {len(plans)} à recalculer."
+    )
+    return plans
 
 # Fonction d'ordonnancement et de troncature des contextes planifiés
 def select_contexts(
@@ -2179,6 +2623,8 @@ class IncrementalOutcome:
         computed: Contexts computed and written, in order.
         backlog: Stale contexts left to the next runs by the budget.
         n_selected: Contexts selected for this run (planned units of the report).
+        pinned: Snapshot the run read its sources at (``None`` in ``legacy``
+            mode).
     """
     reports: List[Any] = field(default_factory=list)
     failures: Dict[str, Exception] = field(default_factory=dict)
@@ -2187,6 +2633,7 @@ class IncrementalOutcome:
     computed: List[Unit] = field(default_factory=list)
     backlog: int = 0
     n_selected: int = 0
+    pinned: Optional[int] = None
 
 # Fonction d'exécution incrémentale de la synthèse (planification, calcul, écriture)
 def run_incremental_synthesis(
@@ -2212,6 +2659,8 @@ def run_incremental_synthesis(
     tracker: Any = None,
     log_artifacts: bool = True,
     reader: Any = None,
+    cursors: Optional[StepCursors] = None,
+    mode: str = "legacy",
 ) -> IncrementalOutcome:
     """Synthesise the stale contexts, by context and by method.
 
@@ -2261,6 +2710,12 @@ def run_incremental_synthesis(
         reader: Opens the read connection of a worker (a
             :class:`~kedro_pipeline.io.ducklake.ConnectionReader`). ``None``
             lends ``scores_conn``, which only works with one process.
+        cursors: Cursors of the synthesis on its sources; required by the
+            ``shadow`` and ``snapshot`` modes (``legacy`` otherwise).
+        mode: Decision mode (``legacy``, ``shadow``, ``snapshot``, see
+            :func:`kedro_pipeline.io.cursors.decision_mode`). Outside
+            ``legacy``, every read is pinned at the snapshot of the catalog
+            captured at the start of the run.
 
     Returns:
         The outcome of the run.
@@ -2284,10 +2739,22 @@ def run_incremental_synthesis(
     diagnostics_table = DuckLakeTable(diagnostics_conn, catalog_alias, diagnostics_schema)
     outcome = IncrementalOutcome()
 
+    # Snapshot épinglé : toutes les lectures du run portent sur le même état
+    if mode != "legacy" and cursors is None:
+        logger.warning(f"Mode de décision {mode!r} sans curseurs : repli sur legacy.")
+        mode = "legacy"
+    pinned = current_snapshot(scores_conn, catalog_alias) if mode != "legacy" else None
+    if mode != "legacy" and pinned is None:
+        mode = "legacy"
+    outcome.pinned = pinned
+
     # 1. Planification : contextes de la grille, plans, ordre et budget
     contexts = read_contexts(
         scores_conn,
-        build_contexts_query(sources, filters, catalog_alias, context_columns, flow_codes, vintages),
+        build_contexts_query(
+            sources, filters, catalog_alias, context_columns, flow_codes, vintages,
+            at_snapshot=pinned,
+        ),
     )
     typed = {context_unit(context_columns, context): context for context in contexts}
     units = list(typed)
@@ -2298,6 +2765,16 @@ def run_incremental_synthesis(
         period_column=settings.period_column,
         adopt_legacy_fingerprints=adopt_legacy_fingerprints,
     )
+    if mode != "legacy":
+        assert cursors is not None and pinned is not None
+        outcome.plans = decide_with_cursors(
+            scores_conn, mode=mode, cursors=cursors, registry=registry, units=units,
+            legacy_plans=outcome.plans, requested=requested, force=force,
+            method_names=method_names, pinned=pinned, sources=sources, filters=filters,
+            catalog_alias=catalog_alias, context_columns=context_columns,
+            flow_codes=flow_codes, vintages=vintages,
+            adopt_legacy_fingerprints=adopt_legacy_fingerprints, tracker=tracker,
+        )
     selected, outcome.backlog = select_contexts(
         outcome.plans, units, settings.period_column, settings.max_contexts
     )
@@ -2329,7 +2806,7 @@ def run_incremental_synthesis(
         scores_table=scores_table, diagnostics_table=diagnostics_table,
         registry=registry, requested=requested, marks=marks,
         computed_at=computed_at, run_id=run_id, settings=settings,
-        log_artifacts=log_artifacts, artifacts=artifacts,
+        log_artifacts=log_artifacts, artifacts=artifacts, at_snapshot=pinned,
     )
     # Artefacts des workers rejoués dans le run, comme un calcul séquentiel
     artifacts.replay(tracker)
@@ -2378,6 +2855,7 @@ class SynthesisTask:
         flow_codes: Flow codes of the synthesised directions.
         vintages: ``SYNTHESIS.VINTAGES``.
         log_artifacts: Whether the artifacts are recorded for the parent.
+        at_snapshot: Snapshot the sources are read at (``None``: current).
     """
     rank: int
     unit: Unit
@@ -2394,6 +2872,7 @@ class SynthesisTask:
     flow_codes: Optional[Sequence[int]]
     vintages: Optional[str]
     log_artifacts: bool
+    at_snapshot: Optional[int] = None
 
 # Résultat d'une tâche de calcul, renvoyé au processus parent
 @dataclass
@@ -2443,6 +2922,7 @@ def compute_context_task(task: SynthesisTask) -> TaskOutcome:
                 build_source_query(
                     task.sources, task.filters, task.catalog_alias, task.flow_codes,
                     task.vintages, contexts=[task.context], context_columns=context_columns,
+                    at_snapshot=task.at_snapshot,
                 ),
                 cell_columns,
             )
@@ -2528,6 +3008,7 @@ def _synthesise_contexts(
     settings: IncrementalSettings,
     log_artifacts: bool,
     artifacts: ArtifactCollector,
+    at_snapshot: Optional[int] = None,
 ) -> float:
     """Compute the selected contexts in worker processes and write them.
 
@@ -2567,6 +3048,7 @@ def _synthesise_contexts(
             batch size).
         log_artifacts: Whether the artifacts are recorded.
         artifacts: Collector of the artifacts recorded by the workers.
+        at_snapshot: Snapshot the sources are read at (``None``: current).
 
     Returns:
         The CPU seconds spent by the tasks (workers and sequential phase).
@@ -2598,7 +3080,7 @@ def _synthesise_contexts(
             methods=methods, with_consensus=with_consensus, kept_methods=kept,
             reader=task_reader, sources=sources, filters=filters, catalog_alias=catalog_alias,
             result_schema=result_schema, flow_codes=flow_codes, vintages=vintages,
-            log_artifacts=log_artifacts,
+            log_artifacts=log_artifacts, at_snapshot=at_snapshot,
         )
 
     # Phase parallèle : méthodes du plan hors méthodes séquentielles
@@ -2720,6 +3202,7 @@ def run_synthesis_step(
     force: Optional[ForceSpec] = None,
     cadence_check: bool = False,
     run_id: Optional[str] = None,
+    cursors: Optional[FreshnessRegistry] = None,
 ) -> StepResult:
     """Synthesise the stale contexts and return the outcome of the run.
 
@@ -2744,6 +3227,9 @@ def run_synthesis_step(
             ``freshness/skipped_by_cadence``) when the step ran less than
             ``CADENCE.MIN_INTERVAL_DAYS`` ago and nothing forces it.
         run_id: Run identifier recorded on the DuckLake snapshots.
+        cursors: Registry of the cursors of every step (``state.cursors``);
+            the ``SYNTHESIS.STATE.DECISION_MODE`` modes ``shadow`` and
+            ``snapshot`` need it (``legacy`` is applied without it).
 
     Returns:
         The step result: one unit per context selected, metrics and artifacts
@@ -2823,6 +3309,8 @@ def run_synthesis_step(
                 tracker=tracker,
                 log_artifacts=log_artifacts,
                 reader=reader,
+                cursors=StepCursors(cursors, STEP) if cursors is not None else None,
+                mode=decision_mode(block.get("STATE")),
             )
     result = _run_result(
         tracker, outcome.reports, outcome.failures, outcome.n_selected,

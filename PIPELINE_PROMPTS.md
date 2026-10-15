@@ -71,7 +71,7 @@
 | K-15 | Rendu Argo (argo-kedro → WorkflowTemplate + 2 CronWorkflow) | 4 | **Opus** | **Oui** | K-13, K-14 | trade-analysis |
 | K-16 | Site de documentation (mkdocs + kedro-viz) | 4 | Sonnet | Non | K-12 | trade-analysis |
 | K-17 🔌 | Déploiement, recette sur Onyxia et runbooks | 4 | Sonnet | **Oui** | K-15, K-16 | trade-analysis |
-| K-17c | Nettoyage des compatibilités avec d'anciennes bases et filigrane de données (`statflows` corrigé) | 4 | Sonnet | **Oui** | K-17 (étapes 1 à 4), nouvelle version de `statflows` | trade-analysis |
+| K-17c | Nettoyage des compatibilités avec d'anciennes bases et bascule de la fraîcheur sur les données modifiées (`statflows` 0.3.0 déjà intégré) | 4 | Sonnet | **Oui** | K-17 (étapes 1 à 4), intégration `statflows` 0.3.0 (faite) | trade-analysis |
 | K-17d 🔌 | Validation du déploiement sur bases vierges (recette demo complète, idempotence, MLflow, données, bascule, runbooks) | 4 | Sonnet | **Oui** | K-17c | trade-analysis |
 | K-17b 🔌 | Retrait des données de démonstration et fictives sur le cluster (inventaire, non-contamination, suppression confirmée) | 4 | Sonnet | **Oui** | K-17d, **données réelles complètes** (PQ-20) | trade-analysis |
 | K-18 | Nettoyage final : suppression des scripts, du code fictif et des fichiers de démonstration, documentation | 4 | Sonnet | Non | K-17b | trade-analysis |
@@ -2422,9 +2422,9 @@ CRITÈRES D'ACCEPTATION
 
 ---
 
-## K-17c — Nettoyage des compatibilités avec d'anciennes bases et filigrane de données
+## K-17c — Nettoyage des compatibilités avec d'anciennes bases et bascule de la fraîcheur sur les données modifiées
 
-- **Modèle** : Sonnet · **Mode plan** : Oui (suppression transversale dans plusieurs modules, contrat de tests à préserver) · **Phase** : 4 · **Dépend de** : K-17 (étapes 1 à 4 réalisées), nouvelle version de `statflows` publiée par l'utilisateur (date du dernier téléchargement ayant réellement ramené des données)
+- **Modèle** : Sonnet · **Mode plan** : Oui (suppression transversale dans plusieurs modules, contrat de tests à préserver) · **Phase** : 4 · **Dépend de** : K-17 (étapes 1 à 4 réalisées) ; intégration de `statflows` 0.3.0 déjà faite (voir `AUDIT_WATERMARKS_AVAL.md` §10)
 - **Dépôt** : `trade-analysis` — pas d'accès `kubectl` requis
 
 ````text
@@ -2439,19 +2439,45 @@ CONVENTIONS DE RÉDACTION DU CODE (à appliquer à tout le code écrit ou modifi
   d'un document d'architecture ou de spécification : décris explicitement toute
   l'information utile (règle, motivation, valeurs attendues) à l'endroit où elle sert.
 
-Dépôt `trade-analysis`. Contexte : la production repart de bases de données VIERGES. Tout
-code ajouté pour faire cohabiter la version courante avec d'anciennes bases (registres,
-tables, métadonnées d'une version antérieure) est donc inutile et doit disparaître avant
-le lancement, pour livrer le code le plus simple possible. Lis `CLAUDE.md` (s'il existe),
-`PIPELINE_ARCHITECTURE.md` (§2.3, PD-13, PD-14, §5, §8) et `kubernetes/generated/README.md`.
+Dépôt `trade-analysis`. Contexte : la production repart de bases de données VIERGES
+(catalogues DuckLake, registres de téléchargement et registres de fraîcheur). Tout code
+ajouté pour faire cohabiter la version courante avec d'anciennes bases ou d'anciennes
+règles de décision est donc inutile et doit disparaître avant le lancement, pour livrer le
+code le plus simple possible.
 
-OBJECTIF : (A) retirer les compatibilités avec d'anciennes bases ; (B) adopter la nouvelle
-version de `statflows` pour que la fraîcheur des unités partenaires ne dépende plus de la
-date d'exécution des requêtes de téléchargement.
+Lis d'abord `CLAUDE.md`, `AUDIT_WATERMARKS_AVAL.md` (en entier, en particulier §5, §7 et
+§10), `PIPELINE_ARCHITECTURE.md` (§2.3, PD-10, PD-12, PD-16, §5, §8) et
+`kubernetes/generated/README.md`.
 
-A. NETTOYAGE (pour chaque élément : supprimer le code, les paramètres, les tests, la
-   documentation et les mentions du `Dockerfile` ; vérifier avec `grep` qu'il ne reste
-   aucune référence)
+DÉJÀ FAIT — NE PAS REFAIRE (vérifie seulement que c'est en place, sans le retravailler) :
+- `statflows` est en `v0.3.0` (`pyproject.toml`, `uv.lock`) : champs `last_modified` /
+  `last_modified_snapshot` du registre de téléchargement, `changes_since(...,
+  key_columns, until_snapshot)`, `current_snapshot`.
+- `DownloadRegistryView.pairs_last_modified()` et `batches_marks_by_year()`
+  (`kedro_pipeline/io/registry_views.py`) ; `UpstreamMark`, `upstream_mark_is_newer`,
+  raison `pending` et `mark_pending` (`kedro_pipeline/io/freshness.py`) ; curseurs DuckLake
+  (`kedro_pipeline/io/cursors.py`, jeu de données `state.cursors`) ; décision des
+  partenaires et de BACI sur les données modifiées, synthèse par curseurs, lectures
+  épinglées (`AT (VERSION => n)`) ; suivi des tables de passage par millésime BACI
+  (`concordance_checksums`) ; expiration des snapshots bornée par les curseurs
+  (`MAX_SNAPSHOT_RETENTION_DAYS`) ; verrou méthodologique (`kedro_pipeline/methodology.py`,
+  `kedro_pipeline/methodology.lock`, `tests/test_methodology_lock.py`) ;
+  `invalidate-freshness-script --reset-cursor`.
+- Tests correspondants : `tests/test_cursors.py`, `tests/test_partners_decision.py`,
+  `tests/test_synthesis_cursors_e2e.py`, ajouts de `tests/test_baci_steps.py` et
+  `tests/test_io_maintenance.py`. Ils couvrent déjà : requête rejouée sans nouvelles
+  données → aucune unité partenaire périmée ; données modifiées → seules les unités
+  concernées ; révision ancienne, suppression, échec puis reprise, snapshots expirés pour
+  la synthèse. Ne les réécris pas ; adapte-les seulement à ce que le nettoyage retire.
+Tout cela reste : ce sont des comportements PERMANENTS, pas de la compatibilité.
+
+OBJECTIF : (A) retirer les compatibilités avec d'anciennes bases ; (B) sur bases vierges,
+faire des règles fondées sur les données modifiées les SEULES règles de décision et
+retirer les mécanismes de transition introduits pour basculer des anciennes.
+
+A. NETTOYAGE DES ANCIENNES BASES (pour chaque élément : supprimer le code, les paramètres,
+   les tests, la documentation et les mentions du `Dockerfile` ; vérifier avec `grep`
+   qu'il ne reste aucune référence)
    1. `tools/migrate_indicators_key.py`, `tests/test_migrate_indicators_key.py` et la ligne
       `COPY tools/ tools/` de `docker/Dockerfile` (le dossier `tools/` disparaît s'il ne
       contient plus rien d'autre ; sinon seule la partie migration est retirée).
@@ -2463,45 +2489,83 @@ A. NETTOYAGE (pour chaque élément : supprimer le code, les paramètres, les te
       `legacy_entry`, `adopt_legacy`, `adopt_legacy_flag`, `ADOPT_ENV_VARIABLE`, le champ
       `RegistryEntry.legacy` (et sa sérialisation), la lecture d'un document v1 au chemin
       d'un fragment v2 ; leurs branchements : `pipelines/_common.adopt_legacy`, le
-      paramètre `adopt_legacy_fingerprints` (`pipelines/vulnerabilities/nodes.py`,
-      `pipelines/baci/nodes.py`, `steps/coherence.py`, `steps/network.py`),
-      `_parse_legacy_network` et `legacy_path` (`steps/network.py`), `LegacySource` dans
-      `steps/baci.py`, et la clé `STATE` des fichiers de configuration qui ne sert qu'à
-      cela. Adapter `tests/test_freshness*.py` et `tests/test_invalidate_freshness.py`.
+      paramètre `adopt_legacy_fingerprints` (`units_to_compute`, `plan_pending_contexts`
+      et `decide_with_cursors` de `steps/synthesis.py`, `_decide_pass` de
+      `steps/partners.py`, `plan_baci_vintages` de `steps/baci.py`,
+      `pipelines/vulnerabilities/nodes.py`, `pipelines/baci/nodes.py`,
+      `steps/coherence.py`, `steps/network.py`), `_parse_legacy_network` et `legacy_path`
+      (`steps/network.py`), `_legacy_partner_parser` (`steps/partners.py`),
+      `global_legacy_parser` (`steps/synthesis.py`), `LegacySource` dans `steps/baci.py`,
+      les clés `PATHS.LAST_COMPUTATION_PATH` / `LAST_PROCESSING_PATH` et
+      `STATE.ADOPT_LEGACY_FINGERPRINTS` des fichiers de configuration. Adapte
+      `tests/test_freshness*.py` et `tests/test_invalidate_freshness.py`.
    4. Toute autre mention héritée que le `grep` (`legacy`, `ancien`, `antérieur`,
       `migrat`, `rétro`, `v1`) fait remonter dans `kedro_pipeline/`, `config/`,
       `kubernetes/`, `docker/` et les README : classe-la en « compatibilité d'anciennes
-      bases » (à retirer) ou « comportement permanent » (à garder) et justifie chaque
-      choix dans le rapport.
+      bases » (à retirer) ou « comportement permanent » (à garder), et justifie chaque
+      choix dans le rapport. Attention aux homonymes : le mode de décision `legacy` est
+      traité en B ; le champ `UpstreamMark.legacy` (entrée de registre sans snapshot) est
+      traité en B.3.
    À GARDER (corrections de vrais bugs, pas de la compatibilité) : dépendance `pytz`,
    détection d'existence d'un fichier S3 sans caractère générique
    (`DuckDBPassIO._exists`) et son test, config `config/demo/parameters_maintenance.yml`
-   et son test de cohérence.
+   et son test de cohérence, `attribute_of=None` de la structure factice de
+   `tests/test_download_helpers.py`.
 
-B. FILIGRANE DE DONNÉES
-   1. Mets à jour la dépendance `statflows` (tag fourni par l'utilisateur) et lis sa
-      documentation : le registre de téléchargement distingue désormais la date
-      d'exécution de la requête de la date du dernier téléchargement ayant ramené des
-      données.
-   2. `DownloadRegistryView` (`kedro_pipeline/io/registry_views.py`) et les unités
-      partenaires (`steps/partners.py`, filigrane amont d'une unité) lisent la date de
-      DONNÉES et non plus la date d'exécution. Les unités de BACI, de réseau, de synthèse
-      et de cohérence héritent déjà du filigrane de leur amont : vérifie qu'aucune ne lit
-      la date d'exécution.
-   3. Tests : une requête rejouée sans nouvelles données ne rend aucune unité partenaire
-      périmée ; une requête rejouée avec de nouvelles observations rend périmées les
-      seules unités concernées ; cascade vers synthèse/cohérence.
+B. RÈGLES DE DÉCISION UNIQUES SUR BASES VIERGES
+   Les modes `legacy` et `shadow` (`STATE.DECISION_MODE`) n'existent que pour basculer
+   des anciennes règles (date `last_download`, marques des registres amont,
+   `RECENT_PERIODS`) vers les nouvelles en observant l'écart. Sur bases vierges, cette
+   observation n'a plus d'objet. Sans cette étape, le mode `shadow` par défaut continue
+   d'EXÉCUTER l'ancienne décision : les unités partenaires seraient encore recalculées à
+   chaque `daily`, défaut que K-17d doit voir corrigé. Propose dans le plan, puis applique
+   après validation :
+   1. Supprimer `STATE.DECISION_MODE` et les modes `legacy` / `shadow` : les partenaires
+      et BACI décident sur `UpstreamMark` (`upstream_mark_is_newer`), la synthèse sur ses
+      curseurs. Retirer `decision_mode`, `shadow_metrics`, `_decide_pass` (garder une
+      décision directe), `PartnerPass.marks` / `.shadow`, `BaciScope.mode` / `.marks` /
+      `.shadow`, le paramètre `mark` de `completed_entry`, les métriques
+      `freshness/shadow_*`, et dans les tests les cas `legacy` / `shadow`.
+   2. Retirer les anciennes règles devenues mortes : `UpstreamMarks`,
+      `plan_synthesis_contexts` (remplacé par `plan_pending_contexts`), `RECENT_PERIODS`
+      (paramètre, `IncrementalSettings.recent_periods`, `default_recent_periods`,
+      `recent_period_values`), `summarize_upstream` / `UpstreamSummary` s'ils ne servent
+      plus, le prédicat par dates `upstream_is_newer` pour les partenaires et BACI, les
+      entrées de registres amont (`state.partners`, `state.network`) du nœud de synthèse
+      si elles ne servent plus qu'à ces marques, et le `watermark` de `context_entry` s'il
+      n'est plus lu.
+   3. Adoption et repli hérités : dans `read_synthesis_cursors`, l'« adoption » (curseur
+      absent alors que des contextes sont déjà calculés) ne se produit plus sur bases
+      vierges ; garde seulement le repli complet. Dans `upstream_mark_is_newer`, la branche
+      « entrée enregistrée sans `upstream_snapshot` » (comparaison de dates à la bascule)
+      et le champ `UpstreamMark.legacy` (entrée de registre de téléchargement écrite avant
+      statflows 0.2.2) deviennent morts SI tous les catalogues exposent des snapshots :
+      vérifie-le dans la documentation de statflows et décide (retirer, ou garder
+      explicitement pour un catalogue sans snapshot), justification au rapport.
+   4. À GARDER : la lecture de `last_download` pour la porte de complétude BACI et l'audit
+      de couverture (« téléchargé au moins une fois »), la raison `pending`, les curseurs,
+      l'épinglage, le verrou méthodologique, l'expiration bornée.
+   5. Mettre à jour `AUDIT_WATERMARKS_AVAL.md` §10 (bascule faite, modes retirés) et
+      `EXTENSION_PARCIMONIE_AVAL.md` si une hypothèse y change.
 
-RÈGLES : pas de commit sans demande ; `uv run pytest` complet (hors tests nécessitant S3,
-déjà en échec pour clés d'accès invalides : le signaler sans le corriger) et doctests des
-modules modifiés ; mets à jour `PIPELINE_ARCHITECTURE.md` (§2.3, §5, §8) pour qu'il ne
-décrive plus de compatibilité avec d'anciennes bases.
+RÈGLES : pas de commit sans demande ; `uv run pytest -m "slow or not slow"` complet (hors
+tests nécessitant S3, déjà en échec pour clés d'accès invalides : le signaler sans le
+corriger), doctests des modules modifiés, `python -m kedro_pipeline.methodology check` (un
+nettoyage de `macroforecast/` qui ne change aucune valeur se tranche par `lock --accept`),
+`kedro trade render-argo --check` et `kedro trade config-check`. Mets à jour
+`PIPELINE_ARCHITECTURE.md` (§2.3, PD-10, PD-12, §5, §8) pour qu'il ne décrive plus ni
+compatibilité avec d'anciennes bases ni mode de transition.
 
 CRITÈRES D'ACCEPTATION
-- `grep -rniE "legacy|adopt_legacy|migrate_indicators" kedro_pipeline config tests docker
-  kubernetes tools` ne remonte rien d'inattendu (liste commentée de ce qui reste).
+- `grep -rniE "legacy|adopt_legacy|migrate_indicators|DECISION_MODE|shadow|RECENT_PERIODS"
+  kedro_pipeline config tests docker kubernetes tools` ne remonte rien d'inattendu (liste
+  commentée de ce qui reste).
+- Les tests de `tests/test_partners_decision.py`, `tests/test_synthesis_cursors_e2e.py` et
+  `tests/pipeline/test_kedro_run.py` vérifient, sans mode de transition : second run sans
+  nouvelles données → aucune unité partenaire, BACI, réseau, synthèse ni cohérence
+  recalculée ; données modifiées → seules les unités concernées, cascade comprise.
 - Tests verts ; rapport : fichiers supprimés, fonctions retirées, éléments gardés et
-  pourquoi, version de `statflows` adoptée.
+  pourquoi.
 - Demande-moi ensuite le commit/push et le tag d'image `sha-<court>` résultant.
 ````
 
@@ -2560,8 +2624,9 @@ ACQUIS DE LA RECETTE PRÉCÉDENTE (déjà fait, à ne pas refaire)
   2 h 40 (téléchargement Comtrade ≈ 1 h 20, Eurostat ≈ 2 h 30, partenaires 3 min).
 - Défaut d'idempotence découvert : la date `last_download` de `statflows` avance à chaque
   exécution d'une requête même sans nouvelle donnée, donc toutes les unités partenaires
-  étaient recalculées (`freshness/units_new_data` = 17 752 à chaque `daily`). Corrigé en
-  K-17c : à CONFIRMER ici par la seconde exécution (étape 3).
+  étaient recalculées (`freshness/units_new_data` = 17 752 à chaque `daily`). Corrigé par
+  la décision sur les données modifiées (`statflows` 0.3.0), seule règle depuis K-17c : à
+  CONFIRMER ici par la seconde exécution (étape 3).
 
 ÉTAPES
 1. Pré-vol (lecture seule) : contexte `kubectl`, secrets (clés), image `sha-<tag fourni>`

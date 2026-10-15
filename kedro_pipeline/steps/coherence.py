@@ -41,6 +41,8 @@ from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
 from statflows.storage.json import Loader, Saver
 # Poignée d'écriture des tables DuckLake (remplacement transactionnel, traçabilité)
 from kedro_pipeline.io.ducklake import BorrowedReader, DuckLakeTable, attached_catalog_alias
+# Révision méthodologique du verrou (recalcul après correction d'une formule)
+from kedro_pipeline.methodology import revised
 # Parallélisme intra-pod (carte parallèle, erreurs transmissibles)
 from kedro_pipeline.parallel import parallel_map, serialisable_exception
 # Module d'utilitaires de téléchargement (instants, parsing ISO)
@@ -142,7 +144,7 @@ def coherence_requested(config: CoherenceConfig) -> Dict[str, str]:
         >>> list(coherence_requested(CoherenceConfig()))
         ['coherence']
     """
-    return {STEP: fingerprint(STEP, methodology_params(config))}
+    return {STEP: fingerprint(STEP, revised(STEP, methodology_params(config)))}
 
 # Fonction d'extraction des contextes distincts de la table des métriques
 def distinct_contexts(

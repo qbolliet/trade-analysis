@@ -63,8 +63,14 @@ from kedro_pipeline.io.freshness import (
     plan_metrics,
     units_to_compute,
     upstream_is_newer,
+    upstream_mark_is_newer,
+    UpstreamMark,
 )
+# Mode de décision, comparaison des décisions et lectures épinglées
+from kedro_pipeline.io.cursors import decision_mode, shadow_metrics, time_travel, try_current_snapshot
 from kedro_pipeline.io.ducklake import attached_catalog_alias
+# Révision méthodologique du verrou (recalcul après correction d'une formule)
+from kedro_pipeline.methodology import revised
 from kedro_pipeline.io.registry_views import ProductsKey
 from kedro_pipeline.steps.result import (
     StepProgress,
@@ -422,6 +428,7 @@ def classifications_by_year(
     years: Sequence[int],
     classification_col: str = "classificationCode",
     period_col: str = "period",
+    at_snapshot: Optional[int] = None,
 ) -> Dict[int, List[str]]:
     """List the HS classifications present in the Comtrade fact table, year by year.
 
@@ -434,6 +441,8 @@ def classifications_by_year(
         years: Years to inspect.
         classification_col: Classification column.
         period_col: Period column.
+        at_snapshot: Snapshot the table is read at (DuckLake time travel);
+            ``None`` reads the current state.
 
     Returns:
         Mapping ``year -> sorted classification codes``.
@@ -451,7 +460,7 @@ def classifications_by_year(
     year_expr = _year_sql(period_col)
     rows = conn.execute(
         f'SELECT DISTINCT {year_expr} AS y, "{classification_col}" AS c '
-        f'FROM "{source_schema}".{FACT_TABLE} '
+        f'FROM "{source_schema}".{FACT_TABLE}{time_travel(at_snapshot)} '
         f"WHERE list_contains(?::INTEGER[], {year_expr})",
         [[int(year) for year in years]],
     ).fetchall()
@@ -621,6 +630,7 @@ def rows_by_chapter(
     year: int,
     period_col: str = "period",
     product_col: str = "cmdCode",
+    at_snapshot: Optional[int] = None,
 ) -> Dict[str, int]:
     """Count the Comtrade declarations of a year per HS chapter.
 
@@ -630,6 +640,7 @@ def rows_by_chapter(
         year: Year to count.
         period_col: Period column.
         product_col: Product column.
+        at_snapshot: Snapshot the table is read at, or ``None``.
 
     Returns:
         Mapping ``chapter -> declarations``.
@@ -638,7 +649,7 @@ def rows_by_chapter(
 
     chapter = _chapter_sql(product_col)
     rows = conn.execute(
-        f'SELECT {chapter} AS chapter, count(*) FROM "{source_schema}".{FACT_TABLE} '
+        f'SELECT {chapter} AS chapter, count(*) FROM "{source_schema}".{FACT_TABLE}{time_travel(at_snapshot)} '
         f"WHERE {_year_sql(period_col)} = ? GROUP BY 1",
         [int(year)],
     ).fetchall()
@@ -655,6 +666,7 @@ def read_comtrade_year(
     period_col: str = "period",
     product_col: str = "cmdCode",
     chapters: Optional[Sequence[str]] = None,
+    at_snapshot: Optional[int] = None,
 ) -> pd.DataFrame:
     """Read the projected Comtrade declarations of one year, read-only.
 
@@ -669,6 +681,7 @@ def read_comtrade_year(
         period_col: Period column.
         product_col: Product column.
         chapters: HS chapters of the block (``None``: the whole year).
+        at_snapshot: Snapshot the table is read at, or ``None``.
 
     Returns:
         The declarations of the year (or block).
@@ -685,7 +698,10 @@ def read_comtrade_year(
     from statflows.storage.ducklake.tables import FACT_TABLE
 
     col_list = ", ".join(f'"{column}"' for column in columns)
-    sql = f'SELECT {col_list} FROM "{source_schema}".{FACT_TABLE} WHERE {_year_sql(period_col)} = ?'
+    sql = (
+        f'SELECT {col_list} FROM "{source_schema}".{FACT_TABLE}{time_travel(at_snapshot)} '
+        f"WHERE {_year_sql(period_col)} = ?"
+    )
     params: List[Any] = [int(year)]
     if chapters is not None:
         sql += f" AND list_contains(?::VARCHAR[], {_chapter_sql(product_col)})"
@@ -813,8 +829,11 @@ class DuckDBPassIO:
         harmonizer_factory: Optional[Callable[[], Any]] = None,
         links: Sequence[Tuple[str, str]] = (),
         max_rows_per_chunk: Optional[int] = None,
+        at_snapshot: Optional[int] = None,
     ) -> None:
         self.conn = conn
+        # Snapshot de lecture de la source : toutes les passes lisent le même état
+        self.at_snapshot = at_snapshot
         self.source_schema = source_schema
         self.years = sorted(int(year) for year in years)
         self.root = root.rstrip("/")
@@ -879,6 +898,7 @@ class DuckDBPassIO:
             counts = rows_by_chapter(
                 self.conn, self.source_schema, year=year,
                 period_col=self.period_col, product_col=self.product_col,
+                at_snapshot=self.at_snapshot,
             )
             if not counts:
                 continue
@@ -888,6 +908,7 @@ class DuckDBPassIO:
                     self.conn, self.source_schema, columns, year=year,
                     period_col=self.period_col, product_col=self.product_col,
                     chapters=None if len(blocks) == 1 else chapters,
+                    at_snapshot=self.at_snapshot,
                 )
                 n_raw = len(df_chunk)
                 if self.harmonizer_factory is not None and n_raw:
@@ -1377,7 +1398,7 @@ def baci_unit(vintage: str) -> Unit:
     return Unit.of(vintage=vintage)
 
 # Fonction de calcul de l'empreinte méthodologique du redressement
-def baci_requested(config: BaciConfig) -> Dict[str, str]:
+def baci_requested(config: BaciConfig, inputs: Optional[Mapping[str, str]] = None) -> Dict[str, str]:
     """Current methodological fingerprint of the BACI reconstruction.
 
     A single fingerprint per vintage: the BACI steps are coupled (the gravity
@@ -1388,6 +1409,10 @@ def baci_requested(config: BaciConfig) -> Dict[str, str]:
 
     Args:
         config: Methodological configuration of the reconstruction.
+        inputs: Digests of the non-tabular inputs (CEPII files,
+            :func:`baci_inputs`): a new CEPII file re-estimates the vintages.
+            ``None`` leaves them out. The correspondence tables are followed
+            per vintage instead (:func:`stale_concordance_vintages`).
 
     Returns:
         ``{"baci": fingerprint}``.
@@ -1395,9 +1420,103 @@ def baci_requested(config: BaciConfig) -> Dict[str, str]:
     Examples:
         >>> list(baci_requested(DEFAULT_CONFIG))
         ['baci']
+        >>> baci_requested(DEFAULT_CONFIG, {"cepii": "a"}) != baci_requested(DEFAULT_CONFIG, {"cepii": "b"})
+        True
     """
-    params = methodology_params(config, BACI_FINGERPRINT_EXCLUDED)
+    params = revised(STEP, methodology_params(config, BACI_FINGERPRINT_EXCLUDED))
+    if inputs is not None:
+        params["inputs"] = dict(sorted(inputs.items()))
     return {STEP: fingerprint(STEP, params)}
+
+
+# Fonction d'empreinte des fichiers CEPII
+def baci_inputs(dist: Optional[pd.DataFrame], geo: Optional[pd.DataFrame]) -> Dict[str, str]:
+    """Digest of the CEPII files read by BACI (gravity variables).
+
+    Args:
+        dist: CEPII distances.
+        geo: CEPII geography.
+
+    Returns:
+        ``{"cepii": digest}``.
+
+    Examples:
+        >>> frame = pd.DataFrame({"a": [1]})
+        >>> baci_inputs(frame, frame) != baci_inputs(frame.iloc[0:0], frame)
+        True
+    """
+    return {
+        "cepii": fingerprint(
+            "cepii",
+            {
+                "dist": table_checksum(dist) if dist is not None else None,
+                "geo": table_checksum(geo) if geo is not None else None,
+            },
+        ),
+    }
+
+
+# Clé d'une entrée d'enregistrement des sommes de contrôle des tables de passage
+CONCORDANCE_CHECKSUMS_KEY = "concordance_checksums"
+
+
+# Fonction de lecture des sommes de contrôle de tables de passage
+def concordance_checksums(
+    concordance_registry: Optional[Mapping[str, Any]], pairs: Iterable[Tuple[str, str]]
+) -> Dict[str, Optional[str]]:
+    """Checksums of some cached correspondence tables, as recorded by the cache registry.
+
+    Args:
+        concordance_registry: Registry of the concordance cache
+            (``unsd_correspondance_tables.json``), ``None`` when absent.
+        pairs: ``(source, target)`` pairs.
+
+    Returns:
+        Mapping ``"<source>-<target>" -> checksum`` (``None`` when unknown).
+
+    Examples:
+        >>> concordance_checksums({"HS2022-HS2017": {"checksum": "x"}}, [("HS2022", "HS2017")])
+        {'HS2022-HS2017': 'x'}
+    """
+    registry = concordance_registry or {}
+    checksums: Dict[str, Optional[str]] = {}
+    for source, target in sorted(set(pairs)):
+        key = f"{source}-{target}"
+        entry = registry.get(key)
+        checksums[key] = entry.get("checksum") if isinstance(entry, Mapping) else None
+    return checksums
+
+
+# Fonction de détection des millésimes dont une table de passage utilisée a changé
+def stale_concordance_vintages(
+    state: FreshnessRegistry,
+    labels: Iterable[str],
+    concordance_registry: Optional[Mapping[str, Any]],
+) -> List[str]:
+    """Vintages whose last pass used a correspondence table refreshed since.
+
+    Each completed entry records the checksums of the tables the pass used
+    (``concordance_checksums``); only those are compared, so a table
+    downloaded for another step (historical partner rows) never re-estimates
+    a vintage. A table needed for the first time comes with a new year or a
+    new nomenclature, i.e. a scope change, handled by the cadence rule.
+
+    Args:
+        state: BACI freshness registry.
+        labels: Candidate vintages.
+        concordance_registry: Current registry of the concordance cache.
+
+    Returns:
+        The vintages to re-estimate, in input order.
+    """
+    stale: List[str] = []
+    for label in labels:
+        entry = state.get(baci_unit(label))
+        recorded = (entry.extra.get(CONCORDANCE_CHECKSUMS_KEY) if entry is not None else None) or {}
+        pairs = [tuple(key.split("-", 1)) for key in recorded]
+        if recorded and concordance_checksums(concordance_registry, pairs) != recorded:
+            stale.append(label)
+    return stale
 
 # Fonction de lecture du registre v1 des traitements BACI en entrées héritées
 def _parse_legacy_baci(data: Mapping[str, Any]) -> Iterator[RegistryEntry]:
@@ -1505,11 +1624,36 @@ def vintage_watermark(
     dates = [when for year in years for when in (batches.get(int(year)) or {}).values()]
     return max(dates) if dates else None
 
+# Fonction de calcul de la marque « données modifiées » d'un millésime
+def vintage_mark(
+    marks: Mapping[int, Mapping[ProductsKey, UpstreamMark]],
+    years: Iterable[int],
+) -> Optional[UpstreamMark]:
+    """Most recent data modification of the Comtrade batches of the years of a vintage.
+
+    Args:
+        marks: Data-modification marks of the batches, by year
+            (:meth:`DownloadRegistryView.batches_marks_by_year`).
+        years: Years of the vintage scope.
+
+    Returns:
+        The combined mark, or ``None`` when no batch is known.
+
+    Examples:
+        >>> from kedro_pipeline.io.freshness import parse_instant
+        >>> mark = vintage_mark({2022: {("a",): UpstreamMark(parse_instant("2026-01-01"), 4)},
+        ...                      2023: {("a",): UpstreamMark(parse_instant("2026-02-01"), 9)}}, [2022])
+        >>> mark.snapshot
+        4
+    """
+    found = [mark for year in years for mark in (marks.get(int(year)) or {}).values()]
+    return UpstreamMark.combine(found) if found else None
+
 # Fonction de calcul de l'identifiant d'une passe d'estimation
 def compute_fit_id(
     vintage: str,
     scope: Sequence[int],
-    watermark: Optional[datetime],
+    watermark: Any,
     requested: Mapping[str, str],
 ) -> str:
     """Identifier of a BACI estimation pass.
@@ -1521,7 +1665,9 @@ def compute_fit_id(
     Args:
         vintage: Vintage label.
         scope: Years of the pass.
-        watermark: Upstream watermark of the pass.
+        watermark: Upstream watermark of the pass: a date (``last_download``)
+            or an :class:`UpstreamMark` (stable while the data does not
+            change).
         requested: Methodological fingerprint (:func:`baci_requested`).
 
     Returns:
@@ -1536,7 +1682,9 @@ def compute_fit_id(
         {
             "vintage": vintage,
             "scope": sorted(int(y) for y in scope),
-            "watermark": format_instant(watermark),
+            "watermark": (
+                watermark.to_json() if isinstance(watermark, UpstreamMark) else format_instant(watermark)
+            ),
             "fingerprints": dict(requested),
         },
     )
@@ -1569,6 +1717,7 @@ def baci_is_new_data(
     scopes: Mapping[Unit, Sequence[int]],
     refresh: Optional[Mapping[str, Any]],
     now: datetime,
+    newer: NewDataPredicate = upstream_is_newer,
 ) -> NewDataPredicate:
     """Build the ``new_data`` rule of the BACI vintages (re-estimation cadence).
 
@@ -1593,6 +1742,9 @@ def baci_is_new_data(
             (``MIN_INTERVAL_DAYS``, default 7; ``ON_NEW_COMPLETE_YEAR``,
             default true).
         now: Decision instant.
+        newer: Comparison of the upstream of a vintage with its entry:
+            dates (``last_download``) by default, or
+            :func:`upstream_mark_is_newer` on data-modification marks.
 
     Returns:
         The predicate ``(unit, entry, watermark) -> bool``.
@@ -1617,7 +1769,7 @@ def baci_is_new_data(
             return False
         if recorded_scope is not None and scope != recorded_scope:
             return True
-        return upstream_is_newer(unit, entry, watermark)
+        return newer(unit, entry, watermark)
 
     return rule
 
@@ -1632,6 +1784,7 @@ def plan_baci_vintages(
     now: datetime,
     *,
     adopt_legacy_fingerprints: bool = False,
+    newer: NewDataPredicate = upstream_is_newer,
 ) -> Dict[Unit, UnitPlan]:
     """Decide which BACI vintages to re-estimate.
 
@@ -1647,6 +1800,7 @@ def plan_baci_vintages(
         refresh: ``REFRESH`` block of the ``baci`` parameters.
         now: Decision instant.
         adopt_legacy_fingerprints: Deployment migration flag.
+        newer: Upstream comparison (see :func:`baci_is_new_data`).
 
     Returns:
         Mapping ``unit -> plan`` for the vintages to re-estimate.
@@ -1660,7 +1814,7 @@ def plan_baci_vintages(
         requested,
         force,
         step=STEP,
-        is_new_data=baci_is_new_data(units, refresh, now),
+        is_new_data=baci_is_new_data(units, refresh, now, newer),
         adopt_legacy_fingerprints=adopt_legacy_fingerprints,
     )
 
@@ -1709,8 +1863,9 @@ def completed_entry(
     fit_id: str,
     scope: Sequence[int],
     processed_at: datetime,
-    watermark: Optional[datetime],
+    watermark: Any,
     requested: Mapping[str, str],
+    mark: Optional[UpstreamMark] = None,
     **counters: Any,
 ) -> RegistryEntry:
     """Entry recorded once every year of the vintage was written.
@@ -1721,8 +1876,11 @@ def completed_entry(
         fit_id: Identifier of the pass.
         scope: Years of the pass (all written).
         processed_at: Instant captured before the pass started.
-        watermark: Upstream watermark taken into account.
+        watermark: Upstream watermark taken into account: a date, or an
+            :class:`UpstreamMark` (its ``last_modified`` and snapshot recorded).
         requested: Current methodological fingerprint.
+        mark: Data-modification mark read with a date watermark (``shadow``
+            mode): its snapshot is recorded too.
         **counters: Extra fields (``n_rows``, ``result_schema``,
             ``is_provisional``…).
 
@@ -1730,13 +1888,18 @@ def completed_entry(
         The entry to upsert after the write.
     """
     years = sorted(int(y) for y in scope)
+    upstream: Dict[str, Any] = {}
+    if isinstance(watermark, UpstreamMark):
+        watermark, upstream = watermark.recorded()
+    elif mark is not None:
+        upstream = mark.recorded()[1]
     return RegistryEntry(
         unit=unit,
         last_computed=processed_at,
         upstream_watermark=watermark,
         fingerprints=dict(requested),
         reason=plan.reason,
-        extra={"fit_id": fit_id, "years_scope": years, "years_written": years, **counters},
+        extra={"fit_id": fit_id, "years_scope": years, "years_written": years, **upstream, **counters},
     )
 
 # Fonction de restriction des cibles configurées aux millésimes demandés
@@ -1811,7 +1974,17 @@ class BaciScope:
         shares: Download share of the planned batches, by year.
         start_years: First year of every selected target vintage.
         scopes: Eligible years of every vintage.
-        watermarks: Upstream watermark of every vintage.
+        watermarks: Upstream watermark of every vintage: ``last_download``
+            dates (``legacy`` and ``shadow`` modes) or data-modification marks
+            (``snapshot``).
+        marks: Data-modification mark of every vintage (``shadow`` mode),
+            recorded with the completed entries.
+        mode: Decision mode (``STATE.DECISION_MODE``).
+        shadow: Comparison of the ``legacy`` and ``snapshot`` decisions.
+        pinned: Snapshot of the Comtrade catalog every read of the run is
+            pinned at (``None``: current state).
+        concordance_checksums: Checksums of the correspondence tables used by
+            each vintage, recorded with its completed entry.
         requested: Current methodological fingerprint.
         force: One-off forcing.
         plans: Plan of every vintage to re-estimate, by label.
@@ -1834,7 +2007,12 @@ class BaciScope:
     shares: Dict[int, float]
     start_years: Dict[str, int]
     scopes: Dict[str, List[int]] = field(default_factory=dict)
-    watermarks: Dict[str, Optional[datetime]] = field(default_factory=dict)
+    watermarks: Dict[str, Any] = field(default_factory=dict)
+    marks: Dict[str, Optional[UpstreamMark]] = field(default_factory=dict)
+    mode: str = "legacy"
+    shadow: Dict[str, float] = field(default_factory=dict)
+    pinned: Optional[int] = None
+    concordance_checksums: Dict[str, Dict[str, Optional[str]]] = field(default_factory=dict)
     requested: Dict[str, str] = field(default_factory=dict)
     force: Any = None
     plans: Dict[str, Any] = field(default_factory=dict)
@@ -1982,21 +2160,58 @@ def prepare_baci(
         logger.info("Aucune année complète : aucun millésime n'est redressé.")
         return scope
 
+    # Lecture des fichiers CEPII (avant la décision : leur empreinte y entre)
+    loader = loader if loader is not None else TableLoader()
+    saver = saver if saver is not None else TableSaver()
+    bucket = params["BUCKET"]
+    scope.dist = loader.load(params["PATHS"]["DIST_CEPII"], bucket=bucket)
+    scope.geo = loader.load(params["PATHS"]["GEO_CEPII"], bucket=bucket)
+    concordance_registry_file = concordance_registry_path(classifications_config["CONCORDANCE_PATH"])
+
     # Fraîcheur : un fragment par millésime, l'unité étant le millésime entier (ses
-    # paramètres sont estimés sur toutes ses années) ; périmètre et watermark amont
-    scope.requested = baci_requested(config)
+    # paramètres sont estimés sur toutes ses années) ; périmètre et watermark amont.
+    # L'empreinte couvre la méthodologie, les tables de passage et les fichiers CEPII
+    scope.mode = decision_mode(params.get("STATE"))
+    scope.requested = baci_requested(config, baci_inputs(scope.dist, scope.geo))
     scope.force = force if force is not None else ForceSpec.from_runtime(runtime, environ={})
     scope.scopes = vintage_scopes(years_eligible, start_years)
     scope.watermarks = {label: vintage_watermark(batches, years) for label, years in scope.scopes.items()}
-    plans = plan_baci_vintages(
-        state, scope.scopes, scope.watermarks, scope.requested, scope.force,
-        params.get("REFRESH"), processed_at,
-        adopt_legacy_fingerprints=(
-            adopt_legacy_fingerprints
-            if adopt_legacy_fingerprints is not None
-            else adopt_legacy_flag(params.get("STATE"), environ={})
-        ),
+    adopt = (
+        adopt_legacy_fingerprints
+        if adopt_legacy_fingerprints is not None
+        else adopt_legacy_flag(params.get("STATE"), environ={})
     )
+    legacy_plans = plan_baci_vintages(
+        state, scope.scopes, scope.watermarks, scope.requested, scope.force,
+        params.get("REFRESH"), processed_at, adopt_legacy_fingerprints=adopt,
+    )
+    plans = legacy_plans
+    if scope.mode != "legacy":
+        # Marques « données modifiées » des lots des années de chaque millésime
+        marks_by_year = registry_view.batches_marks_by_year()
+        scope.marks = {label: vintage_mark(marks_by_year, years) for label, years in scope.scopes.items()}
+        new_plans = plan_baci_vintages(
+            state, scope.scopes, scope.marks, scope.requested, scope.force,
+            params.get("REFRESH"), processed_at, adopt_legacy_fingerprints=adopt,
+            newer=upstream_mark_is_newer,
+        )
+        if scope.mode == "snapshot":
+            plans, scope.watermarks, scope.marks = new_plans, dict(scope.marks), {}
+        else:
+            scope.shadow = shadow_metrics(legacy_plans, new_plans)
+            # Logging
+            logger.info("Décision BACI (shadow) : %s", scope.shadow)
+
+    # Tables de passage utilisées par la dernière passe et rafraîchies depuis :
+    # réestimation immédiate (changement d'entrée, comme une empreinte)
+    concordance_registry = JsonLoader().load(concordance_registry_file, bucket=bucket, missing_ok=True)
+    plans = dict(plans)
+    for label in stale_concordance_vintages(state, scope.scopes, concordance_registry):
+        unit = baci_unit(label)
+        if unit not in plans:
+            plans[unit] = UnitPlan("fingerprint", frozenset(scope.requested))
+            # Logging
+            logger.info("%s : table de passage rafraîchie depuis la dernière passe.", label)
     scope.plans = {unit.get("vintage"): plan for unit, plan in plans.items()}
     # Logging
     logger.info(
@@ -2013,23 +2228,19 @@ def prepare_baci(
         label: target for label, target in targets_config.items() if label in scope.plans
     }
 
-    # Lecture des fichiers CEPII
-    loader = loader if loader is not None else TableLoader()
-    saver = saver if saver is not None else TableSaver()
-    bucket = params["BUCKET"]
-    scope.dist = loader.load(params["PATHS"]["DIST_CEPII"], bucket=bucket)
-    scope.geo = loader.load(params["PATHS"]["GEO_CEPII"], bucket=bucket)
-
     # Nomenclatures présentes par année (SELECT DISTINCT, jamais la table entière),
-    # tables de correspondance nécessaires et référentiels de nomenclature
+    # tables de correspondance nécessaires et référentiels de nomenclature ; snapshot
+    # épinglé : toutes les lectures Comtrade du run (passes comprises) portent sur cet état
     connector = comtrade.connector()
     with comtrade.connect() as conn:
+        scope.pinned = try_current_snapshot(conn, attached_catalog_alias(comtrade))
         scope.classifications = classifications_by_year(
             conn,
             scope.source_schema,
             years=sorted({y for label in scope.targets for y in scope.scopes.get(label, [])}),
             classification_col=config.schema.classification_col,
             period_col=config.schema.period_col,
+            at_snapshot=scope.pinned,
         )
         pairs = concordance_pairs(
             scope.classifications, {label: scope.scopes.get(label, []) for label in scope.targets}
@@ -2045,6 +2256,15 @@ def prepare_baci(
             bucket=bucket,
             force_refresh=classifications_config.get("FORCE_REFRESH", False),
         )
+        # Sommes de contrôle des tables de passage de chaque millésime (registre du
+        # cache relu après d'éventuels téléchargements), enregistrées avec sa passe
+        concordance_registry = JsonLoader().load(concordance_registry_file, bucket=bucket, missing_ok=True)
+        scope.concordance_checksums = {
+            label: concordance_checksums(
+                concordance_registry, [pair for pair in scope.concordances if pair[1] == label]
+            )
+            for label in scope.targets
+        }
         # Référentiels publiés dans le catalogue Comtrade ; non bloquant
         scope.reference = (reference_publisher or publish_hs_reference)(
             scope.concordances,
@@ -2128,7 +2348,7 @@ def run_baci_vintage(
     state.upsert(started_entry(state.get(unit), unit, plan, fit_id, years))
     state.save()
     # Fraîcheur : décision du millésime et tag de forçage
-    tracker.log_metrics(plan_metrics({unit: plan}, n_candidates=len(scope.scopes)))
+    tracker.log_metrics({**plan_metrics({unit: plan}, n_candidates=len(scope.scopes)), **scope.shadow})
     tracker.set_tags({"fit_id": fit_id, "freshness_reason": plan.reason})
     if scope.force.forces_step(STEP, scope.requested):
         tracker.set_tags({"forced": scope.force.describe()})
@@ -2181,6 +2401,7 @@ def run_baci_vintage(
             harmonizer_factory=harmonizer_factory,
             links=chapter_links(scope.concordances, sources, vintage),
             max_rows_per_chunk=passes.get("MAX_ROWS_PER_CHUNK"),
+            at_snapshot=scope.pinned,
         )
 
         # Redressement par passes, écriture année par année
@@ -2204,6 +2425,8 @@ def run_baci_vintage(
             completed_entry(
                 unit, plan, fit_id, years, scope.processed_at, scope.watermarks[vintage],
                 scope.requested,
+                mark=scope.marks.get(vintage),
+                **{CONCORDANCE_CHECKSUMS_KEY: scope.concordance_checksums.get(vintage, {})},
                 result_schema=result_schema,
                 n_rows=int(report.flows),
                 is_provisional=bool(scope.is_provisional),
