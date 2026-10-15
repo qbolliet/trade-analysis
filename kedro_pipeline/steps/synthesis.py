@@ -15,14 +15,16 @@ Freshness, by context and by method. The unit is the context; the registry
 (one fragment per period) holds for every context one fingerprint per method,
 one for the consensus and one for the input selection. A context is recomputed:
 
-* entirely, when it was never computed, when a forcing covers it, when an
-  upstream change touching all its periods happened since (partner pair
-  computed for the first time, partner methodology changed or forced, network
-  of its vintage recomputed), or when the partner metrics have new data and its
-  period is one of the ``RECENT_PERIODS`` most recent;
+* entirely, when it was never computed, when a forcing covers it, or when the
+  rows it reads changed upstream;
 * for the sole methods whose fingerprint changed or was invalidated, plus the
   consensus, fed with the stored scores of the other methods: adding or fixing
   a method only recomputes it, over the whole history.
+
+Upstream changes are read from the DuckLake change feed, through one cursor per
+source table (:mod:`kedro_pipeline.io.cursors`): every read of the run is
+pinned at one snapshot, and the contexts touched by the changed rows (and only
+them, whatever their period) are flagged ``pending`` before the cursors move.
 
 The run has three stages: planning (query of the contexts of the grid, no metric
 read), pure computation of each context (in worker processes), writes by
@@ -31,15 +33,6 @@ replaced in one transaction per table), the registry advancing batch by batch.
 The ``MAX_CONTEXTS_PER_RUN`` budget only serves the catch-up. The recorded
 instant is captured before the computation. The failure of a context does not
 interrupt the others; only the successful contexts are written and recorded.
-
-Decision modes (``STATE.DECISION_MODE``). The rules above (``legacy``) compare
-instants of the upstream registries. With ``snapshot``, the upstream changes are
-read from the DuckLake change feed instead, through one cursor per source table
-(:mod:`kedro_pipeline.io.cursors`): every read is pinned at one snapshot, the
-contexts touched by the changed rows (and only them, whatever their period)
-are flagged ``pending`` before the cursors move, and the ``RECENT_PERIODS``
-approximation disappears. ``shadow`` executes the legacy decision and logs the
-comparison with the cursor decision, before switching.
 
 No environment variable and no YAML path are read here.
 """
@@ -52,7 +45,6 @@ from datetime import datetime, timedelta
 from contextlib import nullcontext
 import logging
 import numbers
-from pathlib import Path
 import re
 import time
 from typing import (
@@ -79,37 +71,27 @@ from kedro_pipeline.methodology import revised
 # Module d'écriture des tables de faits DuckLake (upsert par clé primaire)
 from statflows.storage.ducklake.tables import FACT_TABLE
 # Module d'utilitaires de téléchargement (instants, parsing ISO)
-from statflows.core.download import _now, _parse_iso
+from statflows.core.download import _now
 # Registres de fraîcheur v2 (unité globale, empreinte, forçage, cascade)
 from kedro_pipeline.io.freshness import (
     ForceSpec,
     FreshnessRegistry,
-    LegacySource,
     RegistryEntry,
     Unit,
     UnitPlan,
-    UpstreamSummary,
     fingerprint,
-    legacy_entry,
     mark_pending,
     plan_metrics,
-    summarize_upstream,
     units_to_compute,
 )
 # Curseurs DuckLake (changements des sources depuis le dernier passage)
 from kedro_pipeline.io.cursors import (
-    FALLBACK_ABSENT,
     CursorRead,
     StepCursors,
     current_snapshot,
     cursor_fingerprint,
-    decision_mode,
-    shadow_metrics,
     time_travel,
 )
-# Registres amont (partenaires et réseau), lus seulement
-from kedro_pipeline.steps.partners import partner_classification, partner_registry
-from kedro_pipeline.steps.network import network_registry
 # Fabriques de configuration (ré-exportées pour la cohérence et les scripts)
 from kedro_pipeline.steps._config import (  # noqa: F401
     _FLOW_COLUMN,
@@ -117,7 +99,6 @@ from kedro_pipeline.steps._config import (  # noqa: F401
     _VINTAGE_COLUMN,
     VINTAGE_MODES,
     IncrementalSettings,
-    default_recent_periods,
     incremental_settings,
     load_flows,
     load_synthesis_flows,
@@ -129,7 +110,7 @@ from kedro_pipeline.steps._config import (  # noqa: F401
 # Résultat d'étape
 from kedro_pipeline.steps.result import StepResult, capturing
 # Macros SQL de nomenclature et millésime en vigueur (référentiel des millésimes)
-from kedro_pipeline.config import nomenclature_macros_sql, vintage_in_force
+from kedro_pipeline.config import nomenclature_macros_sql
 
 # Modules de manipulation de données
 import numpy as np
@@ -169,15 +150,6 @@ logger = logging.getLogger(__name__)
 # Nœud du rapport de run (clé des contrôles des paramètres tracking ; message de commit)
 NODE = "compute_synthetic_scores"
 
-# Clé racine du registre JSON des dates de dernier calcul de synthèse, tenu ici
-_REGISTRY_ROOT = "SYNTHESIS"
-
-# Clé racine du registre des vulnérabilités partenaires (cf. compute_trade_vulnerabilities.py)
-_PARTNERS_ROOT = "VULNERABILITIES"
-
-# Clé racine du registre des vulnérabilités de réseau (cf. compute_network_vulnerabilities.py)
-_NETWORK_ROOT = "NETWORK_VULNERABILITIES"
-
 # Colonnes de nomenclature de la grille partenaires — faits de schéma source :
 # drapeau des lignes en vigueur (prédicat généré depuis `VINTAGES`) et millésime
 # SH de rattachement (clé de contexte : deux millésimes ne sont jamais comparés)
@@ -190,11 +162,6 @@ _METHOD_COLUMN = "method"
 _FAMILY_COLUMN = "family"
 
 _ITEM_A_COLUMN = "item_a"
-
-# Raisons de calcul d'une unité partenaire valant changement de toutes ses
-# périodes : couple jamais calculé (tout son historique arrive d'un coup),
-# changement de méthodologie, forçage
-_FULL_CHANGE_REASONS = frozenset({"first", "fingerprint", "forced"})
 
 # ──────────────────────────────────────────────────────────────────────
 # Construction de la requête source (fonction pure, testable sans base)
@@ -643,182 +610,11 @@ def read_source_metrics(
     return df.astype({column: str for column in present}) if present else df
 
 # ──────────────────────────────────────────────────────────────────────
-# Registres de fraîcheur : amonts (lecture seule) et synthèse (lecture/écriture)
-# ──────────────────────────────────────────────────────────────────────
-
-# Générateur des registres de fraîcheur amont (partenaires et réseau)
-def iter_upstream_registries(
-    vulnerability_config: Mapping[str, Any],
-) -> Iterator[Tuple[Path, Optional[str], str]]:
-    """Yield ``(path, bucket, root)`` for each upstream freshness registry.
-
-    The partners family may hold several dataflow blocks under
-    ``VULNERABILITIES``; every mapping carrying a
-    ``PATHS.LAST_COMPUTATION_PATH`` is a registry. The network family holds a
-    single block under ``NETWORK_VULNERABILITIES``.
-
-    Args:
-        vulnerability_config: Parsed ``config/vulnerabilities.yaml``.
-
-    Yields:
-        Tuples ``(registry_path, bucket, registry_root_key)``.
-    """
-    # Famille partenaires : un bloc par dataflow sous VULNERABILITIES
-    partners = vulnerability_config.get(_PARTNERS_ROOT) or {}
-    for block in partners.values():
-        if not isinstance(block, Mapping):
-            continue
-        path = (block.get("PATHS") or {}).get("LAST_COMPUTATION_PATH")
-        if path:
-            yield Path(path), block.get("BUCKET"), _PARTNERS_ROOT
-
-    # Famille réseau : bloc unique sous NETWORK_VULNERABILITIES
-    network = vulnerability_config.get(_NETWORK_ROOT) or {}
-    path = (network.get("PATHS") or {}).get("LAST_COMPUTATION_PATH")
-    if path:
-        yield Path(path), network.get("BUCKET"), _NETWORK_ROOT
-
-# Fonction de lecture de l'instant de calcul amont le plus récent
-def load_max_upstream_computation(
-    vulnerability_config: Mapping[str, Any],
-    loader: Loader,
-) -> Optional[datetime]:
-    """Read every upstream registry and return the most recent ``last_computed``.
-
-    Args:
-        vulnerability_config: Parsed ``config/vulnerabilities.yaml``.
-        loader: ``Loader`` instance.
-
-    Returns:
-        The latest upstream computation instant (UTC-aware), or ``None`` when no
-        upstream registry holds a single dated entry yet.
-    """
-    # Parcours des registres amont, collecte des instants exploitables
-    instants: List[datetime] = []
-    for path, bucket, root in iter_upstream_registries(vulnerability_config):
-        registry = (
-            loader.load(path, bucket=bucket, missing_ok=True) or {}
-        ).get(root, {})
-        for entry in registry.values():
-            if not isinstance(entry, Mapping):
-                continue
-            when = _parse_iso(entry.get("last_computed"))
-            if when is not None:
-                instants.append(when)
-    return max(instants) if instants else None
-
-# Fonction de lecture de l'instant de dernier calcul de synthèse
-def load_synthesis_computation_date(
-    last_computation_path: Path,
-    loader: Loader,
-    bucket: Optional[str],
-) -> Optional[datetime]:
-    """Read the synthesis registry (empty if it does not exist yet).
-
-    Args:
-        last_computation_path: Path to the synthesis registry.
-        loader: ``Loader`` instance.
-        bucket: S3 bucket holding the registry, or ``None`` for a local path.
-
-    Returns:
-        The last synthesis computation instant (UTC-aware), or ``None``.
-    """
-    # Lecture de l'entrée globale (racine "SYNTHESIS")
-    entry = (
-        loader.load(last_computation_path, bucket=bucket, missing_ok=True) or {}
-    ).get(_REGISTRY_ROOT, {})
-    return _parse_iso(entry.get("last_computed")) if isinstance(entry, Mapping) else None
-
-# Fonction d'écriture de l'entrée de registre de synthèse
-def save_synthesis_computation_date(
-    last_computation_path: Path,
-    entry: Mapping[str, Any],
-    saver: Saver,
-    bucket: Optional[str],
-) -> None:
-    """Persist the synthesis registry entry (single global entry, first registry format).
-
-    Args:
-        last_computation_path: Path to the synthesis registry.
-        entry: Registry payload (``last_computed``, ``n_cells``, ``n_contexts``,
-            ``methods``).
-        saver: ``Saver`` instance.
-        bucket: S3 bucket holding the registry, or ``None`` for a local path.
-    """
-    # Écriture de l'entrée sous la racine "SYNTHESIS" (aucune fusion : entrée unique)
-    saver.save(
-        last_computation_path,
-        {_REGISTRY_ROOT: dict(entry)},
-        bucket=bucket,
-        indent=2,
-        ensure_ascii=False,
-    )
-    # Logging
-    logger.info(
-        f"Registre de synthèse mis à jour dans '{last_computation_path}'"
-    )
-
-# ──────────────────────────────────────────────────────────────────────
-# Règle de fraîcheur
-# ──────────────────────────────────────────────────────────────────────
-
-# Fonction de décision de recalcul des contextes
-def contexts_to_recompute(
-    last_upstream: Optional[datetime],
-    last_synthesis: Optional[datetime],
-    force: bool,
-) -> bool:
-    """Decide whether the selected contexts must be recomputed (first registry format).
-
-    Since neither upstream registry is indexed by period, the granularity of
-    the decision is the whole selection: either every context selected by
-    ``FILTERS`` is recomputed, or none is.
-
-    Args:
-        last_upstream: Most recent upstream computation instant, or ``None``
-            when no upstream registry holds a dated entry.
-        last_synthesis: Last synthesis computation instant, or ``None`` when the
-            synthesis has never run.
-        force: The ``SYNTHESIS.FORCE`` flag.
-
-    Returns:
-        ``True`` when ``force`` is set, when the synthesis never ran while an
-        upstream instant exists, or when the most recent upstream instant is
-        strictly after the last synthesis; ``False`` otherwise (nothing
-        upstream, or the synthesis is already up to date).
-
-    Examples:
-        >>> from datetime import datetime, timezone
-        >>> old = datetime(2026, 1, 1, tzinfo=timezone.utc)
-        >>> new = datetime(2026, 6, 1, tzinfo=timezone.utc)
-        >>> contexts_to_recompute(new, old, False)
-        True
-        >>> contexts_to_recompute(old, new, False)
-        False
-        >>> contexts_to_recompute(None, None, True)
-        True
-    """
-    # Recalcul forcé
-    if force:
-        return True
-    # Rien en amont : rien à synthétiser
-    if last_upstream is None:
-        return False
-    # Jamais synthétisé alors qu'un amont existe
-    if last_synthesis is None:
-        return True
-    # Amont strictement plus récent que la dernière synthèse
-    return last_upstream > last_synthesis
-
-# ──────────────────────────────────────────────────────────────────────
-# Registre de fraîcheur v2 : unité globale, empreinte globale
+# Registre de fraîcheur : étape, empreinte
 # ──────────────────────────────────────────────────────────────────────
 
 # Nom de l'étape (forçage FORCE_STEPS, champ « step » du registre)
 STEP = "synthesis"
-
-# Unité unique : toute la sélection de contextes est recalculée d'un bloc
-GLOBAL_UNIT = Unit.of(scope="global")
 
 # Champs de SynthesisConfig exclus de l'empreinte : options d'artefacts seulement
 _SYNTHESIS_FINGERPRINT_EXCLUDED = frozenset({"artifact_top_n"})
@@ -863,211 +659,6 @@ def synthesis_requested(
     if vintages is not None:
         params["vintages"] = vintages
     return {STEP: fingerprint(STEP, params)}
-
-# Fabrique du lecteur d'un registre global v1 (fichier unique, une entrée)
-def global_legacy_parser(root: str):
-    """Build the parser of a version-1 global registry (``{root: {...}}``).
-
-    Args:
-        root: Root key of the version-1 document (``SYNTHESIS``, ``COHERENCE``).
-
-    Returns:
-        Function turning the document into at most one legacy entry of the
-        global unit.
-    """
-    def parse(data: Mapping[str, Any]) -> Iterator[RegistryEntry]:
-        entry = data.get(root)
-        if isinstance(entry, Mapping) and entry.get("last_computed"):
-            extra = {k: v for k, v in entry.items() if k != "last_computed"}
-            yield legacy_entry(GLOBAL_UNIT, entry["last_computed"], **extra)
-
-    return parse
-
-# Fonction de construction d'un registre global à fragment unique
-def global_registry(
-    path: Any,
-    bucket: Optional[str],
-    step: str,
-    root: str,
-    *,
-    loader: Optional[Loader] = None,
-    saver: Optional[Saver] = None,
-) -> FreshnessRegistry:
-    """Build a single-fragment registry, reading a version-1 file at the same path.
-
-    Args:
-        path: Registry path (``PATHS.LAST_COMPUTATION_PATH``).
-        bucket: S3 bucket, or ``None`` for a local file.
-        step: Step name.
-        root: Root key of the version-1 document.
-        loader: JSON loader (a fresh one by default).
-        saver: JSON saver (a fresh one by default).
-
-    Returns:
-        The registry.
-    """
-    return FreshnessRegistry(
-        path,
-        bucket,
-        step,
-        shard_of=lambda unit: unit.key,
-        legacy=LegacySource(path, bucket, global_legacy_parser(root)),
-        loader=loader,
-        saver=saver,
-    )
-
-# Fonction de construction des registres amont (partenaires et réseau)
-def upstream_registries(
-    vulnerability_config: Mapping[str, Any],
-    classification: str,
-) -> List[FreshnessRegistry]:
-    """Freshness registries of the partner and network steps, read only.
-
-    Args:
-        vulnerability_config: Parsed ``config/vulnerabilities.yaml``.
-        classification: Classification label of the partner units.
-
-    Returns:
-        One registry per partner dataflow block carrying a ``STATE``, plus the
-        network registry when configured.
-    """
-    registries: List[FreshnessRegistry] = []
-    for block in (vulnerability_config.get(_PARTNERS_ROOT) or {}).values():
-        if isinstance(block, Mapping) and (block.get("STATE") or {}).get("PATH_TEMPLATE"):
-            registries.append(partner_registry(block, classification))
-    network = vulnerability_config.get(_NETWORK_ROOT) or {}
-    if (network.get("STATE") or {}).get("PATH_TEMPLATE"):
-        registries.append(network_registry(network))
-    return registries
-
-# Fonction de résumé des registres amont
-def summarize_registries(
-    registries: Iterable[FreshnessRegistry],
-    since: Optional[datetime],
-) -> UpstreamSummary:
-    """Summarise every upstream registry since the last downstream computation.
-
-    Args:
-        registries: Upstream registries.
-        since: ``upstream_watermark`` of the downstream entry (``None`` when
-            it was never computed).
-
-    Returns:
-        The upstream summary: watermark (most recent upstream computation) and
-        reasons of the units computed since, for the cascade.
-    """
-    return summarize_upstream(
-        (entry for registry in registries for entry in registry.iter_entries()), since
-    )
-
-# Fonction de décision de l'unité globale (synthèse ou cohérence)
-def plan_global_unit(
-    registry: FreshnessRegistry,
-    watermark: Optional[datetime],
-    requested: Mapping[str, str],
-    force: ForceSpec,
-    *,
-    step: str,
-    yaml_force: bool = False,
-    adopt_legacy_fingerprints: bool = False,
-) -> Dict[Unit, UnitPlan]:
-    """Decide whether the whole selection of contexts must be recomputed.
-
-    Same priorities as every step (first > forced > new_data > fingerprint)
-    on the single global unit. The historical ``FORCE`` flag of the YAML is
-    kept and is equivalent to listing the step in ``FORCE_STEPS``. Nothing is
-    computed while no upstream exists, unless forced.
-
-    Args:
-        registry: Single-fragment registry of the step.
-        watermark: Most recent upstream computation (``None``: no upstream).
-        requested: Current fingerprint.
-        force: One-off forcing.
-        step: Step name (``synthesis`` or ``coherence``).
-        yaml_force: The historical ``FORCE`` flag of the step block.
-        adopt_legacy_fingerprints: Deployment migration flag.
-
-    Returns:
-        ``{GLOBAL_UNIT: plan}`` or an empty mapping.
-
-    Examples:
-        >>> from kedro_pipeline.io.freshness import _EmptyLoader
-        >>> registry = FreshnessRegistry("s.json", None, "synthesis", lambda u: "global",
-        ...                              loader=_EmptyLoader())
-        >>> plan_global_unit(registry, None, {"synthesis": "x"}, ForceSpec(), step="synthesis")
-        {}
-        >>> plan_global_unit(registry, None, {"synthesis": "x"}, ForceSpec(), step="synthesis",
-        ...                  yaml_force=True)[GLOBAL_UNIT].reason
-        'first'
-    """
-    if yaml_force:
-        force = replace(force, steps=force.steps | {step})
-    # Rien en amont : rien à calculer, sauf forçage
-    if watermark is None and not force.covers(step, GLOBAL_UNIT, requested):
-        return {}
-    return units_to_compute(
-        [GLOBAL_UNIT], registry, {GLOBAL_UNIT: watermark}, requested, force,
-        step=step, adopt_legacy_fingerprints=adopt_legacy_fingerprints,
-    )
-
-# Fonction de construction des tags de fraîcheur d'une exécution
-def freshness_tags(
-    plan: UnitPlan,
-    force: ForceSpec,
-    requested: Mapping[str, str],
-    step: str,
-) -> Dict[str, str]:
-    """Run tags of a freshness decision.
-
-    Args:
-        plan: Plan of the global unit.
-        force: One-off forcing.
-        requested: Current fingerprint.
-        step: Step name.
-
-    Returns:
-        ``freshness_reason``, plus ``forced`` (description of the forcing)
-        when the step is forced.
-
-    Examples:
-        >>> freshness_tags(UnitPlan("forced", frozenset()), ForceSpec(steps=frozenset({"synthesis"})),
-        ...                {"synthesis": "x"}, "synthesis")
-        {'freshness_reason': 'forced', 'forced': 'steps=synthesis'}
-    """
-    tags = {"freshness_reason": plan.reason}
-    if plan.reason == "forced" or force.forces_step(step, requested):
-        tags["forced"] = force.describe() or f"steps={step}"
-    return tags
-
-# Fonction de construction de l'entrée de l'unité globale calculée
-def global_entry(
-    plan: UnitPlan,
-    computed_at: datetime,
-    summary: UpstreamSummary,
-    requested: Mapping[str, str],
-    **counters: Any,
-) -> RegistryEntry:
-    """Entry recorded once the selection of contexts was recomputed.
-
-    Args:
-        plan: Plan of the computation (its reason cascades downstream).
-        computed_at: Instant captured before the computation started.
-        summary: Upstream summary taken into account (its watermark and the
-            upstream reasons are recorded for the downstream steps).
-        requested: Current fingerprint.
-        **counters: Extra fields (``n_cells``, ``n_contexts``…).
-
-    Returns:
-        The registry entry.
-    """
-    return RegistryEntry(
-        unit=GLOBAL_UNIT,
-        last_computed=computed_at,
-        upstream_watermark=summary.watermark,
-        fingerprints=dict(requested),
-        reason=plan.reason,
-        extra={**counters, "upstream_reasons": summary.to_json()},
-    )
 
 # ──────────────────────────────────────────────────────────────────────
 # Fraîcheur par contexte et par méthode : empreintes
@@ -1365,267 +956,6 @@ def context_registry(
         template, bucket, step, shard_of=shard_of, loader=loader, saver=saver
     )
 
-# Marques amont d'une étape par contexte, par pertinence de millésime
-@dataclass(frozen=True)
-class UpstreamMarks:
-    """Most recent upstream computations, by the contexts they concern.
-
-    A context of the synthesis reads the partner rows of its HS vintage
-    (``hs_vintage``) and period, joined to the network rows of the same
-    vintage. A partner unit in force (classification = label of the in-force
-    units) concerns the contexts in force; a historical partner unit of
-    vintage ``V`` concerns the historical contexts of ``V``; a network unit of
-    vintage ``V`` concerns every context of ``V``. A context is in force when
-    its ``hs_vintage`` is the vintage in force in its year.
-
-    Two families of marks, each the most recent ``last_computed`` per
-    relevance key:
-
-    * ``full``: changes that may alter **every period** of the contexts
-      concerned — a partner unit computed for the first time (a reporter x
-      product pair newly downloaded brings its whole history), recomputed
-      after a change of methodology or forced, and any network unit (a BACI
-      re-estimation rewrites every year of its vintage);
-    * ``partner``: any partner computation, including ``new_data``, which
-      only alters the most recent periods (the incremental download brings
-      back the last observations only).
-
-    Attributes:
-        watermark: Most recent upstream computation, recorded on the context
-            entries.
-        full: Relevance key -> most recent complete change.
-        partner: Relevance key -> most recent partner computation.
-        nomenclatures: HS vintage -> entry year, to tell a context in force
-            from a historical one; ``None`` makes every key relevant.
-        vintage_column: Context column holding the HS vintage.
-        period_column: Context column holding the period.
-
-    Examples:
-        >>> from kedro_pipeline.io.freshness import parse_instant
-        >>> t = parse_instant("2026-01-01")
-        >>> marks = UpstreamMarks.from_entries(
-        ...     [], [RegistryEntry(Unit.of(vintage="HS2017"), t, reason="new_data")],
-        ...     partner_label="HS2022", nomenclatures={"HS2017": 2017, "HS2022": 2022})
-        >>> marks.full_mark(Unit.of(hs_vintage="HS2017", TIME_PERIOD="2019")) == t
-        True
-        >>> marks.full_mark(Unit.of(hs_vintage="HS2022", TIME_PERIOD="2023")) is None
-        True
-    """
-    watermark: Optional[datetime]
-    full: Mapping[Tuple[str, str], datetime]
-    partner: Mapping[Tuple[str, str], datetime]
-    nomenclatures: Optional[Mapping[str, int]] = None
-    vintage_column: str = _VINTAGE_COLUMN
-    period_column: str = _PERIOD_COLUMN
-
-    # Construction à partir des entrées des registres amont
-    @classmethod
-    def from_entries(
-        cls,
-        partner_entries: Iterable[RegistryEntry],
-        network_entries: Iterable[RegistryEntry],
-        *,
-        partner_label: Optional[str],
-        nomenclatures: Optional[Mapping[str, int]],
-        vintage_column: str = _VINTAGE_COLUMN,
-        period_column: str = _PERIOD_COLUMN,
-    ) -> "UpstreamMarks":
-        """Summarise the partner and network registries into relevance marks.
-
-        Args:
-            partner_entries: Entries of the partner registries.
-            network_entries: Entries of the network registry.
-            partner_label: Classification of the partner units in force (the
-                most recent vintage label); ``None`` treats every partner
-                unit as in force.
-            nomenclatures: HS vintage -> entry year.
-            vintage_column: Context column holding the HS vintage.
-            period_column: Context column holding the period.
-
-        Returns:
-            The marks.
-        """
-        full: Dict[Tuple[str, str], datetime] = {}
-        partner: Dict[Tuple[str, str], datetime] = {}
-        watermark: Optional[datetime] = None
-
-        # Conservation du maximum par clé
-        def keep(marks: Dict[Tuple[str, str], datetime], key: Tuple[str, str], when: datetime) -> None:
-            if key not in marks or when > marks[key]:
-                marks[key] = when
-
-        for entry in partner_entries:
-            if entry.last_computed is None:
-                continue
-            classification = entry.unit.get("classification")
-            in_force = partner_label is None or classification in (None, partner_label)
-            key = ("partners", "in_force" if in_force else str(classification))
-            keep(partner, key, entry.last_computed)
-            if entry.reason in _FULL_CHANGE_REASONS:
-                keep(full, key, entry.last_computed)
-            watermark = entry.last_computed if watermark is None else max(watermark, entry.last_computed)
-        for entry in network_entries:
-            if entry.last_computed is None:
-                continue
-            keep(full, ("network", str(entry.unit.get("vintage"))), entry.last_computed)
-            watermark = entry.last_computed if watermark is None else max(watermark, entry.last_computed)
-        return cls(watermark, full, partner, nomenclatures, vintage_column, period_column)
-
-    # Clés de pertinence d'un contexte
-    def relevance_keys(self, unit: Unit) -> Optional[Tuple[Tuple[str, str], ...]]:
-        """Relevance keys of a context; ``None`` when every key is relevant.
-
-        Args:
-            unit: Context unit.
-
-        Returns:
-            The partner key (in force or historical vintage) and the network
-            key of its vintage, or ``None`` when the context carries no HS
-            vintage or its period cannot be placed in the nomenclatures.
-        """
-        vintage = unit.get(self.vintage_column)
-        period = unit.get(self.period_column)
-        if vintage is None or period is None or not self.nomenclatures:
-            return None
-        try:
-            in_force = vintage == vintage_in_force(int(str(period)[:4]), self.nomenclatures)
-        except ValueError:
-            return None
-        partner_key = ("partners", "in_force" if in_force else vintage)
-        return (partner_key, ("network", vintage))
-
-    # Maximum des marques pertinentes d'une famille
-    def _mark(self, marks: Mapping[Tuple[str, str], datetime], unit: Unit) -> Optional[datetime]:
-        keys = self.relevance_keys(unit)
-        values = list(marks.values()) if keys is None else [marks[k] for k in keys if k in marks]
-        return max(values) if values else None
-
-    # Dernier changement complet pertinent pour un contexte
-    def full_mark(self, unit: Unit) -> Optional[datetime]:
-        """Most recent upstream change altering every period of the context."""
-        return self._mark(self.full, unit)
-
-    # Dernier calcul partenaire pertinent pour un contexte
-    def partner_mark(self, unit: Unit) -> Optional[datetime]:
-        """Most recent partner computation concerning the context."""
-        return self._mark(self.partner, unit)
-
-# Fonction de lecture des registres amont, par famille
-def upstream_registry_groups(
-    vulnerability_config: Mapping[str, Any],
-    classification: str,
-) -> Tuple[List[FreshnessRegistry], List[FreshnessRegistry]]:
-    """Freshness registries of the partner and network steps, read only, by family.
-
-    Args:
-        vulnerability_config: Parsed ``config/vulnerabilities.yaml``.
-        classification: Classification label of the partner units in force.
-
-    Returns:
-        ``(partner_registries, network_registries)``.
-    """
-    partners: List[FreshnessRegistry] = []
-    for block in (vulnerability_config.get(_PARTNERS_ROOT) or {}).values():
-        if isinstance(block, Mapping) and (block.get("STATE") or {}).get("PATH_TEMPLATE"):
-            partners.append(partner_registry(block, classification))
-    network = vulnerability_config.get(_NETWORK_ROOT) or {}
-    networks = [network_registry(network)] if (network.get("STATE") or {}).get("PATH_TEMPLATE") else []
-    return partners, networks
-
-# ──────────────────────────────────────────────────────────────────────
-# Fraîcheur par contexte : planification (fonctions pures)
-# ──────────────────────────────────────────────────────────────────────
-
-# Fonction de sélection des périodes récentes de la grille
-def recent_period_values(
-    units: Iterable[Unit], period_column: str, recent_periods: Optional[int]
-) -> Optional[FrozenSet[str]]:
-    """Return the ``recent_periods`` most recent periods among the contexts.
-
-    Args:
-        units: Planned context units.
-        period_column: Context column holding the period.
-        recent_periods: Number of periods; ``None`` means every period.
-
-    Returns:
-        The recent periods, or ``None`` when every period is recent.
-
-    Examples:
-        >>> units = [Unit.of(TIME_PERIOD=p) for p in ("2021", "2023", "2022")]
-        >>> sorted(recent_period_values(units, "TIME_PERIOD", 2))
-        ['2022', '2023']
-    """
-    if recent_periods is None:
-        return None
-    periods = sorted({str(unit.get(period_column)) for unit in units}, reverse=True)
-    return frozenset(periods[: int(recent_periods)])
-
-# Fonction de décision des contextes de synthèse à (re)calculer
-def plan_synthesis_contexts(
-    units: Sequence[Unit],
-    registry: FreshnessRegistry,
-    requested: Mapping[str, str],
-    marks: UpstreamMarks,
-    force: ForceSpec,
-    *,
-    method_names: Sequence[str],
-    recent_periods: Optional[int],
-    period_column: str = _PERIOD_COLUMN,
-    adopt_legacy_fingerprints: bool = False,
-) -> Dict[Unit, UnitPlan]:
-    """Decide, per context, why it is recomputed and which methods.
-
-    A context gets a single plan, the first matching reason winning:
-
-    * ``first``: never computed → every method and the consensus;
-    * ``forced``: within the forcing scope → the forced methods (and the
-      consensus), or all of them;
-    * ``new_data``: a relevant upstream change altering every period happened
-      since the context was computed (see :class:`UpstreamMarks`), or the
-      partner metrics changed and the context is one of the
-      ``recent_periods`` most recent periods → every method;
-    * ``fingerprint``: the methods whose fingerprint differs or is missing
-      (added, modified or invalidated), plus the consensus; a stale input
-      selection makes every method stale.
-
-    Args:
-        units: Contexts of the filtered grid.
-        registry: Per-context registry of the synthesis.
-        requested: Current fingerprints (:func:`synthesis_context_requested`).
-        marks: Upstream marks.
-        force: One-off forcing.
-        method_names: Configured method names.
-        recent_periods: Number of recent periods recomputed on partner new
-            data (``None``: every period).
-        period_column: Context column holding the period.
-        adopt_legacy_fingerprints: Deployment migration flag.
-
-    Returns:
-        Mapping ``unit -> UnitPlan`` of the stale contexts.
-    """
-    recent = recent_period_values(units, period_column, recent_periods)
-
-    # Règle « nouvelles données » : changement complet pertinent, ou données
-    # partenaires nouvelles sur une période récente
-    def is_new_data(unit: Unit, entry: RegistryEntry, _watermark: Optional[datetime]) -> bool:
-        since = entry.upstream_watermark
-        full = marks.full_mark(unit)
-        if full is not None and (since is None or full > since):
-            return True
-        partner = marks.partner_mark(unit)
-        if partner is not None and (since is None or partner > since):
-            return recent is None or str(unit.get(period_column)) in recent
-        return False
-
-    plans = units_to_compute(
-        units, registry, {}, requested, force, step=STEP,
-        is_new_data=is_new_data, adopt_legacy_fingerprints=adopt_legacy_fingerprints,
-    )
-    return {
-        unit: UnitPlan(plan.reason, expand_synthesis_names(plan.names, requested, method_names))
-        for unit, plan in plans.items()
-    }
-
 # ──────────────────────────────────────────────────────────────────────
 # Fraîcheur par curseurs DuckLake : contextes touchés par les lignes modifiées
 # ──────────────────────────────────────────────────────────────────────
@@ -1785,13 +1115,10 @@ class CursorDecision:
     Attributes:
         touched: Grid contexts touched by a change (all of them on fallback).
         reads: Read of each source cursor.
-        adoption: Whether a cursor was absent while the registry already holds
-            computed contexts: the legacy rule decides once (migration).
     """
 
     touched: Set[Unit]
     reads: List[CursorRead]
-    adoption: bool = False
 
 
 # Fonction de lecture des curseurs et des contextes touchés
@@ -1800,7 +1127,6 @@ def read_synthesis_cursors(
     cursors: StepCursors,
     specs: Sequence[SourceCursor],
     units: Sequence[Unit],
-    typed_registry: FreshnessRegistry,
     *,
     pinned: int,
     sources: Sequence[Mapping[str, Any]],
@@ -1817,8 +1143,6 @@ def read_synthesis_cursors(
         cursors: Cursors of the synthesis.
         specs: Cursors of the sources (:func:`source_cursors`).
         units: Contexts of the grid (read at ``pinned``).
-        typed_registry: Per-context registry (tells a first run from an
-            adoption).
         pinned: Snapshot every read is pinned at.
         sources: ``SOURCES`` block.
         filters: ``FILTERS`` block.
@@ -1827,27 +1151,21 @@ def read_synthesis_cursors(
         flow_codes: Flow codes of the synthesised directions.
         vintages: ``SYNTHESIS.VINTAGES``.
 
+    A source whose cursor is absent, whose fingerprint changed or whose
+    snapshots expired is read in full: every context is touched.
+
     Returns:
-        The decision: touched contexts (restricted to the grid), reads,
-        adoption flag.
+        The decision: touched contexts (restricted to the grid) and reads.
     """
     grid_units = set(units)
     touched: Set[Unit] = set()
     reads: List[CursorRead] = []
-    adoption = False
     for spec in specs:
         read = cursors.read(
             conn, catalog_alias, spec.schema,
             fingerprint=spec.fingerprint, key_columns=spec.key_columns, until_snapshot=pinned,
         )
         reads.append(read)
-        if read.fallback == FALLBACK_ABSENT:
-            # Premier passage du curseur : adoption si l'étape a déjà calculé des contextes
-            adoption = adoption or any(
-                (entry := typed_registry.get(unit)) is not None and entry.last_computed is not None
-                for unit in units
-            )
-            continue
         if read.full or (spec.coarse and read.modified):
             touched = set(grid_units)
             continue
@@ -1862,7 +1180,7 @@ def read_synthesis_cursors(
                     flow_codes=flow_codes, vintages=vintages, at_snapshot=pinned,
                 )
             }
-    return CursorDecision(touched=touched & grid_units, reads=reads, adoption=adoption)
+    return CursorDecision(touched=touched & grid_units, reads=reads)
 
 
 # Fonction de décision des contextes à (re)calculer à partir du registre seul
@@ -1873,7 +1191,6 @@ def plan_pending_contexts(
     force: ForceSpec,
     *,
     method_names: Sequence[str],
-    adopt_legacy_fingerprints: bool = False,
 ) -> Dict[Unit, UnitPlan]:
     """Decide the contexts to compute once the touched ones are flagged ``pending``.
 
@@ -1888,7 +1205,6 @@ def plan_pending_contexts(
         requested: Current fingerprints.
         force: One-off forcing.
         method_names: Configured method names.
-        adopt_legacy_fingerprints: Deployment migration flag.
 
     Returns:
         Mapping ``unit -> UnitPlan`` of the stale contexts.
@@ -1896,7 +1212,6 @@ def plan_pending_contexts(
     plans = units_to_compute(
         units, registry, {}, requested, force, step=STEP,
         is_new_data=lambda unit, entry, mark: False,
-        adopt_legacy_fingerprints=adopt_legacy_fingerprints,
     )
     return {
         unit: UnitPlan(plan.reason, expand_synthesis_names(plan.names, requested, method_names))
@@ -1904,15 +1219,13 @@ def plan_pending_contexts(
     }
 
 
-# Fonction de décision par curseurs (modes shadow et snapshot)
+# Fonction de décision par curseurs
 def decide_with_cursors(
     conn: Any,
     *,
-    mode: str,
     cursors: StepCursors,
     registry: FreshnessRegistry,
     units: Sequence[Unit],
-    legacy_plans: Mapping[Unit, UnitPlan],
     requested: Mapping[str, str],
     force: ForceSpec,
     method_names: Sequence[str],
@@ -1923,29 +1236,20 @@ def decide_with_cursors(
     context_columns: Sequence[str],
     flow_codes: Optional[Sequence[int]] = None,
     vintages: Optional[str] = None,
-    adopt_legacy_fingerprints: bool = False,
     tracker: Any = None,
 ) -> Dict[Unit, UnitPlan]:
     """Read the cursors, flag the touched contexts and return the plans to execute.
 
-    ``snapshot`` mode, two phases: the touched contexts are flagged
-    ``pending`` and the registry saved, then the cursors move to ``pinned``
-    and are saved; the plans come from the registry alone. A cursor absent
-    while contexts were already computed means the step switches to cursors:
-    the legacy rule decides one last time (its ``new_data`` contexts are
-    flagged too).
-
-    ``shadow`` mode: the legacy plans are executed; the decision the cursors
-    would have taken is compared (metrics ``freshness/shadow_*``) and the
-    cursors move forward, so that the switch to ``snapshot`` starts from them.
+    Two phases, so that a failed or budget-limited run loses no change: the
+    touched contexts are flagged ``pending`` and the registry saved, then the
+    cursors move to ``pinned`` and are saved. The plans come from the registry
+    alone (:func:`plan_pending_contexts`).
 
     Args:
         conn: Open connection (catalog attached).
-        mode: ``shadow`` or ``snapshot``.
         cursors: Cursors of the synthesis.
         registry: Per-context registry.
         units: Contexts of the grid (read at ``pinned``).
-        legacy_plans: Plans of the legacy rule (:func:`plan_synthesis_contexts`).
         requested: Current fingerprints.
         force: One-off forcing.
         method_names: Configured method names.
@@ -1956,7 +1260,6 @@ def decide_with_cursors(
         context_columns: Ordered context key columns.
         flow_codes: Flow codes of the synthesised directions.
         vintages: ``SYNTHESIS.VINTAGES``.
-        adopt_legacy_fingerprints: Deployment migration flag.
         tracker: Tracker receiving the ``cursor/*`` and ``freshness/*`` metrics.
 
     Returns:
@@ -1964,7 +1267,7 @@ def decide_with_cursors(
     """
     specs = source_cursors(sources, context_columns)
     decision = read_synthesis_cursors(
-        conn, cursors, specs, units, registry, pinned=pinned, sources=sources,
+        conn, cursors, specs, units, pinned=pinned, sources=sources,
         filters=filters, catalog_alias=catalog_alias, context_columns=context_columns,
         flow_codes=flow_codes, vintages=vintages,
     )
@@ -1972,35 +1275,13 @@ def decide_with_cursors(
     for read in decision.reads:
         metrics.update(read.metrics("cursor"))
 
-    if mode == "shadow":
-        # Décision qu'auraient prise les curseurs : contextes touchés et raisons hors new_data
-        new_units = set(decision.touched) | {
-            unit for unit, plan in legacy_plans.items() if plan.reason != "new_data"
-        }
-        if decision.adoption:
-            new_units |= set(legacy_plans)
-        comparison = shadow_metrics(legacy_plans, new_units)
-        metrics.update(comparison)
-        missed = sorted(unit.key for unit in new_units - set(legacy_plans))
-        if missed:
-            # Logging
-            logger.warning(
-                f"Mode shadow : {len(missed)} contexte(s) touché(s) que la règle actuelle "
-                f"ne recalcule pas (ex. {missed[:5]})."
-            )
-        plans = dict(legacy_plans)
-    else:
-        touched = set(decision.touched)
-        if decision.adoption:
-            touched |= {unit for unit, plan in legacy_plans.items() if plan.reason == "new_data"}
-        # Phase 1 : contextes touchés marqués en attente, registre écrit
-        flagged = mark_pending(registry, touched, pinned)
-        registry.save()
-        metrics["freshness/units_flagged"] = float(flagged)
-        plans = plan_pending_contexts(
-            units, registry, requested, force, method_names=method_names,
-            adopt_legacy_fingerprints=adopt_legacy_fingerprints,
-        )
+    # Phase 1 : contextes touchés marqués en attente, registre écrit
+    flagged = mark_pending(registry, decision.touched, pinned)
+    registry.save()
+    metrics["freshness/units_flagged"] = float(flagged)
+    plans = plan_pending_contexts(
+        units, registry, requested, force, method_names=method_names,
+    )
 
     # Phase 2 : curseurs avancés au snapshot épinglé, puis écrits
     for spec, read in zip(specs, decision.reads):
@@ -2010,8 +1291,8 @@ def decide_with_cursors(
         tracker.log_metrics(metrics)
     # Logging
     logger.info(
-        f"Curseurs ({mode}) au snapshot {pinned} : {len(decision.touched)} contexte(s) touché(s)"
-        f"{' (adoption)' if decision.adoption else ''}, {len(plans)} à recalculer."
+        f"Curseurs au snapshot {pinned} : {len(decision.touched)} contexte(s) touché(s), "
+        f"{len(plans)} à recalculer."
     )
     return plans
 
@@ -2356,7 +1637,6 @@ def context_entry(
     unit: Unit,
     plan: UnitPlan,
     computed_at: datetime,
-    watermark: Optional[datetime],
     requested: Mapping[str, str],
     previous: Optional[RegistryEntry],
     **counters: Any,
@@ -2370,7 +1650,6 @@ def context_entry(
         unit: Context unit.
         plan: Plan computed (its reason cascades to the coherence).
         computed_at: Instant captured before the run started.
-        watermark: Upstream instant taken into account.
         requested: Current fingerprints.
         previous: Previous entry of the context, or ``None``.
         **counters: Extra fields (``n_cells``, ``methods``…).
@@ -2383,7 +1662,6 @@ def context_entry(
     return RegistryEntry(
         unit=unit,
         last_computed=computed_at,
-        upstream_watermark=watermark,
         fingerprints=fingerprints,
         reason=plan.reason,
         extra=dict(counters),
@@ -2623,8 +1901,8 @@ class IncrementalOutcome:
         computed: Contexts computed and written, in order.
         backlog: Stale contexts left to the next runs by the budget.
         n_selected: Contexts selected for this run (planned units of the report).
-        pinned: Snapshot the run read its sources at (``None`` in ``legacy``
-            mode).
+        pinned: Snapshot the run read its sources at (set by the synthesis;
+            the coherence reads the scores as they are).
     """
     reports: List[Any] = field(default_factory=list)
     failures: Dict[str, Exception] = field(default_factory=dict)
@@ -2648,27 +1926,24 @@ def run_incremental_synthesis(
     diagnostics_schema: str,
     registry: FreshnessRegistry,
     requested: Mapping[str, str],
-    marks: UpstreamMarks,
     force: ForceSpec,
     settings: IncrementalSettings,
+    cursors: StepCursors,
     flow_codes: Optional[Sequence[int]] = None,
     vintages: Optional[str] = None,
-    adopt_legacy_fingerprints: bool = False,
     computed_at: Optional[datetime] = None,
     run_id: Optional[str] = None,
     tracker: Any = None,
     log_artifacts: bool = True,
     reader: Any = None,
-    cursors: Optional[StepCursors] = None,
-    mode: str = "legacy",
 ) -> IncrementalOutcome:
     """Synthesise the stale contexts, by context and by method.
 
     Three separate steps, so that the middle one can be parallelised:
 
     1. **planning**: the distinct contexts of the filtered grid (one SQL
-       query, no metric read), the plan of each one
-       (:func:`plan_synthesis_contexts`), the order (most recent periods
+       query, no metric read), the plan of each one (changes read from the
+       cursors, :func:`decide_with_cursors`), the order (most recent periods
        first) and the catch-up budget;
     2. **computation** of each context (:func:`compute_context_task`), in
        ``settings.n_jobs`` worker processes, each with a read connection of
@@ -2695,12 +1970,11 @@ def run_incremental_synthesis(
         diagnostics_schema: Target schema of the fit diagnostics.
         registry: Per-context registry of the synthesis.
         requested: Current fingerprints (:func:`synthesis_context_requested`).
-        marks: Upstream marks.
         force: One-off forcing.
         settings: Incremental settings.
+        cursors: Cursors of the synthesis on its sources.
         flow_codes: Flow codes of the synthesised directions.
         vintages: ``SYNTHESIS.VINTAGES``.
-        adopt_legacy_fingerprints: Deployment migration flag.
         computed_at: Instant recorded as ``last_computed`` (captured before the
             run by default).
         run_id: Run identifier recorded on the snapshots.
@@ -2710,18 +1984,14 @@ def run_incremental_synthesis(
         reader: Opens the read connection of a worker (a
             :class:`~kedro_pipeline.io.ducklake.ConnectionReader`). ``None``
             lends ``scores_conn``, which only works with one process.
-        cursors: Cursors of the synthesis on its sources; required by the
-            ``shadow`` and ``snapshot`` modes (``legacy`` otherwise).
-        mode: Decision mode (``legacy``, ``shadow``, ``snapshot``, see
-            :func:`kedro_pipeline.io.cursors.decision_mode`). Outside
-            ``legacy``, every read is pinned at the snapshot of the catalog
-            captured at the start of the run.
 
     Returns:
-        The outcome of the run.
+        The outcome of the run; every read is pinned at the snapshot of the
+        catalog captured at the start of the run (``outcome.pinned``).
 
     Raises:
         ValueError: If several processes are requested without a ``reader``.
+        RuntimeError: If the catalog exposes no snapshot to pin the reads at.
     """
     if tracker is None:
         from macroforecast.tracking import NULL_TRACKER
@@ -2739,13 +2009,11 @@ def run_incremental_synthesis(
     diagnostics_table = DuckLakeTable(diagnostics_conn, catalog_alias, diagnostics_schema)
     outcome = IncrementalOutcome()
 
-    # Snapshot épinglé : toutes les lectures du run portent sur le même état
-    if mode != "legacy" and cursors is None:
-        logger.warning(f"Mode de décision {mode!r} sans curseurs : repli sur legacy.")
-        mode = "legacy"
-    pinned = current_snapshot(scores_conn, catalog_alias) if mode != "legacy" else None
-    if mode != "legacy" and pinned is None:
-        mode = "legacy"
+    # Snapshot épinglé : toutes les lectures du run portent sur le même état ; sans
+    # snapshot, ni curseur ni lecture reproductible : l'étape ne peut pas décider
+    pinned = current_snapshot(scores_conn, catalog_alias)
+    if pinned is None:
+        raise RuntimeError(f"Le catalogue '{catalog_alias}' n'expose aucun snapshot : lectures non épinglables.")
     outcome.pinned = pinned
 
     # 1. Planification : contextes de la grille, plans, ordre et budget
@@ -2758,23 +2026,13 @@ def run_incremental_synthesis(
     )
     typed = {context_unit(context_columns, context): context for context in contexts}
     units = list(typed)
-    outcome.plans = plan_synthesis_contexts(
-        units, registry, requested, marks, force,
-        method_names=method_names,
-        recent_periods=settings.recent_periods,
-        period_column=settings.period_column,
-        adopt_legacy_fingerprints=adopt_legacy_fingerprints,
+    outcome.plans = decide_with_cursors(
+        scores_conn, cursors=cursors, registry=registry, units=units,
+        requested=requested, force=force,
+        method_names=method_names, pinned=pinned, sources=sources, filters=filters,
+        catalog_alias=catalog_alias, context_columns=context_columns,
+        flow_codes=flow_codes, vintages=vintages, tracker=tracker,
     )
-    if mode != "legacy":
-        assert cursors is not None and pinned is not None
-        outcome.plans = decide_with_cursors(
-            scores_conn, mode=mode, cursors=cursors, registry=registry, units=units,
-            legacy_plans=outcome.plans, requested=requested, force=force,
-            method_names=method_names, pinned=pinned, sources=sources, filters=filters,
-            catalog_alias=catalog_alias, context_columns=context_columns,
-            flow_codes=flow_codes, vintages=vintages,
-            adopt_legacy_fingerprints=adopt_legacy_fingerprints, tracker=tracker,
-        )
     selected, outcome.backlog = select_contexts(
         outcome.plans, units, settings.period_column, settings.max_contexts
     )
@@ -2804,7 +2062,7 @@ def run_incremental_synthesis(
         sources=sources, filters=filters, catalog_alias=catalog_alias,
         flow_codes=flow_codes, vintages=vintages, result_schema=result_schema,
         scores_table=scores_table, diagnostics_table=diagnostics_table,
-        registry=registry, requested=requested, marks=marks,
+        registry=registry, requested=requested,
         computed_at=computed_at, run_id=run_id, settings=settings,
         log_artifacts=log_artifacts, artifacts=artifacts, at_snapshot=pinned,
     )
@@ -3002,7 +2260,6 @@ def _synthesise_contexts(
     diagnostics_table: DuckLakeTable,
     registry: FreshnessRegistry,
     requested: Mapping[str, str],
-    marks: UpstreamMarks,
     computed_at: datetime,
     run_id: Optional[str],
     settings: IncrementalSettings,
@@ -3041,7 +2298,6 @@ def _synthesise_contexts(
         diagnostics_table: Handle of the diagnostic table.
         registry: Per-context registry of the synthesis.
         requested: Current fingerprints.
-        marks: Upstream marks.
         computed_at: Instant recorded as ``last_computed``.
         run_id: Run identifier recorded on the snapshots.
         settings: Incremental settings (``n_jobs``, ``sequential_methods``,
@@ -3129,7 +2385,7 @@ def _synthesise_contexts(
             planned = methods_of[result.unit]
             registry.upsert(
                 context_entry(
-                    result.unit, plans[result.unit], computed_at, marks.watermark, requested,
+                    result.unit, plans[result.unit], computed_at, requested,
                     registry.get(result.unit),
                     n_cells=int(report.n_cells),
                     methods=list(planned) if planned is not None else "all",
@@ -3190,19 +2446,16 @@ def run_synthesis_step(
     scores: Any,
     diagnostics: Any,
     state: FreshnessRegistry,
-    upstream_partners: Sequence[FreshnessRegistry],
-    upstream_network: Sequence[FreshnessRegistry],
+    cursors: FreshnessRegistry,
     *,
     params: Mapping[str, Any],
     vulnerability_params: Mapping[str, Any],
     runtime: Mapping[str, Any],
     tracker: Optional[RunTracker] = None,
     n_jobs: int = 1,
-    eurostat: Optional[Mapping[str, Any]] = None,
     force: Optional[ForceSpec] = None,
     cadence_check: bool = False,
     run_id: Optional[str] = None,
-    cursors: Optional[FreshnessRegistry] = None,
 ) -> StepResult:
     """Synthesise the stale contexts and return the outcome of the run.
 
@@ -3213,23 +2466,18 @@ def run_synthesis_step(
         diagnostics: :class:`~kedro_pipeline.io.ducklake.DuckLakeTable` of the
             diagnostics table (``synthesis_diagnostics``, ``fit`` family).
         state: Per-context registry of the synthesis.
-        upstream_partners: Freshness registries of the partner step (read only).
-        upstream_network: Freshness registries of the network step (read only).
+        cursors: Registry of the cursors of every step (``state.cursors``).
         params: The ``synthesis`` parameters (``SYNTHESIS`` block read).
         vulnerability_params: The ``vulnerabilities`` parameters (flow codes).
         runtime: The ``runtime`` parameters (``NOMENCLATURES.HS``, forcing).
         tracker: Tracker of the caller's open run (never entered here).
         n_jobs: Worker processes computing the contexts (resolved by the caller).
-        eurostat: The ``eurostat`` parameters, default of ``RECENT_PERIODS``.
         force: One-off forcing; read from ``runtime`` alone when ``None``. The
             ``SYNTHESIS.FORCE`` flag forces the step too.
         cadence_check: Whether to skip the run (metric
             ``freshness/skipped_by_cadence``) when the step ran less than
             ``CADENCE.MIN_INTERVAL_DAYS`` ago and nothing forces it.
         run_id: Run identifier recorded on the DuckLake snapshots.
-        cursors: Registry of the cursors of every step (``state.cursors``);
-            the ``SYNTHESIS.STATE.DECISION_MODE`` modes ``shadow`` and
-            ``snapshot`` need it (``legacy`` is applied without it).
 
     Returns:
         The step result: one unit per context selected, metrics and artifacts
@@ -3247,7 +2495,7 @@ def run_synthesis_step(
     vintages = load_synthesis_vintages(block, config)
     sources = block["SOURCES"]
     filters = block.get("FILTERS") or {}
-    settings = incremental_settings(block, eurostat, n_jobs=n_jobs)
+    settings = incremental_settings(block, n_jobs=n_jobs)
     log_artifacts = bool((block.get("TRACKING") or {}).get("LOG_ARTIFACTS", True))
     nomenclatures = runtime["NOMENCLATURES"]["HS"]
 
@@ -3267,15 +2515,6 @@ def run_synthesis_step(
                 step=STEP, metrics=dict(tracker.metrics), tags=dict(tracker.tags),
                 reportable=False, outputs={"skipped_by_cadence": True},
             )
-
-    # Amont : marques des registres partenaires et réseau, par millésime
-    classification = partner_classification(nomenclatures)
-    marks = UpstreamMarks.from_entries(
-        (entry for registry in upstream_partners for entry in registry.iter_entries()),
-        (entry for registry in upstream_network for entry in registry.iter_entries()),
-        partner_label=classification,
-        nomenclatures=nomenclatures,
-    )
 
     # Instant de référence capturé avant le calcul : la date enregistrée correspond au
     # début du traitement, pour ne pas rater une mise à jour survenue pendant le calcul
@@ -3299,7 +2538,6 @@ def run_synthesis_step(
                 diagnostics_schema=diagnostics.schema,
                 registry=state,
                 requested=requested,
-                marks=marks,
                 force=force,
                 settings=settings,
                 flow_codes=flow_codes,
@@ -3309,8 +2547,7 @@ def run_synthesis_step(
                 tracker=tracker,
                 log_artifacts=log_artifacts,
                 reader=reader,
-                cursors=StepCursors(cursors, STEP) if cursors is not None else None,
-                mode=decision_mode(block.get("STATE")),
+                cursors=StepCursors(cursors, STEP),
             )
     result = _run_result(
         tracker, outcome.reports, outcome.failures, outcome.n_selected,

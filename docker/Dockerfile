@@ -40,7 +40,6 @@ COPY macroforecast/ macroforecast/
 COPY scripts/ scripts/
 COPY kedro_pipeline/ kedro_pipeline/
 COPY config/ config/
-COPY tools/ tools/
 RUN --mount=type=cache,target=/root/.cache/uv \
     uv sync --frozen --no-dev ${UV_EXTRAS}
 

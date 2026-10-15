@@ -453,9 +453,16 @@ class ServingWorld(NamedTuple):
     locations: dict
 
 
-def _serving_frames(rng: "np.random.Generator") -> dict:
-    """Tables sources fictives (Comext, partenaires, réseau, synthèse, cohérence)."""
+def _serving_frames(rng: "np.random.Generator", nomenclatures: dict) -> dict:
+    """Tables sources fictives (Comext, partenaires, réseau, synthèse, cohérence).
+
+    Args:
+        rng: Générateur des valeurs.
+        nomenclatures: Millésimes SH et leur année d'entrée en vigueur.
+    """
     from scipy.stats import rankdata
+
+    from kedro_pipeline.config import classification_of, vintage_in_force
 
     comext_rows, indicator_rows = [], []
     for year in SERVING_YEARS:
@@ -491,6 +498,15 @@ def _serving_frames(rng: "np.random.Generator") -> dict:
         columns=["freq", "reporter", "product", "flow", "indicators", "TIME_PERIOD",
                  "HHI", "CDI2", "CDI3", "HHI_ALERT", "CDI2_ALERT", "CDI3_ALERT"],
     )
+    # Colonnes de nomenclature des lignes en vigueur, comme les écrit l'étape partenaires
+    years = df_indicators["TIME_PERIOD"].astype(int)
+    df_indicators["classification"] = [
+        classification_of(product, year, nomenclatures)
+        for product, year in zip(df_indicators["product"], years)
+    ]
+    df_indicators["hs_vintage"] = [vintage_in_force(year, nomenclatures) for year in years]
+    df_indicators["in_force"] = True
+    df_indicators["is_provisional"] = False
 
     # Réseau : deux millésimes pour chaque année, valeurs distinctes par millésime
     # et par flux (l'export, graphe transposé, décalé de SERVING_NETWORK_EXPORT_SHIFT)
@@ -512,9 +528,9 @@ def _serving_frames(rng: "np.random.Generator") -> dict:
 
     # Synthèse : format long par méthode, rang 1 = score le plus élevé (S-2.4)
     grid = df_indicators[df_indicators["indicators"] == "VALUE_IN_EUROS"][
-        ["freq", "flow", "indicators", "TIME_PERIOD", "reporter", "product"]
+        ["hs_vintage", "freq", "flow", "indicators", "TIME_PERIOD", "reporter", "product"]
     ]
-    context = ["freq", "flow", "indicators", "TIME_PERIOD"]
+    context = ["hs_vintage", "freq", "flow", "indicators", "TIME_PERIOD"]
     frames = []
     for method in SERVING_METHODS:
         df = grid.copy()
@@ -534,7 +550,7 @@ def _serving_frames(rng: "np.random.Generator") -> dict:
     # Cohérence : familles metrics, methods et fit (cette dernière non exposée)
     diag_rows = []
     for year in SERVING_YEARS:
-        base = ("A", 1, "VALUE_IN_EUROS", str(year))
+        base = (vintage_in_force(year, nomenclatures), "A", 1, "VALUE_IN_EUROS", str(year))
         diag_rows += [
             (*base, "global", "ALL", "ALL", "metrics", "spearman", "HHI", "CDI2", 0.4, 24),
             (*base, "by_product", "ALL", "85411000", "metrics", "kendall_w", "", "", 0.7, 3),
@@ -544,7 +560,7 @@ def _serving_frames(rng: "np.random.Generator") -> dict:
         ]
     df_diagnostics = pd.DataFrame(
         diag_rows,
-        columns=["freq", "flow", "indicators", "TIME_PERIOD", "level", "reporter", "product",
+        columns=["hs_vintage", "freq", "flow", "indicators", "TIME_PERIOD", "level", "reporter", "product",
                  "family", "statistic", "item_a", "item_b", "value", "n"],
     )
     return {
@@ -559,10 +575,10 @@ def _serving_frames(rng: "np.random.Generator") -> dict:
 # Clés primaires des tables sources fictives
 _SERVING_KEYS = {
     "comext": ["freq", "reporter", "partner", "product", "flow", "indicators", "TIME_PERIOD"],
-    "indicators": ["freq", "reporter", "product", "flow", "indicators", "TIME_PERIOD"],
+    "indicators": ["classification", "freq", "reporter", "product", "flow", "indicators", "TIME_PERIOD"],
     "network": ["product", "year", "classification", "flow"],
-    "synthesis": ["freq", "flow", "indicators", "TIME_PERIOD", "reporter", "product", "method"],
-    "diagnostics": ["freq", "flow", "indicators", "TIME_PERIOD", "level", "reporter", "product",
+    "synthesis": ["hs_vintage", "freq", "flow", "indicators", "TIME_PERIOD", "reporter", "product", "method"],
+    "diagnostics": ["hs_vintage", "freq", "flow", "indicators", "TIME_PERIOD", "level", "reporter", "product",
                     "family", "statistic", "item_a", "item_b"],
 }
 
@@ -594,7 +610,7 @@ def build_serving_world(
         synthesis=configs["synthesis"],
     )
     factory = file_connector_factory(root)
-    frames = _serving_frames(np.random.default_rng(0))
+    frames = _serving_frames(np.random.default_rng(0), runtime["NOMENCLATURES"]["HS"])
 
     for alias, location in locations.items():
         connector = factory(location, None, None)

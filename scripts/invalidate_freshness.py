@@ -273,8 +273,8 @@ def configured_methods() -> Tuple[str, ...]:
 def build_registry(step: str) -> FreshnessRegistry:
     """Build the freshness registry of a step from the environment configuration.
 
-    The very same builders as the steps are used, so the paths, buckets and
-    version-1 fallbacks are identical.
+    The very same builders as the steps are used, so the paths and buckets
+    are identical.
 
     Args:
         step: Step name.
@@ -290,15 +290,12 @@ def build_registry(step: str) -> FreshnessRegistry:
         from scripts.compute_trade_vulnerabilities import (
             load_eurostat_config,
             load_vulnerability_config,
-            partner_classification,
             partner_registry,
         )
-        from scripts.download_comtrade import load_runtime_config
 
         dataflow = load_eurostat_config()["DATAFLOW"]
         block = load_vulnerability_config()["VULNERABILITIES"][dataflow]
-        classification = partner_classification(load_runtime_config()["NOMENCLATURES"]["HS"])
-        return partner_registry(block, classification)
+        return partner_registry(block)
     if step == "network":
         from scripts.compute_network_vulnerabilities import (
             load_vulnerability_config,

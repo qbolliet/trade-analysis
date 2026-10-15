@@ -2,8 +2,8 @@
 
 Le catalogue DuckLake a ses métadonnées en SQLite (``tests/sqlite_catalog.py``) : les
 poignées paresseuses donnent à chaque processus de travail sa propre connexion, ce qui
-permet de comparer un et deux processus. Les registres amont sont écrits sur disque,
-comme ceux des étapes partenaires et réseau.
+permet de comparer un et deux processus. Les registres de fraîcheur et les curseurs sont
+écrits sur disque, comme ceux des étapes.
 """
 
 from __future__ import annotations
@@ -18,7 +18,7 @@ import pytest
 pytest.importorskip("dt_ducklake_manager")
 
 from kedro_pipeline.io.ducklake import DuckLakeLocation, DuckLakeTable  # noqa: E402
-from kedro_pipeline.io.freshness import FreshnessRegistry, RegistryEntry, Unit  # noqa: E402
+from kedro_pipeline.io.freshness import FreshnessRegistry  # noqa: E402
 from kedro_pipeline.steps import synthesis as synthesis_step  # noqa: E402
 from kedro_pipeline.steps.coherence import run_coherence_step  # noqa: E402
 from kedro_pipeline.steps.synthesis import context_registry, run_synthesis_step  # noqa: E402
@@ -119,19 +119,12 @@ def _handle(root: Path, schema: str) -> DuckLakeTable:
     return DuckLakeTable.lazy(location, None, None, connector_factory=_SqliteFactory(root))
 
 
-def _partners(root: Path) -> FreshnessRegistry:
-    registry = FreshnessRegistry(
-        f"{root.as_posix()}/partners/{{reporter}}.json", None, "partners",
-        shard_of=lambda unit: unit.get("reporter"),
+def _cursors(root: Path, name: str) -> FreshnessRegistry:
+    """Registre des curseurs de la passe ``name``."""
+    return FreshnessRegistry(
+        f"{root.as_posix()}/{name}/cursors/{{step}}.json", None, "cursors",
+        shard_of=lambda unit: unit.get("step"),
     )
-    for reporter in REPORTERS:
-        for product in PRODUCTS:
-            registry.upsert(RegistryEntry(
-                Unit.of(classification="HS2022", reporter=reporter, product=product), T0,
-                upstream_watermark=T0, reason="first",
-            ))
-    registry.save()
-    return registry
 
 
 def _synthesise(root: Path, name: str, *, n_jobs: int, cadence_check: bool = False, tracker=None):
@@ -139,7 +132,7 @@ def _synthesise(root: Path, name: str, *, n_jobs: int, cadence_check: bool = Fal
              "STATE": {"PATH_TEMPLATE": f"{root.as_posix()}/{name}/state/{{TIME_PERIOD}}.json"}}
     state = context_registry(block, None, "synthesis", CONTEXT_COLUMNS)
     return run_synthesis_step(
-        _handle(root, name), _handle(root, f"{name}_diag"), state, [_partners(root)], [],
+        _handle(root, name), _handle(root, f"{name}_diag"), state, _cursors(root, name),
         params={"SYNTHESIS": block, "COHERENCE": COHERENCE}, vulnerability_params={},
         runtime=RUNTIME, tracker=tracker, n_jobs=n_jobs, cadence_check=cadence_check, run_id="wf-1",
     ), block

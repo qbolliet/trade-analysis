@@ -5,8 +5,6 @@
 # KEDRO_ENV=demo ou `--env demo`.
 # ─────────────────────────────────────────────────────────────────────────────
 baci:
-  PATHS:
-    LAST_PROCESSING_PATH: "trade/demo/datasets/last_processing/baci.json"
   STATE:
     PATH_TEMPLATE: "trade/demo/state/baci/{vintage}.json"
   PASSES:

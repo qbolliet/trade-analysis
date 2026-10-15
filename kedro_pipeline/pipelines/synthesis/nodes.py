@@ -8,7 +8,7 @@ here.
 # Importation des modules
 from __future__ import annotations
 # Modules de base
-from typing import Any, Dict, Mapping, Optional
+from typing import Any, Dict, Mapping
 
 # Modules du package
 from kedro_pipeline.io.datasets import DuckLakeCatalogs
@@ -53,16 +53,13 @@ def synthesis_table(
 def compute_synthetic_scores(
     partners: Any,
     network: Any,
-    partners_state: FreshnessRegistry,
-    network_state: FreshnessRegistry,
     state: FreshnessRegistry,
+    cursors: FreshnessRegistry,
     catalogs: DuckLakeCatalogs,
     synthesis: Mapping[str, Any],
     vulnerabilities: Mapping[str, Any],
-    eurostat: Mapping[str, Any],
     runtime: Mapping[str, Any],
     tracking: Mapping[str, Any],
-    cursors: Optional[FreshnessRegistry] = None,
 ) -> Dict[str, Any]:
     """Compute the synthetic scores of the stale contexts.
 
@@ -74,19 +71,16 @@ def compute_synthetic_scores(
     Args:
         partners: Handle of the partner metrics (upstream).
         network: Handle of the network metrics (upstream).
-        partners_state: Partners freshness registry (read only).
-        network_state: Network freshness registry (read only).
         state: Synthesis freshness registry.
-        catalogs: Factory of the written handles.
-        synthesis: The ``synthesis`` parameters (``SYNTHESIS``, ``COHERENCE``).
-        vulnerabilities: The ``vulnerabilities`` parameters.
-        eurostat: The ``eurostat`` parameters (default recent periods).
-        runtime: ``runtime`` parameters (``N_JOBS`` resolved).
-        tracking: ``tracking`` parameters (report of the run).
         cursors: Registry of the cursors (``state.cursors``), read and written
             by the step itself (two-phase protocol, saved before the
             computation): it is not an output, so that the maintenance keeps
             no dependency on this node.
+        catalogs: Factory of the written handles.
+        synthesis: The ``synthesis`` parameters (``SYNTHESIS``, ``COHERENCE``).
+        vulnerabilities: The ``vulnerabilities`` parameters.
+        runtime: ``runtime`` parameters (``N_JOBS`` resolved).
+        tracking: ``tracking`` parameters (report of the run).
 
     Returns:
         ``table`` (handle of the scores), ``metrics`` and ``artifacts``.
@@ -98,11 +92,11 @@ def compute_synthetic_scores(
     scores = synthesis_table(catalogs, vulnerabilities, synthesis, "SYNTHESIS")
     diagnostics = synthesis_table(catalogs, vulnerabilities, synthesis, "COHERENCE")
     result = run_synthesis_step(
-        scores, diagnostics, state, [partners_state], [network_state],
+        scores, diagnostics, state, cursors,
         params=synthesis, vulnerability_params=vulnerabilities, runtime=runtime,
-        n_jobs=n_jobs_of(synthesis["SYNTHESIS"], runtime), eurostat=eurostat,
+        n_jobs=n_jobs_of(synthesis["SYNTHESIS"], runtime),
         force=force_spec(runtime), cadence_check=False, run_id=run_id(),
-        tracker=reporting.step_tracker, cursors=cursors,
+        tracker=reporting.step_tracker,
     )
     return finish_step(result, state, outputs={"table": scores}, reporting=reporting)
 

@@ -38,7 +38,7 @@ from typing import Any, Dict, Iterable, Mapping, Optional
 import pandas as pd
 
 # Modules du package
-from kedro_pipeline.io.freshness import ForceSpec, adopt_legacy_flag
+from kedro_pipeline.io.freshness import ForceSpec
 from kedro_pipeline.io.ducklake import workflow_run_id
 from kedro_pipeline.steps.result import StepResult
 from macroforecast.tracking import RunTracker
@@ -392,19 +392,6 @@ def force_spec(runtime: Mapping[str, Any]) -> ForceSpec:
         forcing as parameters).
     """
     return ForceSpec.from_runtime(runtime, environ={})
-
-
-# Fonction de l'adoption des empreintes héritées
-def adopt_legacy(block: Optional[Mapping[str, Any]]) -> bool:
-    """Read the legacy-fingerprint adoption flag of a step block (``STATE``).
-
-    Args:
-        block: Parameter block of the step.
-
-    Returns:
-        Whether the legacy entries adopt the current fingerprints.
-    """
-    return adopt_legacy_flag((block or {}).get("STATE"), environ={})
 
 
 # Fonction du nombre de processus d'une étape

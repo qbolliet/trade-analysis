@@ -46,7 +46,6 @@ from kedro_pipeline.steps.coherence import (  # noqa: F401
     IncrementalOutcome,
     IncrementalSettings,
     last_computation,
-    load_coherence_computation_date,
     load_synthesis_flows,
     load_synthesis_vintages,
     _log_run,
@@ -54,12 +53,10 @@ from kedro_pipeline.steps.coherence import (  # noqa: F401
     plan_coherence_contexts,
     read_contexts,
     read_source_metrics,
-    _REGISTRY_ROOT,
     replacement_predicate,
     run_coherence_step,
     run_from_connections,
     run_incremental_coherence,
-    save_coherence_computation_date,
     select_contexts,
     skipped_by_cadence,
     _sql_literal,
@@ -70,7 +67,6 @@ from kedro_pipeline.steps.coherence import (  # noqa: F401
 )
 # Lecture des paramètres et poignées partagées avec le script de synthèse
 from scripts.compute_synthetic_scores import (  # noqa: F401
-    _PARTNERS_ROOT,
     context_registry,
     load_synthesis_config,
     load_vulnerability_config,

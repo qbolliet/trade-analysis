@@ -1,4 +1,4 @@
-"""Read-only views of the ``statflows`` download registry (PS-12.3).
+"""Read-only views of the ``statflows`` download registry.
 
 The downstream steps (partner vulnerabilities, BACI completeness gate) need the
 last-download dates of the units they work on: (reporter x product) pairs for
@@ -6,7 +6,7 @@ Eurostat, (year x product batch) for Comtrade. :class:`DownloadRegistryView`
 **explodes** each registry entry into those units.
 
 The registry is always read through ``statflows.iter_registry_entries``, which
-hides its physical layout (single file or per-shard fragments, PS-27): this
+hides its physical layout (single file or per-shard fragments): this
 module is the only place of the repository that knows the shape of a registry
 entry, and it never reads the registry root key by hand.
 
@@ -56,10 +56,8 @@ def _last_download(entry: RegistryEntry) -> datetime:
 
 # Fonction de lecture de la marque « données modifiées » d'une entrée
 def _modified_mark(entry: RegistryEntry) -> UpstreamMark:
-    """Return the :class:`UpstreamMark` of an entry (statflows >= 0.2.2 fields)."""
-    return UpstreamMark.of_entry(
-        getattr(entry, "last_modified", None), getattr(entry, "last_modified_snapshot", None)
-    )
+    """Return the :class:`UpstreamMark` of an entry."""
+    return UpstreamMark.of_entry(entry.last_modified, entry.last_modified_snapshot)
 
 
 # Fonction de combinaison de deux valeurs d'une même unité

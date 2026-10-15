@@ -10,15 +10,15 @@ contextes dans des processus de travail, écriture par lots dans le processus
 parent ; diagnostics d'ajustement (famille ``fit``) dans ``synthesis_diagnostics``.
 
 Ce script charge les paramètres, construit les poignées des tables de scores et
-de diagnostics (identifiants lus à la première connexion), les registres (synthèse
-en lecture/écriture, partenaires et réseau en lecture seule), le nombre de
+de diagnostics (identifiants lus à la première connexion), le registre de la
+synthèse et les curseurs DuckLake de ses sources, le nombre de
 processus (``N_JOBS``, à défaut ``NUM_CPU``) et un seul run MLflow, appelle
 l'étape, publie le rapport de run puis sort en erreur si un contexte a échoué.
 ``--cadence-check`` (ou ``CADENCE_CHECK=1``) fait sortir le script sans rien
 calculer si la dernière exécution date de moins de ``CADENCE.MIN_INTERVAL_DAYS``
 jours.
 
-Configuration lue : blocs ``synthesis``, ``vulnerabilities``, ``eurostat`` et
+Configuration lue : blocs ``synthesis``, ``vulnerabilities`` et
 ``runtime`` des paramètres Kedro, environnement choisi par ``KEDRO_ENV``.
 """
 # Importation des modules
@@ -43,7 +43,6 @@ from kedro_pipeline.io.freshness import ForceSpec
 from kedro_pipeline.parallel import resolve_n_jobs
 from kedro_pipeline.config import experiment_name, load_parameters, read_config_file
 from kedro_pipeline.steps._config import schema_name, vulnerabilities_location
-from kedro_pipeline.steps.partners import partner_classification
 # Étape de synthèse (ré-exportée : requêtes, fraîcheur, calcul, écriture)
 from kedro_pipeline.steps.synthesis import (  # noqa: F401
     _aggregate_reports,
@@ -60,17 +59,9 @@ from kedro_pipeline.steps.synthesis import (  # noqa: F401
     context_registry,
     context_unit,
     ContextResult,
-    contexts_to_recompute,
-    default_recent_periods,
     expand_synthesis_names,
     _FAMILY_COLUMN,
     _FLOW_COLUMN,
-    freshness_tags,
-    _FULL_CHANGE_REASONS,
-    global_entry,
-    global_legacy_parser,
-    global_registry,
-    GLOBAL_UNIT,
     _grid_where_parts,
     _IN_FORCE_COLUMN,
     incremental_settings,
@@ -78,40 +69,30 @@ from kedro_pipeline.steps.synthesis import (  # noqa: F401
     IncrementalSettings,
     INPUTS_FINGERPRINT,
     _ITEM_A_COLUMN,
-    iter_upstream_registries,
     last_computation,
-    load_max_upstream_computation,
-    load_synthesis_computation_date,
     load_synthesis_flows,
     load_synthesis_vintages,
     _log_run,
     _merge_phase_reports,
     _METHOD_COLUMN,
     method_fingerprint_params,
-    _NETWORK_ROOT,
     NODE,
-    _PARTNERS_ROOT,
     _PERIOD_COLUMN,
-    plan_global_unit,
     plan_methods,
-    plan_synthesis_contexts,
+    plan_pending_contexts,
     read_contexts,
     read_source_metrics,
-    recent_period_values,
-    _REGISTRY_ROOT,
     replacement_predicate,
     run_from_connections,
     run_incremental_synthesis,
     _run_result,
     run_synthesis_step,
-    save_synthesis_computation_date,
     select_contexts,
     skip_by_cadence,
     skipped_by_cadence,
     _sql_list,
     _sql_literal,
     STEP,
-    summarize_registries,
     synthesis_config_from_params,
     synthesis_context_requested,
     _SYNTHESIS_FINGERPRINT_EXCLUDED,
@@ -119,9 +100,6 @@ from kedro_pipeline.steps.synthesis import (  # noqa: F401
     _synthesise_contexts,
     SynthesisTask,
     TaskOutcome,
-    upstream_registries,
-    upstream_registry_groups,
-    UpstreamMarks,
     validate_flow_context,
     _VINTAGE_COLUMN,
     VINTAGE_MODES,
@@ -189,11 +167,10 @@ def load_synthesis_config(config_path: Optional[os.PathLike] = None) -> dict:
 def load_vulnerability_config(config_path: Optional[os.PathLike] = None) -> dict:
     """Load the vulnerability-computation configuration.
 
-    Read for three things only: the catalog identity shared by the two upstream
-    families (``VULNERABILITIES.DBNAME`` / ``VULNERABILITIES.CATALOG_ALIAS``, the
-    same catalog the synthesis writes into), and the paths of the two upstream
-    freshness registries (partners and network). No methodological parameter of
-    the metric computation is used here.
+    Read for the catalog identity shared by the two upstream families
+    (``VULNERABILITIES.DBNAME`` / ``VULNERABILITIES.CATALOG_ALIAS``, the same
+    catalog the synthesis writes into) and the flow codes. No methodological
+    parameter of the metric computation is used here.
 
     Args:
         config_path: Explicit YAML file (``vulnerabilities`` root key or
@@ -254,21 +231,6 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     )
     return parser.parse_args(argv)
 
-# Fonction de lecture optionnelle de la configuration de téléchargement Eurostat
-def _optional_eurostat_config() -> Optional[Mapping[str, Any]]:
-    """Read the Eurostat download configuration, ``None`` when absent.
-
-    It only provides the default of ``RECENT_PERIODS`` (depth of the
-    incremental download).
-    """
-    from scripts.compute_trade_vulnerabilities import load_eurostat_config
-
-    try:
-        return load_eurostat_config()
-    except (FileNotFoundError, KeyError):
-        # Bloc eurostat absent des paramètres de l'environnement
-        return None
-
 # Fonction de journalisation d'une exécution sautée par cadence
 def log_cadence_skip(tracker: Any, step: str, last: Optional[datetime]) -> None:
     """Log the metric and tag of a run skipped by the cadence check.
@@ -305,12 +267,12 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
     diagnostics = result_table(
         vulnerability_config, coherence_block["RESULT_SCHEMA"], block["BUCKET"], coherence_block["PATHS"]["DATA_PATH"]
     )
-    # Registres : synthèse par contexte (fragment = période), amont par famille (lecture seule)
+    # Registres : synthèse par contexte (fragment = période) et curseurs des sources
+    from scripts.invalidate_freshness import build_cursors
+
     context_columns = synthesis_config_from_params(block.get("PARAMETERS") or {}).context_columns
     state = context_registry(block, block["BUCKET"], STEP, context_columns)
-    partners, network = upstream_registry_groups(
-        vulnerability_config, partner_classification(runtime_config["NOMENCLATURES"]["HS"])
-    )
+    cursors = build_cursors()
     # Un seul run par exécution, toutes méthodes confondues
     tracker = CapturingTracker(
         get_tracker(
@@ -322,9 +284,9 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
     scope = RunScope(NODE)
     with tracker, guarded_run(scope, tracker):
         result = run_synthesis_step(
-            scores, diagnostics, state, partners, network, params=synthesis_file,
+            scores, diagnostics, state, cursors, params=synthesis_file,
             vulnerability_params=vulnerability_config, runtime=runtime_config, tracker=tracker,
-            n_jobs=resolve_n_jobs(block.get("N_JOBS")), eurostat=_optional_eurostat_config(),
+            n_jobs=resolve_n_jobs(block.get("N_JOBS")),
             force=ForceSpec.from_runtime(runtime_config),
             cadence_check=cadence_check_requested(args.cadence_check), run_id=workflow_run_id(),
         )

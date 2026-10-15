@@ -27,37 +27,32 @@ succeeded):
 
 - unit in force: (most recent HS vintage of the referential, reporter, product),
   one unit covering every period of the downloaded pair; its upstream is the
-  last download of the pair;
+  data-modification mark of the pair (:class:`~kedro_pipeline.io.freshness.UpstreamMark`);
 - historical unit: (vintage, reporter, HS6 target code); its sources are the
   recent codes converting into it (preimage of the correspondence tables), its
-  upstream the most recent of their downloads. It waits while a source was
-  never downloaded (``freshness/units_waiting_sources``), a partial sum being
+  upstream the combined mark of their downloads. It waits while a source never
+  had data written (``freshness/units_waiting_sources``), a partial sum being
   wrong. Its fingerprint adds the checksum of the correspondence tables: a
   corrected table recomputes the rows.
 
 A unit is recomputed, with all its metrics, when it was never computed, when a
 forcing covers it, when its upstream changed since, or when a fingerprint
 changed or is missing (metric added, parameter changed, fingerprint
-invalidated). "Its upstream changed" depends on ``STATE.DECISION_MODE``:
+invalidated). "Its upstream changed" means that the data of the pair was
+actually modified, not merely downloaded again: the download registry records
+the snapshot of the last write that changed rows (``last_modified_snapshot``),
+and the computed entry records the snapshot it took into account (see
+:func:`kedro_pipeline.io.freshness.upstream_mark_is_newer`). A query replayed
+without new data therefore recomputes nothing.
 
-- ``legacy``: the pair was downloaded again (``last_download``), even when the
-  download changed nothing;
-- ``snapshot``: the data of the pair was actually modified
-  (``last_modified_snapshot``, ``last_modified`` for the entries without
-  snapshot, see :func:`kedro_pipeline.io.freshness.upstream_mark_is_newer`);
-- ``shadow``: the ``legacy`` decision is executed, the ``snapshot`` one is
-  logged for comparison (``freshness/shadow_*``).
-
-The computed entries record the upstream snapshot in every mode, so that the
-switch to ``snapshot`` compares snapshots right away. Fingerprints are kept per metric AND per direction
+Fingerprints are kept per metric AND per direction
 (``HHI/import``): adding ``export`` only recomputes the export rows.
 
 :func:`run_partner_vulnerabilities` runs one pass for the rows in force, then
 one per historical vintage, each in its own tracked run (tags
 ``classification`` and ``in_force``, metrics prefixed by direction
 ``partners/import/...``). The failure of a pass does not stop the next ones; the
-step fails at the end if one failed. A result table created before the
-``classification`` key is refused: it must be recreated first.
+step fails at the end if one failed.
 
 No environment variable and no YAML path are read here.
 """
@@ -69,9 +64,8 @@ from dataclasses import dataclass, field, replace
 from datetime import datetime
 from functools import partial
 import logging
-from pathlib import Path
 from typing import (
-    Any, Callable, Dict, FrozenSet, Iterable, Iterator, List, Mapping, Optional, Sequence, Set, Tuple,
+    Any, Callable, Dict, FrozenSet, List, Mapping, Optional, Sequence, Set, Tuple,
 )
 
 # Modules de manipulation de données
@@ -84,25 +78,17 @@ from statflows.storage.json import Loader, Saver
 from kedro_pipeline.io.ducklake import DuckLakeTable, attached_catalog_alias
 # Révision méthodologique du verrou (recalcul après correction d'une formule)
 from kedro_pipeline.methodology import revised
-# Vue du registre de téléchargement (lecture indépendante de son format physique)
-from kedro_pipeline.io.registry_views import DownloadRegistryView
-# Mode de décision (legacy / shadow / snapshot) et comparaison des décisions
-from kedro_pipeline.io.cursors import decision_mode, shadow_metrics
 # Registres de fraîcheur v2 (fragments, empreintes, forçage)
 from kedro_pipeline.io.freshness import (
     ForceSpec,
     FreshnessRegistry,
-    LegacySource,
     RegistryEntry,
     Unit,
     UnitPlan,
-    adopt_legacy_flag,
     fingerprint,
-    legacy_entry,
     plan_metrics,
     qualifiers_to_compute,
     units_to_compute,
-    NewDataPredicate,
     UpstreamMark,
     upstream_mark_is_newer,
     utc_now,
@@ -138,9 +124,6 @@ from kedro_pipeline.steps.result import (
     failure_message,
     shared_runs,
 )
-# Module d'utilitaires de téléchargement
-from statflows.core.download import _parse_iso
-
 # Module de suivi d'exécution (objet nul par défaut)
 from kedro_pipeline.io.tracking import flow_run_metrics
 from macroforecast.tracking import NULL_TRACKER
@@ -164,13 +147,9 @@ from macroforecast.trade.processing import (
     harmonize_partner_flows,
 )
 # Existence et nom de la table de faits DuckLake
-from statflows.storage.ducklake.tables import FACT_TABLE, fact_table_exists
 
 # Initialisation du logger
 logger = logging.getLogger(__name__)
-
-# Clé racine du registre JSON des dates de dernier calcul
-_REGISTRY_ROOT = "VULNERABILITIES"
 
 # Préfixe des métriques MLflow de l'étape (suivi du sens : partners/import/...)
 _METRICS_FAMILY = "partners"
@@ -200,130 +179,6 @@ _HS6_LENGTH = 6
 CONCORDANCE_FINGERPRINT = "concordance"
 
 
-
-# Fonction d'indexation des dates de dernier téléchargement par couple reporter x produit
-def load_last_download_dates(
-    last_download_path: Path,
-    loader: Loader,
-    bucket: Optional[str],
-) -> Dict[Tuple[str, str], datetime]:
-    """Read the download registry and index last-download dates by (reporter, product).
-
-    The registry is read through ``DownloadRegistryView`` (``statflows``
-    ``iter_registry_entries``), which hides its physical layout (single file or
-    fragments) and explodes multi-product queries into pairs.
-
-    Args:
-        last_download_path: Path to the ``LAST_DOWNLOAD_PATH`` registry
-            (cf. the ``eurostat`` parameters / ``SDMXDownloader``).
-        loader: ``Loader`` instance. Kept for compatibility: the view reads the
-            registry with its own loader.
-        bucket: S3 bucket holding the registry, or ``None`` for a local path.
-
-    Returns:
-        Mapping ``(reporter, product) -> last_download`` (UTC-aware datetime).
-    """
-    return DownloadRegistryView(last_download_path, bucket).pairs_last_download()
-
-# Fonction de lecture des dates de dernier calcul par couple reporter x produit
-def load_last_computation_dates(
-    last_computation_path: Path,
-    loader: Loader,
-    bucket: Optional[str],
-) -> Dict[Tuple[str, str], datetime]:
-    """Read the vulnerability-computation registry (empty if it does not exist yet).
-
-    Args:
-        last_computation_path: Path to the vulnerability-computation registry.
-        loader: ``Loader`` instance.
-        bucket: S3 bucket holding the registry, or ``None`` for a local path.
-
-    Returns:
-        Mapping ``(reporter, product) -> last_computed`` (UTC-aware datetime).
-    """
-    # Importation des données
-    data = loader.load(last_computation_path, bucket=bucket, missing_ok=True) or {}
-    # Extraction du registre
-    registry = data.get(_REGISTRY_ROOT, {})
-    # Initialisation du dictionnaire associant au tuple reporter X produit la date du dernier calcul de vulnérabilité
-    dates: Dict[Tuple[str, str], datetime] = {}
-    # Parcours des entrées du registre
-    for entry in registry.values():
-        # Extraction du reporter et du produit
-        reporter = entry.get("reporter")
-        product = entry.get("product")
-        # Extraction de la date de dernier téléchargement
-        last_computed = _parse_iso(entry.get("last_computed"))
-        # Association de la date de dernier téléchargement au couple
-        if reporter and product and last_computed is not None:
-            dates[(reporter, product)] = last_computed
-    return dates
-
-# Fonction de fusion et de sauvegarde des dates de calcul mises à jour
-def save_last_computation_dates(
-    last_computation_path: Path,
-    dates: Dict[Tuple[str, str], datetime],
-    loader: Loader,
-    saver: Saver,
-    bucket: Optional[str],
-) -> None:
-    """Merge new (reporter, product) computation dates into the registry and persist it.
-
-    Args:
-        last_computation_path: Path to the vulnerability-computation registry.
-        dates: Pairs and their new ``last_computed`` instant. Merged into the
-            existing registry; every other entry is preserved untouched.
-        loader: ``Loader`` instance (to load the existing registry before merging).
-        saver: ``Saver`` instance.
-        bucket: S3 bucket holding the registry, or ``None`` for a local path.
-    """
-    # Fusion avec le registre existant : seules les entrées recalculées bougent
-    data = loader.load(last_computation_path, bucket=bucket, missing_ok=True) or {}
-    registry = data.get(_REGISTRY_ROOT, {})
-
-    # Mise à jour des dates
-    for (reporter, product), when in dates.items():
-        registry[f"{reporter}|{product}"] = {
-            "reporter": reporter,
-            "product": product,
-            "last_computed": when.isoformat(),
-        }
-
-    # Ecriture du fichier json mis à jour
-    saver.save(
-        last_computation_path,
-        {_REGISTRY_ROOT: registry},
-        bucket=bucket,
-        indent=2,
-        ensure_ascii=False,
-    )
-    # Logging
-    logger.info(
-        f"{len(dates)} date(s) de calcul mise(s) à jour dans '{last_computation_path}'"
-    )
-
-# Fonction de sélection des couples dont le score de vulnérabilité est périmé
-def pairs_to_recompute(
-    last_download: Dict[Tuple[str, str], datetime],
-    last_computed: Dict[Tuple[str, str], datetime],
-) -> Set[Tuple[str, str]]:
-    """Select (reporter, product) pairs whose vulnerability score is stale.
-
-    A pair is selected when it was never scored, or when it was last scored
-    before its most recent download.
-
-    Args:
-        last_download: Last-download date per pair (source registry).
-        last_computed: Last-computation date per pair (vulnerability registry).
-
-    Returns:
-        Set of pairs to (re)compute.
-    """
-    return {
-        pair
-        for pair, downloaded_at in last_download.items()
-        if pair not in last_computed or last_computed[pair] < downloaded_at
-    }
 
 # Nom de l'étape (forçage FORCE_STEPS, champ « step » des fragments)
 STEP = "partners"
@@ -362,31 +217,30 @@ def partner_classification(nomenclatures: Mapping[str, int]) -> str:
 
 # Fonction de construction des unités partenaires et de leur watermark amont
 def partner_units(
-    last_download: Mapping[Tuple[str, str], Any],
+    marks: Mapping[Tuple[str, str], UpstreamMark],
     classification: str,
-) -> Dict[Unit, Any]:
-    """Turn the upstream values of the pairs into freshness units.
+) -> Dict[Unit, UpstreamMark]:
+    """Turn the upstream marks of the pairs into freshness units.
 
     Args:
-        last_download: Upstream value per (reporter, product) pair, as read
-            from the download registry: the ``last_download`` date, or the
-            :class:`~kedro_pipeline.io.freshness.UpstreamMark` of the data.
+        marks: Data-modification mark per (reporter, product) pair, as read
+            from the download registry
+            (:meth:`~kedro_pipeline.io.registry_views.DownloadRegistryView.pairs_last_modified`).
         classification: Classification label of the units
             (:func:`partner_classification`).
 
     Returns:
-        Mapping ``Unit(classification, reporter, product) -> upstream value``.
+        Mapping ``Unit(classification, reporter, product) -> upstream mark``.
 
     Examples:
-        >>> from datetime import timezone
-        >>> when = datetime(2026, 9, 16, tzinfo=timezone.utc)
-        >>> units = partner_units({("FR", "280530"): when}, "HS2022")
+        >>> mark = UpstreamMark.of_entry("2026-09-16", 7)
+        >>> units = partner_units({("FR", "280530"): mark}, "HS2022")
         >>> [unit.key for unit in units]
         ['HS2022|FR|280530']
     """
     return {
-        Unit.of(classification=classification, reporter=reporter, product=product): when
-        for (reporter, product), when in last_download.items()
+        Unit.of(classification=classification, reporter=reporter, product=product): mark
+        for (reporter, product), mark in marks.items()
     }
 
 # Fonction de calcul des empreintes demandées des métriques partenaires
@@ -433,49 +287,20 @@ def partner_requested(
         for metric in metrics
     }
 
-# Fonction de lecture du registre v1 des partenaires en entrées héritées
-def _legacy_partner_parser(classification: str):
-    """Build the parser of the version-1 partners registry.
-
-    Args:
-        classification: Classification label given to the legacy units.
-
-    Returns:
-        Function turning ``{"VULNERABILITIES": {"FR|280530": {...}}}`` into
-        legacy entries.
-    """
-    def parse(data: Mapping[str, Any]) -> Iterator[RegistryEntry]:
-        for item in (data.get(_REGISTRY_ROOT) or {}).values():
-            if not isinstance(item, Mapping) or not item.get("reporter") or not item.get("product"):
-                continue
-            unit = Unit.of(
-                classification=classification,
-                reporter=item["reporter"],
-                product=item["product"],
-            )
-            yield legacy_entry(unit, item.get("last_computed"))
-
-    return parse
-
 # Fonction de construction du registre de fraîcheur des partenaires
 def partner_registry(
     block: Mapping[str, Any],
-    classification: str,
     *,
     loader: Optional[Loader] = None,
     saver: Optional[Saver] = None,
 ) -> FreshnessRegistry:
     """Build the partners freshness registry from its configuration block.
 
-    One fragment per classification x reporter
-    (``STATE.PATH_TEMPLATE``), with the version-1 registry
-    (``PATHS.LAST_COMPUTATION_PATH``) read as a fallback for the migration.
-    Also used read-only by the synthesis to follow its upstream.
+    One fragment per classification x reporter (``STATE.PATH_TEMPLATE``).
 
     Args:
         block: Dataflow block of ``VULNERABILITIES`` in
-            the ``vulnerabilities`` parameters (``BUCKET``, ``PATHS``, ``STATE``).
-        classification: Classification label of the units.
+            the ``vulnerabilities`` parameters (``BUCKET``, ``STATE``).
         loader: JSON loader (a fresh one by default).
         saver: JSON saver (a fresh one by default).
 
@@ -485,18 +310,11 @@ def partner_registry(
     Raises:
         KeyError: If the block has no ``STATE.PATH_TEMPLATE``.
     """
-    bucket = block.get("BUCKET")
-    legacy_path = (block.get("PATHS") or {}).get("LAST_COMPUTATION_PATH")
     return FreshnessRegistry(
         block["STATE"]["PATH_TEMPLATE"],
-        bucket,
+        block.get("BUCKET"),
         STEP,
         shard_of=lambda unit: f"{unit.get('classification')}/{unit.get('reporter')}",
-        legacy=(
-            LegacySource(legacy_path, bucket, _legacy_partner_parser(classification))
-            if legacy_path
-            else None
-        ),
         loader=loader,
         saver=saver,
     )
@@ -504,49 +322,39 @@ def partner_registry(
 # Fonction de décision des unités partenaires à (re)calculer
 def plan_partner_units(
     registry: FreshnessRegistry,
-    units: Mapping[Unit, datetime],
+    units: Mapping[Unit, UpstreamMark],
     requested: Mapping[str, str],
     force: ForceSpec,
-    *,
-    adopt_legacy_fingerprints: bool = False,
-    is_new_data: Optional[NewDataPredicate] = None,
 ) -> Dict[Unit, UnitPlan]:
     """Decide which partner units to (re)compute.
 
-    A unit is planned when it was never computed, when it is forced, when its
-    series was downloaded again since, or when a metric fingerprint changed.
+    A unit is planned when it was never computed, when it is forced, when the
+    data of its series was modified since, or when a metric fingerprint changed.
     Every metric of a planned direction is recomputed (the result table is wide
     and upserted by whole rows); the directions recomputed are those named by
     the plans (see :func:`kedro_pipeline.io.freshness.qualifiers_to_compute`).
 
     Args:
         registry: Partners freshness registry.
-        units: Candidate units and their last-download date.
+        units: Candidate units and their data-modification mark.
         requested: Current metric fingerprints (:func:`partner_requested`).
         force: One-off forcing.
-        adopt_legacy_fingerprints: Deployment migration flag (see
-            :func:`kedro_pipeline.io.freshness.units_to_compute`).
-        is_new_data: ``new_data`` rule; the default compares dates
-            (``last_download``), :func:`upstream_mark_is_newer` compares the
-            data-modification marks.
 
     Returns:
         Mapping ``unit -> plan`` for the stale units.
     """
     return units_to_compute(
         units, registry, units, requested, force,
-        step=STEP, adopt_legacy_fingerprints=adopt_legacy_fingerprints,
-        is_new_data=is_new_data,
+        step=STEP, is_new_data=upstream_mark_is_newer,
     )
 
 # Fonction d'inscription des unités calculées dans le registre
 def record_computed_units(
     registry: FreshnessRegistry,
     plans: Mapping[Unit, UnitPlan],
-    watermarks: Mapping[Unit, Any],
+    marks: Mapping[Unit, UpstreamMark],
     requested: Mapping[str, str],
     computed_at: datetime,
-    marks: Optional[Mapping[Unit, UpstreamMark]] = None,
 ) -> None:
     """Record the units just computed (in memory until ``registry.save()``).
 
@@ -558,22 +366,14 @@ def record_computed_units(
     Args:
         registry: Freshness registry.
         plans: Plans of the computed units.
-        watermarks: Upstream value of each unit, taken into account: a date
-            (``last_download``) or an :class:`UpstreamMark` (its
-            ``last_modified`` and snapshot are recorded).
+        marks: Upstream mark of each unit, taken into account: its
+            ``last_modified`` becomes the ``upstream_watermark`` and its
+            snapshot is recorded with the entry.
         requested: Current fingerprints.
         computed_at: Instant captured before the computation started.
-        marks: Data-modification marks read with ``watermarks`` (``shadow``
-            mode): their snapshot is recorded too, so that the switch to
-            ``snapshot`` compares snapshots at once.
     """
     for unit, plan in plans.items():
-        watermark = watermarks.get(unit)
-        extra: Dict[str, Any] = {}
-        if isinstance(watermark, UpstreamMark):
-            watermark, extra = watermark.recorded()
-        elif marks is not None and unit in marks:
-            extra = marks[unit].recorded()[1]
+        watermark, extra = marks[unit].recorded()
         registry.upsert(
             RegistryEntry(
                 unit=unit,
@@ -795,53 +595,48 @@ class HistoricalUnits:
 
     Attributes:
         vintage: Target vintage of the units.
-        watermarks: Units whose sources were all downloaded, and the most
-            recent download among their sources.
+        watermarks: Units whose sources all had data written, and the
+            combined mark of their sources.
         sources: Source codes of every unit of ``watermarks`` (the recent
             codes converted into its target code).
-        waiting: Units with at least one source never downloaded, and the
+        waiting: Units with at least one source never written, and the
             missing sources: a partial sum would be wrong, so they wait.
     """
 
     vintage: str
-    watermarks: Dict[Unit, Any] = field(default_factory=dict)
+    watermarks: Dict[Unit, UpstreamMark] = field(default_factory=dict)
     sources: Dict[Unit, FrozenSet[str]] = field(default_factory=dict)
     waiting: Dict[Unit, FrozenSet[str]] = field(default_factory=dict)
 
 # Fonction de construction des unités historiques d'un millésime
 def historical_units(
-    last_download: Mapping[Tuple[str, str], Any],
+    marks: Mapping[Tuple[str, str], UpstreamMark],
     conversions: Mapping[str, Mapping[str, str]],
     vintage: str,
-    combine: Callable[[Iterable[Any]], Any] = max,
 ) -> HistoricalUnits:
     """Turn the downloaded pairs into the historical units of one vintage.
 
     A historical unit is a reporter and a six-digit code of ``vintage``. Its
     sources are the codes of every later vintage that convert into it (the
-    preimage of the correspondence tables); its upstream instant is the most
-    recent download among them. A unit exists as soon as one of its sources
-    was downloaded for the reporter, and waits until all of them were.
+    preimage of the correspondence tables); its upstream mark combines those
+    of its sources. A unit exists as soon as one of its sources had data
+    written for the reporter, and waits until all of them had.
 
     Args:
-        last_download: Upstream value per (reporter, product) pair (date or
-            :class:`~kedro_pipeline.io.freshness.UpstreamMark`).
+        marks: Data-modification mark per (reporter, product) pair.
         conversions: Conversion maps into ``vintage``, keyed by source vintage
             (:func:`historical_conversions`).
         vintage: Target vintage.
-        combine: Combination of the values of several sources (``max`` for
-            dates, :meth:`UpstreamMark.combine` for marks).
 
     Returns:
         The units, their sources, and the units waiting for a source.
 
     Examples:
-        >>> from datetime import timezone
-        >>> t1, t2 = datetime(2026, 1, 1, tzinfo=timezone.utc), datetime(2026, 2, 1, tzinfo=timezone.utc)
-        >>> units = historical_units({("FR", "010121"): t1, ("FR", "010129"): t2},
+        >>> old, new = UpstreamMark.of_entry("2026-01-01", 3), UpstreamMark.of_entry("2026-02-01", 5)
+        >>> units = historical_units({("FR", "010121"): old, ("FR", "010129"): new},
         ...                          {"HS2022": {"010121": "010121", "010129": "010121"}}, "HS2017")
-        >>> [(unit.key, when == t2) for unit, when in units.watermarks.items()]
-        [('HS2017|FR|010121', True)]
+        >>> [(unit.key, mark.snapshot) for unit, mark in units.watermarks.items()]
+        [('HS2017|FR|010121', 5)]
     """
     # Préimage de chaque code cible, tous millésimes sources confondus
     preimage: Dict[str, Set[str]] = {}
@@ -854,13 +649,13 @@ def historical_units(
             targets_of.setdefault(source, set()).add(target)
 
     # Codes SH6 téléchargés par reporter (zéro initial restitué)
-    downloaded: Dict[str, Dict[str, Any]] = {}
-    for (reporter, product), when in last_download.items():
+    downloaded: Dict[str, Dict[str, UpstreamMark]] = {}
+    for (reporter, product), mark in marks.items():
         code = product_code(product)
         if len(code) != _HS6_LENGTH:
             continue
         codes = downloaded.setdefault(reporter, {})
-        codes[code] = combine([codes[code], when]) if code in codes else when
+        codes[code] = UpstreamMark.combine([codes[code], mark]) if code in codes else mark
 
     units = HistoricalUnits(vintage)
     for reporter, codes in sorted(downloaded.items()):
@@ -872,7 +667,7 @@ def historical_units(
             if missing:
                 units.waiting[unit] = frozenset(missing)
                 continue
-            units.watermarks[unit] = combine([codes[code] for code in sources])
+            units.watermarks[unit] = UpstreamMark.combine([codes[code] for code in sources])
             units.sources[unit] = sources
     return units
 
@@ -938,38 +733,6 @@ def historical_source_predicate(config: VulnerabilityConfig, first_year: int) ->
         f'CAST(substr(CAST("{config.period_col}" AS VARCHAR), 1, 4) AS INTEGER) >= {int(first_year)}'
     )
 
-# Fonction de vérification de la clé de la table résultat
-def ensure_nomenclature_key(conn: Any, catalog_alias: str, schema: str) -> None:
-    """Refuse to write into a result table created before the classification key.
-
-    The upsert matches rows on the primary key of the existing table: on a
-    table keyed without ``classification``, a historical row would overwrite
-    the row in force of the same cell. Such a table must first be recreated
-    with the new key.
-
-    Args:
-        conn: Open connection on the result catalog.
-        catalog_alias: Alias of the result catalog.
-        schema: Result schema.
-
-    Raises:
-        RuntimeError: If the table exists without a ``classification`` column.
-    """
-    if not fact_table_exists(conn, catalog_alias, schema):
-        return
-    columns = {
-        row[0]
-        for row in conn.execute(
-            f'DESCRIBE "{catalog_alias}"."{schema}"."{FACT_TABLE}"'
-        ).fetchall()
-    }
-    if CLASSIFICATION_COL not in columns:
-        raise RuntimeError(
-            f"Table '{schema}' has no '{CLASSIFICATION_COL}' column: it was created "
-            "before the nomenclature key. Recreate it with "
-            "tools/migrate_indicators_key.py before running this step."
-        )
-
 # Classe de résultat de l'étape partenaires
 @dataclass
 class PartnerStepResult:
@@ -992,7 +755,7 @@ def compute_partner_units(
     *,
     plans: Mapping[Unit, UnitPlan],
     registry: FreshnessRegistry,
-    units: Mapping[Unit, datetime],
+    units: Mapping[Unit, UpstreamMark],
     requested: Mapping[str, str],
     force: ForceSpec,
     source_catalog_alias: str,
@@ -1008,8 +771,6 @@ def compute_partner_units(
     on_unmapped: str = "drop",
     is_provisional: bool = False,
     n_waiting: Optional[int] = None,
-    marks: Optional[Mapping[Unit, UpstreamMark]] = None,
-    shadow: Optional[Mapping[str, float]] = None,
     metrics: Optional[Sequence[VulnerabilityMetric]] = None,
     backend: str = "pandas",
     tracker: Any = NULL_TRACKER,
@@ -1028,7 +789,7 @@ def compute_partner_units(
     :func:`prepare_vintage_flows`, then the same computation and write.
 
     The registry is written only after the computation and the table write
-    succeeded: a date is never moved forward wrongly. The computation instant
+    succeeded: an upstream mark is never moved forward wrongly. The computation instant
     is captured before reading the source, so an upstream update landing
     during the run is never missed. Only the directions named by the plans
     are computed, in a single pass over the union of the planned units.
@@ -1038,7 +799,7 @@ def compute_partner_units(
         result_conn: Open connection on the result catalog (owned by the caller).
         plans: Units to compute (:func:`plan_partner_units`).
         registry: Partners freshness registry.
-        units: Candidate units of the pass and their upstream instant.
+        units: Candidate units of the pass and their upstream mark.
         requested: Current fingerprints of the pass.
         force: One-off forcing (``forced`` tag of the run).
         source_catalog_alias: Alias of the source catalog.
@@ -1058,10 +819,6 @@ def compute_partner_units(
         is_provisional: Value of the ``is_provisional`` column.
         n_waiting: Units waiting for a source, logged as
             ``freshness/units_waiting_sources`` when given.
-        marks: Data-modification marks of the units (``shadow`` mode),
-            recorded with the computed entries.
-        shadow: Comparison metrics of the ``shadow`` mode
-            (``freshness/shadow_*``), logged with the decision.
         metrics: Metric instances, built on the configuration extended by
             :func:`nomenclature_config` (the default registry when ``None``).
         backend: Narwhals computation backend.
@@ -1083,7 +840,6 @@ def compute_partner_units(
 
     Raises:
         ValueError: If a historical pass lacks its sources or tables.
-        RuntimeError: If the result table predates the classification key.
     """
     computed_at = now or utc_now()
     pairs = sorted({(unit.get("reporter"), unit.get("product")) for unit in plans})
@@ -1096,13 +852,9 @@ def compute_partner_units(
     freshness = plan_metrics(plans, n_candidates=len(units))
     if n_waiting is not None:
         freshness["freshness/units_waiting_sources"] = float(n_waiting)
-    freshness.update(shadow or {})
     tracker.log_metrics(freshness)
     if force.forces_step(STEP, requested):
         tracker.set_tags({"forced": force.describe()})
-
-    # Garde : jamais d'upsert sur une table indexée sans classification
-    ensure_nomenclature_key(result_conn, result_catalog_alias, result_schema)
 
     # Lecture des flux de la passe ; les macros de session restituent le zéro
     # initial des codes stockés en entiers
@@ -1196,7 +948,7 @@ def compute_partner_units(
     )
 
     # Inscription des unités calculées, puis écriture des seuls fragments modifiés
-    record_computed_units(registry, plans, units, requested, computed_at, marks)
+    record_computed_units(registry, plans, units, requested, computed_at)
     written = registry.save()
     return PartnerStepResult(dict(plans), report, written)
 
@@ -1206,10 +958,9 @@ def run_partner_step(
     result_conn: Any,
     *,
     registry: FreshnessRegistry,
-    units: Mapping[Unit, datetime],
+    units: Mapping[Unit, UpstreamMark],
     requested: Mapping[str, str],
     force: ForceSpec,
-    adopt_legacy_fingerprints: bool = False,
     **compute_kwargs: Any,
 ) -> PartnerStepResult:
     """Decide, compute and record the partner units on already-open connections.
@@ -1221,23 +972,18 @@ def run_partner_step(
         source_conn: Open connection on the source catalog.
         result_conn: Open connection on the result catalog.
         registry: Partners freshness registry.
-        units: Candidate units and their last-download date.
+        units: Candidate units and their data-modification mark.
         requested: Current metric fingerprints.
         force: One-off forcing.
-        adopt_legacy_fingerprints: Deployment migration flag.
         **compute_kwargs: Remaining arguments of :func:`compute_partner_units`
             (schemas, aliases, configuration, metrics, tracker…).
 
     Returns:
-        The step result; ``plans`` is empty when nothing was stale (migrated
-        legacy entries are still written).
+        The step result; ``plans`` is empty when nothing was stale.
     """
-    plans = plan_partner_units(
-        registry, units, requested, force, adopt_legacy_fingerprints=adopt_legacy_fingerprints
-    )
+    plans = plan_partner_units(registry, units, requested, force)
     if not plans:
-        # Rien à recalculer : seules d'éventuelles entrées v1 adoptées sont écrites
-        return PartnerStepResult({}, None, registry.save())
+        return PartnerStepResult({}, None, [])
     return compute_partner_units(
         source_conn, result_conn, plans=plans, registry=registry, units=units,
         requested=requested, force=force, **compute_kwargs,
@@ -1251,26 +997,20 @@ class PartnerPass:
     Args:
         label: Classification label of the pass (tag of its run).
         target_vintage: Historical vintage, ``None`` for the rows in force.
-        units: Candidate units and their upstream instant.
+        units: Candidate units and their upstream mark.
         requested: Current fingerprints of the pass.
         plans: Units to compute.
         sources: Source codes of the historical units.
         n_waiting: Historical units waiting for a source.
-        marks: Data-modification marks of the units, recorded with the
-            computed entries (``shadow`` mode).
-        shadow: Comparison of the ``legacy`` and ``snapshot`` decisions
-            (``shadow`` mode).
     """
 
     label: str
     target_vintage: Optional[str]
-    units: Dict[Unit, Any]
+    units: Dict[Unit, UpstreamMark]
     requested: Dict[str, str]
     plans: Dict[Unit, UnitPlan]
     sources: Optional[Dict[Unit, FrozenSet[str]]] = None
     n_waiting: Optional[int] = None
-    marks: Optional[Dict[Unit, UpstreamMark]] = None
-    shadow: Dict[str, float] = field(default_factory=dict)
 
 
 
@@ -1325,54 +1065,31 @@ def load_partner_concordances(
     )
 
 
-# Fonction de décision d'une passe selon le mode
+# Fonction de décision d'une passe
 def _decide_pass(
     state: FreshnessRegistry,
-    downloaded: Mapping[Unit, datetime],
-    modified: Optional[Mapping[Unit, UpstreamMark]],
+    modified: Mapping[Unit, UpstreamMark],
     requested: Mapping[str, str],
     force: ForceSpec,
     *,
-    mode: str,
-    adopt: bool,
     label: str,
     target_vintage: Optional[str],
 ) -> PartnerPass:
-    """Plan one pass with the rule of the decision mode.
+    """Plan one pass on the data-modification marks of its units.
 
     Args:
         state: Partners freshness registry.
-        downloaded: Units and their ``last_download`` date.
-        modified: Units and their data-modification mark (``None`` in
-            ``legacy`` mode).
+        modified: Units and their data-modification mark.
         requested: Current fingerprints of the pass.
         force: One-off forcing.
-        mode: ``legacy``, ``shadow`` or ``snapshot``.
-        adopt: Deployment migration flag of the version-1 fingerprints.
         label: Classification label of the pass.
         target_vintage: Historical vintage, ``None`` for the rows in force.
 
     Returns:
-        The planned pass: its units and plans follow the rule executed by the
-        mode; in ``shadow`` mode, ``marks`` and ``shadow`` are set.
+        The planned pass.
     """
-    legacy = (
-        plan_partner_units(state, downloaded, requested, force, adopt_legacy_fingerprints=adopt)
-        if mode != "snapshot" or modified is None
-        else {}
-    )
-    if modified is None or mode == "legacy":
-        return PartnerPass(label, target_vintage, dict(downloaded), dict(requested), legacy)
-    new = plan_partner_units(
-        state, modified, requested, force,
-        adopt_legacy_fingerprints=adopt, is_new_data=upstream_mark_is_newer,
-    )
-    if mode == "snapshot":
-        return PartnerPass(label, target_vintage, dict(modified), dict(requested), new)
-    return PartnerPass(
-        label, target_vintage, dict(downloaded), dict(requested), legacy,
-        marks=dict(modified), shadow=shadow_metrics(legacy, new),
-    )
+    plans = plan_partner_units(state, modified, requested, force)
+    return PartnerPass(label, target_vintage, dict(modified), dict(requested), plans)
 
 
 # Plan des passes de l'étape partenaires
@@ -1403,14 +1120,13 @@ def plan_partner_passes(
     dataflow: str,
     concordances_loader: Optional[Callable[..., Dict[Tuple[str, str], pd.DataFrame]]] = None,
     force: Optional[ForceSpec] = None,
-    adopt_legacy_fingerprints: Optional[bool] = None,
 ) -> PartnerPlan:
     """Plan the pass of the rows in force and one pass per historical vintage.
 
     Args:
         state: Partners freshness registry.
         download_registry: View of the Comext download registry
-            (``pairs_last_download()``).
+            (``pairs_last_modified()``).
         params: The ``vulnerabilities`` parameters (``PARAMETERS``, ``FLOWS``,
             ``VINTAGES``, ``VINTAGES_ON_UNMAPPED``, ``VULNERABILITIES``).
         runtime: The ``runtime`` parameters (``NOMENCLATURES.HS``).
@@ -1419,8 +1135,6 @@ def plan_partner_passes(
             load the correspondence tables of the historical vintages; required
             when ``VINTAGES`` requests some.
         force: One-off forcing; read from ``runtime`` alone when ``None``.
-        adopt_legacy_fingerprints: Deployment migration flag (rows in force);
-            read from ``STATE`` alone when ``None``.
 
     Returns:
         The planned passes.
@@ -1434,28 +1148,18 @@ def plan_partner_passes(
     flows = load_flows(params)
     vintages = requested_vintages(params.get(_VINTAGES_KEY, []), nomenclatures)
     on_unmapped = params.get(_ON_UNMAPPED_KEY, "drop")
-    block = params["VULNERABILITIES"][dataflow]
     force = force if force is not None else ForceSpec.from_runtime(runtime, environ={})
-    adopt = (
-        adopt_legacy_fingerprints
-        if adopt_legacy_fingerprints is not None
-        else adopt_legacy_flag(block.get("STATE"), environ={})
-    )
 
     # Couples reporter x produit du registre de téléchargement (lecture seule) :
-    # dates de téléchargement et, hors mode legacy, marques de modification
-    mode = decision_mode(block.get("STATE"))
-    last_download = download_registry.pairs_last_download()
-    modified = download_registry.pairs_last_modified() if mode != "legacy" else None
+    # marque de modification des données de chaque couple
+    modified = download_registry.pairs_last_modified()
     classification = partner_classification(nomenclatures)
     requested = partner_requested(config, flows)
 
     # Passe des lignes en vigueur : unités du registre de téléchargement
     passes = [
         _decide_pass(
-            state, partner_units(last_download, classification),
-            partner_units(modified, classification) if modified is not None else None,
-            requested, force, mode=mode, adopt=adopt,
+            state, partner_units(modified, classification), requested, force,
             label=classification, target_vintage=None,
         )
     ]
@@ -1468,24 +1172,13 @@ def plan_partner_passes(
         concordances = concordances_loader(vintages, nomenclatures)
         conversions = historical_conversions(concordances, vintages, nomenclatures)
         for vintage in vintages:
-            historical = historical_units(last_download, conversions[vintage], vintage)
-            historical_marks = (
-                historical_units(modified, conversions[vintage], vintage, UpstreamMark.combine)
-                if modified is not None
-                else None
-            )
+            historical = historical_units(modified, conversions[vintage], vintage)
             vintage_requested = historical_requested(requested, concordances, vintage, on_unmapped)
             partner_pass = _decide_pass(
-                state, historical.watermarks,
-                historical_marks.watermarks if historical_marks is not None else None,
-                vintage_requested, force, mode=mode, adopt=False,
+                state, historical.watermarks, vintage_requested, force,
                 label=vintage, target_vintage=vintage,
             )
-            partner_pass.sources = (
-                historical_marks.sources
-                if mode == "snapshot" and historical_marks is not None
-                else historical.sources
-            )
+            partner_pass.sources = historical.sources
             partner_pass.n_waiting = len(historical.waiting)
             passes.append(partner_pass)
             # Logging
@@ -1497,11 +1190,6 @@ def plan_partner_passes(
 
     # Logging
     for partner_pass in passes:
-        if partner_pass.shadow.get("freshness/shadow_only_new"):
-            logger.warning(
-                f"{partner_pass.label} (shadow) : {int(partner_pass.shadow['freshness/shadow_only_new'])} "
-                f"unité(s) aux données modifiées que la règle last_download ne recalcule pas."
-            )
         reasons = Counter(plan.reason for plan in partner_pass.plans.values())
         logger.info(
             f"{partner_pass.label} ({'en vigueur' if partner_pass.target_vintage is None else 'historique'}) : "
@@ -1523,7 +1211,6 @@ def run_partner_vulnerabilities(
     runs: Optional[UnitRuns] = None,
     concordances_loader: Optional[Callable[..., Dict[Tuple[str, str], pd.DataFrame]]] = None,
     force: Optional[ForceSpec] = None,
-    adopt_legacy_fingerprints: Optional[bool] = None,
     run_id: Optional[str] = None,
 ) -> StepResult:
     """Plan, compute and record the partner metrics, one tracked run per pass.
@@ -1548,7 +1235,6 @@ def run_partner_vulnerabilities(
             ``in_force``); every pass in a null run when ``None``.
         concordances_loader: See :func:`plan_partner_passes`.
         force: One-off forcing; read from ``runtime`` alone when ``None``.
-        adopt_legacy_fingerprints: Deployment migration flag.
         run_id: Run identifier recorded on the DuckLake snapshots.
 
     Returns:
@@ -1561,14 +1247,11 @@ def run_partner_vulnerabilities(
     plan = plan_partner_passes(
         state, download_registry, params=params, runtime=runtime, dataflow=dataflow,
         concordances_loader=concordances_loader, force=force,
-        adopt_legacy_fingerprints=adopt_legacy_fingerprints,
     )
     force = force if force is not None else ForceSpec.from_runtime(runtime, environ={})
     todo = [partner_pass for partner_pass in plan.passes if partner_pass.plans]
 
-    # Rien à recalculer : seules d'éventuelles entrées v1 adoptées sont écrites
     if not todo:
-        state.save()
         logger.info("Nothing to recompute, stop.")
         return StepResult(step="partners", reportable=False)
 
@@ -1656,8 +1339,6 @@ def _run_partner_pass(
             target_vintage=partner_pass.target_vintage,
             sources=partner_pass.sources,
             n_waiting=partner_pass.n_waiting,
-            marks=partner_pass.marks,
-            shadow=partner_pass.shadow,
             tracker=tracker,
             commit_message=f"{NODE} {partner_pass.label} {len(plans)} unités",
             **compute_kwargs,

@@ -2,10 +2,14 @@
 
 L'environnement ``config/test/`` remplace PostgreSQL + S3 par des catalogues DuckLake
 FICHIERS et les API par les clients factices de ``tests/pipeline/fakes.py``, sous un
-dossier temporaire (``TRADE_TEST_ROOT``). Une même racine enchaîne quatre exécutions :
+dossier temporaire (``TRADE_TEST_ROOT``). Une même racine enchaîne les exécutions :
 
 1. pipeline complet : toutes les tables sont écrites, catalogue ``serving`` compris ;
-2. pipeline complet à nouveau : rien à télécharger, BACI et réseau à jour ;
+2. pipeline complet à nouveau : rien à télécharger, et aucune unité partenaire, BACI,
+   réseau, synthèse ni cohérence à recalculer ;
+2b. une observation Eurostat révisée par le fournisseur : seules les unités concernées
+   sont recalculées (couples du reporter, contextes de la période, cohérence qui les
+   suit), puis plus rien à la passe suivante ;
 3. pipeline complet avec ``runtime.FORCE_STEPS=synthesis`` : la synthèse est forcée ;
 4. point d'entrée ``daily`` : seules les quatre tâches quotidiennes s'exécutent.
 
@@ -33,6 +37,11 @@ pytest.importorskip("dt_ducklake_manager")
 PROJECT = Path(__file__).resolve().parents[2]
 # Tâches du point d'entrée quotidien
 DAILY_TASKS = {"download_eurostat", "download_comtrade", "compute_partner_vulnerabilities", "publish_serving"}
+# Nœuds dont la décision de fraîcheur est mesurée (unités planifiées)
+DECIDING_NODES = (
+    "compute_partner_vulnerabilities", "compute_network_vulnerabilities",
+    "compute_synthetic_scores", "compute_synthesis_coherence",
+)
 # Tables écrites par le pipeline (dataset du catalogue)
 WRITTEN_TABLES = (
     "eurostat.comext", "comtrade.tariffline", "baci.hs2017", "vulnerabilities.partners",
@@ -124,7 +133,12 @@ def _planned(metrics: Dict[str, Dict[str, float]], node: str) -> float:
     return metrics[node]["units/planned"]
 
 
-def test_full_runs_are_incremental_forcible_and_split_by_cadence(test_env: Path) -> None:
+def _recomputed(metrics: Dict[str, Dict[str, float]], node: str) -> float:
+    """Unités que les décisions de fraîcheur du nœud ont planifiées (0 si le nœud n'en a pas écrit)."""
+    return sum(v for k, v in metrics.get(node, {}).items() if k.endswith("freshness/units_planned"))
+
+
+def test_full_runs_are_incremental_forcible_and_split_by_cadence(test_env: Path, monkeypatch) -> None:
     from kedro.framework.project import pipelines
 
     from kedro_pipeline.config import load_parameters
@@ -143,24 +157,43 @@ def test_full_runs_are_incremental_forcible_and_split_by_cadence(test_env: Path)
     assert metrics["download_comtrade"]["download/rows_written"] > 0
     for name in WRITTEN_TABLES:
         assert _row_count(name) > 0, name
+    first_recomputed = {node: _recomputed(metrics, node) for node in DECIDING_NODES}
+    assert all(count > 0 for count in first_recomputed.values()), first_recomputed
     serving_tables = set(load_parameters("test")["serving"]["TABLES"])
     assert serving_tables <= _serving_tables()
 
-    # ── 2. Seconde exécution : rien à télécharger, BACI et réseau à jour ───────
+    # ── 2. Seconde exécution : rien à télécharger, aucune étape aval à recalculer ──
     executed, metrics = _run(test_env)
     assert metrics["download_eurostat"]["download/rows_written"] == 0
     assert metrics["download_comtrade"]["download/rows_written"] == 0
+    # Une requête rejouée sans nouvelle donnée ne modifie rien : les étapes décident sur
+    # les données modifiées, pas sur la date du dernier téléchargement
+    for node in DECIDING_NODES:
+        assert _recomputed(metrics, node) == 0, node
     for node in ("prepare_baci", "process_baci_hs2017", "compute_network_vulnerabilities"):
         assert _planned(metrics, node) == 0, node
-    # Comportement figé (à corriger dans statflows) : une requête re-téléchargée sans
-    # nouvelle donnée avance tout de même sa date de dernier téléchargement, que les
-    # métriques partenaires prennent pour filigrane amont ; partenaires, synthèse et
-    # cohérence recalculent donc tout pour « nouvelles données » à chaque exécution
-    partners = metrics["compute_partner_vulnerabilities"]
-    assert partners["units/planned"] > 0
-    assert sum(v for k, v in partners.items() if k.endswith("freshness/units_new_data")) > 0
-    assert metrics["compute_synthetic_scores"]["freshness/units_new_data"] > 0
-    assert metrics["compute_synthetic_scores"]["freshness/units_first"] == 0
+
+    # ── 2b. Une observation révisée par le fournisseur : seules les unités concernées ──
+    from tests.pipeline.fakes import FakeEurostatClient
+
+    monkeypatch.setattr(FakeEurostatClient, "revisions", {("FR", "2022", "CN"): 3.0})
+    executed, metrics = _run(test_env)
+    monkeypatch.setattr(FakeEurostatClient, "revisions", {})
+    assert metrics["download_eurostat"]["download/rows_written"] > 0
+    # Partenaires : les couples du seul reporter révisé, jamais tous
+    partners = _recomputed(metrics, "compute_partner_vulnerabilities")
+    assert 0 < partners < first_recomputed["compute_partner_vulnerabilities"]
+    # Cascade : seuls les contextes de la période révisée sont resynthétisés, puis la cohérence
+    synthesis = _recomputed(metrics, "compute_synthetic_scores")
+    assert 0 < synthesis < first_recomputed["compute_synthetic_scores"]
+    assert _recomputed(metrics, "compute_synthesis_coherence") == synthesis
+    # BACI et réseau ne lisent pas Eurostat : rien à recalculer
+    for node in ("prepare_baci", "process_baci_hs2017", "compute_network_vulnerabilities"):
+        assert _planned(metrics, node) == 0, node
+    # La révision une fois prise en compte, plus rien n'est périmé
+    executed, metrics = _run(test_env)
+    for node in DECIDING_NODES:
+        assert _recomputed(metrics, node) == 0, node
 
     # ── 3. Forçage de la synthèse ──────────────────────────────────────────────
     executed, metrics = _run(test_env, runtime_params={"runtime": {"FORCE_STEPS": "synthesis"}})

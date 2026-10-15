@@ -86,7 +86,6 @@ def baci_world(ducklake_conn, synthetic_world, synthetic_reference, synthetic_se
     comtrade["DOWNLOADS"]["C_A_HS"]["PATHS"]["LAST_DOWNLOAD_PATH"] = str(registry_path)
     baci = load_parameters("demo")["baci"]
     baci["BUCKET"] = None
-    baci["PATHS"]["LAST_PROCESSING_PATH"] = str(tmp_path / "last_processing.json")
     # Registre de fraîcheur v2 dans le dossier temporaire : sinon un run réussi laisse
     # un fragment dans le dépôt et le test suivant trouve le millésime à jour
     baci["STATE"]["PATH_TEMPLATE"] = (tmp_path / "state" / "{vintage}.json").as_posix()

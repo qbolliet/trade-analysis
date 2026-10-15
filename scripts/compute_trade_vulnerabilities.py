@@ -14,8 +14,7 @@ Ce script charge les paramètres, construit les poignées des tables source et
 résultat (identifiants lus à la première connexion), le registre de fraîcheur, la
 vue du registre de téléchargement et un run MLflow par passe (en vigueur, puis
 un par millésime historique), appelle l'étape, puis sort en erreur si une passe
-a échoué. Les fonctions de l'étape restent importables d'ici (tests, outils de
-migration).
+a échoué. Les fonctions de l'étape restent importables d'ici (tests).
 
 Configuration lue : blocs ``eurostat``, ``vulnerabilities``, ``baci`` et
 ``runtime`` des paramètres Kedro, environnement choisi par ``KEDRO_ENV``.
@@ -37,7 +36,7 @@ from kedro_pipeline.io.ducklake import (
     s3_credentials_from_env,
     workflow_run_id,
 )
-from kedro_pipeline.io.freshness import ForceSpec, adopt_legacy_flag
+from kedro_pipeline.io.freshness import ForceSpec
 from kedro_pipeline.io.registry_views import DownloadRegistryView
 from kedro_pipeline.config import experiment_name, load_parameters, read_config_file
 from kedro_pipeline.steps._config import download_location, schema_name, vulnerabilities_location
@@ -56,17 +55,13 @@ from kedro_pipeline.steps.partners import (  # noqa: F401
     PartnerStepResult,
     annotate_nomenclature,
     compute_partner_units,
-    ensure_nomenclature_key,
     historical_conversions,
     historical_requested,
     historical_source_predicate,
     historical_units,
     load_flows,
-    load_last_computation_dates,
-    load_last_download_dates,
     load_partner_concordances,
     nomenclature_config,
-    pairs_to_recompute,
     partner_classification,
     partner_registry,
     partner_requested,
@@ -77,7 +72,6 @@ from kedro_pipeline.steps.partners import (  # noqa: F401
     record_computed_units,
     run_partner_step,
     run_partner_vulnerabilities,
-    save_last_computation_dates,
     vulnerability_config_from_params,
 )
 # Paramètres d'exécution partagés (même lecteur que le téléchargement)
@@ -165,7 +159,6 @@ def main() -> None:
     dataflow = eurostat_config["DATAFLOW"]
     block = vulnerability_config["VULNERABILITIES"][dataflow]
     downloads = eurostat_config["DOWNLOADS"][dataflow]
-    nomenclatures = runtime_config["NOMENCLATURES"]["HS"]
     # Poignées source et résultat (connexions ouvertes par l'étape, seulement si besoin)
     source = DuckLakeTable.lazy(download_location(eurostat_config), None, None, connector_factory=_connector)
     result = DuckLakeTable.lazy(
@@ -182,12 +175,12 @@ def main() -> None:
         experiment=experiment_name("vulnerabilities"),
     )
     outcome = run_partner_vulnerabilities(
-        source, result, partner_registry(block, partner_classification(nomenclatures)),
+        source, result, partner_registry(block),
         DownloadRegistryView(downloads["PATHS"]["LAST_DOWNLOAD_PATH"], downloads["BUCKET"]),
         params=vulnerability_config, runtime=runtime_config, dataflow=dataflow, runs=runs,
         concordances_loader=partial(load_partner_concordances, baci_config=load_baci_config()),
         force=ForceSpec.from_runtime(runtime_config),
-        adopt_legacy_fingerprints=adopt_legacy_flag(block.get("STATE")), run_id=workflow_run_id(),
+        run_id=workflow_run_id(),
     )
     outcome.raise_if_failed()
 

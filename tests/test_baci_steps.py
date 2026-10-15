@@ -40,7 +40,7 @@ from scripts.process_baci_hs import (
     select_targets,
     with_year_written,
 )
-from kedro_pipeline.io.freshness import RegistryEntry
+from kedro_pipeline.io.freshness import RegistryEntry, UpstreamMark
 
 KEYS = ["exporter", "importer", "product", "year"]
 
@@ -141,7 +141,7 @@ def test_years_written_and_fit_id() -> None:
     entry = with_year_written(with_year_written(entry, 2019), 2018)
     assert entry.extra["years_written"] == [2018, 2019] and entry.extra["fit_id"] == "f"
     requested = baci_requested(BaciConfig())
-    watermark = datetime(2026, 9, 1, tzinfo=timezone.utc)
+    watermark = UpstreamMark.of_entry(datetime(2026, 9, 1, tzinfo=timezone.utc), 5)
     same = compute_fit_id("HS2017", [2018, 2019], watermark, requested)
     assert same == compute_fit_id("HS2017", [2019, 2018], watermark, requested)
     # Changement de périmètre : nouvel identifiant, donc nouveaux fichiers de travail
@@ -320,7 +320,7 @@ def test_exists_distinguishes_a_present_file_from_an_absent_one(tmp_path) -> Non
 
 
 # ──────────────────────────────────────────────────────────────────────
-# Décision sur les données modifiées (statflows >= 0.2.2) et lectures épinglées
+# Décision sur les données modifiées et lectures épinglées
 # ──────────────────────────────────────────────────────────────────────
 
 
@@ -369,20 +369,20 @@ def test_baci_inputs_cover_cepii_and_the_concordances_actually_used(tmp_path) ->
 def test_baci_rule_on_marks_respects_the_refresh_interval() -> None:
     from datetime import timedelta
 
-    from kedro_pipeline.io.freshness import UpstreamMark, parse_instant, upstream_mark_is_newer
+    from kedro_pipeline.io.freshness import UpstreamMark, parse_instant
     from kedro_pipeline.steps.baci import baci_is_new_data, completed_entry
 
     unit, now = baci_unit("HS2017"), parse_instant("2026-10-15")
-    mark = UpstreamMark(parse_instant("2026-10-01"), 12, None)
+    mark = UpstreamMark(parse_instant("2026-10-01"), 12)
     plan = SimpleNamespace(reason="first")
     entry = completed_entry(unit, plan, "f", [2018], now - timedelta(days=8), mark, {"baci": "x"})
     assert entry.extra["upstream_snapshot"] == 12
-    rule = baci_is_new_data({unit: [2018]}, {"MIN_INTERVAL_DAYS": 7}, now, upstream_mark_is_newer)
+    rule = baci_is_new_data({unit: [2018]}, {"MIN_INTERVAL_DAYS": 7}, now)
     assert not rule(unit, entry, mark)
-    assert rule(unit, entry, UpstreamMark(mark.modified, 13, None))
+    assert rule(unit, entry, UpstreamMark(mark.modified, 13))
     # Intervalle minimal non écoulé : la révision attend la passe suivante
     recent = completed_entry(unit, plan, "f", [2018], now - timedelta(days=2), mark, {"baci": "x"})
-    assert not rule(unit, recent, UpstreamMark(mark.modified, 13, None))
+    assert not rule(unit, recent, UpstreamMark(mark.modified, 13))
 
 
 def test_comtrade_reads_can_be_pinned_at_a_snapshot(comtrade_catalog) -> None:

@@ -49,27 +49,13 @@ synthesis:
     STATE:
       # Champs du modèle : colonnes de contexte uniquement (vérifié au chargement)
       PATH_TEMPLATE: "trade/state/synthesis/{TIME_PERIOD}.json"
-      # Décision des contextes à recalculer :
-      #   - legacy   : registres amont seuls (dates de calcul, RECENT_PERIODS) ;
-      #   - shadow   : décision legacy exécutée, décision par curseurs DuckLake calculée
-      #                et comparée (métriques freshness/shadow_*), curseurs avancés ;
-      #   - snapshot : curseurs DuckLake (state.cursors) sur chaque source : seuls les
-      #                contextes touchés par des lignes modifiées sont recalculés, toutes
-      #                périodes, lectures épinglées au snapshot du début du run.
-      # Bascule : snapshot quand freshness/shadow_only_new reste nul (cf.
-      # AUDIT_WATERMARKS_AVAL.md §5.6)
-      DECISION_MODE: "shadow"
+      # Les contextes à recalculer sont ceux touchés par des lignes réellement modifiées
+      # des sources, lues dans le flux de changements DuckLake par un curseur par source
+      # (state.cursors), toutes périodes ; les lectures du run sont épinglées au snapshot
+      # du début
     # Recalcul forcé de tous les contextes, quelle que soit la fraîcheur des amonts
     # (équivaut à runtime.FORCE_STEPS=synthesis, également pris en compte)
     FORCE: false
-    # Mode legacy / shadow seulement (sans effet en snapshot, où les contextes touchés
-    # sont lus dans le flux de changements) : nombre de périodes les plus récentes
-    # recalculées quand les métriques partenaires ont de nouvelles données (le
-    # téléchargement incrémental ne rapporte que les dernières observations). null =>
-    # N_LAST_OBSERVATIONS du téléchargement Eurostat. Un changement complet de l'amont
-    # (couple partenaire nouveau, méthodologie modifiée ou forcée, réseau recalculé)
-    # recalcule toutes les périodes
-    RECENT_PERIODS: null
     # Budget de rattrapage : nombre maximal de contextes calculés par exécution, les
     # périodes les plus récentes d'abord, le reste à l'exécution suivante. null en
     # régime nominal (aucune approximation, cadence hebdomadaire)
@@ -128,7 +114,7 @@ synthesis:
             # (concentration de la demande mondiale), une ligne import celles de l'offre
             - 'n."flow" = p."flow"'
         # Lecture des changements de cette source par le curseur de la synthèse
-        # (STATE.DECISION_MODE shadow / snapshot) : colonnes des lignes modifiées lues
+        # (state.cursors) : colonnes des lignes modifiées lues
         # (KEYS) et conditions les rattachant aux contextes de la grille p (ON, sous
         # l'alias de la source). Toute modification d'une ligne (millésime, année,
         # sens) touche les contextes qu'elle peut joindre, quel que soit le produit :

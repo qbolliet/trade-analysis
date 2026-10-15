@@ -22,7 +22,7 @@ from kedro_pipeline.config import active_targets
 from kedro_pipeline.io.datasets import ConcordanceCache, DuckLakeCatalogs
 from kedro_pipeline.io.freshness import FreshnessRegistry
 from kedro_pipeline.io.registry_views import DownloadRegistryView
-from kedro_pipeline.pipelines._common import adopt_legacy, finish_step, force_spec, node_reporting, run_id
+from kedro_pipeline.pipelines._common import finish_step, force_spec, node_reporting, run_id
 from kedro_pipeline.steps._config import (
     HS_REFERENCE_TABLES,
     download_location,
@@ -119,7 +119,7 @@ def prepare_baci_node(
     scope = prepare_baci(
         comtrade, state, view, plan.planned, plan.reference_codes["cmd:HS"]["code"],
         params=baci, comtrade_params=comtrade_params, runtime=runtime,
-        force=force_spec(runtime), adopt_legacy_fingerprints=adopt_legacy(baci), now=now,
+        force=force_spec(runtime), now=now,
         concordance_client_factory=unsd_client,
     )
     metrics = {

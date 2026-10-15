@@ -35,19 +35,20 @@
 | 2026-09-21 (phase 0, K-03b) | **Couche de service et référentiels** : `kedro_pipeline/config.py` (millésimes, macros SQL), `kedro_pipeline/steps/reference.py` (référentiels, un schéma par table `reference_<table>`), `kedro_pipeline/io/serving.py` (`ServingCatalog`, transaction unique vérifiée sur DuckDB 1.5.3), `kedro_pipeline/steps/serving.py` + `config/serving.yaml` (8 tables), `serving-script` ; `product` des tables Comext/partenaires stocké en `BIGINT` → macro `product_code` | C-22, C-23, PS-27, PS-28.4, PS-29.1, PS-29.2 |
 | 2026-09-21 (phase 0) | **Données fictives de démonstration** (Comtrade indisponible, Comext trop lent) : monde simulé isolé dans les catalogues `demo_*` (garde d'écriture testée), entrées de registre marquées `synthetic`, code non migré dans Kedro ; **retrait en deux prompts** : K-17b 🔌 (données sur le cluster) puis K-18 (code et fichiers) | PD-24, PS-04.4, PR-22, PQ-20, §12, K-17b, K-18 |
 | 2026-09-21 (phase 0, K-03d) | **Rapport de run MLflow des scripts** : `macroforecast/tracking/{report,figures}.py` (contrôles, description, HTML Plotly), `kedro_pipeline/io/tracking.py` (`publish_run_report`), `scripts/_run_report.py`, `config/tracking.yaml` ; métriques des scripts en `/` (rekeyage `rekey_metrics`), une expérience par bloc ; contrôles alignés sur les métriques réellement émises ; constats de rendu vérifiés sur MLflow 3.15 local | C-19, PD-13, PS-31, PR-19, PQ-19 |
-| 2026-10-02 (K-05) | **Registres de fraîcheur v2** : `kedro_pipeline/io/freshness.py` (`fingerprint`, `Unit`, `FreshnessRegistry` fragmenté et paresseux, `ForceSpec`, `units_to_compute`, `summarize_upstream`) branché sur BACI, partenaires et réseau ; synthèse et cohérence sur une unité `global` en attendant K-08 ; `version` des métriques et `BACI_METHODOLOGY_VERSION`, listes d'exclusion de l'empreinte dans `macroforecast/` ; **séparateur `;`** sous `kedro run --params` (constat sur les sources Kedro) ; `FORCE_METRICS` / `FORCE_METHODS` seuls forcent les étapes concernées ; unité partenaires = millésime SH le plus récent jusqu'à K-06b ; migration par drapeau `ADOPT_LEGACY_FINGERPRINTS` (pas d'outil dédié) | PD-10, PS-04.1, PS-10, PS-11, PS-12.3, PS-14.6, §12 |
+| 2026-10-02 (K-05) | **Registres de fraîcheur v2** : `kedro_pipeline/io/freshness.py` (`fingerprint`, `Unit`, `FreshnessRegistry` fragmenté et paresseux, `ForceSpec`, `units_to_compute`, `summarize_upstream`) branché sur BACI, partenaires et réseau ; synthèse et cohérence sur une unité `global` en attendant K-08 ; `version` des métriques et `BACI_METHODOLOGY_VERSION`, listes d'exclusion de l'empreinte dans `macroforecast/` ; **séparateur `;`** sous `kedro run --params` (constat sur les sources Kedro) ; `FORCE_METRICS` / `FORCE_METHODS` seuls forcent les étapes concernées ; unité partenaires = millésime SH le plus récent jusqu'à K-06b | PD-10, PS-04.1, PS-10, PS-11, PS-12.3, PS-14.6, §12 |
 | 2026-10-03 (K-05, suite) | **Plus de version déclarée** (métriques, BACI, synthèse, cohérence) : l'empreinte ne porte que le nom et les paramètres ; une correction d'implémentation se signale par **invalidation** des empreintes enregistrées (`FreshnessRegistry.invalidate`, commande `invalidate-freshness-script`), persistée et reprise à l'exécution planifiée suivante (raison `fingerprint`, cascade vers l'aval) ; le forçage par paramètres d'exécution reste pour les recalculs immédiats | PD-10, PS-10.2, PS-10.3, PS-11, §5.2, §5.3, §5.9, PR-05b |
 | 2026-10-05 | **Métriques réseau orientées** : constat que `CENTRALITY_RISK`, `EXPORT_HHI`, `SPOF`, `SPOF_DECILE` dépendent de l'orientation du graphe (lecture côté offre) ; à l'export, **miroirs par transposition** (valeur égale à celle de l'import sur le graphe transposé, sans nouvelle classe) ; **cadre commun du sens** pour toutes les métriques : hyperparamètre d'instance `flow` (convention sklearn), rôles `counterpart_col` / `exposed_col` côté réseau, `own` / `other` côté partenaires, distinct de l'**échelle** portée par la classe (pays / monde) ; `network_indicators` gagne la colonne `flow` (clé primaire) ; `EXPORT_HHI` renommée `WORLD_HHI` ; jointure de synthèse sur `flow` | C-12, PD-09, PD-20, PS-04.3, PS-15, PS-29, PR-11, PQ-06, K-06 |
 | 2026-10-05 (implémentation) | **Import / export implémentés** (partenaires, réseau, synthèse, service, Superset). Écarts à la spécification : pas de bloc `FLOW_CODES` (codes portés par les champs `import_flow` / `export_flow` des deux configurations, `NetworkVulnerabilityConfig` gagnant aussi `flow_col`) ; empreintes **modifiées à l'import** (clé `"<métrique>/<flux>"`, `flow` dans les paramètres) → **un recalcul complet des partenaires** au premier run, valeurs import identiques ; seuls les sens nommés par les plans de fraîcheur sont recalculés (union des unités planifiées) ; diagnostics, artefacts et métriques MLflow **par sens** (`partners/<flux>/…`, `network/<flux>/…`, artefacts `vulnerabilities/<flux>/…`) ; contrôle de l'agrégat extra-UE étendu à l'export ; `FORCE_METRICS=HHI` et `invalidate-freshness-script --metrics HHI` couvrent les deux sens (`HHI/export` pour un seul) ; migration du réseau en §12 | C-12, PD-09, PS-04.3, PS-10.2, PS-15, PS-29.2, §12 |
-| 2026-10-06 (K-06b) | **Millésimes de nomenclature implémentés** : `indicators` clé `(classification, freq, reporter, product, flow, indicators, TIME_PERIOD)`, colonnes `hs_vintage`, `in_force`, `is_provisional`, partition `classification` ; lignes historiques par conversion des flux SH6 Comext (`harmonize_partner_flows`, fondée sur `HsHarmonizer`, règle 1 → n = affectation intégrale au code désigné par la table UNSD) ; `prepare_concordances` extrait dans `kedro_pipeline/steps/baci.py` (cache partagé) ; unité historique `(V, reporter, code SH6)` avec préimage multi-millésimes, attente des sources jamais téléchargées, empreinte `concordance` ; synthèse : `VINTAGES`, contexte **`hs_vintage`** (écart assumé : NC8 et SH comparés ensemble), jointure réseau sur `p."hs_vintage"` et `product_code` (correction d'un bug SH6) ; service : colonnes réelles, repli dérivé par `DESCRIBE` ; `network_indicators.in_force` ; migration `tools/migrate_indicators_key.py` (§12). Volumétrie mesurée : ×3,63 en SH6, ×1,86 sur la table | C-11, C-25, PD-20, PS-04.3, PS-10.1, PS-28, PS-29.3, §12 |
-| 2026-10-06 (K-08) | **Évolution de schéma et synthèse incrémentale implémentées** : poignée `kedro_pipeline.io.ducklake.DuckLakeTable` (`upsert`, `upsert_many(delete_where=…)` = remplacement transactionnel d'une tranche, `add_columns`, `writer`) utilisée par partenaires (écrivain injecté dans le runner `macroforecast`), réseau, BACI (`DuckLakeYearWriter`), synthèse et cohérence ; constat empirique : un upsert portant un sous-ensemble des colonnes **préserve** les colonnes absentes (aucune complétion). `run_synthesis(methods=…, df_existing_scores=…)` (équivalence calcul complet / deux temps testée, consensus compris) ; registres **par contexte** (`STATE.PATH_TEMPLATE`, fragment = période) de la synthèse et de la cohérence ; empreintes par méthode + `consensus` + `synthesis` (sélection des entrées) ; planification pure (`plan_synthesis_contexts`, `UpstreamMarks` par millésime), calcul pur par contexte, écriture par lots ; budget, `--cadence-check`, métriques `synthesis/contexts_*`. Écarts : un couple partenaire `first` vaut **changement complet** (choix utilisateur, exactitude) ; pertinence des changements amont par millésime SH ; lignes longues **remplacées** (et non fusionnées) ; pas de migration des registres globaux (première passe `first` partout). **`dt-ducklake-manager 0.4.0` non retenu** : son constructeur stocke `'None'` (texte) dans les champs nuls de `metadata` quand l'entrée est un DataFrame pandas, ce qui fait échouer tout `update_database` ultérieur (`Binder Error … column named "None"`, 26 tests) ; dépendance laissée en 0.3.1, API utilisée identique | C-13, PD-11, PD-12, PS-10, PS-16, PS-17 |
+| 2026-10-06 (K-06b) | **Millésimes de nomenclature implémentés** : `indicators` clé `(classification, freq, reporter, product, flow, indicators, TIME_PERIOD)`, colonnes `hs_vintage`, `in_force`, `is_provisional`, partition `classification` ; lignes historiques par conversion des flux SH6 Comext (`harmonize_partner_flows`, fondée sur `HsHarmonizer`, règle 1 → n = affectation intégrale au code désigné par la table UNSD) ; `prepare_concordances` extrait dans `kedro_pipeline/steps/baci.py` (cache partagé) ; unité historique `(V, reporter, code SH6)` avec préimage multi-millésimes, attente des sources jamais téléchargées, empreinte `concordance` ; synthèse : `VINTAGES`, contexte **`hs_vintage`** (écart assumé : NC8 et SH comparés ensemble), jointure réseau sur `p."hs_vintage"` et `product_code` (correction d'un bug SH6) ; service : colonnes réelles ; `network_indicators.in_force`. Volumétrie mesurée : ×3,63 en SH6, ×1,86 sur la table | C-11, C-25, PD-20, PS-04.3, PS-10.1, PS-28, PS-29.3, §12 |
+| 2026-10-06 (K-08) | **Évolution de schéma et synthèse incrémentale implémentées** : poignée `kedro_pipeline.io.ducklake.DuckLakeTable` (`upsert`, `upsert_many(delete_where=…)` = remplacement transactionnel d'une tranche, `add_columns`, `writer`) utilisée par partenaires (écrivain injecté dans le runner `macroforecast`), réseau, BACI (`DuckLakeYearWriter`), synthèse et cohérence ; constat empirique : un upsert portant un sous-ensemble des colonnes **préserve** les colonnes absentes (aucune complétion). `run_synthesis(methods=…, df_existing_scores=…)` (équivalence calcul complet / deux temps testée, consensus compris) ; registres **par contexte** (`STATE.PATH_TEMPLATE`, fragment = période) de la synthèse et de la cohérence ; empreintes par méthode + `consensus` + `synthesis` (sélection des entrées) ; planification pure (`plan_pending_contexts`, curseurs DuckLake), calcul pur par contexte, écriture par lots ; budget, `--cadence-check`, métriques `synthesis/contexts_*`. Écarts : un couple partenaire `first` vaut **changement complet** (choix utilisateur, exactitude) ; pertinence des changements amont par millésime SH ; lignes longues **remplacées** (et non fusionnées) ; pas de migration des registres globaux (première passe `first` partout). **`dt-ducklake-manager 0.4.0` non retenu** : son constructeur stocke `'None'` (texte) dans les champs nuls de `metadata` quand l'entrée est un DataFrame pandas, ce qui fait échouer tout `update_database` ultérieur (`Binder Error … column named "None"`, 26 tests) ; dépendance laissée en 0.3.1, API utilisée identique | C-13, PD-11, PD-12, PS-10, PS-16, PS-17 |
 | 2026-10-06 (K-07) | **BACI par passes implémenté** : `macroforecast/trade/processing/streaming.py` (accumulateurs), `partial_fit`/`finalize` des trois estimateurs groupés, `run_baci_passes` + `BaciPassIO` / `InMemoryPassIO`, `kedro_pipeline/steps/baci.py` (`DuckDBPassIO`, `DuckLakeYearWriter`, porte de complétude, blocs de chapitres), script `process_baci_hs.py` sans lecture intégrale de Comtrade, `BACI_TARGETS`, bloc `PASSES` de `baci.yaml`. Écarts à la spécification : forme factorisée QR (et non `A = Σ w x xᵀ`) pour la gravité, imposée par la précision ; référence des indicatrices d'année = première année de l'échantillon ; quantiles des taux de fret calculés en SQL (passe S2) ; protocole d'E/S regroupant les rappels `chunks_factory` / `median_uv` / `writer` ; orchestration par millésime restée dans le script. Écarts numériques mesurés (PR-05b) ≤ 10⁻¹² | PS-14.2 à PS-14.5, PS-14.7, PR-05b, PQ-21, §12 |
 | 2026-10-08 (K-10) | **Projet Kedro et configuration au format Kedro** : `kedro_pipeline/{__main__,settings,pipeline_registry,hooks,cli,config_check}.py` (pipeline `__default__` vide, `kedro trade config-check`), `config/{base,demo,cloud,local}/` lus par `OmegaConfigLoader` (fusion `soft` des paramètres), `load_parameters(env)` pour les scripts (`KEDRO_ENV`, `local` par défaut ; plus aucune variable `*_CONFIG_PATH`), datasets `kedro_pipeline/io/datasets.py` (`DuckLakeTableDataset`, `FreshnessRegistryDataset`, `ServingCatalogDataset`), `DuckLakeTable.lazy`. Écarts : `kedro` résolu en **1.7.0** (borne `>=1.6,<2`) ; **`kedro-datasets` ajouté** (importé par kedro-mlflow 2.0.3 sans être déclaré) ; aucune contrainte `pytest<9` (elle n'existe que dans l'extra `test` de kedro-mlflow) ; **hooks kedro-mlflow et argo-kedro désactivés** (`DISABLE_HOOKS_FOR_PLUGINS`) tant que `mlflow.yml` / `argo.yml` n'existent pas (sans eux, toute session échoue) ; noms d'expériences dans **`experiments.yml`** (motif `experiments`) ; entrée de credentials composée **`ducklake`** ; cibles BACI désactivées en demo par **entrées nulles** (`active_targets`) ; registres `state.<étape>` en **entrées explicites** (pas de factory) ; interpolations inter-fichiers vérifiées (résolution **par environnement**) ; télémétrie Kedro (`kedro-telemetry`, dépendance de kedro) active par défaut hors CI | C-16, PD-03, PS-02, PS-03, PS-04, PS-05, PS-06, PS-07 |
-| 2026-10-09 (K-11) | **Fonctions d'étape partagées, scripts en enveloppes minces** : `kedro_pipeline/steps/{result,_config,downloads,coverage,partners,network,synthesis,coherence}.py` (nouveaux), `baci.py` (fraîcheur, `prepare_baci`, `run_baci_vintage(s)`), `reference.py` et `serving.py` (retour `StepResult`) ; `StepResult` étendu (unités en échec, libellé, tables du rapport, `reportable`, `outputs` lisibles par clé, `children`, `failure_exception`) ; runs par unité par fabrique `UnitRuns` (un run par passe partenaires, par millésime BACI et réseau) ; construction unique du rapport `kedro_pipeline.io.tracking.build_step_report` ; `DuckLakeTable.connector()` / `.reader()`, `attached_catalog_alias` ; scripts : chargement, poignées paresseuses (identifiants lus à la première connexion), tracker, appel, rapport, `raise_if_failed` ; ré-exports des symboles importés par les tests et `tools/`. **Audit de couverture implémenté** et branché, non bloquant, dans les téléchargements (bloc `COVERAGE`). Écarts : arguments résolus par l'appelant (`force`, `adopt_legacy_fingerprints`, `run_id`, `n_jobs`), `prepare_baci` reçoit les requêtes planifiées, injection des collaborateurs BACI (client UNSD, cache, référentiels, passes), une ligne d'import de test modifiée (`test_scripts_synthesis_parallel_e2e.py`) | PD-02, PS-08, PS-13 |
+| 2026-10-09 (K-11) | **Fonctions d'étape partagées, scripts en enveloppes minces** : `kedro_pipeline/steps/{result,_config,downloads,coverage,partners,network,synthesis,coherence}.py` (nouveaux), `baci.py` (fraîcheur, `prepare_baci`, `run_baci_vintage(s)`), `reference.py` et `serving.py` (retour `StepResult`) ; `StepResult` étendu (unités en échec, libellé, tables du rapport, `reportable`, `outputs` lisibles par clé, `children`, `failure_exception`) ; runs par unité par fabrique `UnitRuns` (un run par passe partenaires, par millésime BACI et réseau) ; construction unique du rapport `kedro_pipeline.io.tracking.build_step_report` ; `DuckLakeTable.connector()` / `.reader()`, `attached_catalog_alias` ; scripts : chargement, poignées paresseuses (identifiants lus à la première connexion), tracker, appel, rapport, `raise_if_failed` ; ré-exports des symboles importés par les tests et `tools/`. **Audit de couverture implémenté** et branché, non bloquant, dans les téléchargements (bloc `COVERAGE`). Écarts : arguments résolus par l'appelant (`force`, `run_id`, `n_jobs`), `prepare_baci` reçoit les requêtes planifiées, injection des collaborateurs BACI (client UNSD, cache, référentiels, passes), une ligne d'import de test modifiée (`test_scripts_synthesis_parallel_e2e.py`) | PD-02, PS-08, PS-13 |
 | 2026-10-09 (K-12) | **Pipelines et nœuds Kedro, deux cadences, test de bout en bout** : `kedro_pipeline/pipelines/{downloads,baci,vulnerabilities,synthesis,serving,maintenance}/` (nœuds `argo_kedro.pipeline.Node`, téléchargements en `FusedPipeline`), `__default__` par `sum_pipelines` (16 tâches en base), `daily` (4) et `weekly` (12) filtrés par tag ; `kedro_pipeline/pipelines/_common.py` (sorties de suivi, ordre registres → échec) ; hook `TradeRunHooks` (`N_JOBS`, `context.argo` par défaut, métriques d'un nœud en échec) ; datasets `ducklake.catalogs`, `clients.*`, `baci.scope`, `baci.concordances`, `mlflow.metrics.{node}` / `mlflow.artifacts.{node}` (fichiers locaux) ; catalogues DuckLake fichiers (`FileConnectorFactory`, métadonnées SQLite) choisis par `credentials.ducklake.file_root` ; `run_download` découpé en phases ; étape `maintenance` minimale ; environnement `config/test/` (résolveur `trade.test_root`, clients factices `tests/pipeline/fakes.py`). Écarts : tags en `famille.valeur` (Kedro refuse `:`), registres en entrée seulement, `state.baci` unique, diagnostics `fit` hors sorties de la synthèse, `baci.scope` en pickle. Constats : `kedro run` est la commande d'argo-kedro (FusedRunner) et **ignore `--params`** ; un téléchargement sans nouvelle donnée avance `last_download` (PQ-22) | PD-14, PS-07, PS-08, PS-09, PS-11, PS-18, §6, PQ-22 |
 | 2026-10-09 (K-13) | **Suivi MLflow du pipeline Kedro** : `config/{base,test}/mlflow.yml` (résolveur `trade.env` limité à `MLFLOW_TRACKING_URI`, `MLFLOW_EXPERIMENT_NAME`, `WORKFLOW_ID`) ; hook kedro-mlflow **gardé** `kedro_pipeline/mlflow_hook.py::GuardedMlflowHook` (sonde du serveur, aucune erreur de suivi ne remonte au runner, plus de réouverture du run avant chaque nœud) à la place de celui du plugin ; `ActiveRunTracker` ; `build_tracker`, `node_unit_runs` (unités d'un nœud au `step` de leur millésime), `build_node_report` (contrôles par unité, runs inactifs), `close_stale_runs`, `tag_active_experiment` (`kedro_pipeline/io/tracking.py`) ; datasets `MlflowRunMetricsDataset` (sans doublon) et `MlflowTablesDataset` (`kedro_pipeline/io/mlflow_datasets.py`) ; `TradeRunHooks` (tags, nom de run, contexte injecté dans `params:tracking`, description réduite) ; `finish_step` : registres → rapport → échec ; **sections PD-13** des métriques BACI (`output/`, `conversion/`, `gravity/`, `valuation/`, `reconciliation/`, `quality/{value,quantity}/`, `nes/`, `harmonization/`) et des requêtes (`download/query/`, `download/fetch/`, `http/`, `rate_limit/`), `CHECKS` renommés ; couverture et tables PS-31.4 dans le rapport des téléchargements ; clôture des runs orphelins par `maintain_ducklake`. Écarts : `trade.env` au lieu d'`oc.env`, datasets projet au lieu de `MlflowArtifactDataset`, expériences typées « Model training » (interface MLflow 3). Constats : métriques système actives par la seule variable ; la réouverture du run par kedro-mlflow démarrait un moniteur de plus par nœud | C-19, PD-13, PD-16, PS-07, PS-08, PS-19, PS-31, §5.1, §5.8, PR-19, PR-20, PQ-19 |
 | 2026-10-11 (K-14) | **Maintenance DuckLake implémentée** : `kedro_pipeline/io/maintenance.py` (métadonnées, procédures en SQL direct à horloge injectée, `VACUUM`, `pg_dump | gzip` vers S3, rétention), `kedro_pipeline/steps/maintenance.py::run_maintenance(catalogs, *, params, tracker, now)`, nœud `maintain_ducklake` (entrée `ducklake.catalogs`, clôture des runs orphelins conditionnée par `maintenance.STALE_RUNS`), `DuckLakeCatalogs.connector` / `has_postgres`, rapport (chiffres clés, section, `maintenance.csv`), contrôle `maintain_ducklake` ; `compact_after_update=False` explicite partout (test d'analyse du code) ; paramètre `TIMEZONE`. Résultats de vérification sur DuckDB 1.5.3 consignés en PS-24 : seuil d'inlining par défaut de 10 lignes (suppressions comprises, mesurer après `flush`), `DuckLakeMaintenance` avale ses erreurs et lit l'horloge système, mesure de `compact_after_update` (`True` : 586 snapshots contre 202). `dt-ducklake-manager` était déjà en 0.4.1 | C-08, PD-16, PD-21, PS-24, PS-31.4, PS-31.5, PR-07, PR-20 |
 | 2026-10-11 (K-15) | **Rendu Argo implémenté** : `config/base/argo.yml` (partie argo-kedro + bloc projet `workflow` : service account, `parallelism: 8`, planifications, délais, reprises par motif, dépendances strictes, environnement et secrets), `kedro_pipeline/deploy/{config,render}.py` (`build_dag` seul appelant de `get_argo_dag`, `TaskSpec`, `exit_task`, `cron_schedule`, `schedule_field`, `render_manifests`, `diff_manifests`), gabarits `kedro_pipeline/deploy/templates/*.yaml.j2` (délimiteurs Jinja en crochets), `kedro trade render-argo [--env] [--image-tag] [--output-dir] [--check]`, `kubernetes/generated/` (3 manifestes + README), contrôle en CI, tests `tests/deploy/` (fichiers de référence jouets, pipeline réel, schéma JSON minimal, `jsonschema` en groupe `dev`). Constats : `kedro run` est **toujours** la commande d'argo-kedro (les commandes globales de plugin passent avant les commandes projet) et ignore `--params` ; `python -m kedro_pipeline` était cassé (`find_run_command` cherche `kedro_pipeline.cli.run`) → **commande `run` projet** (FusedRunner + `runtime_params`), appelée par les pods ; hook argo-kedro réactivé, repli `context.argo` de `TradeRunHooks` retiré ; surcharge d'`entrypoint` / `activeDeadlineSeconds` par `workflowSpec` avec `workflowTemplateRef` confirmée sur le source v3.6.10 (`JoinWorkflowSpec` : Workflow > WorkflowTemplate > défauts). Écarts : **`KEDRO_ENV` figé** à l'environnement du rendu (plus de paramètre `kedro-env` : le fan-out BACI en dépend ; démo rendue hors dépôt), paramètre **`extra-params`** au lieu de `max-runtime-hours`, mutex portés par des enveloppes `steps` (motif validé par la transition), `emph_storage` non rendu, étiquette d'image par défaut `qb-vulnerabilities` (`imagePullPolicy: Always`) à épingler en K-17, pas d'annotation de SHA (sortie indépendante du commit) | PD-14, PS-03, PS-11, PS-20, PS-21 |
+| 2026-10-15 (K-17c) | **Bases vierges, règles de décision uniques** : la production repart de catalogues, registres de téléchargement et registres de fraîcheur vierges ; retrait de tout code de cohabitation avec d'anciennes bases (registres de fraîcheur v1 et adoption des empreintes, `tools/migrate_indicators_key.py`, alignement de `label_for`, repli dérivé des colonnes de nomenclature du service, chemins `LAST_COMPUTATION_PATH` / `LAST_PROCESSING_PATH`, registres globaux de synthèse et de cohérence) et des modes `legacy` / `shadow` (`STATE.DECISION_MODE`) ; les partenaires et BACI décident sur `UpstreamMark` (`upstream_mark_is_newer`), la synthèse sur ses curseurs DuckLake ; `RECENT_PERIODS` et `UpstreamMarks` retirés. Conservé : le repli par dates de `upstream_mark_is_newer` quand `statflows` n'a relevé aucun snapshot (écriture sans rapport), `upstream_is_newer` pour les cascades aval (réseau, cohérence). PQ-22 résolu | PD-10, PD-12, PS-10, PS-17, §5.3, §8, §12 |
 
 ## Sommaire
 
@@ -243,7 +244,8 @@ local, `kedro run` exécute tout le DAG dans un seul processus. Sur Argo, chaque
    (`MAX_RUNTIME`, 10 h par défaut) : ils s'arrêtent proprement une fois le budget épuisé.
 3. Les étapes aval s'exécutent **même si un téléchargement a échoué** : elles ne lisent
    que des données commitées et décident seules, par leurs registres de fraîcheur, de ce
-   qui est à recalculer (PD-06, PD-10).
+   qui est à recalculer (PD-06, PD-10) — sur les données **réellement modifiées** : une
+   requête rejouée sans nouvelle donnée ne recalcule rien.
 4. En fin de workflow, qu'il ait réussi ou non, le gestionnaire `onExit` lance la
    maintenance DuckLake (PD-16).
 5. Tous les pods journalisent dans MLflow sous un même `workflow_id` (PD-13) ; chaque
@@ -315,7 +317,7 @@ une étape seule — que Kedro couvre déjà (`kedro run --pipeline baci --nodes
 process_baci_hs2017 --env local`, ou `--from-nodes`/`--to-nodes`). Conserver les
 scripts, c'est garantir qu'ils finissent **redondants puis inopérants** (paramètre ajouté
 au nœud et oublié dans le script). Les seuls utilitaires hors pipeline (mesures
-ponctuelles, migrations de registres) vivent dans `tools/` et ne sont pas des points
+ponctuelles, construction de la documentation) vivent dans `tools/` et ne sont pas des points
 d'entrée du paquet.
 
 **Conséquences.** Le refactoring (K-11) doit laisser `uv run pytest` vert à l'identique ;
@@ -758,7 +760,8 @@ entrées sont indexées par **unité de fraîcheur** et portent :
 
 Une unité est recalculée si **au moins une** des conditions suivantes est vraie :
 1. elle n'a jamais été calculée ;
-2. son amont est plus récent que `upstream_watermark` ;
+2. les données de son amont ont été modifiées depuis son calcul (marque « données
+   modifiées » plus récente que celle enregistrée, ou curseur DuckLake touchant l'unité) ;
 3. l'empreinte d'une métrique/méthode **demandée** diffère de celle enregistrée ou
    manque : la métrique a été ajoutée, ses paramètres ont changé, ou son empreinte a été
    **invalidée** après la correction de son implémentation ;
@@ -787,15 +790,15 @@ de réestimer sept millésimes chaque jour pendant le rattrapage (PS-14.6).
   `fingerprint` (cascade vers l'aval). On peut aussi, ponctuellement, forcer une étape
   entière via les paramètres d'exécution (PS-11).
 
-> **Révision (2026-10-15, parcimonie aval, `AUDIT_WATERMARKS_AVAL.md`).** Trois
-> compléments, sans changer le format des fragments :
+> **Révision (K-17c).** Trois compléments, sans changer le format des fragments :
 > - **raison `pending`** (champ `pending_since`) : unité touchée par un changement lu
 >   dans le flux DuckLake (curseur, `kedro_pipeline/io/cursors.py`) et pas encore
 >   recalculée ; priorité `first > forced > pending > new_data > fingerprint` ;
-> - **marques « données modifiées »** (`UpstreamMark`, statflows ≥ 0.2.2) : les
->   partenaires et BACI peuvent décider sur `last_modified_snapshot` au lieu de
->   `last_download` (`STATE.DECISION_MODE`), le snapshot amont étant enregistré dans
->   `upstream_snapshot` ;
+> - **marques « données modifiées »** (`UpstreamMark`) : les partenaires et BACI
+>   décident sur le snapshot de la dernière écriture qui a modifié des lignes
+>   (`last_modified_snapshot` du registre de téléchargement), enregistré dans
+>   `upstream_snapshot` ; une requête rejouée sans nouvelle donnée ne périme rien. Quand
+>   `statflows` n'a pas pu relever de snapshot, la date de modification décide ;
 > - **verrou méthodologique** (`kedro_pipeline/methodology.lock`) : le code entre
 >   finalement dans les empreintes, sous la forme d'une **révision** décidée au commit
 >   (`lock --bump` / `--accept`, contrôlé en CI), et non d'un hachage brut du source.
@@ -892,9 +895,9 @@ une empreinte par méthode.
 - *Nouvelle méthode ou méthode modifiée* : recalcul de **cette seule méthode** sur tous
   les contextes filtrés, plus les pseudo-méthodes de consensus (`borda`, `copeland`) qui
   dépendent de toutes les autres.
-- *Amont partenaires `new_data`* : recalcul des contextes des **`RECENT_PERIODS`**
-  dernières périodes (par défaut `eurostat.DOWNLOADS.*.N_LAST_OBSERVATIONS`, puisque
-  l'incrémental ne rapporte que ces périodes), plus les contextes **jamais calculés**.
+- *Amont modifié* : recalcul des seuls contextes touchés par des lignes réellement
+  modifiées des tables sources, lues dans le flux de changements DuckLake (toutes
+  périodes), plus les contextes **jamais calculés**.
 - *Amont partenaires `fingerprint` ou `forced`, ou amont réseau modifié* : recalcul de
   tous les contextes filtrés. Un redressement BACI réestime en effet toutes les années de
   son millésime.
@@ -917,29 +920,20 @@ une empreinte par méthode.
   en cas de forçage. L'empreinte de cohérence est globale : pas de granularité par
   statistique.
 
-**Implémentation (K-08)** : voir PS-17 pour l'algorithme et ses écarts. Deux révisions
-de la décision ci-dessus :
-- *Amont partenaires* : une unité partenaire calculée pour la **première** fois
-  (`first`, couple reporter × produit nouvellement téléchargé, dont tout l'historique
-  arrive d'un coup) vaut changement **complet**, comme `fingerprint` et `forced` (choix
-  utilisateur : la règle « périodes récentes » laisserait les anciennes périodes sans
-  les nouvelles cellules, donc approximées). Pendant le rattrapage du téléchargement,
-  chaque passe hebdomadaire est donc complète ; le budget est l'outil prévu pour cela.
-- *Pertinence par millésime* : un changement amont ne périme que les contextes qu'il
-  concerne. Une unité partenaire en vigueur concerne les contextes en vigueur (le
-  `hs_vintage` du contexte est le millésime en vigueur de son année) ; une unité
-  historique de `V`, les contextes historiques de `V` ; une unité réseau de `V`, tous
-  les contextes de `V`. Sans `hs_vintage` parmi les colonnes de contexte, tout
-  changement concerne tous les contextes.
+**Implémentation (K-08)** : voir PS-17 pour l'algorithme et ses écarts. Un changement amont ne
+périme que les contextes qu'il concerne (révision K-17c ci-dessous).
 
-> **Révision (2026-10-15).** `SYNTHESIS.STATE.DECISION_MODE: snapshot` remplace les
-> marques des registres amont et l'approximation `RECENT_PERIODS` par des **curseurs
-> DuckLake** sur `indicators` et `network_indicators` (`state.cursors`) : les contextes
-> touchés par des lignes réellement modifiées (bloc `CHANGE` de chaque source jointe)
-> sont marqués `pending` avant l'avancement des curseurs, toutes périodes, et toutes les
-> lectures du run sont épinglées au snapshot du début (`AT (VERSION => n)`). Corrige
-> deux faux négatifs (marque globale comparée par clé, révision ancienne) :
-> `AUDIT_WATERMARKS_AVAL.md` §3.1. Mode `shadow` par défaut pendant l'observation.
+> **Révision (K-17c).** La décision de la synthèse ne repose plus sur les marques des
+> registres amont ni sur l'approximation « périodes récentes » : des **curseurs DuckLake**
+> sur `indicators` et `network_indicators` (`state.cursors`) donnent les contextes touchés
+> par des lignes réellement modifiées (bloc `CHANGE` de chaque source jointe), toutes
+> périodes, marqués `pending` avant l'avancement des curseurs ; toutes les lectures du
+> run sont épinglées au snapshot du début (`AT (VERSION => n)`). Un curseur absent,
+> d'empreinte modifiée ou dont les snapshots ont expiré se replie sur un recalcul complet.
+> Les deux révisions ci-dessus (couple `first` = changement complet, pertinence par
+> millésime) sont ainsi absorbées : un couple nouveau écrit toutes ses lignes, qui
+> touchent leurs contextes, et la jointure `CHANGE` rapporte chaque ligne modifiée aux
+> seuls contextes qu'elle joint.
 
 **Justification.** Sur toute la période, avec 15 méthodes (SMAA 2 000 tirages, bootstrap,
 Kantorovitch), une synthèse complète ne tient pas dans 24 h ; plutôt que d'approximer
@@ -1368,8 +1362,8 @@ identiques pour les codes stables.
    `(classification, reporter, product)` ; pour une ligne historique, la source d'un
    produit cible est l'ensemble des codes de la nomenclature en vigueur qui s'y
    projettent (préimage de la table de passage), et son watermark est le maximum de
-   leurs `last_download`. Une unité historique n'est calculée que lorsque **tous** ses
-   codes sources ont été téléchargés au moins une fois (sinon `freshness/units_waiting_sources`).
+   marques de données modifiées. Une unité historique n'est calculée que lorsque **tous** ses
+   codes sources ont eu des données écrites au moins une fois (sinon `freshness/units_waiting_sources`).
    Paramètre `vulnerabilities.VINTAGES: "all"` (par défaut) ou liste explicite ; les
    millésimes NC8 (`CN<t>`) ne sont pas convertis tant qu'aucune table de passage NC8
    cohérente n'existe (extension prévue : même mécanisme, nouveau bloc
@@ -1627,7 +1621,7 @@ trade-analysis/
 ├── macroforecast/ (inchangé dans son rôle ; baci.py réorganisé en estimateurs par passes, PS-14 ;
 │                   tracking/report.py et tracking/figures.py : rapport de run pur, PS-31)
 ├── scripts/ (phase 0 → enveloppes minces → supprimés en K-18, PD-02)
-├── tools/ (utilitaires hors pipeline : migrations de registres, mesures ponctuelles)
+├── tools/ (utilitaires hors pipeline : mesures ponctuelles, construction de la documentation)
 ├── kedro_pipeline/
 │   ├── __init__.py
 │   ├── __main__.py
@@ -1956,7 +1950,6 @@ synthesis:
     # "in_force" (défaut) : contextes de la nomenclature en vigueur ; "all" : aussi
     # les millésimes historiques (classification dans context_columns)
     VINTAGES: "in_force"
-    RECENT_PERIODS: 10
     MAX_CONTEXTS_PER_RUN: null     # jamais de budget en régime nominal (PD-12)
     WRITE_BATCH_CONTEXTS: 8
     N_JOBS: ${runtime.N_JOBS}
@@ -2225,8 +2218,7 @@ serving.tables:                        # poignée du catalogue DuckLake `serving
   diffèrent par étape et Kedro formate (`str.format_map`) toutes les chaînes d'une entrée
   de factory, si bien que les champs `{vintage}`, `{reporter}`… du gabarit y seraient
   interprétés comme des paramètres du motif. Le libellé de fragment vaut les valeurs des
-  champs du gabarit jointes par `/` ; la source v1 (`LegacySource`) n'est pas exposée (la
-  migration reste le fait des étapes) ;
+  champs du gabarit jointes par `/` ;
 - `serving.tables.sources` décrit l'**emplacement complet** de chaque catalogue source
   (alias → `location`), nécessaire pour l'attacher ;
 - `baci.scope` (K-11) et les datasets `mlflow.*` (K-13) ne sont pas encore créés ;
@@ -2356,7 +2348,7 @@ Invariants communs (hérités des scripts, à conserver) :
 > | `serving.py` | `publish_serving(sources, serving, *, params, runtime, tracker) -> StepResult` | `sources` reste `Mapping[str, SourceTable]` : le catalogue de service attache des catalogues entiers en lecture seule, pas des tables |
 > | `reference.py` | `publish_reference(codelists, table, *, source, params, conn=None) -> StepResult` | `table` est un connecteur (ou une connexion ouverte `conn`) |
 >
-> Arguments communs résolus **par l'appelant** (invariant 4) : `force` (`ForceSpec`), `adopt_legacy_fingerprints`, `run_id` (identifiant du workflow), `n_jobs` ; sans eux, les étapes prennent `ForceSpec.from_runtime(runtime, environ={})` et `adopt_legacy_flag(..., environ={})`, sans lire l'environnement. Les étapes n'entrent jamais le tracker : le run appartient à l'appelant (script ou nœud). Le rapport est construit une seule fois, par `kedro_pipeline.io.tracking.build_step_report(result, node=…, params=…, context=…)` ; `progress` (attribut `step`) nomme la dernière étape atteinte dans la description réduite d'un échec. **À traiter en K-12/K-13** : avec `shared_runs`, toutes les passes partenaires partageraient un run et les mêmes noms de métriques ; un nœud Kedro par passe ou un préfixe par passe sera nécessaire.
+> Arguments communs résolus **par l'appelant** (invariant 4) : `force` (`ForceSpec`), `run_id` (identifiant du workflow), `n_jobs` ; sans eux, les étapes prennent `ForceSpec.from_runtime(runtime, environ={})`, sans lire l'environnement. Les étapes n'entrent jamais le tracker : le run appartient à l'appelant (script ou nœud). Le rapport est construit une seule fois, par `kedro_pipeline.io.tracking.build_step_report(result, node=…, params=…, context=…)` ; `progress` (attribut `step`) nomme la dernière étape atteinte dans la description réduite d'un échec. **À traiter en K-12/K-13** : avec `shared_runs`, toutes les passes partenaires partageraient un run et les mêmes noms de métriques ; un nœud Kedro par passe ou un préfixe par passe sera nécessaire.
 
 > **K-13** — `kedro_pipeline/pipelines/_common.py::finish_step(…, reporting=, reported=)`
 > applique l'invariant 3 dans cet ordre : sauvegarde des registres, publication du rapport
@@ -2477,10 +2469,10 @@ Maille et fragment par étape :
 
 | Étape | Unité | Fragment | Watermark amont |
 |---|---|---|---|
-| BACI | **millésime** (entrée enrichie de `fit_id` et `years_written`, PD-10) | millésime | max `last_download` des requêtes Comtrade des années du périmètre |
-| Partenaires | classification × reporter × produit | classification / reporter | en vigueur : `last_download` de la requête couvrant le couple ; historique : max des `last_download` des codes sources (PD-20.6) |
+| BACI | **millésime** (entrée enrichie de `fit_id` et `years_written`, PD-10) | millésime | marque de données modifiées maximale des lots Comtrade des années du périmètre (`last_modified_snapshot`) |
+| Partenaires | classification × reporter × produit | classification / reporter | en vigueur : marque de données modifiées de la requête couvrant le couple ; historique : marque combinée des codes sources (PD-20.6) |
 | Réseau | millésime | millésime | `last_computed` du millésime BACI |
-| Synthèse | contexte `(classification, freq, flow, indicators, TIME_PERIOD)` | période | max des watermarks partenaires et réseau pertinents |
+| Synthèse | contexte `(classification, freq, flow, indicators, TIME_PERIOD)` | période | curseurs DuckLake sur `indicators` et `network_indicators` (contextes touchés marqués `pending`) |
 | Cohérence | contexte | période | `last_computed` synthèse du contexte |
 | Publication de service | table de service (× année en mode `by_year`) | table | max `last_computed` des étapes sources de la table |
 
@@ -2494,8 +2486,8 @@ Maille et fragment par étape :
 > Unité en vigueur : couple téléchargé (reporter, produit), toutes périodes,
 > `classification` = millésime SH le plus récent (inchangé depuis K-05, aucune
 > migration). Unité historique : `(V, reporter, code SH6 cible)`, fragment `V/<reporter>`,
-> watermark = max des `last_download` des sources (préimage sur tous les millésimes
-> postérieurs à `V`), reportée tant qu'une source n'a jamais été téléchargée
+> marque amont = combinaison des marques des sources (préimage sur tous les millésimes
+> postérieurs à `V`), reportée tant qu'une source n'a jamais eu de données écrites
 > (`freshness/units_waiting_sources`), empreinte = métriques + `concordance` (somme de
 > contrôle des tables `W → V` et `VINTAGES_ON_UNMAPPED`). Nom invalidable :
 > `invalidate-freshness-script --step partners --metrics concordance`.
@@ -2505,17 +2497,14 @@ Maille et fragment par étape :
 > récent** de `runtime.NOMENCLATURES.HS` pour tous les codes, NC8 compris (choix
 > utilisateur : stable d'une année à l'autre, pas de recalcul complet chaque
 > 1er janvier qu'aurait provoqué `CN<année>`). Synthèse et cohérence : unité unique
-> `{"scope": "global"}`, fragment unique au chemin `PATHS.LAST_COMPUTATION_PATH`,
+> `{"scope": "global"}`, fragment unique,
 > empreinte globale (méthodes, configuration, `SOURCES`, `FILTERS` ; resp.
 > configuration de cohérence) ; l'entrée consigne `upstream_reasons` (raisons des
 > unités amont recalculées depuis) pour K-08. BACI : l'entrée porte `fit_id`,
 > `years_scope`, `years_written` ; une entrée « démarrée » (`years_written: []`,
 > `last_computed` précédent conservé) précède toute écriture ; le réseau ignore un
-> millésime dont la passe est incomplète. Les registres v1 sont lus comme entrées
-> héritées (`fingerprints={}`, `reason="first"`, `upstream_watermark =
-> last_computed`, ce qui reproduit la règle v1) : une empreinte manquante signifie
-> « jamais calculé avec cette méthodologie », sauf adoption
-> (`STATE.ADOPT_LEGACY_FINGERPRINTS` / variable `ADOPT_LEGACY_FINGERPRINTS`).
+> millésime dont la passe est incomplète. Une empreinte manquante signifie « jamais
+> calculé avec cette méthodologie ».
 
 #### PS-10.2 Empreinte méthodologique
 
@@ -2572,8 +2561,8 @@ def units_to_compute(planned: Iterable[Unit], registry: FreshnessRegistry,
   sur des lignes entières). Le registre enregistre les nouvelles empreintes de toutes.
 - **Synthèse** (table longue par méthode) : on ne recalcule **que** les méthodes de
   `names`, plus le consensus dès que `names` n'est pas vide.
-- **Implémentation (K-05)** : `units_to_compute(..., step, is_new_data=None,
-  adopt_legacy_fingerprints=False)`. La règle `new_data` est un prédicat
+- **Implémentation (K-05)** : `units_to_compute(..., step, is_new_data=None)`.
+  La règle `new_data` est un prédicat
   surchargeable (par défaut : amont plus récent que `upstream_watermark`) ; BACI y
   branche sa cadence (PS-14.6). Une unité dont `last_computed` est nul (passe
   démarrée jamais terminée) est `first`. Forçage d'une métrique : `FORCE_METRICS=HHI`
@@ -2659,9 +2648,12 @@ actuel).
 module de fraîcheur en K-05) **éclate** chaque entrée
 du registre `statflows` en unités :
 - Eurostat : `dims.reporter` × chaque code de `dims.product` (chaîne ou liste, séparateurs
-  `+` ou `,`) → `{(reporter, product): last_download}` ;
+  `+` ou `,`) → `{(reporter, product): last_download}` (audit de couverture, porte
+  de complétude) et `{(reporter, product): UpstreamMark}` (`pairs_last_modified()`, décision
+  des partenaires) ;
 - Comtrade : chaque période de `params.periods` → `{year: [last_download de chaque lot]}`
-  pour la porte de complétude (PS-14).
+  pour la porte de complétude (PS-14, « téléchargé au moins une fois »), et
+  `{year: {lot: UpstreamMark}}` (`batches_marks_by_year()`) pour la décision de BACI.
 
 La vue passe par l'API de lecture de `statflows` (PS-27) et **ne suppose pas** le format
 physique du registre (fichier unique ou fragments).
@@ -3003,24 +2995,27 @@ clés → les autres lignes valent `NULL`, aucune ligne dupliquée.
 ### PS-17 — Synthèse incrémentale (algorithme)
 
 ```
-entrées : registre synthèse S (fragments par période), registres amont P (partenaires) et N (réseau),
-          méthodes demandées M (avec empreintes), FLOWS, VINTAGES, RECENT_PERIODS, budget B (null en nominal)
+entrées : registre synthèse S (fragments par période), curseurs C des tables sources,
+          méthodes demandées M (avec empreintes), FLOWS, VINTAGES, budget B (null en nominal)
+0. snapshot_épinglé ← snapshot courant du catalogue ; toutes les lectures du run lui sont épinglées
 1. contextes_planifiés ← SELECT DISTINCT classification, freq, flow, indicators, TIME_PERIOD FROM grille
                           WHERE FILTERS.WHERE AND flow IN FLOWS
                             AND (VINTAGES = 'all' OR in_force)
-2. changement_amont_complet ← ∃ entrée de P ou N plus récente que S.watermark_global
-                               avec reason ∈ {fingerprint, forced}  OU  N a changé
+2. pour chaque source : clés_modifiées ← changements de la table entre le curseur et le snapshot_épinglé
+                        (repli : toutes les clés si curseur absent, empreinte changée ou snapshots expirés)
+   contextes_touchés ← contextes_planifiés joints par les clés modifiées (toutes périodes)
+   marquer contextes_touchés « pending » dans S et enregistrer S ; puis avancer les curseurs au
+   snapshot_épinglé et les enregistrer
 3. pour chaque contexte c :
-     si c ∉ S                                  → plan(c) = (first, M)
+     si c ∉ S ou jamais terminé                → plan(c) = (first, M)
      sinon si c ∈ portée de forçage            → plan(c) = (forced, M_forcées ou M)
-     sinon si changement_amont_complet         → plan(c) = (new_data, M)
-     sinon si P a changé et période(c) ∈ RECENT_PERIODS dernières → plan(c) = (new_data, M)
+     sinon si c est « pending »                → plan(c) = (pending, M)
      sinon m ← {méthodes dont l'empreinte diffère}; si m ≠ ∅ → plan(c) = (fingerprint, m ∪ consensus)
 4. trier les contextes planifiés par période décroissante ; tronquer à B
 5. joblib.Parallel(n_jobs) sur les contextes (lecture SQL du contexte dans le worker,
    run_synthesis restreint aux méthodes du plan) ; résultats collectés dans le processus parent
 6. écriture par lots de WRITE_BATCH_CONTEXTS contextes (upsert scores + diagnostics fit),
-   puis avancement des entrées de registre du lot
+   puis avancement des entrées de registre du lot (le marqueur « pending » est effacé)
 ```
 
 Le worker **n'écrit jamais** et ouvre sa propre connexion de lecture (les connexions
@@ -3032,7 +3027,7 @@ pas les résultats des méthodes calculées : un test d'équivalence le vérifie
 > `scripts/compute_synthesis_coherence.py` (tests : `tests/test_synthesis_planning.py`,
 > `tests/test_scripts_synthesis_incremental_e2e.py`,
 > `tests/aggregation/test_synthesis_incremental.py`). Le code est découpé en
-> planification (`plan_synthesis_contexts`, `select_contexts`), calcul pur d'un
+> planification (`decide_with_cursors`, `plan_pending_contexts`, `select_contexts`), calcul pur d'un
 > contexte (`compute_synthesis_context`) et écriture par lots
 > (`write_synthesis_batch`). L'étape 5 est parallélisée en K-09 (voir PS-18 :
 > `compute_context_task` / `compute_coherence_task`, un contexte par tâche, lecture
@@ -3051,12 +3046,15 @@ pas les résultats des méthodes calculées : un test d'équivalence le vérifie
 >   périmée, elle périme toutes les méthodes). `invalidate-freshness-script --step
 >   synthesis --metrics <méthode>` invalide une méthode ; les filtres `--periods` et
 >   `--vintages` (`hs_vintage`) s'appliquent aux contextes.
-> - **Étape 2** remplacée par des **marques par pertinence** (`UpstreamMarks`) :
->   `changement_amont_complet(c)` = dernière unité partenaire pertinente `first`,
->   `fingerprint` ou `forced`, ou dernière unité réseau pertinente, postérieure au
->   `upstream_watermark` du contexte (PD-12, révisions K-08) ; `P a changé` = dernière
->   unité partenaire pertinente postérieure ; le watermark enregistré est le maximum
->   amont lu à la planification.
+> - **Étape 2** : les changements amont sont lus dans le flux de changements DuckLake,
+>   un **curseur** par table source (`kedro_pipeline/io/cursors.py`, jeu de données
+>   `state.cursors`). Les clés des lignes insérées, mises à jour ou supprimées depuis le
+>   curseur, jusqu'au snapshot épinglé au début du run, sont rapportées aux contextes
+>   qu'elles joignent (bloc `CHANGE` de chaque source jointe, toutes périodes) ; ces
+>   contextes sont marqués `pending` et le registre est écrit **avant** l'avancement des
+>   curseurs, de sorte qu'un run en échec ou limité par le budget ne perd aucun
+>   changement. Un curseur absent, d'empreinte modifiée ou dont les snapshots ont expiré
+>   se replie sur un recalcul complet de la sélection.
 > - **Consensus** : `run_synthesis(methods=…, df_existing_scores=…)` ; les scores en
 >   base des méthodes non recalculées (lus par `build_scores_query(…, methods=…)`) sont
 >   réinjectés dans l'ordre de la configuration ; une méthode stockée n'entre que si
@@ -3069,9 +3067,8 @@ pas les résultats des méthodes calculées : un test d'équivalence le vérifie
 >   cohérence remplace de même les familles `metrics` et `methods` d'un contexte.
 > - **Registre** : une entrée par contexte (`STATE.PATH_TEMPLATE`, fragment = période),
 >   avancée lot par lot après l'écriture ; empreintes des noms recalculés mises à jour,
->   celles des autres conservées. Pas de migration du registre global
->   (`PATHS.LAST_COMPUTATION_PATH`, retiré de la configuration) : la première passe est
->   `first` partout, ce qui coïncide avec `LAST_N_PERIODS: null`.
+>   celles des autres conservées. La première passe est `first` partout, ce qui coïncide
+>   avec `LAST_N_PERIODS: null`.
 > - **Cadence** : `--cadence-check` (ou `CADENCE_CHECK=1`) sort avec le code 0 et la
 >   métrique `freshness/skipped_by_cadence = 1` si le `last_computed` le plus récent du
 >   registre date de moins de `CADENCE.MIN_INTERVAL_DAYS` (6) jours, sauf forçage de
@@ -3133,8 +3130,8 @@ pas les résultats des méthodes calculées : un test d'équivalence le vérifie
 > `{"params:runtime": {..., "N_JOBS": resolve_n_jobs(runtime.N_JOBS)}}` — mécanisme natif
 > de Kedro (le dictionnaire renvoyé remplace les entrées chargées), sans dataset ni
 > fonction supplémentaire ; le nœud prend `N_JOBS` de son bloc s'il est positif, sinon
-> celui de `runtime` (même ordre que les scripts). Forçage (`ForceSpec.from_runtime`) et
-> adoption des empreintes héritées lus dans les paramètres seuls (`environ={}`).
+> celui de `runtime` (même ordre que les scripts). Forçage (`ForceSpec.from_runtime`)
+> lu dans les paramètres seuls (`environ={}`).
 
 ### PS-19 — Journalisation MLflow
 
@@ -3764,8 +3761,8 @@ passe, comme la passe en vigueur (découpage mémoire laissé à K-09). Une tabl
 
 Unité `(V, r, p_V)`. Sources : `S(p_V) = {codes c de vintage_in_force(t) : c ↦ p_V}` par
 la table de passage (préimage) — union sur tous les millésimes postérieurs à `V`
-(K-06b). Watermark = `max(last_download(r, c), c ∈ S)`. Si un
-code de `S` n'a jamais été téléchargé, l'unité est reportée
+(K-06b). Marque amont = combinaison des marques de données modifiées de `(r, c), c ∈ S`. Si un
+code de `S` n'a jamais eu de données écrites, l'unité est reportée
 (`freshness/units_waiting_sources`). Empreinte : celle des métriques **plus** la somme de
 contrôle de la table de passage utilisée (une table UNSD corrigée déclenche le recalcul).
 
@@ -4513,10 +4510,6 @@ procédure antérieure au verrou :
    à jour la configuration, puis forcer l'étape.
 8. Diffuser une colonne calculée à part sur des lignes existantes (migration
    ponctuelle) : `DuckLakeTable.add_columns(df)` (PD-11), depuis un service Onyxia.
-9. Changer la **clé primaire** d'une table (ex. ajout de `classification` à
-   `indicators`, PD-20) : script de migration dans `tools/` qui recrée la table à partir
-   de l'ancienne (testé sur catalogue fichier), exécuté depuis Onyxia (§12), puis
-   forçage de l'étape pour les colonnes nouvelles.
 
 ### 5.4 Rattrapage (backfill) et suivi de l'avancement
 
@@ -4662,7 +4655,7 @@ ni le cluster.
 | PQ-19 | Sur le MLflow 3 déployé : le rapport HTML Plotly s'affiche-t-il dans *Artifacts* ? Quelle longueur maximale pour la description (tag) ? Les métriques système s'activent-elles par variable d'environnement sur les runs de kedro-mlflow ? La vue multi-expériences existe-t-elle ? | Oui pour tout ; limite de tag 8 000 caractères ; replis de PS-31.6 sinon. Vérifié en K-03d sur MLflow 3.15 local : **oui, oui (7 500 caractères acceptés ; limite de MLflow 3 : 8 000) et oui** (variable d'environnement suffisante sur un run `mlflow.start_run`) ; vue multi-expériences non vérifiée ; constats détaillés en PS-31.6 ; à refaire sur le MLflow d'Onyxia. *K-13* : métriques système **actives par la seule variable sur les runs de kedro-mlflow** (après suppression de la réouverture du run par nœud) ; vue multi-expériences **existante** (`#/compare-experiments`, filtre `tags.workflow_id` accepté) ; liste filtrée par URL sur le chemin `/runs` ; expériences typées « Model training » par le pipeline (sinon ouverture sur *Traces*, filtre perdu) |
 | PQ-20 | À partir de quel seuil les **données réelles sont-elles « complètes »** pour retirer le demo (K-17b) ? | Toutes les requêtes Comext planifiées présentes au registre ; Comtrade : `COMPLETENESS.MIN_SHARE` (1,0) atteint sur toutes les années de `ANALYSIS_START_YEAR.comtrade` à l'année complète la plus récente ; au moins une exécution `daily` et une `weekly` de production réussies (PR-01 : plusieurs jours à semaines). K-17b mesure ces critères et **s'arrête** s'ils ne sont pas remplis |
 | PQ-21 | Que faire des déclarations Comtrade d'un millésime **antérieur** à la cible (déclarant en retard d'une révision, ex. `H3` en 2015 pour la cible `HS2012`) ? UNSD ne publie que les 21 tables **descendantes** (vérifié le 2026-10-06 dans `statflows/parameters/unsd.json` : toutes présentes jusqu'à HS1992) ; une conversion ascendante n'est pas fonctionnelle et `HsHarmonizer` la refuse, ce qui fait échouer le millésime cible concerné (comportement antérieur à K-07, inchangé). | Sans objet pour HS1992 (toutes les conversions sont descendantes). Pour les cibles récentes : à décider sur données réelles (écarter ces lignes et mesurer la valeur perdue, ou affecter selon la table descendante inverse) ; rien n'est fait en attendant |
-| PQ-22 | **Recalcul quotidien complet des partenaires** (constat K-12) : `statflows` avance `last_download` d'une requête même quand la réponse est vide (`statflows/core/download.py`, validation de l'entrée sur résultat vide) ; les métriques partenaires en font leur filigrane amont, donc chaque téléchargement quotidien rend toutes les unités `new_data` (puis toute la synthèse et la cohérence de la semaine). Vérifié sur `config/test/` : seconde exécution complète = 0 ligne téléchargée, BACI et réseau à jour, partenaires / synthèse / cohérence entièrement recalculés (comportement figé par `test_kedro_run.py`). | Rien n'est changé en K-12. Correctif proposé dans `statflows` : conserver une date de dernière **donnée écrite** (`last_data`) distincte de `last_download`, lue par `DownloadRegistryView.pairs_last_download` ; le test devra alors attendre 0 unité partenaires à la seconde exécution |
+| PQ-22 | ~~**Recalcul quotidien complet des partenaires** (constat K-12)~~ **Résolu (K-17c)** : `statflows` ≥ 0.3.0 enregistre pour chaque requête la date et le snapshot DuckLake de la dernière écriture qui a **modifié** des lignes (`last_modified`, `last_modified_snapshot`), distincts de `last_download` ; les partenaires, BACI et la synthèse ne décident plus que sur ces données modifiées (marque `UpstreamMark`, curseurs DuckLake). Vérifié sur `config/test/` par `test_kedro_run.py` : seconde exécution complète = aucune unité partenaire, BACI, réseau, synthèse ni cohérence recalculée ; une observation révisée ne recalcule que les unités concernées, cascade comprise. | — |
 
 ---
 
@@ -4801,9 +4794,6 @@ les autres depuis le poste local.
 | Première publication de la couche de service et vérification des volumes | K-03b (exécution), K-03c | `argo submit`, session DuckDB | données réelles, catalogue `serving` |
 | Connexion DuckDB de Superset, construction du tableau de bord, export versionné | K-03c | K-03c 🔌 | interface et pod Superset du namespace |
 | Mesure des limites de l'API Eurostat pour `products_step` (PR-03) | K-01 ou K-04b | local possible (réseau public), **mais** l'adresse IP et le limiteur diffèrent en production → mesurer aussi depuis un pod | débit réel |
-| Migration des registres v1 → v2 sur S3 (`adopt_legacy_fingerprints`) | après K-05 | un run de chaque étape avec `ADOPT_LEGACY_FINGERPRINTS=true` (variable d'environnement ou `STATE.ADOPT_LEGACY_FINGERPRINTS` / bloc `SYNTHESIS` / `COHERENCE`), puis retour à `false` ; pas d'outil dédié (choix K-05) | S3 réel : sauvegarder les registres v1 avant ; synthèse et cohérence réécrivent leur fichier en place |
-| Recréation de la table `indicators` avec la nouvelle clé (`classification`) | après K-06b, avant tout run partenaires | entre deux exécutions de l'étape : 1. sauvegarde des registres `trade/state/vulnerabilities/partners/` (et `trade/demo/…`) ; 2. `tools/migrate_indicators_key.py --dry-run` (profil par `VULNERABILITIES_CONFIG_PATH`, `SYNTHESIS_CONFIG_PATH`, `EUROSTAT_CONFIG_PATH`, `RUNTIME_CONFIG_PATH`) ; 3. `tools/migrate_indicators_key.py --drop-dependent --network` (recrée `indicators` avec `classification`, `hs_vintage`, `in_force = true`, `is_provisional` du profil, partition `classification` ; contrôle nombre de lignes / clés uniques, sauvegarde conservée en cas d'écart ou avec `--keep-backup` ; supprime `synthesis` et `synthesis_diagnostics` ; renseigne `network_indicators.in_force`) ; démo puis base ; 4. run partenaires : lignes en vigueur inchangées (empreintes intactes), lignes historiques calculées (`first`), tables de passage lues dans le cache UNSD de BACI ; 5. synthèse et cohérence (recalcul complet automatique : empreinte modifiée) puis `serving-script` | catalogue et Parquet réels ; suppressions irréversibles |
-| **Migration import / export du réseau** (colonne `flow` dans la clé primaire de `network_indicators`, `EXPORT_HHI` renommée `WORLD_HHI`) | au déploiement de l'implémentation import / export (2026-10-05), avant tout run réseau | 1. suppression de la table `network_indicators` et de `demo_network_indicators` (session DuckDB attachée au catalogue `vulnerabilities`, `DROP TABLE` du `fact_table` de chaque schéma) ; 2. réinitialisation des registres de fraîcheur réseau (suppression des fragments `trade/state/vulnerabilities/network/` et `trade/demo/state/vulnerabilities/network/`) ; 3. recalcul réseau forcé (`FORCE_STEPS=network`) ; 4. synthèse, cohérence, puis publication de service (`serving-script`), afin que `cell_scores` porte `WORLD_HHI` et la jointure par flux. Le premier run partenaires recalcule de lui-même tout le périmètre (empreintes `"<métrique>/<flux>"`), sans action manuelle. **Rien n'a été supprimé par le prompt d'implémentation** | suppressions irréversibles sur le catalogue et S3 réels ; réexporter ensuite les objets Superset si leur ID de jeu de données change |
 | Première passe BACI par millésime sur données réelles ; relevé de `memory/peak_mb` (par année), de `passes/<P>/seconds` et de `timing/seconds` | après K-07 | un millésime court d'abord : pod `baci-hs-script` avec `BACI_TARGETS=HS2022` (puis `HS2017`, …, `HS1992`), machine `baci-large` ; ou `argo submit --from workflowtemplate/trade-pipeline --entrypoint weekly -p force-steps=baci -p force-vintages=HS2022` ; vérifier ensuite qu'aucun Parquet ne reste sous `trade/work/baci/<V>/` | seul moyen d'avoir les vraies volumétries ; ajuster `PASSES.MAX_ROWS_PER_CHUNK` ou `baci-large` si `memory/peak_mb` approche la limite du pod |
 | Déploiement des manifestes générés, bascule, recette, runbooks | K-17 | K-17 🔌 | `kubectl apply`, `argo` |
 | **Retrait des données de démonstration et fictives** : bases `demo_*`, schémas `demo_*`, préfixes S3 `trade/demo/`, registres du profil, expériences MLflow `demo-*`, objets Superset du demo, workflow de transition ; contrôle de non-contamination de la production | K-17b (après K-17, données réelles complètes — PQ-20) | K-17b 🔌, confirmation objet par objet | suppressions **irréversibles** sur PostgreSQL, S3, MLflow, Superset |

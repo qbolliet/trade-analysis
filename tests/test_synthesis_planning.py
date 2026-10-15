@@ -1,9 +1,9 @@
 """Planification incrémentale de la synthèse par contexte et par méthode (fonctions pures).
 
-Règles de décision d'un contexte (premier calcul, forçage, nouvelles données
-complètes ou récentes, empreintes par méthode), pertinence des changements amont
-par millésime SH, budget de rattrapage, réglages, cadence et requêtes SQL.
-Registres locaux sous ``tmp_path``, aucune base.
+Règles de décision d'un contexte (premier calcul, forçage, contexte touché par un
+changement amont et marqué en attente, empreintes par méthode), budget de
+rattrapage, réglages, cadence et requêtes SQL. Registres locaux sous
+``tmp_path``, aucune base.
 """
 
 from __future__ import annotations
@@ -19,13 +19,13 @@ from kedro_pipeline.io.freshness import (
     RegistryEntry,
     Unit,
     UnitPlan,
+    mark_pending,
     parse_instant,
 )
 from macroforecast.trade.aggregation import MethodSpec, SynthesisConfig
 from scripts.compute_synthetic_scores import (
     CONSENSUS_FINGERPRINT,
     INPUTS_FINGERPRINT,
-    UpstreamMarks,
     build_contexts_query,
     build_scores_query,
     build_source_query,
@@ -33,26 +33,22 @@ from scripts.compute_synthetic_scores import (
     context_entry,
     context_registry,
     context_unit,
-    default_recent_periods,
     expand_synthesis_names,
     incremental_settings,
     method_fingerprint_params,
     plan_methods,
-    plan_synthesis_contexts,
-    recent_period_values,
+    plan_pending_contexts,
     replacement_predicate,
     select_contexts,
     skipped_by_cadence,
     synthesis_context_requested,
 )
 
-# Référentiel restreint des millésimes et colonnes de contexte de la configuration réelle
-NOMENCLATURES = {"HS2017": 2017, "HS2022": 2022}
+# Colonnes de contexte de la configuration réelle
 COLUMNS = ("hs_vintage", "freq", "flow", "indicators", "TIME_PERIOD")
-# Instants : premier calcul amont, calcul de la synthèse, changement amont ultérieur
+# Instants : calcul de la synthèse, calcul ultérieur
 T0 = parse_instant("2026-01-01T00:00:00+00:00")
 T1 = parse_instant("2026-01-02T00:00:00+00:00")
-T2 = parse_instant("2026-01-03T00:00:00+00:00")
 SOURCES = [{"SCHEMA": "indicators", "ALIAS": "p", "COLUMNS": ["HHI", "CDI2"]}]
 
 
@@ -89,36 +85,22 @@ def _requested(config: SynthesisConfig, filters=None):
     return synthesis_context_requested(config, SOURCES, filters or {}, ["import"], "all")
 
 
-def _record_all(registry: FreshnessRegistry, requested, watermark=T0) -> None:
+def _record_all(registry: FreshnessRegistry, requested) -> None:
     """Passe complète enregistrée sur tous les contextes."""
     for unit in _units():
         registry.upsert(context_entry(
-            unit, UnitPlan("first", frozenset(requested)), T1, watermark, requested, None,
+            unit, UnitPlan("first", frozenset(requested)), T1, requested, None,
         ))
     registry.save()
 
 
-def _marks(partners=(), networks=()) -> UpstreamMarks:
-    return UpstreamMarks.from_entries(
-        list(partners), list(networks), partner_label="HS2022", nomenclatures=NOMENCLATURES,
-    )
-
-
-def _partner(reason: str, when=T2, classification="HS2022") -> RegistryEntry:
-    return RegistryEntry(
-        Unit.of(classification=classification, reporter="FR", product="854110"), when, reason=reason
-    )
-
-
-def _network(vintage: str, when=T2, reason="new_data") -> RegistryEntry:
-    return RegistryEntry(Unit.of(vintage=vintage), when, reason=reason)
-
-
-def _plan(tmp_path, config, *, marks=None, force=ForceSpec(), recent=None, filters=None):
+def _plan(tmp_path, config, *, pending=(), force=ForceSpec(), filters=None):
+    """Plans des contextes, ``pending`` étant les contextes touchés par un changement amont."""
     requested = _requested(config, filters)
-    return plan_synthesis_contexts(
-        _units(), _registry(tmp_path), requested, marks or _marks([_partner("first", T0)]),
-        force, method_names=[spec.name for spec in config.methods], recent_periods=recent,
+    registry = _registry(tmp_path)
+    mark_pending(registry, pending, 42)
+    return plan_pending_contexts(
+        _units(), registry, requested, force, method_names=[spec.name for spec in config.methods],
     )
 
 
@@ -161,46 +143,34 @@ def test_forcing_step_methods_and_scope(tmp_path: Path) -> None:
     assert {unit.get("hs_vintage") for unit in plans} == {"HS2017"} and len(plans) == 4
 
 
-@pytest.mark.parametrize("reason", ["first", "fingerprint", "forced"])
-def test_partner_full_change_recomputes_every_in_force_period(tmp_path: Path, reason: str) -> None:
+def test_touched_contexts_are_planned_pending_with_every_name(tmp_path: Path) -> None:
     config = _config()
     _record_all(_registry(tmp_path), _requested(config))
-    plans = _plan(tmp_path, config, marks=_marks([_partner("first", T0), _partner(reason)]), recent=1)
-    # Toutes les périodes en vigueur, jamais le contexte historique
-    assert _keys(plans) == {unit.key for unit in _units()[:5]}
-    assert {p.reason for p in plans.values()} == {"new_data"}
-    assert all(p.names == frozenset(_requested(config)) for p in plans.values())
+    # Contextes touchés par un changement amont, toutes périodes confondues
+    touched = [_units()[0], _units()[4]]
+    plans = _plan(tmp_path, config, pending=touched)
+    assert _keys(plans) == {unit.key for unit in touched}
+    assert {plan.reason for plan in plans.values()} == {"pending"}
+    assert all(plan.names == frozenset(_requested(config)) for plan in plans.values())
+    # Aucun contexte touché : rien à recalculer
+    assert _plan(tmp_path, config) == {}
 
 
-def test_partner_new_data_recomputes_recent_periods_only(tmp_path: Path) -> None:
+def test_pending_flag_lasts_until_the_context_is_recorded(tmp_path: Path) -> None:
     config = _config()
-    _record_all(_registry(tmp_path), _requested(config))
-    plans = _plan(tmp_path, config, marks=_marks([_partner("first", T0), _partner("new_data")]), recent=2)
-    # Deux périodes les plus récentes, contextes en vigueur seulement
-    assert {(u.get("hs_vintage"), u.get("TIME_PERIOD")) for u in plans} == {
-        ("HS2022", "2022"), ("HS2022", "2023"),
-    }
-    # Sans profondeur connue : toutes les périodes sont récentes
-    plans = _plan(tmp_path, config, marks=_marks([_partner("first", T0), _partner("new_data")]), recent=None)
-    assert len(plans) == 5
-
-
-def test_historical_partner_unit_only_touches_its_vintage(tmp_path: Path) -> None:
-    config = _config()
-    _record_all(_registry(tmp_path), _requested(config))
-    marks = _marks([_partner("first", T0), _partner("fingerprint", classification="HS2017")])
-    plans = _plan(tmp_path, config, marks=marks)
-    assert _keys(plans) == {"HS2017|A|1|V|2023"}
-
-
-def test_network_change_touches_contexts_of_its_vintage(tmp_path: Path) -> None:
-    config = _config()
-    _record_all(_registry(tmp_path), _requested(config))
-    plans = _plan(tmp_path, config, marks=_marks([_partner("first", T0)], [_network("HS2017")]))
-    assert {unit.get("hs_vintage") for unit in plans} == {"HS2017"} and len(plans) == 4
-    # Changement ancien (antérieur au watermark enregistré) : rien
-    plans = _plan(tmp_path, config, marks=_marks([_partner("first", T0)], [_network("HS2017", T0)]))
-    assert plans == {}
+    requested = _requested(config)
+    registry = _registry(tmp_path)
+    _record_all(registry, requested)
+    unit = _units()[1]
+    mark_pending(registry, [unit], 7)
+    registry.save()
+    # Run interrompu : le marqueur survit, le contexte reste planifié
+    assert _keys(_plan(tmp_path, config)) == {unit.key}
+    # Enregistrement après succès : le marqueur est effacé
+    reread = _registry(tmp_path)
+    reread.upsert(context_entry(unit, UnitPlan("pending", frozenset(requested)), T1, requested, reread.get(unit)))
+    reread.save()
+    assert _plan(tmp_path, config) == {}
 
 
 def test_added_and_removed_methods(tmp_path: Path) -> None:
@@ -292,16 +262,12 @@ def test_budget_orders_by_period_and_reports_backlog() -> None:
     assert [unit.get("TIME_PERIOD") for unit in selected][:3] == ["2023", "2023", "2022"]
 
 
-def test_recent_periods_and_settings() -> None:
-    assert recent_period_values(_units(), "TIME_PERIOD", None) is None
-    assert recent_period_values(_units(), "TIME_PERIOD", 1) == frozenset({"2023"})
-    eurostat = {"DOWNLOADS": {"DS-045409": {"N_LAST_OBSERVATIONS": 10}, "OTHER": {"N_LAST_OBSERVATIONS": 4}}}
-    assert default_recent_periods(eurostat) == 10
-    settings = incremental_settings({"MAX_CONTEXTS_PER_RUN": None, "CADENCE": {"MIN_INTERVAL_DAYS": 3}}, eurostat)
-    assert (settings.recent_periods, settings.max_contexts, settings.min_interval_days) == (10, None, 3.0)
-    assert incremental_settings({"RECENT_PERIODS": 2}, eurostat).recent_periods == 2
+def test_incremental_settings() -> None:
+    settings = incremental_settings({"MAX_CONTEXTS_PER_RUN": None, "CADENCE": {"MIN_INTERVAL_DAYS": 3}}, n_jobs=1)
+    assert (settings.max_contexts, settings.min_interval_days) == (None, 3.0)
+    assert incremental_settings({"MAX_CONTEXTS_PER_RUN": 5}, n_jobs=1).max_contexts == 5
     with pytest.raises(ValueError):
-        incremental_settings({"MAX_CONTEXTS_PER_RUN": 0})
+        incremental_settings({"MAX_CONTEXTS_PER_RUN": 0}, n_jobs=1)
 
 
 def test_cadence_check() -> None:
@@ -324,7 +290,7 @@ def test_registry_template_must_name_context_columns(tmp_path: Path) -> None:
 def test_context_entry_merges_fingerprints() -> None:
     unit = _units()[0]
     previous = RegistryEntry(unit, T0, T0, fingerprints={"mpi": "old", "rank_mean": "kept"})
-    entry = context_entry(unit, UnitPlan("fingerprint", frozenset({"mpi"})), T1, T1,
+    entry = context_entry(unit, UnitPlan("fingerprint", frozenset({"mpi"})), T1,
                           {"mpi": "new", "rank_mean": "current"}, previous, n_cells=3)
     assert entry.fingerprints == {"mpi": "new", "rank_mean": "kept"}
     assert entry.extra == {"n_cells": 3} and entry.reason == "fingerprint"

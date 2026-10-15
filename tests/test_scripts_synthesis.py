@@ -1,14 +1,13 @@
 """Tests des helpers purs de ``scripts/compute_synthetic_scores.py``.
 
 Comportement figé, sans base : construction de la requête source (S-2.3),
-construction de la configuration méthodologique par surcharge, et règle de
-fraîcheur (S-2.1 v1). L'écriture DuckLake et ``run_synthesis`` ne sont pas
-exercés ici.
+et construction de la configuration méthodologique par surcharge. L'écriture
+DuckLake et ``run_synthesis`` ne sont pas exercés ici.
 """
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import timezone
 import logging
 
 import pytest
@@ -19,7 +18,6 @@ pytest.importorskip("dt_ducklake_manager")
 
 from scripts.compute_synthetic_scores import (  # noqa: E402
     build_source_query,
-    contexts_to_recompute,
     load_synthesis_flows,
     synthesis_config_from_params,
     synthesis_requested,
@@ -38,10 +36,9 @@ REFERENCE = load_parameters("base")["synthesis"]
 # build_source_query (S-2.3)
 # ──────────────────────────────────────────────────────────────────────
 
-# Sources et filtres de l'exemple S-2.2, figés dans leur forme d'avant le
-# paramètre FLOWS (filtre de flux écrit à la main) : sans ``flow_codes``, la
-# requête construite doit rester caractère pour caractère la même
-_LEGACY_SOURCES = [
+# Sources et filtres figés avec un filtre de flux écrit à la main : sans
+# ``flow_codes``, la requête construite doit rester caractère pour caractère la même
+_BASE_SOURCES = [
     {"SCHEMA": "indicators", "ALIAS": "p", "COLUMNS": ["HHI", "CDI2", "CDI3"]},
     {
         "SCHEMA": "network_indicators",
@@ -56,7 +53,7 @@ _LEGACY_SOURCES = [
         },
     },
 ]
-_LEGACY_FILTERS = {
+_BASE_FILTERS = {
     "WHERE": "p.\"flow\" = 1 AND p.\"indicators\" = 'VALUE_IN_EUROS' AND p.\"freq\" = 'A'",
     "LAST_N_PERIODS": 5,
 }
@@ -85,7 +82,7 @@ def synthesis_block() -> dict:
 
 def test_build_source_query_matches_s2_2() -> None:
     """Sans ``flow_codes``, la requête construite sur l'exemple S-2.2 est inchangée."""
-    query = build_source_query(_LEGACY_SOURCES, _LEGACY_FILTERS, "vulnerabilities")
+    query = build_source_query(_BASE_SOURCES, _BASE_FILTERS, "vulnerabilities")
     assert query == _EXPECTED_QUERY
 
 
@@ -123,8 +120,8 @@ def test_synthesis_flows_require_flow_in_context(synthesis_block: dict) -> None:
 
 def test_build_source_query_without_last_n_periods() -> None:
     """``LAST_N_PERIODS`` nul => aucune sous-requête sur les périodes."""
-    filters = {**_LEGACY_FILTERS, "LAST_N_PERIODS": None}
-    query = build_source_query(_LEGACY_SOURCES, filters, "vulnerabilities")
+    filters = {**_BASE_FILTERS, "LAST_N_PERIODS": None}
+    query = build_source_query(_BASE_SOURCES, filters, "vulnerabilities")
     assert "TIME_PERIOD\" IN (" not in query
     assert "SELECT DISTINCT" not in query
     assert query.splitlines()[-1] == (
@@ -237,34 +234,6 @@ def test_synthesis_config_from_params_on_reference_config() -> None:
     assert config.winsorize_quantile is None
     assert config.methods[1].levels == ("global",)
     assert config.methods[12].metrics == ("HHI", "CDI2", "CDI3", "WORLD_HHI")
-
-
-# ──────────────────────────────────────────────────────────────────────
-# contexts_to_recompute (S-2.1 v1)
-# ──────────────────────────────────────────────────────────────────────
-
-_OLD = datetime(2026, 1, 1, tzinfo=UTC)
-_NEW = datetime(2026, 6, 1, tzinfo=UTC)
-
-
-@pytest.mark.parametrize(
-    ("last_upstream", "last_synthesis", "force", "expected"),
-    [
-        (_NEW, _OLD, False, True),    # amont plus récent
-        (_OLD, _NEW, False, False),   # synthèse à jour
-        (_OLD, _OLD, False, False),   # instants égaux
-        (_NEW, None, False, True),    # jamais synthétisé
-        (None, None, False, False),   # rien en amont
-        (None, _OLD, False, False),   # rien en amont, synthèse existante
-        (_OLD, _NEW, True, True),     # FORCE prime
-        (None, None, True, True),     # FORCE prime sans amont
-    ],
-)
-def test_contexts_to_recompute(
-    last_upstream, last_synthesis, force, expected
-) -> None:
-    """Règle de fraîcheur : recalcul global de tous les contextes ou aucun."""
-    assert contexts_to_recompute(last_upstream, last_synthesis, force) is expected
 
 
 def test_read_source_metrics_casts_identifier_columns_to_text() -> None:

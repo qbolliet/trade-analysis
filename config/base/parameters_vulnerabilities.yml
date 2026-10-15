@@ -51,27 +51,15 @@ vulnerabilities:
       IS_PROVISIONAL: false
       PATHS:
         DATA_PATH: "trade/datasets/vulnerabilities/"
-        # Registre v1 (fichier unique, sans empreintes) : n'est plus écrit, seulement
-        # lu pour la migration vers les fragments de STATE
-        LAST_COMPUTATION_PATH: "trade/vulnerabilities/comext/last_computation.json"
       # Registre de fraîcheur fragmenté : un fichier par classification x reporter,
       # une entrée par produit (dernier calcul, watermark amont, empreinte de chaque
       # métrique, raison du calcul)
       STATE:
         PATH_TEMPLATE: "trade/state/vulnerabilities/partners/{classification}/{reporter}.json"
-        # Migration : à true pour UN run au déploiement, les entrées du registre v1
-        # adoptent les empreintes courantes sans recalcul et sont réécrites en
-        # fragments ; à false sinon (empreinte manquante = jamais calculé avec la
-        # méthodologie courante). Surchargeable par ADOPT_LEGACY_FINGERPRINTS
-        ADOPT_LEGACY_FINGERPRINTS: false
-        # Décision « amont modifié » d'un couple :
-        #   - legacy   : couple re-téléchargé (last_download), même sans changement ;
-        #   - shadow   : décision legacy exécutée, décision sur les données réellement
-        #                modifiées (last_modified_snapshot) comparée (freshness/shadow_*) ;
-        #   - snapshot : couple dont les données ont été modifiées (statflows >= 0.2.2).
-        # Les entrées calculées enregistrent le snapshot amont dans tous les modes.
-        # Bascule après la synthèse (AUDIT_WATERMARKS_AVAL.md §5.7)
-        DECISION_MODE: "shadow"
+        # Un couple est recalculé quand les données de sa série ont réellement changé
+        # (last_modified_snapshot du registre de téléchargement), pas quand la requête
+        # a seulement été rejouée ; l'entrée calculée enregistre le snapshot amont pris
+        # en compte
 
   # Suivi d'exécution MLflow (l'URI du serveur vient de la variable
   # MLFLOW_TRACKING_URI, le nom d'expérience de experiments.yml). Dépendance
@@ -123,15 +111,10 @@ vulnerabilities:
     RESULT_SCHEMA: "network_indicators"
     PATHS:
       DATA_PATH: "trade/datasets/vulnerabilities/"
-      # Registre v1 (fichier unique, sans empreintes) : n'est plus écrit, seulement
-      # lu pour la migration vers les fragments de STATE
-      LAST_COMPUTATION_PATH: "trade/vulnerabilities/baci/last_computation.json"
     # Registre de fraîcheur fragmenté : un fichier par millésime, confronté au
     # dernier calcul BACI du millésime (registre baci.STATE)
     STATE:
       PATH_TEMPLATE: "trade/state/vulnerabilities/network/{vintage}.json"
-      # Migration des entrées v1 (cf. bloc partenaires)
-      ADOPT_LEGACY_FINGERPRINTS: false
     # Nombre de processus calculant les millésimes en parallèle (un millésime par
     # tâche ; le processus parent reste l'unique écrivain). null => variable
     # d'environnement NUM_CPU (CPU du pod), à défaut nombre de CPU de la machine

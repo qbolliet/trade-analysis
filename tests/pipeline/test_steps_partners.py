@@ -26,7 +26,7 @@ from test_scripts_partners_e2e import (  # noqa: E402
     _VINTAGE_CODES,
     NOMENCLATURES,
     REPORTERS,
-    T0,
+    MARK,
     _vintage_fact_table,
 )
 
@@ -50,12 +50,12 @@ class _CatalogFactory:
 
 
 class _Downloads:
-    """Vue factice du registre de téléchargement : couples reporter x produit."""
+    """Vue factice du registre de téléchargement : marques des couples reporter x produit."""
 
     def __init__(self, pairs) -> None:
         self.pairs = pairs
 
-    def pairs_last_download(self):
+    def pairs_last_modified(self):
         return dict(self.pairs)
 
 
@@ -88,7 +88,7 @@ def _setup(tmp_path: Path):
     with source.connect() as conn:
         write_dataframe(conn, _vintage_fact_table(), KEYS, catalog_alias="lake", schema="comext")
     downloads = _Downloads({
-        (reporter, str(product).zfill(6) if len(str(product)) <= 6 else str(product)): T0
+        (reporter, str(product).zfill(6) if len(str(product)) <= 6 else str(product)): MARK
         for reporter in REPORTERS for codes in _VINTAGE_CODES.values() for product in codes
     })
     block = {
@@ -107,7 +107,7 @@ def _setup(tmp_path: Path):
 
 def _run(source, result, downloads, block, params, runtime, runs, *, loader=None):
     return run_partner_vulnerabilities(
-        source, result, partner_registry(block, "HS2022"), downloads,
+        source, result, partner_registry(block), downloads,
         params=params, runtime=runtime, dataflow="DS", runs=runs,
         concordances_loader=loader or (lambda vintages, nomenclatures: _CONCORDANCES),
         run_id="wf-1",
@@ -148,22 +148,24 @@ def test_partner_step_runs_one_tracked_pass_per_nomenclature(tmp_path: Path) -> 
     assert second.n_units_planned == 0 and not second.reportable and again.opened == []
 
 
-def test_failed_pass_is_isolated_and_raised_at_the_end(tmp_path: Path) -> None:
-    from statflows.storage.ducklake.tables import write_dataframe
-    import pandas as pd
+def test_failed_pass_is_isolated_and_raised_at_the_end(tmp_path: Path, monkeypatch) -> None:
+    from kedro_pipeline.steps import partners as partners_step
 
     source, result, downloads, block, params, runtime = _setup(tmp_path)
-    # Table résultat créée avant la clé de nomenclature : chaque passe est refusée
-    with result.connect() as conn:
-        write_dataframe(
-            conn, pd.DataFrame({"reporter": ["FR"], "product": ["854140"], "HHI": [0.1]}),
-            ["reporter", "product"], catalog_alias="lake", schema="indicators",
-        )
+    original = partners_step.compute_partner_units
+
+    # Panne simulée de la seule passe historique : la passe en vigueur doit aboutir
+    def flaky(*args, target_vintage=None, **kwargs):
+        if target_vintage == "HS2017":
+            raise RuntimeError("panne simulée")
+        return original(*args, target_vintage=target_vintage, **kwargs)
+
+    monkeypatch.setattr(partners_step, "compute_partner_units", flaky)
     runs = _Runs()
     outcome = _run(source, result, downloads, block, params, runtime, runs)
-    assert set(outcome.failures) == {"HS2022", "HS2017"} and outcome.n_units_succeeded == 0
-    assert "classification" in outcome.failures["HS2022"] and runs.published == {}
-    with pytest.raises(RuntimeError, match=r"Passe\(s\) partenaires en échec : \['HS2017', 'HS2022'\]"):
+    assert set(outcome.failures) == {"HS2017"} and outcome.n_units_succeeded == 1
+    assert "panne simulée" in outcome.failures["HS2017"] and set(outcome.children) == {"HS2022"}
+    with pytest.raises(RuntimeError, match=r"Passe\(s\) partenaires en échec : \['HS2017'\]"):
         outcome.raise_if_failed()
 
 
@@ -173,12 +175,12 @@ def test_historical_vintages_require_a_correspondence_loader(tmp_path: Path) -> 
     source, result, downloads, block, params, runtime = _setup(tmp_path)
     with pytest.raises(ValueError, match="correspondence-table loader"):
         plan_partner_passes(
-            partner_registry(block, "HS2022"), downloads, params=params, runtime=runtime,
+            partner_registry(block), downloads, params=params, runtime=runtime,
             dataflow="DS",
         )
     # Sans millésime historique, une seule passe et aucune table de passage lue
     plan = plan_partner_passes(
-        partner_registry(block, "HS2022"), downloads, params={**params, "VINTAGES": []},
+        partner_registry(block), downloads, params={**params, "VINTAGES": []},
         runtime=runtime, dataflow="DS",
     )
     assert [p.label for p in plan.passes] == ["HS2022"] and plan.concordances == {}

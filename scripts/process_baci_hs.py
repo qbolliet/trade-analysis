@@ -47,7 +47,7 @@ from kedro_pipeline.io.ducklake import (
     s3_credentials_from_env,
     workflow_run_id,
 )
-from kedro_pipeline.io.freshness import ForceSpec, adopt_legacy_flag
+from kedro_pipeline.io.freshness import ForceSpec
 from kedro_pipeline.io.registry_views import DownloadRegistryView
 from kedro_pipeline.steps._config import (  # noqa: F401
     baci_config_from_params,
@@ -59,8 +59,6 @@ from kedro_pipeline.steps.reference import publish_hs_reference
 # Étape BACI (ré-exportée : fraîcheur, porte de complétude, passes)
 from kedro_pipeline.steps.baci import (  # noqa: F401
     STEP,
-    _PROCESSING_ROOT,
-    _parse_legacy_baci,
     _read_comtrade_fact_table,
     _share_min,
     BaciScope,
@@ -82,8 +80,8 @@ from kedro_pipeline.steps.baci import (  # noqa: F401
     run_baci_vintages,
     select_targets,
     started_entry,
+    vintage_mark,
     vintage_scopes,
-    vintage_watermark,
     with_year_written,
 )
 # Planification des requêtes Comtrade : même liste que le téléchargement
@@ -237,7 +235,7 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
     scope = prepare_baci(
         comtrade, state, view, planned, products, params=baci_config, comtrade_params=comtrade_config,
         runtime=runtime_config, targets=targets, force=ForceSpec.from_runtime(runtime_config),
-        adopt_legacy_fingerprints=adopt_legacy_flag(baci_config.get("STATE")), now=now,
+        now=now,
         loader=TableLoader(), saver=TableSaver(), concordance_client_factory=UNSDClient,
         concordances_loader=prepare_concordances, reference_publisher=publish_hs_reference,
     )

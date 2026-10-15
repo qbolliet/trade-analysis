@@ -468,10 +468,6 @@ class IncrementalSettings:
     """Run settings of a per-context step (synthesis or coherence).
 
     Attributes:
-        recent_periods: Number of most recent periods recomputed when the
-            partner metrics have new data (the incremental download only
-            brings back the last observations); ``None`` treats every period
-            as recent.
         max_contexts: Catch-up budget: maximum number of contexts computed in
             one run, the most recent periods first, the others left to the
             next runs; ``None`` (nominal regime) computes every stale context.
@@ -489,7 +485,6 @@ class IncrementalSettings:
         >>> IncrementalSettings().max_contexts is None
         True
     """
-    recent_periods: Optional[int] = None
     max_contexts: Optional[int] = None
     write_batch_contexts: int = 50
     min_interval_days: float = 6.0
@@ -497,55 +492,20 @@ class IncrementalSettings:
     n_jobs: int = 1
     sequential_methods: Tuple[str, ...] = ()
 
-# Fonction de lecture de la profondeur de l'incrémental Eurostat
-def default_recent_periods(eurostat_config: Optional[Mapping[str, Any]]) -> Optional[int]:
-    """Number of periods the incremental partner download brings back.
-
-    Args:
-        eurostat_config: Parsed Eurostat download configuration, or ``None``.
-
-    Returns:
-        The largest ``N_LAST_OBSERVATIONS`` found in it, or ``None`` when none
-        is set (every period then counts as recent, the conservative choice).
-
-    Examples:
-        >>> default_recent_periods({"DOWNLOADS": {"DS": {"N_LAST_OBSERVATIONS": 10}}})
-        10
-        >>> default_recent_periods(None) is None
-        True
-    """
-    found: List[int] = []
-
-    # Parcours récursif : la clé vit sous le bloc de chaque dataflow
-    def walk(node: Any) -> None:
-        if isinstance(node, Mapping):
-            for key, value in node.items():
-                if key == "N_LAST_OBSERVATIONS" and value is not None:
-                    found.append(int(value))
-                else:
-                    walk(value)
-
-    walk(eurostat_config or {})
-    return max(found) if found else None
-
 # Fonction de lecture des réglages incrémentaux d'un bloc de configuration
 def incremental_settings(
     block: Mapping[str, Any],
-    eurostat_config: Optional[Mapping[str, Any]] = None,
     *,
     n_jobs: Optional[int] = None,
 ) -> IncrementalSettings:
     """Read the incremental settings of a ``SYNTHESIS`` or ``COHERENCE`` block.
 
     Args:
-        block: Configuration block (keys ``RECENT_PERIODS``,
-            ``MAX_CONTEXTS_PER_RUN``, ``WRITE_BATCH_CONTEXTS``,
+        block: Configuration block (keys ``MAX_CONTEXTS_PER_RUN``, ``WRITE_BATCH_CONTEXTS``,
             ``CADENCE.MIN_INTERVAL_DAYS``, ``N_JOBS`` and
             ``SEQUENTIAL_METHODS``). ``N_JOBS`` null resolves to the CPU of the
             pod (see :func:`~kedro_pipeline.parallel.resolve_n_jobs`) unless
             ``n_jobs`` is given.
-        eurostat_config: Eurostat download configuration, the default of
-            ``RECENT_PERIODS``.
         n_jobs: Number of worker processes resolved by the caller; the step
             functions always give it, so that they never read the environment.
 
@@ -556,21 +516,16 @@ def incremental_settings(
         ValueError: If a count is not a positive integer.
 
     Examples:
-        >>> incremental_settings({"MAX_CONTEXTS_PER_RUN": 2, "RECENT_PERIODS": 3}).max_contexts
+        >>> incremental_settings({"MAX_CONTEXTS_PER_RUN": 2}, n_jobs=1).max_contexts
         2
     """
-    recent = block.get("RECENT_PERIODS")
-    if recent is None:
-        recent = default_recent_periods(eurostat_config)
     budget = block.get("MAX_CONTEXTS_PER_RUN")
     batch = block.get("WRITE_BATCH_CONTEXTS") or IncrementalSettings.write_batch_contexts
     interval = (block.get("CADENCE") or {}).get("MIN_INTERVAL_DAYS")
-    for name, value in (("RECENT_PERIODS", recent), ("MAX_CONTEXTS_PER_RUN", budget),
-                        ("WRITE_BATCH_CONTEXTS", batch)):
+    for name, value in (("MAX_CONTEXTS_PER_RUN", budget), ("WRITE_BATCH_CONTEXTS", batch)):
         if value is not None and int(value) < 1:
             raise ValueError(f"{name} must be a positive integer, got {value!r}")
     return IncrementalSettings(
-        recent_periods=int(recent) if recent is not None else None,
         max_contexts=int(budget) if budget is not None else None,
         write_batch_contexts=int(batch),
         min_interval_days=(

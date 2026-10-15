@@ -1,25 +1,22 @@
 """Synthèse pilotée par curseurs DuckLake (catalogue temporaire, de bout en bout).
 
-Comportement figé (``STATE.DECISION_MODE: snapshot``) :
+Comportement figé :
 
 1. premier passage : tous les contextes (``first``), curseurs initialisés ;
 2. aucun changement en entrée : aucun contexte, curseurs avancés ;
 3. révision d'une **période ancienne** d'une cellule partenaire : seul son contexte
-   est recalculé, et le résultat est identique à un recalcul complet (l'heuristique
-   ``RECENT_PERIODS`` l'aurait ratée) ;
+   est recalculé (quelle que soit sa période), et le résultat est identique à un
+   recalcul complet ;
 4. révision d'une ligne réseau : les seuls contextes qu'elle joint ;
 5. suppression de lignes de la grille : contexte recalculé, identique au complet ;
 6. contexte en échec : il reste ``pending`` et est repris au passage suivant ;
 7. snapshots expirés après le curseur : repli complet ;
-8. mode ``shadow`` : la décision legacy est exécutée, l'écart est mesuré ;
-9. faux négatif FN-1 de la règle legacy (instant amont antérieur au watermark
-   global enregistré) : raté par ``legacy``, vu par les curseurs.
+8. curseur perdu alors que des contextes sont déjà calculés : repli complet.
 """
 
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Optional
 
 import pandas as pd
 import pytest
@@ -32,18 +29,14 @@ from kedro_pipeline.io.cursors import StepCursors  # noqa: E402
 from kedro_pipeline.io.freshness import (  # noqa: E402
     ForceSpec,
     FreshnessRegistry,
-    RegistryEntry,
     Unit,
-    parse_instant,
 )
 from kedro_pipeline.steps import synthesis as synthesis_module  # noqa: E402
 from kedro_pipeline.steps.synthesis import (  # noqa: E402
     IncrementalSettings,
-    UpstreamMarks,
     build_source_query,
     context_registry,
     context_unit,
-    plan_synthesis_contexts,
     read_source_metrics,
     run_incremental_synthesis,
     synthesis_context_requested,
@@ -106,20 +99,15 @@ def _cursors(root: Path) -> StepCursors:
     return StepCursors(registry, "synthesis")
 
 
-def _marks(partner_entries=()) -> UpstreamMarks:
-    return UpstreamMarks.from_entries(list(partner_entries), [], partner_label="HS2022", nomenclatures=None)
-
-
-def _synthesise(sources, root: Path, mode: str = "snapshot", *, settings=IncrementalSettings(),
-                marks: Optional[UpstreamMarks] = None, tracker=None):
+def _synthesise(sources, root: Path, *, settings=IncrementalSettings(), tracker=None):
     return run_incremental_synthesis(
         sources.conn, sources.conn, CONFIG,
         sources=SOURCES, filters=FILTERS, catalog_alias=sources.catalog_alias,
         result_schema="synthesis", diagnostics_schema="synthesis_diagnostics",
         registry=_registry(root),
         requested=synthesis_context_requested(CONFIG, SOURCES, FILTERS, ["import", "export"], None),
-        marks=marks or _marks(), force=ForceSpec(), settings=settings, flow_codes=FLOW_CODES,
-        log_artifacts=False, cursors=_cursors(root), mode=mode, tracker=tracker,
+        force=ForceSpec(), settings=settings, flow_codes=FLOW_CODES,
+        log_artifacts=False, cursors=_cursors(root), tracker=tracker,
     )
 
 
@@ -173,7 +161,7 @@ def test_cursor_driven_synthesis(synthesis_source_tables, tmp_path: Path, monkey
 
     # 3. Révision d'une période ancienne : son seul contexte, identique au complet
     _revise_indicator(sources, old, 1, "FR", sources.products[3], 0.987)
-    third = _synthesise(sources, tmp_path, settings=IncrementalSettings(recent_periods=1))
+    third = _synthesise(sources, tmp_path)
     assert set(third.computed) == {_context(old, 1)}
     assert {plan.reason for plan in third.plans.values()} == {"pending"}
     _assert_equal_to_full_recomputation(sources)
@@ -231,50 +219,11 @@ def test_cursor_driven_synthesis(synthesis_source_tables, tmp_path: Path, monkey
     assert len(expired.computed) == n_contexts
     _assert_equal_to_full_recomputation(sources)
 
-
-@pytest.mark.slow
-def test_shadow_mode_measures_what_the_legacy_rule_misses(synthesis_source_tables, tmp_path: Path) -> None:
-    from macroforecast.tracking import CapturingTracker, NULL_TRACKER
-
-    sources = synthesis_source_tables
-    old = min(sources.periods)
-    _synthesise(sources, tmp_path, mode="shadow")
-
-    # Révision ancienne vue comme new_data partenaire : legacy ne recalcule que la
-    # période récente (RECENT_PERIODS = 1), les curseurs touchent la période ancienne
-    _revise_indicator(sources, old, 1, "FR", sources.products[2], 0.31)
-    t1 = parse_instant("2099-01-01")
-    marks = _marks([RegistryEntry(
-        Unit.of(classification="HS2022", reporter="FR", product=sources.products[2]), t1,
-        upstream_watermark=t1, reason="new_data",
-    )])
-    tracker = CapturingTracker(NULL_TRACKER)
-    shadow = _synthesise(sources, tmp_path, mode="shadow", marks=marks,
-                         settings=IncrementalSettings(recent_periods=1), tracker=tracker)
-
-    assert {unit.get("TIME_PERIOD") for unit in shadow.computed} == {max(sources.periods)}
-    assert tracker.metrics["freshness/shadow_only_new"] == 1.0
-    assert tracker.metrics["freshness/shadow_only_legacy"] == 2.0
-    # Les curseurs ont avancé : la bascule en snapshot part de là
-    assert _cursors(tmp_path).snapshot(sources.catalog_alias, "indicators") == shadow.pinned
-
-
-def test_legacy_rule_misses_an_upstream_entry_recorded_late() -> None:
-    """FN-1 : entrée amont enregistrée après la lecture des marques, instant antérieur."""
-    from kedro_pipeline.io.freshness import _EmptyLoader
-
-    registry = FreshnessRegistry("{TIME_PERIOD}.json", None, "synthesis", lambda u: u.key,
-                                 loader=_EmptyLoader())
-    unit = context_unit(CONFIG.context_columns, ("A", 1, "VALUE_IN_EUROS", "2023"))
-    partner_started, network_started = parse_instant("2026-10-10T07:00"), parse_instant("2026-10-10T08:00")
-    # Synthèse calculée avec le watermark global lu à 09:00 (réseau, 08:00)
-    registry.upsert(RegistryEntry(unit, parse_instant("2026-10-10T09:00"),
-                                  upstream_watermark=network_started, reason="first"))
-    # Passe partenaires démarrée à 07:00, enregistrée à 10:00
-    late = RegistryEntry(Unit.of(classification="HS2022", reporter="FR", product="1"),
-                         partner_started, upstream_watermark=partner_started, reason="new_data")
-    plans = plan_synthesis_contexts(
-        [unit], registry, {}, _marks([late]), ForceSpec(),
-        method_names=[], recent_periods=None,
-    )
-    assert plans == {}  # changement raté par la règle legacy, d'où la bascule sur curseurs
+    # 8. Curseur perdu alors que les contextes sont calculés : repli complet, résultat inchangé
+    (tmp_path / "cursors").joinpath("synthesis.json").unlink()
+    lost = _synthesise(sources, tmp_path)
+    assert len(lost.computed) == n_contexts
+    assert {plan.reason for plan in lost.plans.values()} == {"pending"}
+    _assert_equal_to_full_recomputation(sources)
+    # Puis plus rien à recalculer
+    assert _synthesise(sources, tmp_path).plans == {}

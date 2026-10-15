@@ -35,7 +35,7 @@ from kedro_pipeline.io.ducklake import (
     s3_credentials_from_env,
     workflow_run_id,
 )
-from kedro_pipeline.io.freshness import ForceSpec, adopt_legacy_flag
+from kedro_pipeline.io.freshness import ForceSpec
 # Parallélisme intra-pod (résolution de n_jobs)
 from kedro_pipeline.parallel import resolve_n_jobs
 from kedro_pipeline.config import experiment_name, load_parameters, read_config_file
@@ -55,18 +55,13 @@ from kedro_pipeline.steps.network import (  # noqa: F401
     VintageOutcome,
     VintageTask,
     _CONFIG_ROOT,
-    _dates_by_schema,
     annotate_network_in_force,
     compute_vintage_task,
-    load_last_computation_dates,
-    load_last_processing_dates,
     network_registry,
     network_requested,
     network_upstream,
     plan_network_units,
     run_network_vulnerabilities,
-    save_last_computation_dates,
-    vintages_to_recompute,
 )
 # Paramètres d'exécution partagés (forçage ponctuel)
 from scripts.download_comtrade import load_runtime_config
@@ -108,9 +103,8 @@ def load_comtrade_config(config_path: Optional[os.PathLike] = None) -> dict:
 def load_baci_config(config_path: Optional[os.PathLike] = None) -> dict:
     """Load the BACI configuration.
 
-    Read for two things only: the HS vintages to score
-    (``CLASSIFICATIONS.TARGETS``, i.e. which source schemas exist) and the path
-    of the BACI processing registry (``PATHS.LAST_PROCESSING_PATH``). No
+    Read for the HS vintages to score (``CLASSIFICATIONS.TARGETS``, i.e. which
+    source schemas exist) and the BACI freshness registry (``STATE``). No
     methodological BACI parameter is used here.
 
     Args:
@@ -184,7 +178,6 @@ def main() -> None:
         params=vulnerability_config, runtime=runtime_config, dataflow=comtrade_config["DATAFLOW"],
         runs=runs, n_jobs=resolve_n_jobs(network_config.get("N_JOBS")),
         force=ForceSpec.from_runtime(runtime_config),
-        adopt_legacy_fingerprints=adopt_legacy_flag(network_config.get("STATE")),
         run_id=workflow_run_id(),
     )
     outcome.raise_if_failed()

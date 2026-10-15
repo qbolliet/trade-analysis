@@ -49,14 +49,6 @@ pods working on disjoint partitions never overwrite each other's entries.
 Fragments are read lazily, and only the fragments actually modified are
 written back.
 
-Version-1 registries (one global JSON file per step, without fingerprints) are
-read through a :class:`LegacySource`. A version-1 entry is read with
-``fingerprints={}``: a missing fingerprint means "never computed with this
-methodology", so every metric of the unit is recomputed — unless the run sets
-``adopt_legacy_fingerprints``, which copies the current fingerprints onto the
-version-1 entries without recomputation and rewrites them as fragments (the
-deployment migration).
-
 Forcing values are comma- **or** semicolon-separated strings. ``kedro run
 --params`` splits its argument on commas *before* separating keys from values,
 so a value holding a comma (``PERIODS=2020,2021``) fails there; use the
@@ -123,9 +115,6 @@ FORCE_ENV_VARIABLES: Mapping[str, str] = {
     "vintages": "FORCE_VINTAGES",
 }
 
-# Variable d'environnement d'adoption des empreintes courantes par les entrées v1
-ADOPT_ENV_VARIABLE = "ADOPT_LEGACY_FINGERPRINTS"
-
 # Dimensions d'unité confrontées à chaque filtre de périmètre de forçage
 _SCOPE_DIMENSIONS: Mapping[str, Tuple[str, ...]] = {
     "reporters": ("reporter",),
@@ -139,8 +128,7 @@ _SCOPE_DIMENSIONS: Mapping[str, Tuple[str, ...]] = {
 # Clés réservées d'une entrée de fragment (le reste est rangé dans ``extra``)
 _ENTRY_KEYS = frozenset(
     {
-        "unit", "last_computed", "upstream_watermark", "fingerprints", "reason", "legacy",
-        "pending_since",
+        "unit", "last_computed", "upstream_watermark", "fingerprints", "reason", "pending_since",
     }
 )
 
@@ -437,8 +425,6 @@ class RegistryEntry:
         extra: Step-specific fields (counters, ``fit_id``, ``years_scope``,
             ``years_written``, ``upstream_reasons``…), stored at the top level
             of the JSON entry.
-        legacy: Whether the entry comes from a version-1 registry and has not
-            been migrated yet.
         pending_since: Snapshot of the upstream change, read from a cursor,
             that made the unit stale while it is not recomputed yet; ``None``
             when nothing is pending. A new entry recorded after a successful
@@ -458,16 +444,14 @@ class RegistryEntry:
     fingerprints: Dict[str, str] = field(default_factory=dict)
     reason: str = "first"
     extra: Dict[str, Any] = field(default_factory=dict)
-    legacy: bool = False
     pending_since: Optional[int] = None
 
-    # Sérialisation JSON (format d'un fragment v2)
+    # Sérialisation JSON (format d'un fragment)
     def to_json(self) -> Dict[str, Any]:
         """Serialise the entry into its fragment representation.
 
         Returns:
-            JSON-ready mapping; ``extra`` fields are stored at the top level,
-            and ``legacy`` only when true.
+            JSON-ready mapping; ``extra`` fields are stored at the top level.
         """
         payload: Dict[str, Any] = {
             "unit": self.unit.as_dict(),
@@ -479,8 +463,6 @@ class RegistryEntry:
         for key, value in self.extra.items():
             if key not in _ENTRY_KEYS:
                 payload[key] = value
-        if self.legacy:
-            payload["legacy"] = True
         if self.pending_since is not None:
             payload["pending_since"] = int(self.pending_since)
         return payload
@@ -506,69 +488,10 @@ class RegistryEntry:
             fingerprints={str(k): str(v) for k, v in (payload.get("fingerprints") or {}).items()},
             reason=str(payload.get("reason") or "first"),
             extra={k: v for k, v in payload.items() if k not in _ENTRY_KEYS},
-            legacy=bool(payload.get("legacy", False)),
             pending_since=(
                 int(payload["pending_since"]) if payload.get("pending_since") is not None else None
             ),
         )
-
-
-# Fonction de construction d'une entrée héritée d'un registre v1
-def legacy_entry(unit: Unit, last_computed: Any, **extra: Any) -> RegistryEntry:
-    """Build the entry of a unit read from a version-1 registry.
-
-    Documented migration choice: a version-1 entry carries no fingerprint, so
-    it is read with ``fingerprints={}`` — "never computed with the current
-    methodology" — and every metric of the unit will be recomputed, unless
-    the run adopts the current fingerprints (``adopt_legacy_fingerprints``).
-    Its ``upstream_watermark`` is its ``last_computed``: this reproduces the
-    version-1 rule exactly (stale when the upstream is more recent than the
-    last computation). The reason is ``first``: version 1 knew no other one.
-
-    Args:
-        unit: The unit.
-        last_computed: Version-1 computation instant (text or datetime).
-        **extra: Fields kept from the version-1 entry (counters…).
-
-    Returns:
-        The legacy entry, or an entry with ``last_computed=None`` when the
-        instant is unreadable (the unit is then planned as ``first``).
-
-    Examples:
-        >>> entry = legacy_entry(Unit.of(vintage="HS2017"), "2026-01-01T00:00:00+00:00")
-        >>> entry.legacy, entry.fingerprints, entry.upstream_watermark == entry.last_computed
-        (True, {}, True)
-    """
-    instant = parse_instant(last_computed)
-    return RegistryEntry(
-        unit=unit,
-        last_computed=instant,
-        upstream_watermark=instant,
-        fingerprints={},
-        reason="first",
-        extra=dict(extra),
-        legacy=True,
-    )
-
-
-# Classe de source de registre v1
-@dataclass(frozen=True)
-class LegacySource:
-    """Version-1 registry read during the migration.
-
-    Args:
-        path: Path (or S3 key) of the version-1 JSON file. It may be the very
-            path of a fragment (single-fragment registries such as the
-            synthesis one): a file without ``schema_version`` is then read as
-            version 1.
-        bucket: S3 bucket, or ``None`` for a local file.
-        parse: Function turning the version-1 document into legacy entries
-            (see :func:`legacy_entry`).
-    """
-
-    path: Any
-    bucket: Optional[str]
-    parse: Callable[[Mapping[str, Any]], Iterable[RegistryEntry]]
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -601,8 +524,6 @@ class FreshnessRegistry:
         shard_of: Function giving the fragment label of a unit, recorded in the
             ``fragment`` field of the file (for readers; the path comes from
             the template).
-        legacy: Version-1 registry to fall back on for units absent from the
-            fragments.
         loader: JSON loader (a fresh one by default).
         saver: JSON saver (a fresh one by default).
         storage_options: S3 connection arguments forwarded to the loader and
@@ -625,7 +546,6 @@ class FreshnessRegistry:
         step: str,
         shard_of: Callable[[Unit], str],
         *,
-        legacy: Optional[LegacySource] = None,
         loader: Optional[Loader] = None,
         saver: Optional[Saver] = None,
         storage_options: Optional[Mapping[str, Any]] = None,
@@ -634,7 +554,6 @@ class FreshnessRegistry:
         self.bucket = bucket
         self.step = step
         self.shard_of = shard_of
-        self.legacy = legacy
         self.loader = loader or Loader()
         self.saver = saver or Saver()
         self.storage_options = dict(storage_options or {})
@@ -644,8 +563,6 @@ class FreshnessRegistry:
         self._fragment_names: Dict[str, str] = {}
         # Fragments modifiés depuis le dernier save()
         self._dirty: Set[str] = set()
-        # Entrées héritées (registre v1), lues une seule fois à la demande
-        self._legacy_entries: Optional[Dict[Unit, RegistryEntry]] = None
         # Chemins effectivement lus (traçabilité du chargement paresseux)
         self.loaded_paths: List[str] = []
 
@@ -683,9 +600,7 @@ class FreshnessRegistry:
             data = self._read(path, self.bucket)
             self.loaded_paths.append(path)
             entries: Dict[str, RegistryEntry] = {}
-            # Fragment v2 ; tout autre contenu (registre v1 au même chemin) est
-            # laissé à la source héritée
-            if isinstance(data, Mapping) and data.get("schema_version") == SCHEMA_VERSION:
+            if isinstance(data, Mapping):
                 for key, payload in (data.get("entries") or {}).items():
                     try:
                         entries[str(key)] = RegistryEntry.from_json(payload)
@@ -694,26 +609,9 @@ class FreshnessRegistry:
             self._fragments[path] = entries
         return self._fragments[path]
 
-    # Chargement paresseux des entrées héritées
-    def _legacy(self) -> Dict[Unit, RegistryEntry]:
-        """Return the legacy entries, reading the version-1 registry once."""
-        if self._legacy_entries is None:
-            self._legacy_entries = {}
-            if self.legacy is not None:
-                data = self._read(_posix(self.legacy.path), self.legacy.bucket)
-                # Document v1 seulement : un fragment v2 au même chemin n'est pas hérité
-                if isinstance(data, Mapping) and "schema_version" not in data:
-                    for entry in self.legacy.parse(data):
-                        self._legacy_entries[entry.unit] = replace(entry, legacy=True)
-                    logger.info(
-                        "%d entrée(s) héritée(s) lue(s) dans le registre v1 '%s'",
-                        len(self._legacy_entries), self.legacy.path,
-                    )
-        return self._legacy_entries
-
     # Lecture de l'entrée d'une unité
     def get(self, unit: Unit) -> Optional[RegistryEntry]:
-        """Return the entry of a unit (fragment first, then version 1).
+        """Return the entry of a unit.
 
         Args:
             unit: The unit.
@@ -721,63 +619,30 @@ class FreshnessRegistry:
         Returns:
             The entry, or ``None`` when the unit was never recorded.
         """
-        entry = self._fragment(self.path_of(unit)).get(unit.key)
-        if entry is not None:
-            return entry
-        return self._legacy().get(unit)
+        return self._fragment(self.path_of(unit)).get(unit.key)
 
     # Insertion ou remplacement de l'entrée d'une unité
     def upsert(self, entry: RegistryEntry) -> None:
         """Insert or replace the entry of a unit (in memory until :meth:`save`).
 
         Args:
-            entry: The new entry; its ``legacy`` flag is cleared.
+            entry: The new entry.
         """
         path = self.path_of(entry.unit)
-        self._fragment(path)[entry.unit.key] = replace(entry, legacy=False)
+        self._fragment(path)[entry.unit.key] = entry
         self._fragment_names[path] = self.shard_of(entry.unit)
         self._dirty.add(path)
-
-    # Adoption des empreintes courantes par une entrée v1
-    def adopt_legacy(self, unit: Unit, requested: Mapping[str, str]) -> bool:
-        """Copy the current fingerprints onto a version-1 entry, without recomputation.
-
-        Used once, at deployment, so that switching to fingerprinted
-        registries does not recompute every unit. The adopted entry is written
-        into its fragment at the next :meth:`save`.
-
-        Args:
-            unit: The unit.
-            requested: Current fingerprints, by metric or method name.
-
-        Returns:
-            ``True`` when a legacy entry was adopted.
-        """
-        entry = self.get(unit)
-        if entry is None or not entry.legacy:
-            return False
-        self.upsert(replace(entry, fingerprints=dict(requested)))
-        return True
 
     # Écriture des fragments modifiés
     def save(self) -> List[str]:
         """Write the fragments modified since the last call.
-
-        A fragment located at the very path of the version-1 registry also
-        keeps the legacy entries it holds (flagged ``legacy``), so that
-        overwriting the file never drops a non-migrated unit.
 
         Returns:
             Paths written, sorted.
         """
         written: List[str] = []
         for path in sorted(self._dirty):
-            entries = dict(self._fragments[path])
-            # Entrées héritées non migrées d'un registre v1 au même chemin
-            if self.legacy is not None and _posix(self.legacy.path) == path:
-                for unit, entry in self._legacy().items():
-                    if self.path_of(unit) == path and unit.key not in entries:
-                        entries[unit.key] = entry
+            entries = self._fragments[path]
             document = {
                 "schema_version": SCHEMA_VERSION,
                 "step": self.step,
@@ -863,7 +728,7 @@ class FreshnessRegistry:
         )
         return sorted(invalidated)
 
-    # Entrées connues : fragments listés, fragments déjà chargés et entrées héritées
+    # Entrées connues : fragments listés et fragments déjà chargés
     def _iter_known_entries(self) -> Iterator[RegistryEntry]:
         """Iterate over every entry, including fragments only held in memory."""
         seen: Set[Unit] = set()
@@ -925,12 +790,11 @@ class FreshnessRegistry:
 
     # Itération sur toutes les entrées (lecture aval)
     def iter_entries(self) -> Iterator[RegistryEntry]:
-        """Iterate over every entry of the registry: all fragments, then legacy ones.
+        """Iterate over every entry of the registry: all its fragments.
 
         Lists the files matching the template under its static prefix (the
         part before the first field), so a downstream step can read the whole
-        state of an upstream step without knowing its units. Legacy entries
-        are yielded only for units absent from the fragments.
+        state of an upstream step without knowing its units.
 
         Yields:
             Registry entries.
@@ -949,14 +813,8 @@ class FreshnessRegistry:
         else:
             paths = [self.path_template]
 
-        seen: Set[Unit] = set()
         for path in paths:
-            for entry in self._fragment(path).values():
-                seen.add(entry.unit)
-                yield entry
-        for unit, entry in self._legacy().items():
-            if unit not in seen:
-                yield entry
+            yield from self._fragment(path).values()
 
 
 # Fonction de découpage d'un modèle de chemin en parties fixes et champs
@@ -1230,35 +1088,6 @@ class ForceSpec:
         return ";".join(f"{name}={','.join(values)}" for name, values in items if values)
 
 
-# Fonction de lecture du drapeau d'adoption des empreintes par les entrées v1
-def adopt_legacy_flag(
-    state_config: Optional[Mapping[str, Any]],
-    environ: Optional[Mapping[str, str]] = None,
-) -> bool:
-    """Read the ``ADOPT_LEGACY_FINGERPRINTS`` flag of a step.
-
-    Args:
-        state_config: The ``STATE`` block of the step (key
-            ``ADOPT_LEGACY_FINGERPRINTS``), or ``None``.
-        environ: Environment (``os.environ`` by default); a non-empty
-            ``ADOPT_LEGACY_FINGERPRINTS`` variable overrides the YAML value.
-
-    Returns:
-        The flag.
-
-    Examples:
-        >>> adopt_legacy_flag({"ADOPT_LEGACY_FINGERPRINTS": False}, {"ADOPT_LEGACY_FINGERPRINTS": "true"})
-        True
-        >>> adopt_legacy_flag(None, {})
-        False
-    """
-    environ = os.environ if environ is None else environ
-    value = environ.get(ADOPT_ENV_VARIABLE)
-    if value is not None and value.strip():
-        return value.strip().lower() in {"1", "true", "yes", "on"}
-    return bool((state_config or {}).get("ADOPT_LEGACY_FINGERPRINTS", False))
-
-
 # ──────────────────────────────────────────────────────────────────────
 # Décision
 # ──────────────────────────────────────────────────────────────────────
@@ -1285,36 +1114,33 @@ def upstream_is_newer(unit: Unit, entry: RegistryEntry, watermark: Optional[date
     return entry.upstream_watermark is None or watermark > entry.upstream_watermark
 
 
-# Classe de marque amont issue du registre de téléchargement (statflows >= 0.2.2)
+# Classe de marque amont issue du registre de téléchargement
 @dataclass(frozen=True)
 class UpstreamMark:
     """What the download registry says about the data a unit reads.
 
     Built from the ``last_modified`` / ``last_modified_snapshot`` fields of
-    the registry entries covering the unit (statflows >= 0.2.2): unlike
-    ``last_download``, they only move when the data actually changed.
+    the registry entries covering the unit: unlike ``last_download``, they only
+    move when the data actually changed.
 
     Args:
         modified: Most recent ``last_modified`` of the covering entries
             (``None`` when no data was ever written).
         snapshot: Most recent ``last_modified_snapshot`` (``None`` when no
-            covering entry knows its snapshot).
-        legacy: Most recent ``last_modified`` among the covering entries
-            whose snapshot is unknown (entries written before statflows 0.2.2,
-            or catalogs without snapshots), ``None`` when there is none.
+            covering entry knows its snapshot: the download write did not
+            report one).
 
     Examples:
         >>> mark = UpstreamMark.combine([
         ...     UpstreamMark.of_entry(parse_instant("2026-01-02"), 12),
         ...     UpstreamMark.of_entry(parse_instant("2026-01-01"), None),
         ... ])
-        >>> mark.snapshot, mark.modified.day, mark.legacy.day
-        (12, 2, 1)
+        >>> mark.snapshot, mark.modified.day
+        (12, 2)
     """
 
     modified: Optional[datetime] = None
     snapshot: Optional[int] = None
-    legacy: Optional[datetime] = None
 
     # Marque d'une seule entrée de registre
     @classmethod
@@ -1326,13 +1152,11 @@ class UpstreamMark:
             snapshot: Its ``last_modified_snapshot``.
 
         Returns:
-            The mark; a dated entry without snapshot is a legacy one.
+            The mark.
         """
-        instant = parse_instant(modified)
         return cls(
-            modified=instant,
+            modified=parse_instant(modified),
             snapshot=int(snapshot) if snapshot is not None else None,
-            legacy=instant if snapshot is None else None,
         )
 
     # Combinaison des marques de plusieurs entrées (maximum champ par champ)
@@ -1348,12 +1172,10 @@ class UpstreamMark:
         """
         modified: Optional[datetime] = None
         snapshot: Optional[int] = None
-        legacy: Optional[datetime] = None
         for mark in marks:
             modified = _max_optional(modified, mark.modified)
             snapshot = _max_optional(snapshot, mark.snapshot)
-            legacy = _max_optional(legacy, mark.legacy)
-        return cls(modified, snapshot, legacy)
+        return cls(modified, snapshot)
 
     # Absence de toute donnée écrite
     @property
@@ -1370,7 +1192,7 @@ class UpstreamMark:
             empty when the snapshot is unknown.
 
         Examples:
-            >>> UpstreamMark(None, 5, None).recorded()
+            >>> UpstreamMark(None, 5).recorded()
             (None, {'upstream_snapshot': 5})
         """
         extra = {UPSTREAM_SNAPSHOT_KEY: int(self.snapshot)} if self.snapshot is not None else {}
@@ -1382,7 +1204,6 @@ class UpstreamMark:
         return {
             "modified": format_instant(self.modified),
             "snapshot": self.snapshot,
-            "legacy": format_instant(self.legacy),
         }
 
 
@@ -1398,21 +1219,19 @@ def _max_optional(left: Any, right: Any) -> Any:
 
 # Prédicat « amont modifié » fondé sur les marques du registre de téléchargement
 def upstream_mark_is_newer(unit: Unit, entry: RegistryEntry, mark: Any) -> bool:
-    """``new_data`` rule on :class:`UpstreamMark` values (statflows >= 0.2.2).
+    """``new_data`` rule on :class:`UpstreamMark` values.
 
-    Snapshots are compared whenever the recorded entry knows one: they follow
-    the commit order, so two overlapping queries committed in an order
-    different from their capture order cannot hide each other. Dates are the
-    fallback:
+    The data read by a unit changed since its computation when either:
 
-    - entry recorded without snapshot (computed before the switch, its
-      ``upstream_watermark`` being a ``last_download``): stale when
-      ``mark.modified`` is more recent. Since ``last_modified <=
-      last_download``, the switch never recomputes a unit whose data did not
-      change since its computation;
-    - entry recorded with a snapshot: stale when ``mark.snapshot`` is greater,
-      or when a covering entry without snapshot (legacy) is more recent than
-      the recorded instant.
+    - the mark's snapshot is greater than the one recorded with the entry
+      (``upstream_snapshot``): snapshots follow the commit order, so two
+      overlapping queries committed in an order different from their capture
+      order cannot hide each other;
+    - the mark's ``modified`` instant is more recent than the entry's
+      ``upstream_watermark``. This date comparison is the only one available
+      when a download write reported no snapshot (``statflows`` records
+      ``last_modified_snapshot=None`` then): without it, such a change would
+      never be seen.
 
     Args:
         unit: The unit (unused).
@@ -1425,25 +1244,22 @@ def upstream_mark_is_newer(unit: Unit, entry: RegistryEntry, mark: Any) -> bool:
 
     Examples:
         >>> t1, t2 = parse_instant("2026-01-01"), parse_instant("2026-01-02")
-        >>> old = RegistryEntry(Unit.of(v="a"), t2, upstream_watermark=t2)
-        >>> upstream_mark_is_newer(old.unit, old, UpstreamMark(t1, 7, None))
+        >>> done = RegistryEntry(Unit.of(v="a"), t2, upstream_watermark=t1,
+        ...                      extra={"upstream_snapshot": 7})
+        >>> upstream_mark_is_newer(done.unit, done, UpstreamMark(t1, 7))
         False
-        >>> new = RegistryEntry(Unit.of(v="a"), t2, upstream_watermark=t1,
-        ...                     extra={"upstream_snapshot": 7})
-        >>> upstream_mark_is_newer(new.unit, new, UpstreamMark(t1, 8, None))
+        >>> upstream_mark_is_newer(done.unit, done, UpstreamMark(t1, 8))
+        True
+        >>> upstream_mark_is_newer(done.unit, done, UpstreamMark(t2, None))
         True
     """
     if mark is None or mark.is_empty:
         return False
     recorded = entry.extra.get(UPSTREAM_SNAPSHOT_KEY)
-    if recorded is None:
-        return mark.modified is not None and (
-            entry.upstream_watermark is None or mark.modified > entry.upstream_watermark
-        )
-    if mark.snapshot is not None and mark.snapshot > int(recorded):
+    if recorded is not None and mark.snapshot is not None and mark.snapshot > int(recorded):
         return True
-    return mark.legacy is not None and (
-        entry.upstream_watermark is None or mark.legacy > entry.upstream_watermark
+    return mark.modified is not None and (
+        entry.upstream_watermark is None or mark.modified > entry.upstream_watermark
     )
 
 
@@ -1497,7 +1313,6 @@ def units_to_compute(
     *,
     step: str,
     is_new_data: Optional[NewDataPredicate] = None,
-    adopt_legacy_fingerprints: bool = False,
 ) -> Dict[Unit, UnitPlan]:
     """Return, per stale unit, the reason and the metrics or methods to (re)compute.
 
@@ -1523,9 +1338,6 @@ def units_to_compute(
         force: One-off forcing.
         step: Step name (matched against the forcing).
         is_new_data: Staleness rule; :func:`upstream_is_newer` by default.
-        adopt_legacy_fingerprints: When true, a version-1 entry adopts the
-            current fingerprints before the decision (deployment migration:
-            no recomputation caused by the missing fingerprints).
 
     Returns:
         Mapping ``unit -> UnitPlan`` for the units to compute (empty when all
@@ -1543,10 +1355,6 @@ def units_to_compute(
     plans: Dict[Unit, UnitPlan] = {}
     for unit in planned:
         entry = registry.get(unit)
-        # Migration : adoption des empreintes courantes par une entrée v1
-        if adopt_legacy_fingerprints and entry is not None and entry.legacy:
-            registry.adopt_legacy(unit, requested)
-            entry = registry.get(unit)
         if entry is None or entry.last_computed is None:
             plans[unit] = UnitPlan("first", all_names)
         elif force.covers(step, unit, requested):
@@ -1631,86 +1439,3 @@ def plan_metrics(plans: Mapping[Unit, UnitPlan], n_candidates: Optional[int] = N
     if n_candidates is not None:
         metrics["freshness/units_candidates"] = float(n_candidates)
     return metrics
-
-
-# ──────────────────────────────────────────────────────────────────────
-# Lecture aval (cascade)
-# ──────────────────────────────────────────────────────────────────────
-
-# Classe de résumé de l'état d'un registre amont
-@dataclass(frozen=True)
-class UpstreamSummary:
-    """What changed upstream since a given instant.
-
-    Args:
-        watermark: Most recent ``last_computed`` of the upstream entries.
-        n_units: Number of upstream entries read.
-        reasons_since: Reason counts of the units computed strictly after the
-            reference instant (all units when there is none).
-
-    Examples:
-        >>> UpstreamSummary(None, 0, {"forced": 2}).full_change
-        True
-    """
-
-    watermark: Optional[datetime]
-    n_units: int
-    reasons_since: Mapping[str, int]
-
-    # Changement méthodologique ou forcé en amont
-    @property
-    def full_change(self) -> bool:
-        """Whether an upstream unit was recomputed for a ``fingerprint`` or ``forced`` reason.
-
-        A downstream step treats such a change as a complete change of its
-        input (every downstream unit is stale), as opposed to ``new_data``.
-        """
-        return bool(self.reasons_since.get("fingerprint") or self.reasons_since.get("forced"))
-
-    # Représentation JSON (champ « upstream_reasons » des entrées aval)
-    def to_json(self) -> Dict[str, Any]:
-        """Serialise the summary for a downstream registry entry."""
-        return {
-            "watermark": format_instant(self.watermark),
-            "n_units": self.n_units,
-            "reasons_since": dict(sorted(self.reasons_since.items())),
-            "full_change": self.full_change,
-        }
-
-
-# Fonction de résumé d'un ou plusieurs registres amont
-def summarize_upstream(
-    entries: Iterable[RegistryEntry],
-    since: Optional[datetime] = None,
-) -> UpstreamSummary:
-    """Summarise upstream entries for a downstream freshness decision.
-
-    Args:
-        entries: Upstream entries (e.g. :meth:`FreshnessRegistry.iter_entries`
-            of several registries chained).
-        since: Reference instant (the downstream ``upstream_watermark``);
-            ``None`` counts every computed entry.
-
-    Returns:
-        The upstream summary.
-
-    Examples:
-        >>> t1, t2 = parse_instant("2026-01-01"), parse_instant("2026-02-01")
-        >>> summary = summarize_upstream(
-        ...     [RegistryEntry(Unit.of(v="a"), t1, reason="new_data"),
-        ...      RegistryEntry(Unit.of(v="b"), t2, reason="fingerprint")], since=t1)
-        >>> summary.watermark == t2, dict(summary.reasons_since), summary.full_change
-        (True, {'fingerprint': 1}, True)
-    """
-    watermark: Optional[datetime] = None
-    n_units = 0
-    reasons: Counter = Counter()
-    for entry in entries:
-        n_units += 1
-        if entry.last_computed is None:
-            continue
-        if watermark is None or entry.last_computed > watermark:
-            watermark = entry.last_computed
-        if since is None or entry.last_computed > since:
-            reasons[entry.reason] += 1
-    return UpstreamSummary(watermark, n_units, dict(reasons))

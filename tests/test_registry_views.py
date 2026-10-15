@@ -20,8 +20,6 @@ from kedro_pipeline.io.registry_views import (
     products_key,
     split_codes,
 )
-from scripts.compute_trade_vulnerabilities import load_last_download_dates
-from statflows.storage.json import Loader
 
 STAMP_OLD = "2026-09-10T08:00:00+00:00"
 STAMP_NEW = "2026-09-16T01:47:02+00:00"
@@ -171,13 +169,6 @@ def test_missing_registry_is_empty(tmp_path: Path) -> None:
     view = DownloadRegistryView(tmp_path / "absent.json")
     assert view.pairs_last_download() == {}
     assert view.batches_by_year() == {}
-
-
-def test_load_last_download_dates_wrapper(tmp_path: Path) -> None:
-    """Signature et type de retour historiques de ``load_last_download_dates``."""
-    path = _write_single(tmp_path / "comext.json", _eurostat_entries())
-    assert load_last_download_dates(path, Loader(), None) == EXPECTED_PAIRS
-    assert load_last_download_dates(tmp_path / "absent.json", Loader(), None) == {}
 
 
 # ──────────────────────────────────────────────────────────────────────

@@ -7,8 +7,7 @@ flux, donc quatre contextes), registres de fraîcheur sous ``tmp_path`` :
 2. seconde passe : aucun contexte ;
 3. méthode ajoutée à la configuration : elle seule et le consensus sont écrits,
    sur tous les contextes, avec les valeurs d'un calcul complet ;
-4. empreinte d'une métrique partenaire invalidée puis recalculée (raison
-   ``fingerprint``, cascade) : tous les contextes ;
+4. une ligne partenaire révisée : son seul contexte (raison ``pending``) ;
 5. budget de deux contextes : deux contextes (période la plus récente), puis les
    suivants à la passe d'après.
 
@@ -25,13 +24,10 @@ import pytest
 
 pytest.importorskip("dt_ducklake_manager")
 
-from kedro_pipeline.io.freshness import (  # noqa: E402
-    ForceSpec,
-    FreshnessRegistry,
-    RegistryEntry,
-    Unit,
-    parse_instant,
-)
+from statflows.storage.ducklake.tables import write_dataframe  # noqa: E402
+
+from kedro_pipeline.io.cursors import StepCursors  # noqa: E402
+from kedro_pipeline.io.freshness import ForceSpec, FreshnessRegistry  # noqa: E402
 from macroforecast.trade.aggregation import (  # noqa: E402
     CoherenceConfig,
     MethodSpec,
@@ -44,7 +40,6 @@ from scripts.compute_synthesis_coherence import (  # noqa: E402
 )
 from scripts.compute_synthetic_scores import (  # noqa: E402
     IncrementalSettings,
-    UpstreamMarks,
     build_source_query,
     context_registry,
     read_source_metrics,
@@ -71,9 +66,7 @@ SOURCES = [
 ]
 FILTERS = {"WHERE": "p.\"indicators\" = 'VALUE_IN_EUROS' AND p.\"freq\" = 'A'", "LAST_N_PERIODS": None}
 FLOW_CODES = [1, 2]
-# Instants des calculs partenaires simulés (antérieurs aux passes de synthèse)
-T0 = parse_instant("2026-01-01T00:00:00+00:00")
-T1 = parse_instant("2026-02-01T00:00:00+00:00")
+INDICATOR_KEYS = ["freq", "flow", "indicators", "TIME_PERIOD", "reporter", "product"]
 
 # Méthodes : rapides, déterministes et aléatoires, consensus Borda et Copeland
 _METHODS = (
@@ -104,30 +97,25 @@ def _registry(root: Path, step: str) -> FreshnessRegistry:
     )
 
 
-def _partners(root: Path) -> FreshnessRegistry:
-    """Registre partenaires simulé (une unité par reporter et produit)."""
-    return FreshnessRegistry(
-        f"{root.as_posix()}/partners/{{reporter}}.json", None, "partners",
-        shard_of=lambda unit: unit.get("reporter"),
+def _cursors(root: Path) -> StepCursors:
+    """Curseurs de la synthèse sur ses sources, relus depuis le disque à chaque appel."""
+    registry = FreshnessRegistry(
+        f"{root.as_posix()}/cursors/{{step}}.json", None, "cursors",
+        shard_of=lambda unit: unit.get("step"),
     )
+    return StepCursors(registry, "synthesis")
 
 
-def _seed_partners(root: Path, sources) -> None:
-    """Unités partenaires calculées pour la première fois en T0."""
-    registry = _partners(root)
-    for reporter in sources.reporters:
-        for product in sources.products:
-            registry.upsert(RegistryEntry(
-                Unit.of(classification="HS2022", reporter=reporter, product=product), T0,
-                upstream_watermark=T0, reason="first",
-            ))
-    registry.save()
-
-
-def _marks(root: Path) -> UpstreamMarks:
-    return UpstreamMarks.from_entries(
-        list(_partners(root).iter_entries()), [], partner_label="HS2022", nomenclatures=None
-    )
+def _revise_indicator(sources, period: str, flow: int, reporter: str, product: str, value: float) -> None:
+    """Réécrit une ligne partenaire avec une nouvelle valeur de HHI."""
+    conn, alias = sources.conn, sources.catalog_alias
+    row = conn.execute(
+        f'SELECT * FROM "{alias}"."indicators"."fact_table" '
+        f"WHERE \"TIME_PERIOD\" = '{period}' AND flow = {flow} AND reporter = '{reporter}' "
+        f"AND product = '{product}'"
+    ).df()
+    row["HHI"] = value
+    write_dataframe(conn, row, INDICATOR_KEYS, catalog_alias=alias, schema="indicators")
 
 
 def _synthesise(sources, root: Path, config: SynthesisConfig, *, settings=IncrementalSettings(),
@@ -139,8 +127,8 @@ def _synthesise(sources, root: Path, config: SynthesisConfig, *, settings=Increm
         result_schema="synthesis", diagnostics_schema="synthesis_diagnostics",
         registry=_registry(root, "synthesis"),
         requested=synthesis_context_requested(config, SOURCES, FILTERS, ["import", "export"], None),
-        marks=_marks(root), force=force, settings=settings, flow_codes=FLOW_CODES,
-        log_artifacts=False,
+        force=force, settings=settings, flow_codes=FLOW_CODES,
+        log_artifacts=False, cursors=_cursors(root),
     )
 
 
@@ -179,7 +167,6 @@ def test_incremental_synthesis_and_coherence(synthesis_source_tables, tmp_path: 
     sources = synthesis_source_tables
     conn, alias = sources.conn, sources.catalog_alias
     n_contexts = len(sources.periods) * len(FLOW_CODES)
-    _seed_partners(tmp_path, sources)
     config = _config()
 
     # 1. Première passe : tous les contextes, toutes les méthodes et le consensus
@@ -227,17 +214,15 @@ def test_incremental_synthesis_and_coherence(synthesis_source_tables, tmp_path: 
     # La cohérence suit : tous les contextes ont été resynthétisés
     assert len(_cohere(sources, tmp_path, extended).computed) == n_contexts
 
-    # 4. Empreinte partenaire invalidée puis recalculée (cascade, raison fingerprint)
-    partners = _partners(tmp_path)
-    partners.upsert(RegistryEntry(
-        Unit.of(classification="HS2022", reporter="FR", product=sources.products[0]), T1,
-        upstream_watermark=T1, reason="fingerprint",
-    ))
-    partners.save()
+    # 4. Une ligne partenaire révisée : son seul contexte, puis la cohérence qui le suit
+    assert _cohere(sources, tmp_path, extended).computed == []
+    _revise_indicator(sources, sources.periods[0], 1, "FR", sources.products[0], 0.987)
     fourth = _synthesise(sources, tmp_path, extended)
-    assert len(fourth.computed) == n_contexts
-    assert {plan.reason for plan in fourth.plans.values()} == {"new_data"}
+    assert len(fourth.computed) == 1 and {plan.reason for plan in fourth.plans.values()} == {"pending"}
     assert all(plan.names >= {"bod", "mpi", "consensus", "synthesis"} for plan in fourth.plans.values())
+    cascaded = _cohere(sources, tmp_path, extended)
+    assert cascaded.computed == fourth.computed
+    assert _synthesise(sources, tmp_path, extended).plans == {} and _cohere(sources, tmp_path, extended).computed == []
 
     # Forçage d'une période : la cohérence ne reprend que les contextes resynthétisés
     _cohere(sources, tmp_path, extended)
@@ -254,7 +239,6 @@ def test_incremental_synthesis_and_coherence(synthesis_source_tables, tmp_path: 
 @pytest.mark.slow
 def test_budget_defers_the_oldest_contexts(synthesis_source_tables, tmp_path: Path) -> None:
     sources = synthesis_source_tables
-    _seed_partners(tmp_path, sources)
     config = _config()
     budget = IncrementalSettings(max_contexts=2, write_batch_contexts=1)
 

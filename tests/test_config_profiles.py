@@ -134,8 +134,7 @@ def test_demo_outputs_are_isolated() -> None:
             if name == "serving" and path == ("DATA_PATH",):
                 continue
             if path[-1] in {
-                "LAST_DOWNLOAD_PATH", "LAST_COMPUTATION_PATH", "LAST_PROCESSING_PATH",
-                "DATA_PATH", "PATH_TEMPLATE", "WORK_PATH",
+                "LAST_DOWNLOAD_PATH", "DATA_PATH", "PATH_TEMPLATE", "WORK_PATH",
             }:
                 assert str(value).startswith("trade/demo/"), (name, path, value)
             if path == ("DOWNLOADS", "DBNAME"):

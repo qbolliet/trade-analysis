@@ -3,8 +3,8 @@
 Couvre l'empreinte méthodologique, les unités, le forçage (séparateurs, priorité
 de l'environnement, périmètre), la décision ``units_to_compute`` (priorités
 first > forced > new_data > fingerprint), le registre fragmenté (chargement
-paresseux, écriture des seuls fragments modifiés, registres v1, adoption des
-empreintes, lecture récursive locale et S3) et la lecture aval.
+paresseux, écriture des seuls fragments modifiés, lecture récursive locale et
+S3) et la règle d'amont modifié sur les marques du registre de téléchargement.
 """
 
 from __future__ import annotations
@@ -12,24 +12,20 @@ from __future__ import annotations
 import json
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Dict, Optional
+from typing import Dict
 
 import pytest
 
 from kedro_pipeline.io.freshness import (
     ForceSpec,
     FreshnessRegistry,
-    LegacySource,
     RegistryEntry,
     Unit,
     UnitPlan,
-    adopt_legacy_flag,
     fingerprint,
-    legacy_entry,
     parse_force_list,
     parse_instant,
     plan_metrics,
-    summarize_upstream,
     units_to_compute,
 )
 
@@ -47,14 +43,13 @@ DE = Unit.of(classification="HS2022", reporter="DE", product="854140")
 
 
 # Fonction de construction d'un registre partenaires local
-def _registry(tmp_path: Path, legacy: Optional[LegacySource] = None) -> FreshnessRegistry:
+def _registry(tmp_path: Path) -> FreshnessRegistry:
     """Build a partners-like registry under ``tmp_path``."""
     return FreshnessRegistry(
         f"{tmp_path.as_posix()}/state/{{classification}}/{{reporter}}.json",
         None,
         "partners",
         shard_of=lambda unit: f"{unit.get('classification')}/{unit.get('reporter')}",
-        legacy=legacy,
     )
 
 
@@ -172,19 +167,6 @@ def test_force_describe() -> None:
     assert ForceSpec().describe() == ""
 
 
-@pytest.mark.parametrize(
-    "state, environ, expected",
-    [
-        ({"ADOPT_LEGACY_FINGERPRINTS": True}, {}, True),
-        ({"ADOPT_LEGACY_FINGERPRINTS": True}, {"ADOPT_LEGACY_FINGERPRINTS": "false"}, False),
-        (None, {"ADOPT_LEGACY_FINGERPRINTS": "1"}, True),
-        (None, {}, False),
-    ],
-)
-def test_adopt_legacy_flag(state, environ, expected) -> None:
-    assert adopt_legacy_flag(state, environ) is expected
-
-
 # ──────────────────────────────────────────────────────────────────────
 # Décision
 # ──────────────────────────────────────────────────────────────────────
@@ -287,63 +269,6 @@ def test_registry_upsert_preserves_other_entries_of_the_fragment(tmp_path: Path)
     assert _registry(tmp_path).get(FR) is not None
 
 
-# Fonction d'analyse du registre v1 des partenaires (fixture)
-def _parse_v1(data):
-    """Parse a v1 partners registry into legacy entries."""
-    for item in data.get("VULNERABILITIES", {}).values():
-        yield legacy_entry(
-            Unit.of(classification="HS2022", reporter=item["reporter"], product=item["product"]),
-            item["last_computed"],
-        )
-
-
-def _write_v1(path: Path) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps({"VULNERABILITIES": {"FR|280530": {
-        "reporter": "FR", "product": "280530", "last_computed": T1.isoformat()}}}), encoding="utf-8")
-
-
-def test_registry_reads_v1_registry_at_another_path(tmp_path: Path) -> None:
-    v1 = tmp_path / "v1" / "last_computation.json"
-    _write_v1(v1)
-    registry = _registry(tmp_path, LegacySource(v1, None, _parse_v1))
-    entry = registry.get(FR)
-    assert entry is not None and entry.legacy and entry.fingerprints == {}
-    assert entry.upstream_watermark == entry.last_computed == T1
-    # Empreinte manquante : jamais calculé avec cette méthodologie → tout recalculer
-    plans = units_to_compute([FR], registry, {FR: T0}, REQUESTED, ForceSpec(), step="partners")
-    assert plans[FR] == UnitPlan("fingerprint", frozenset(REQUESTED))
-
-
-def test_adopt_legacy_fingerprints_migrates_without_recompute(tmp_path: Path) -> None:
-    v1 = tmp_path / "v1" / "last_computation.json"
-    _write_v1(v1)
-    registry = _registry(tmp_path, LegacySource(v1, None, _parse_v1))
-    plans = units_to_compute(
-        [FR], registry, {FR: T0}, REQUESTED, ForceSpec(), step="partners",
-        adopt_legacy_fingerprints=True,
-    )
-    assert plans == {}
-    registry.save()
-    # L'entrée migrée vit désormais dans son fragment v2, sans le registre v1
-    migrated = _registry(tmp_path).get(FR)
-    assert migrated is not None and not migrated.legacy and migrated.fingerprints == REQUESTED
-
-
-def test_single_fragment_registry_reads_v1_at_same_path(tmp_path: Path) -> None:
-    path = tmp_path / "synthesis.json"
-    path.write_text(json.dumps({"SYNTHESIS": {"last_computed": T1.isoformat()}}), encoding="utf-8")
-    unit = Unit.of(scope="global")
-    legacy = LegacySource(path, None, lambda data: [legacy_entry(unit, data["SYNTHESIS"]["last_computed"])])
-    registry = FreshnessRegistry(path, None, "synthesis", lambda _: "global", legacy=legacy)
-    assert registry.get(unit).legacy
-    registry.upsert(RegistryEntry(unit, T2, T1, {"synthesis": "s"}, "new_data"))
-    registry.save()
-    document = json.loads(path.read_text(encoding="utf-8"))
-    assert document["schema_version"] == 2
-    assert FreshnessRegistry(path, None, "synthesis", lambda _: "global").get(unit).last_computed == T2
-
-
 def test_iter_entries_lists_fragments_recursively_and_ignores_foreign_files(tmp_path: Path) -> None:
     registry = _registry(tmp_path)
     registry.upsert(_entry(FR))
@@ -384,25 +309,6 @@ def test_plan_metrics_counts_every_reason() -> None:
     assert metrics["freshness/units_first"] == metrics["freshness/units_forced"] == 1.0
     assert metrics["freshness/units_new_data"] == metrics["freshness/units_fingerprint"] == 0.0
     assert metrics["freshness/units_candidates"] == 5.0
-
-
-@pytest.mark.parametrize(
-    "reasons, since, full_change",
-    [
-        (["new_data", "new_data"], None, False),
-        (["new_data", "fingerprint"], None, True),
-        (["forced", "new_data"], T2, False),
-    ],
-)
-def test_summarize_upstream(reasons, since, full_change) -> None:
-    entries = [
-        RegistryEntry(Unit.of(v=str(i)), T0 + timedelta(days=i), reason=reason)
-        for i, reason in enumerate(reasons)
-    ]
-    summary = summarize_upstream(entries, since)
-    assert summary.watermark == T0 + timedelta(days=len(reasons) - 1)
-    assert summary.full_change is full_change
-    assert summary.to_json()["n_units"] == len(reasons)
 
 
 def test_parse_instant_naive_is_utc() -> None:
@@ -482,8 +388,7 @@ def test_invalidated_reason_cascades_downstream(tmp_path: Path) -> None:
     for unit, plan in plans.items():
         registry.upsert(RegistryEntry(unit, T2, T0, dict(REQUESTED), plan.reason))
     registry.save()
-    summary = summarize_upstream(_registry(tmp_path).iter_entries(), since=T1)
-    assert summary.full_change and summary.reasons_since == {"fingerprint": 2}
+    assert [entry.reason for entry in _registry(tmp_path).iter_entries()] == ["fingerprint", "fingerprint"]
 
 
 def test_invalidate_single_fragment_registry(tmp_path: Path) -> None:

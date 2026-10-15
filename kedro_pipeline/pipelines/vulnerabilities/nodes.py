@@ -11,7 +11,6 @@ from kedro_pipeline.io.freshness import FreshnessRegistry
 from kedro_pipeline.io.registry_views import DownloadRegistryView
 from kedro_pipeline.io.tracking import node_unit_runs
 from kedro_pipeline.pipelines._common import (
-    adopt_legacy,
     finish_step,
     force_spec,
     n_jobs_of,
@@ -95,7 +94,7 @@ def compute_partner_vulnerabilities(
         DownloadRegistryView(downloads["PATHS"]["LAST_DOWNLOAD_PATH"], downloads["BUCKET"]),
         params=vulnerabilities, runtime=runtime, dataflow=dataflow,
         concordances_loader=partial(load_partner_concordances, baci_config=baci, client_factory=unsd_client),
-        force=force_spec(runtime), adopt_legacy_fingerprints=adopt_legacy(block), run_id=run_id(),
+        force=force_spec(runtime), run_id=run_id(),
         runs=node_unit_runs(reporting.step_tracker),
     )
     return finish_step(outcome, state, outputs={"table": result}, reporting=reporting)
@@ -147,7 +146,7 @@ def compute_network_vulnerabilities(
         tables, result, state, baci_state,
         params=vulnerabilities, runtime=runtime, dataflow=comtrade["DATAFLOW"],
         n_jobs=n_jobs_of(network, runtime), force=force_spec(runtime),
-        adopt_legacy_fingerprints=adopt_legacy(network), run_id=run_id(),
+        run_id=run_id(),
         runs=node_unit_runs(reporting.step_tracker),
     )
     return finish_step(outcome, state, outputs={"table": result}, reporting=reporting)

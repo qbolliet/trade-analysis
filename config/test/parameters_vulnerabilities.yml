@@ -10,13 +10,9 @@ vulnerabilities:
   VULNERABILITIES:
     DS-045409:
       BUCKET: null
-      PATHS:
-        LAST_COMPUTATION_PATH: "${trade.test_root:}/vulnerabilities/comext/last_computation.json"
       STATE:
         PATH_TEMPLATE: "${trade.test_root:}/state/vulnerabilities/partners/{classification}/{reporter}.json"
   NETWORK_VULNERABILITIES:
     BUCKET: null
-    PATHS:
-      LAST_COMPUTATION_PATH: "${trade.test_root:}/vulnerabilities/baci/last_computation.json"
     STATE:
       PATH_TEMPLATE: "${trade.test_root:}/state/vulnerabilities/network/{vintage}.json"

@@ -39,9 +39,8 @@ from dataclasses import dataclass
 from datetime import datetime
 import logging
 import time
-from pathlib import Path
 from functools import partial
-from typing import Any, Dict, Iterator, List, Mapping, Optional, Sequence, Tuple
+from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
 
 # Modules de manipulation de données
 import narwhals as nw
@@ -55,18 +54,15 @@ from kedro_pipeline.methodology import revised
 # Parallélisme intra-pod (carte parallèle, erreurs transmissibles)
 from kedro_pipeline.parallel import parallel_map, serialisable_exception
 # Module d'utilitaires de téléchargement
-from statflows.core.download import _now, _parse_iso
+from statflows.core.download import _now
 # Registres de fraîcheur v2 (fragments, empreintes, forçage)
 from kedro_pipeline.io.freshness import (
     ForceSpec,
     FreshnessRegistry,
-    LegacySource,
     RegistryEntry,
     Unit,
     UnitPlan,
-    adopt_legacy_flag,
     fingerprint,
-    legacy_entry,
     plan_metrics,
     qualifiers_to_compute,
     units_to_compute,
@@ -103,13 +99,6 @@ from macroforecast.trade.vulnerabilities.runner import (
 # Initialisation du logger
 logger = logging.getLogger(__name__)
 
-# Clé racine du registre JSON des dates de dernier traitement BACI (écrit par l'étape
-# BACI, lu seulement ici)
-_PROCESSING_ROOT = "BACI"
-
-# Clé racine du registre JSON des dates de dernier calcul, tenu par cette étape
-_REGISTRY_ROOT = "NETWORK_VULNERABILITIES"
-
 # Bloc de configuration dédié aux indicateurs de réseau
 _CONFIG_ROOT = "NETWORK_VULNERABILITIES"
 
@@ -124,180 +113,6 @@ _IN_FORCE_COL = "in_force"
 NODE = "compute_network_vulnerabilities"
 
 
-
-# Fonction auxiliaire : extraction des dates d'un registre indexé par schéma
-def _dates_by_schema(
-    registry: Mapping[str, Mapping[str, Any]],
-    field_name: str,
-) -> Dict[str, datetime]:
-    """Index the dated field of a registry by result schema.
-
-    Both registries confronted here share the same shape — one entry per result
-    schema, carrying an ISO instant — so they share the same reader; only the
-    name of the dated field changes.
-
-    Args:
-        registry: Entries of the registry, keyed by result schema.
-        field_name: Name of the field holding the ISO instant.
-
-    Returns:
-        Mapping ``result_schema -> instant`` (UTC-aware datetime), entries
-        without a parsable instant being dropped.
-
-    Examples:
-        >>> registry = {"baci_hs2017": {"last_processed": "2026-01-02T03:04:05+00:00"}}
-        >>> _dates_by_schema(registry, "last_processed")["baci_hs2017"].year
-        2026
-        >>> _dates_by_schema({"baci_hs2017": {}}, "last_processed")
-        {}
-    """
-    # Parcours des entrées, dates non exploitables écartées
-    dates: Dict[str, datetime] = {}
-    for schema, entry in registry.items():
-        when = _parse_iso(entry.get(field_name))
-        if when is not None:
-            dates[schema] = when
-    return dates
-
-# Fonction de lecture des dates de dernier traitement BACI, par schéma résultat
-def load_last_processing_dates(
-    last_processing_path: Path,
-    loader: Loader,
-    bucket: Optional[str],
-) -> Dict[str, datetime]:
-    """Read the BACI processing registry (empty when it does not exist yet).
-
-    Read-only: this step never writes into the registry of the BACI step, and
-    the BACI step never reads this one — the coupling between the two is that
-    single JSON file.
-
-    Args:
-        last_processing_path: Path to the ``LAST_PROCESSING_PATH`` registry
-            (cf. the ``baci`` parameters / ``process_baci_hs.py``).
-        loader: ``Loader`` instance.
-        bucket: S3 bucket holding the registry, or ``None`` for a local path.
-
-    Returns:
-        Mapping ``result_schema -> last_processed`` (UTC-aware datetime).
-    """
-    # Lecture du registre (racine "BACI") et indexation par schéma résultat
-    registry = (
-        loader.load(last_processing_path, bucket=bucket, missing_ok=True) or {}
-    ).get(_PROCESSING_ROOT, {})
-    return _dates_by_schema(registry, "last_processed")
-
-# Fonction de lecture des dates de dernier calcul, par schéma source
-def load_last_computation_dates(
-    last_computation_path: Path,
-    loader: Loader,
-    bucket: Optional[str],
-) -> Dict[str, datetime]:
-    """Read the network-computation registry (empty if it does not exist yet).
-
-    Args:
-        last_computation_path: Path to the network-computation registry.
-        loader: ``Loader`` instance.
-        bucket: S3 bucket holding the registry, or ``None`` for a local path.
-
-    Returns:
-        Mapping ``source_schema -> last_computed`` (UTC-aware datetime).
-    """
-    # Lecture du registre et indexation par schéma source
-    registry = (
-        loader.load(last_computation_path, bucket=bucket, missing_ok=True) or {}
-    ).get(_REGISTRY_ROOT, {})
-    return _dates_by_schema(registry, "last_computed")
-
-# Fonction de fusion et de sauvegarde des dates de calcul mises à jour
-def save_last_computation_dates(
-    last_computation_path: Path,
-    entries: Mapping[str, Dict[str, Any]],
-    loader: Loader,
-    saver: Saver,
-    bucket: Optional[str],
-) -> None:
-    """Merge the recomputed vintages into the registry and persist it.
-
-    Args:
-        last_computation_path: Path to the network-computation registry.
-        entries: Registry entries of the vintages just computed, keyed by source
-            schema. Merged into the existing registry; every other entry is
-            preserved untouched.
-        loader: ``Loader`` instance (to load the existing registry before merging).
-        saver: ``Saver`` instance.
-        bucket: S3 bucket holding the registry, or ``None`` for a local path.
-    """
-    # Fusion avec le registre existant : seules les entrées recalculées bougent
-    registry = (
-        loader.load(last_computation_path, bucket=bucket, missing_ok=True) or {}
-    ).get(_REGISTRY_ROOT, {})
-    registry.update(entries)
-    # Écriture du registre mis à jour
-    saver.save(
-        last_computation_path,
-        {_REGISTRY_ROOT: registry},
-        bucket=bucket,
-        indent=2,
-        ensure_ascii=False,
-    )
-    # Logging
-    logger.info(
-        f"{len(entries)} date(s) de calcul mise(s) à jour dans "
-        f"'{last_computation_path}'"
-    )
-
-# Fonction de sélection des millésimes dont les scores sont périmés
-def vintages_to_recompute(
-    targets: Mapping[str, str],
-    last_processed: Mapping[str, datetime],
-    last_computed: Mapping[str, datetime],
-) -> List[Tuple[str, str]]:
-    """Select the HS vintages whose network scores are stale.
-
-    A vintage is selected when its BACI slice was never scored, or scored before
-    its most recent BACI pass. A vintage absent from the BACI registry has never
-    been produced and is skipped — there is nothing to read for it — rather than
-    scored on a table that may not exist.
-
-    Args:
-        targets: Configured vintages, mapping the label (``"HS2017"``) to its
-            BACI result schema (``"baci_hs2017"``).
-        last_processed: Last BACI processing date per source schema.
-        last_computed: Last network computation date per source schema.
-
-    Returns:
-        Sorted list of ``(label, source_schema)`` pairs to (re)compute.
-
-    Examples:
-        >>> from datetime import datetime, timezone
-        >>> old = datetime(2026, 1, 1, tzinfo=timezone.utc)
-        >>> new = datetime(2026, 6, 1, tzinfo=timezone.utc)
-        >>> targets = {"HS2017": "baci_hs2017", "HS2022": "baci_hs2022"}
-        >>> vintages_to_recompute(targets, {"baci_hs2017": new}, {})
-        [('HS2017', 'baci_hs2017')]
-        >>> vintages_to_recompute(
-        ...     targets, {"baci_hs2017": old}, {"baci_hs2017": new})
-        []
-    """
-    # Millésimes configurés mais jamais produits par BACI : rien à lire
-    unknown = sorted(label for label, schema in targets.items() if schema not in last_processed)
-    if unknown:
-        # Logging
-        logger.warning(
-            f"Millésime(s) absent(s) du registre de traitement BACI, ignoré(s) : "
-            f"{unknown}"
-        )
-
-    # Millésimes jamais calculés ou calculés avant la dernière passe BACI
-    return sorted(
-        (label, schema)
-        for label, schema in targets.items()
-        if schema in last_processed
-        and (
-            schema not in last_computed
-            or last_computed[schema] < last_processed[schema]
-        )
-    )
 
 # Nom de l'étape (forçage FORCE_STEPS, champ « step » des fragments)
 STEP = "network"
@@ -344,25 +159,6 @@ def network_requested(
         for metric in metrics
     }
 
-# Fonction de lecture du registre v1 du réseau en entrées héritées
-def _parse_legacy_network(data: Mapping[str, Any]) -> Iterator[RegistryEntry]:
-    """Turn the version-1 network registry (keyed by source schema) into legacy entries.
-
-    Args:
-        data: Version-1 document (``{"NETWORK_VULNERABILITIES": {schema: {...}}}``).
-
-    Yields:
-        One legacy entry per vintage recorded.
-    """
-    for item in (data.get(_REGISTRY_ROOT) or {}).values():
-        if not isinstance(item, Mapping) or not item.get("vintage"):
-            continue
-        yield legacy_entry(
-            Unit.of(vintage=item["vintage"]),
-            item.get("last_computed"),
-            n_cells=item.get("n_cells"),
-        )
-
 # Fonction de construction du registre de fraîcheur du réseau
 def network_registry(
     network_config: Mapping[str, Any],
@@ -374,8 +170,7 @@ def network_registry(
 
     Args:
         network_config: ``NETWORK_VULNERABILITIES`` block of
-            the ``vulnerabilities`` parameters (``BUCKET``, ``STATE``,
-            ``PATHS.LAST_COMPUTATION_PATH`` read as the version-1 fallback).
+            the ``vulnerabilities`` parameters (``BUCKET``, ``STATE``).
         loader: JSON loader (a fresh one by default).
         saver: JSON saver (a fresh one by default).
 
@@ -385,14 +180,11 @@ def network_registry(
     Raises:
         KeyError: If the block has no ``STATE.PATH_TEMPLATE``.
     """
-    bucket = network_config.get("BUCKET")
-    legacy_path = (network_config.get("PATHS") or {}).get("LAST_COMPUTATION_PATH")
     return FreshnessRegistry(
         network_config["STATE"]["PATH_TEMPLATE"],
-        bucket,
+        network_config.get("BUCKET"),
         STEP,
         shard_of=lambda unit: unit.get("vintage"),
-        legacy=LegacySource(legacy_path, bucket, _parse_legacy_network) if legacy_path else None,
         loader=loader,
         saver=saver,
     )
@@ -437,8 +229,6 @@ def plan_network_units(
     units: Mapping[Unit, datetime],
     requested: Mapping[str, str],
     force: ForceSpec,
-    *,
-    adopt_legacy_fingerprints: bool = False,
 ) -> Dict[Unit, UnitPlan]:
     """Decide which vintages to (re)score.
 
@@ -448,16 +238,12 @@ def plan_network_units(
             (:func:`network_upstream`).
         requested: Current metric fingerprints (:func:`network_requested`).
         force: One-off forcing.
-        adopt_legacy_fingerprints: Deployment migration flag.
 
     Returns:
         Mapping ``unit -> plan``; every metric of a planned vintage is
         recomputed.
     """
-    return units_to_compute(
-        units, registry, units, requested, force,
-        step=STEP, adopt_legacy_fingerprints=adopt_legacy_fingerprints,
-    )
+    return units_to_compute(units, registry, units, requested, force, step=STEP)
 
 # Tâche de calcul d'un millésime, envoyée à un worker
 @dataclass(frozen=True)
@@ -624,7 +410,6 @@ def run_network_vulnerabilities(
     runs: Optional[UnitRuns] = None,
     n_jobs: int = 1,
     force: Optional[ForceSpec] = None,
-    adopt_legacy_fingerprints: Optional[bool] = None,
     run_id: Optional[str] = None,
 ) -> StepResult:
     """Score the stale BACI vintages, one tracked run per vintage.
@@ -645,8 +430,6 @@ def run_network_vulnerabilities(
             vintage in a null run when ``None``.
         n_jobs: Worker processes computing the vintages (resolved by the caller).
         force: One-off forcing; read from ``runtime`` alone when ``None``.
-        adopt_legacy_fingerprints: Deployment migration flag; read from
-            ``STATE`` alone when ``None``.
         run_id: Run identifier recorded on the DuckLake snapshots.
 
     Returns:
@@ -665,27 +448,20 @@ def run_network_vulnerabilities(
     log_artifacts = bool(tracking.get("LOG_ARTIFACTS", True))
     measure_drift = bool(tracking.get("DRIFT", True))
     force = force if force is not None else ForceSpec.from_runtime(runtime, environ={})
-    adopt = (
-        adopt_legacy_fingerprints
-        if adopt_legacy_fingerprints is not None
-        else adopt_legacy_flag(network_config.get("STATE"), environ={})
-    )
 
     # Unités candidates : millésimes dont la dernière passe BACI est terminée, avec
     # son dernier calcul comme watermark amont (lecture seule)
     targets = {label: table.schema for label, table in baci.items()}
     units = network_upstream(baci_state, targets)
     requested = network_requested(network_parameters, flows)
-    plans = plan_network_units(state, units, requested, force, adopt_legacy_fingerprints=adopt)
+    plans = plan_network_units(state, units, requested, force)
     stale = sorted((unit.get("vintage"), targets[unit.get("vintage")]) for unit in plans)
     # Logging
     logger.info(
         f"{len(stale)} millésime(s) à recalculer : "
         f"{ {unit.get('vintage'): plan.reason for unit, plan in plans.items()} }"
     )
-    # Rien à recalculer : entrées v1 adoptées écrites malgré tout
     if not stale:
-        state.save()
         logger.info("Nothing to recompute, stop.")
         return StepResult(step="network", reportable=False)
 

@@ -27,7 +27,7 @@ change even when the computation fails or a budget defers units):
 
 Fallbacks (``CursorRead.fallback``), all meaning "every unit is touched":
 
-- ``absent``: no cursor yet (the step decides: adoption or first run);
+- ``absent``: no cursor yet (first run, or a lost cursor file);
 - ``fingerprint``: the fingerprint changed, or the cursor was invalidated
   (``invalidate-freshness-script --reset-cursor``);
 - ``unavailable``: the snapshots following the cursor were expired, or the
@@ -39,7 +39,7 @@ from __future__ import annotations
 from dataclasses import dataclass, replace
 from datetime import datetime
 import logging
-from typing import Any, Dict, FrozenSet, Iterable, List, Mapping, Optional, Sequence, Tuple
+from typing import Any, Dict, FrozenSet, Iterable, List, Optional, Sequence, Tuple
 
 # Modules du package
 from kedro_pipeline.io.freshness import (
@@ -377,65 +377,3 @@ def oldest_cursors(registry: FreshnessRegistry) -> Dict[str, int]:
             continue
         oldest[catalog] = min(int(value), oldest.get(catalog, int(value)))
     return oldest
-
-
-# Modes de décision d'une étape (bascule progressive vers les curseurs)
-DECISION_MODES = ("legacy", "shadow", "snapshot")
-
-
-# Fonction de lecture du mode de décision d'une étape
-def decision_mode(state_config: Optional[Mapping[str, Any]], default: str = "legacy") -> str:
-    """Read the ``STATE.DECISION_MODE`` of a step.
-
-    - ``legacy``: the decision of the registries only (behaviour before the
-      cursors);
-    - ``shadow``: the legacy decision is executed, the new one is computed and
-      logged (``freshness/shadow_only_legacy``, ``freshness/shadow_only_new``);
-    - ``snapshot``: the new decision is executed.
-
-    Args:
-        state_config: The ``STATE`` block of the step.
-        default: Mode when the block sets none.
-
-    Returns:
-        The mode.
-
-    Raises:
-        ValueError: If the mode is unknown.
-
-    Examples:
-        >>> decision_mode({"DECISION_MODE": "shadow"}), decision_mode(None)
-        ('shadow', 'legacy')
-    """
-    mode = str((state_config or {}).get("DECISION_MODE") or default).lower()
-    if mode not in DECISION_MODES:
-        raise ValueError(f"STATE.DECISION_MODE must be one of {DECISION_MODES}, got {mode!r}")
-    return mode
-
-
-# Fonction de comparaison des décisions en mode observation
-def shadow_metrics(legacy: Iterable[Unit], new: Iterable[Unit]) -> Dict[str, float]:
-    """Compare the legacy and new decisions (``shadow`` mode).
-
-    A unit planned by the new rule only is a change the legacy rule missed
-    (false negative); a unit planned by the legacy rule only is a useless
-    recomputation (false positive).
-
-    Args:
-        legacy: Units planned by the legacy rule.
-        new: Units planned by the new rule.
-
-    Returns:
-        ``freshness/shadow_only_legacy``, ``freshness/shadow_only_new``,
-        ``freshness/shadow_both``.
-
-    Examples:
-        >>> shadow_metrics([Unit.of(v="a"), Unit.of(v="b")], [Unit.of(v="b"), Unit.of(v="c")])
-        {'freshness/shadow_only_legacy': 1.0, 'freshness/shadow_only_new': 1.0, 'freshness/shadow_both': 1.0}
-    """
-    legacy_set, new_set = set(legacy), set(new)
-    return {
-        "freshness/shadow_only_legacy": float(len(legacy_set - new_set)),
-        "freshness/shadow_only_new": float(len(new_set - legacy_set)),
-        "freshness/shadow_both": float(len(legacy_set & new_set)),
-    }

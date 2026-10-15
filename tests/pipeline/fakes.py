@@ -25,7 +25,7 @@ import functools
 import itertools
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Tuple
 
 import numpy as np
 import pandas as pd
@@ -213,13 +213,17 @@ class FakeEurostatClient:
 
     Implements what the download task uses: the dataflow structure, the
     codelists of its dimensions, and the incremental fetch of one query
-    (nothing new once a query was downloaded).
+    (nothing new once a query was downloaded, except the revisions declared in
+    :attr:`revisions`).
 
     Args:
         root: Root directory of the ``test`` environment (unused).
     """
 
     PROVIDER_CONFIG_NAME = "eurostat"
+    # Révisions simulées du fournisseur : (reporter, année, partenaire) -> facteur appliqué
+    # aux observations correspondantes (un test les pose, puis les retire)
+    revisions: Dict[Tuple[str, str, str], float] = {}
 
     def __init__(self, root: Optional[str] = None, **kwargs: Any) -> None:
         from statflows.core.structures import DataflowStructureRegistry
@@ -269,11 +273,25 @@ class FakeEurostatClient:
             dimensions=dimensions, start_period=query.start_period,
         )
 
-    # Téléchargement incrémental : rien de nouveau après le premier téléchargement
+    # Téléchargement incrémental : rien de nouveau après le premier téléchargement,
+    # hormis les observations révisées
     def fetch_updates(self, query: Any, since: Optional[datetime], n_observations: int = 10) -> pd.DataFrame:
         if since is not None:
-            return pd.DataFrame()
+            return self._revised(self.execute_query(query)) if self.revisions else pd.DataFrame()
         return self.execute_query(query)
+
+    # Observations révisées d'une réponse (les autres ne sont pas renvoyées)
+    def _revised(self, frame: pd.DataFrame) -> pd.DataFrame:
+        selected = pd.Series(False, index=frame.index)
+        revised = frame.copy()
+        for (reporter, year, partner), factor in self.revisions.items():
+            mask = (
+                (frame["reporter"] == reporter) & (frame["partner"] == partner)
+                & frame["TIME_PERIOD"].astype(str).str.startswith(year)
+            )
+            revised.loc[mask, "OBS_VALUE"] = frame.loc[mask, "OBS_VALUE"] * factor
+            selected |= mask
+        return revised[selected]
 
     def close(self) -> None:
         return None

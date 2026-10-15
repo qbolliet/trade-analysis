@@ -21,7 +21,7 @@ import pytest
 
 pytest.importorskip("dt_ducklake_manager")
 
-from kedro_pipeline.io.freshness import ForceSpec  # noqa: E402
+from kedro_pipeline.io.freshness import ForceSpec, UpstreamMark  # noqa: E402
 from macroforecast.trade.vulnerabilities import VulnerabilityConfig  # noqa: E402
 from scripts.compute_trade_vulnerabilities import (  # noqa: E402
     partner_registry,
@@ -38,6 +38,8 @@ REPORTERS = ("FR", "DE")
 PRODUCTS = ("28053010", "85414000", "854140")
 PARTNERS = ("CN", "US", "JP")
 T0 = datetime(2026, 9, 1, tzinfo=timezone.utc)
+# Marque de données modifiées de chaque couple téléchargé (écrites au snapshot 1)
+MARK = UpstreamMark.of_entry(T0, 1)
 # Référentiel des millésimes de la fixture
 NOMENCLATURES = {"HS2017": 2017, "HS2022": 2022}
 
@@ -85,7 +87,7 @@ def test_partner_step_second_run_recomputes_nothing(ducklake_conn, tmp_path: Pat
         "PATHS": {},
         "STATE": {"PATH_TEMPLATE": f"{tmp_path.as_posix()}/state/{{classification}}/{{reporter}}.json"},
     }
-    units = partner_units({(r, p): T0 for r in REPORTERS for p in PRODUCTS}, "HS2022")
+    units = partner_units({(r, p): MARK for r in REPORTERS for p in PRODUCTS}, "HS2022")
     requested = partner_requested(config)
     kwargs = dict(
         source_catalog_alias=alias, source_schema="comext",
@@ -95,7 +97,7 @@ def test_partner_step_second_run_recomputes_nothing(ducklake_conn, tmp_path: Pat
 
     # Première exécution : toutes les unités, un fragment par reporter
     first = run_partner_step(
-        conn, conn, registry=partner_registry(block, "HS2022"), units=units,
+        conn, conn, registry=partner_registry(block), units=units,
         requested=requested, force=ForceSpec(), now=T0 + timedelta(hours=1), **kwargs,
     )
     assert set(first.plans) == set(units)
@@ -113,7 +115,7 @@ def test_partner_step_second_run_recomputes_nothing(ducklake_conn, tmp_path: Pat
 
     # Seconde exécution, registre relu depuis le disque : rien à recalculer
     second = run_partner_step(
-        conn, conn, registry=partner_registry(block, "HS2022"), units=units,
+        conn, conn, registry=partner_registry(block), units=units,
         requested=requested, force=ForceSpec(), now=T0 + timedelta(hours=2), **kwargs,
     )
     assert second.plans == {} and second.report is None and second.written == []
@@ -122,23 +124,23 @@ def test_partner_step_second_run_recomputes_nothing(ducklake_conn, tmp_path: Pat
     ).fetchone()[0] == n_rows
 
     # Invalidation de HHI (formule corrigée) : toutes les unités, raison « fingerprint »
-    registry = partner_registry(block, "HS2022")
+    registry = partner_registry(block)
     registry.invalidate({"HHI"})
     registry.save()
     invalidated = run_partner_step(
-        conn, conn, registry=partner_registry(block, "HS2022"), units=units,
+        conn, conn, registry=partner_registry(block), units=units,
         requested=requested, force=ForceSpec(), now=T0 + timedelta(hours=3), **kwargs,
     )
     assert set(invalidated.plans) == set(units)
     assert {plan.reason for plan in invalidated.plans.values()} == {"fingerprint"}
     assert run_partner_step(
-        conn, conn, registry=partner_registry(block, "HS2022"), units=units,
+        conn, conn, registry=partner_registry(block), units=units,
         requested=requested, force=ForceSpec(), now=T0 + timedelta(hours=4), **kwargs,
     ).plans == {}
 
     # Forçage d'une métrique : toutes les unités
     forced = run_partner_step(
-        conn, conn, registry=partner_registry(block, "HS2022"), units=units,
+        conn, conn, registry=partner_registry(block), units=units,
         requested=requested, force=ForceSpec(metrics=("HHI",)), now=T0 + timedelta(hours=5),
         **kwargs,
     )
@@ -162,7 +164,7 @@ def test_adding_export_computes_only_export_rows(ducklake_conn, tmp_path: Path) 
         "PATHS": {},
         "STATE": {"PATH_TEMPLATE": f"{tmp_path.as_posix()}/state/{{classification}}/{{reporter}}.json"},
     }
-    units = partner_units({(r, p): T0 for r in REPORTERS for p in PRODUCTS}, "HS2022")
+    units = partner_units({(r, p): MARK for r in REPORTERS for p in PRODUCTS}, "HS2022")
     kwargs = dict(
         source_catalog_alias=alias, source_schema="comext",
         result_catalog_alias=alias, result_schema="indicators",
@@ -174,7 +176,7 @@ def test_adding_export_computes_only_export_rows(ducklake_conn, tmp_path: Path) 
 
     # Import seul : aucune ligne export
     run_partner_step(
-        conn, conn, registry=partner_registry(block, "HS2022"), units=units,
+        conn, conn, registry=partner_registry(block), units=units,
         requested=partner_requested(config, ("import",)), force=ForceSpec(),
         now=T0 + timedelta(hours=1), flows=("import",), **kwargs,
     )
@@ -184,7 +186,7 @@ def test_adding_export_computes_only_export_rows(ducklake_conn, tmp_path: Path) 
     # Ajout de l'export : plans limités aux empreintes export, lignes import intactes
     both = ("import", "export")
     added = run_partner_step(
-        conn, conn, registry=partner_registry(block, "HS2022"), units=units,
+        conn, conn, registry=partner_registry(block), units=units,
         requested=partner_requested(config, both), force=ForceSpec(),
         now=T0 + timedelta(hours=2), flows=both, **kwargs,
     )
@@ -249,7 +251,7 @@ def test_in_force_and_historical_passes_share_one_table(ducklake_conn, tmp_path:
         "STATE": {"PATH_TEMPLATE": f"{tmp_path.as_posix()}/state/{{classification}}/{{reporter}}.json"},
     }
     downloads = {
-        (reporter, str(product).zfill(6) if len(str(product)) <= 6 else str(product)): T0
+        (reporter, str(product).zfill(6) if len(str(product)) <= 6 else str(product)): MARK
         for reporter in REPORTERS for codes in _VINTAGE_CODES.values() for product in codes
     }
     requested = partner_requested(config, flows)
@@ -266,11 +268,11 @@ def test_in_force_and_historical_passes_share_one_table(ducklake_conn, tmp_path:
 
     def run(now):
         in_force = run_partner_step(
-            conn, conn, registry=partner_registry(block, "HS2022"), units=in_force_units,
+            conn, conn, registry=partner_registry(block), units=in_force_units,
             requested=requested, force=ForceSpec(), now=now, **kwargs,
         )
         past = run_partner_step(
-            conn, conn, registry=partner_registry(block, "HS2022"), units=historical.watermarks,
+            conn, conn, registry=partner_registry(block), units=historical.watermarks,
             requested=historical_req, force=ForceSpec(), now=now, target_vintage="HS2017",
             sources=historical.sources, concordances=_CONCORDANCES, **kwargs,
         )
@@ -311,35 +313,3 @@ def test_in_force_and_historical_passes_share_one_table(ducklake_conn, tmp_path:
     # Seconde exécution : rien à recalculer, dans aucune passe
     second_in_force, second_past = run(T0 + timedelta(hours=2))
     assert second_in_force.plans == {} and second_past.plans == {}
-
-
-def test_partner_step_refuses_a_table_without_classification(ducklake_conn, tmp_path: Path) -> None:
-    from statflows.storage.ducklake.tables import write_dataframe
-
-    conn, alias = ducklake_conn
-    write_dataframe(
-        conn, _comext_fact_table(),
-        ["freq", "reporter", "product", "flow", "indicators", "TIME_PERIOD", "partner"],
-        catalog_alias=alias, schema="comext",
-    )
-    # Table résultat à l'ancienne clé (sans classification)
-    write_dataframe(
-        conn,
-        pd.DataFrame({"freq": ["A"], "reporter": ["FR"], "product": ["854140"], "flow": [1],
-                      "indicators": ["VALUE_IN_EUROS"], "TIME_PERIOD": ["2023"], "HHI": [0.5]}),
-        ["freq", "reporter", "product", "flow", "indicators", "TIME_PERIOD"],
-        catalog_alias=alias, schema="indicators",
-    )
-    block = {
-        "BUCKET": None, "PATHS": {},
-        "STATE": {"PATH_TEMPLATE": f"{tmp_path.as_posix()}/state/{{classification}}/{{reporter}}.json"},
-    }
-    with pytest.raises(RuntimeError, match="migrate_indicators_key"):
-        run_partner_step(
-            conn, conn, registry=partner_registry(block, "HS2022"),
-            units=partner_units({("FR", "854140"): T0}, "HS2022"),
-            requested=partner_requested(VulnerabilityConfig()), force=ForceSpec(),
-            source_catalog_alias=alias, source_schema="comext", result_catalog_alias=alias,
-            result_schema="indicators", config=VulnerabilityConfig(), nomenclatures=NOMENCLATURES,
-            log_artifacts=False,
-        )

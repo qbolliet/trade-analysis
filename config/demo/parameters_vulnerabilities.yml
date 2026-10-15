@@ -14,13 +14,11 @@ vulnerabilities:
       IS_PROVISIONAL: true
       PATHS:
         DATA_PATH: "trade/demo/datasets/vulnerabilities/"
-        LAST_COMPUTATION_PATH: "trade/demo/vulnerabilities/comext/last_computation.json"
       STATE:
         PATH_TEMPLATE: "trade/demo/state/vulnerabilities/partners/{classification}/{reporter}.json"
   NETWORK_VULNERABILITIES:
     RESULT_SCHEMA: "demo_network_indicators"
     PATHS:
       DATA_PATH: "trade/demo/datasets/vulnerabilities/"
-      LAST_COMPUTATION_PATH: "trade/demo/vulnerabilities/baci/last_computation.json"
     STATE:
       PATH_TEMPLATE: "trade/demo/state/vulnerabilities/network/{vintage}.json"

@@ -41,7 +41,7 @@ synthesis:
             # (concentration de la demande mondiale), une ligne import celles de l'offre
             - 'n."flow" = p."flow"'
         # Lecture des changements de cette source par le curseur de la synthèse
-        # (STATE.DECISION_MODE shadow / snapshot) : colonnes des lignes modifiées lues
+        # (state.cursors) : colonnes des lignes modifiées lues
         # (KEYS) et conditions les rattachant aux contextes de la grille p (ON, sous
         # l'alias de la source). Toute modification d'une ligne (millésime, année,
         # sens) touche les contextes qu'elle peut joindre, quel que soit le produit :

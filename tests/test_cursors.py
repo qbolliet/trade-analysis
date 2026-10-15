@@ -9,9 +9,8 @@ Comportement figé :
 - la maintenance connaît le plus ancien curseur de chaque catalogue ;
 - une unité marquée ``pending`` est planifiée (raison ``pending``) jusqu'à son
   enregistrement après succès ;
-- la règle ``upstream_mark_is_newer`` compare les snapshots, et les dates pour
-  les entrées enregistrées avant la bascule (jamais de recalcul parasite à la
-  bascule, puisque ``last_modified <= last_download``) ;
+- la règle ``upstream_mark_is_newer`` compare les snapshots, et les dates de
+  modification quand aucun snapshot n'est connu ;
 - la vue du registre de téléchargement expose les marques par couple et par lot.
 """
 
@@ -30,7 +29,6 @@ from kedro_pipeline.io.cursors import (
     StepCursors,
     current_snapshot,
     cursor_fingerprint,
-    decision_mode,
     oldest_cursors,
 )
 from kedro_pipeline.io.freshness import (
@@ -125,11 +123,8 @@ def test_expired_snapshots_fall_back_to_a_full_recomputation(ducklake_conn, tmp_
     assert _read(cursors, conn, alias).fallback == FALLBACK_UNAVAILABLE
 
 
-def test_cursor_fingerprint_and_decision_mode() -> None:
+def test_cursor_fingerprint_depends_on_the_join_conditions() -> None:
     assert cursor_fingerprint("s", ["a"], on=["x"]) != cursor_fingerprint("s", ["a"], on=["y"])
-    assert decision_mode({"DECISION_MODE": "SNAPSHOT"}) == "snapshot"
-    with pytest.raises(ValueError, match="DECISION_MODE"):
-        decision_mode({"DECISION_MODE": "fast"})
 
 
 def test_pending_units_are_planned_until_recorded(tmp_path: Path) -> None:
@@ -150,20 +145,23 @@ def test_pending_units_are_planned_until_recorded(tmp_path: Path) -> None:
     assert units_to_compute([done], reread, {}, {"m": "1"}, ForceSpec(), step="demo") == {}
 
 
-def test_mark_rule_compares_snapshots_and_never_recomputes_at_the_switch() -> None:
-    t_download, t_modified = parse_instant("2026-10-14T03:00"), parse_instant("2026-10-02T03:00")
+def test_mark_rule_compares_snapshots_then_dates() -> None:
+    t_computed, t_modified = parse_instant("2026-10-14T03:00"), parse_instant("2026-10-02T03:00")
     unit = Unit.of(v="a")
-    # Entrée enregistrée avant la bascule : watermark = last_download
-    before = RegistryEntry(unit, t_download, upstream_watermark=t_download)
-    assert not upstream_mark_is_newer(unit, before, UpstreamMark(t_modified, 18, None))
-    assert upstream_mark_is_newer(unit, before, UpstreamMark(parse_instant("2026-10-15"), 19, None))
-    # Entrée enregistrée avec un snapshot : comparaison des snapshots, puis des dates héritées
-    after = RegistryEntry(unit, t_download, upstream_watermark=t_modified, extra={"upstream_snapshot": 18})
-    assert not upstream_mark_is_newer(unit, after, UpstreamMark(t_modified, 18, None))
-    assert upstream_mark_is_newer(unit, after, UpstreamMark(t_modified, 19, None))
-    assert upstream_mark_is_newer(unit, after, UpstreamMark(t_modified, 18, parse_instant("2026-10-03")))
+    # Entrée enregistrée avec un snapshot : comparaison des snapshots
+    entry = RegistryEntry(unit, t_computed, upstream_watermark=t_modified, extra={"upstream_snapshot": 18})
+    assert not upstream_mark_is_newer(unit, entry, UpstreamMark(t_modified, 18))
+    assert upstream_mark_is_newer(unit, entry, UpstreamMark(t_modified, 19))
+    # Aucun snapshot connu pour la marque : la date de modification décide
+    assert not upstream_mark_is_newer(unit, entry, UpstreamMark(t_modified, None))
+    assert upstream_mark_is_newer(unit, entry, UpstreamMark(parse_instant("2026-10-03"), None))
+    # Entrée enregistrée sans snapshot : la date de modification décide aussi
+    undated = RegistryEntry(unit, t_computed, upstream_watermark=t_modified)
+    assert not upstream_mark_is_newer(unit, undated, UpstreamMark(t_modified, 18))
+    assert upstream_mark_is_newer(unit, undated, UpstreamMark(parse_instant("2026-10-15"), 19))
     # Aucune donnée jamais écrite : jamais périmé
-    assert not upstream_mark_is_newer(unit, after, UpstreamMark())
+    assert not upstream_mark_is_newer(unit, entry, UpstreamMark())
+    assert not upstream_mark_is_newer(unit, entry, None)
 
 
 def test_registry_view_exposes_data_modification_marks(tmp_path: Path) -> None:
@@ -185,10 +183,10 @@ def test_registry_view_exposes_data_modification_marks(tmp_path: Path) -> None:
     view = DownloadRegistryView(path)
 
     marks = view.pairs_last_modified()
-    assert marks[("FR", "01")] == UpstreamMark(parse_instant("2026-10-02T03:00"), 12, None)
-    # Entrée héritée (sans last_modified) : date de téléchargement, snapshot inconnu
-    legacy = parse_instant("2026-10-14T03:00")
-    assert marks[("FR", "02")] == UpstreamMark(legacy, 12, legacy)
+    assert marks[("FR", "01")] == UpstreamMark(parse_instant("2026-10-02T03:00"), 12)
+    # Requête sans last_modified enregistré : sa date de téléchargement fait office de
+    # borne supérieure de la modification, combinée au snapshot de l'autre requête
+    assert marks[("FR", "02")] == UpstreamMark(parse_instant("2026-10-14T03:00"), 12)
     # Requête toujours vide : marque vide, couple conservé (mêmes unités que last_download)
     assert marks[("DE", "01")].is_empty
     assert set(marks) == set(view.pairs_last_download())

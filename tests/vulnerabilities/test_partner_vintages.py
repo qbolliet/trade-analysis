@@ -18,7 +18,6 @@ from datetime import datetime, timezone
 import narwhals as nw
 import numpy as np
 import pandas as pd
-import pytest
 
 from macroforecast.trade.processing import (
     HsHarmonizer,
@@ -221,21 +220,24 @@ def test_harmonize_partner_flows_matches_hs_harmonizer_on_baci_like_data() -> No
 
 
 def test_conversion_preimage_and_historical_units() -> None:
-    t1 = datetime(2026, 1, 1, tzinfo=timezone.utc)
-    t2 = datetime(2026, 2, 1, tzinfo=timezone.utc)
+    from kedro_pipeline.io.freshness import UpstreamMark
+
+    old, recent = UpstreamMark.of_entry(datetime(2026, 1, 1, tzinfo=timezone.utc), 3), UpstreamMark.of_entry(
+        datetime(2026, 2, 1, tzinfo=timezone.utc), 5
+    )
     conversions = historical_conversions(CONCORDANCES, ["HS2017"], HS)["HS2017"]
     assert sorted(conversion_preimage(conversions["HS2022"])["854140"]) == ["854141", "854142"]
 
-    last_download = {
-        ("FR", "854141"): t1, ("FR", "854142"): t2,   # 854140 : sources complètes
-        ("FR", "854110"): t1,                          # code stable
-        ("DE", "854141"): t1,                          # 854140 : 854142 jamais téléchargé
-        ("FR", "85411000"): t2,                        # NC8 : jamais historique
+    marks = {
+        ("FR", "854141"): old, ("FR", "854142"): recent,   # 854140 : sources complètes
+        ("FR", "854110"): old,                              # code stable
+        ("DE", "854141"): old,                              # 854140 : 854142 jamais écrit
+        ("FR", "85411000"): recent,                         # NC8 : jamais historique
     }
-    units = historical_units(last_download, conversions, "HS2017")
-    keys = {unit.key: when for unit, when in units.watermarks.items()}
-    # Watermark = téléchargement le plus récent parmi les sources
-    assert keys == {"HS2017|FR|854110": t1, "HS2017|FR|854140": t2}
+    units = historical_units(marks, conversions, "HS2017")
+    keys = {unit.key: mark for unit, mark in units.watermarks.items()}
+    # Marque amont = combinaison des marques des sources (la plus récente)
+    assert keys == {"HS2017|FR|854110": old, "HS2017|FR|854140": recent}
     assert {unit.key: sorted(missing) for unit, missing in units.waiting.items()} == {
         "HS2017|DE|854140": ["854142"]
     }

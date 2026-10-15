@@ -32,13 +32,11 @@ from dataclasses import replace
 from datetime import datetime
 from contextlib import nullcontext
 import logging
-from pathlib import Path
 import time
 from dataclasses import dataclass
 from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
 
 # Modules de chargement/sauvegarde JSON (local ou S3), même brique que le téléchargement
-from statflows.storage.json import Loader, Saver
 # Poignée d'écriture des tables DuckLake (remplacement transactionnel, traçabilité)
 from kedro_pipeline.io.ducklake import BorrowedReader, DuckLakeTable, attached_catalog_alias
 # Révision méthodologique du verrou (recalcul après correction d'une formule)
@@ -46,7 +44,7 @@ from kedro_pipeline.methodology import revised
 # Parallélisme intra-pod (carte parallèle, erreurs transmissibles)
 from kedro_pipeline.parallel import parallel_map, serialisable_exception
 # Module d'utilitaires de téléchargement (instants, parsing ISO)
-from statflows.core.download import _now, _parse_iso
+from statflows.core.download import _now
 
 # Module de manipulation de données
 import pandas as pd
@@ -117,9 +115,6 @@ logger = logging.getLogger(__name__)
 # Nœud du rapport de run (clé des contrôles des paramètres tracking ; message de commit)
 NODE = "compute_synthesis_coherence"
 
-# Clé racine du registre JSON des dates de dernier calcul de cohérence, tenu ici
-_REGISTRY_ROOT = "COHERENCE"
-
 # Nom de l'étape (forçage FORCE_STEPS, champ « step » du registre)
 STEP = "coherence"
 
@@ -170,61 +165,6 @@ def distinct_contexts(
     """
     unique = df_metrics.loc[:, list(context_columns)].drop_duplicates()
     return [tuple(row) for row in unique.itertuples(index=False, name=None)]
-
-# Fonction de lecture de l'instant de dernier calcul de cohérence
-def load_coherence_computation_date(
-    last_computation_path: Path,
-    loader: Loader,
-    bucket: Optional[str],
-) -> Optional[datetime]:
-    """Read the coherence registry (empty if it does not exist yet).
-
-    Args:
-        last_computation_path: Path to the coherence registry.
-        loader: ``Loader`` instance.
-        bucket: S3 bucket holding the registry, or ``None`` for a local path.
-
-    Returns:
-        The last coherence computation instant (UTC-aware), or ``None``.
-    """
-    # Lecture de l'entrée globale (racine "COHERENCE")
-    entry = (
-        loader.load(last_computation_path, bucket=bucket, missing_ok=True) or {}
-    ).get(_REGISTRY_ROOT, {})
-    return (
-        _parse_iso(entry.get("last_computed"))
-        if isinstance(entry, Mapping)
-        else None
-    )
-
-# Fonction d'écriture de l'entrée de registre de cohérence
-def save_coherence_computation_date(
-    last_computation_path: Path,
-    entry: Mapping[str, Any],
-    saver: Saver,
-    bucket: Optional[str],
-) -> None:
-    """Persist the coherence registry entry (single global entry, first registry format).
-
-    Args:
-        last_computation_path: Path to the coherence registry.
-        entry: Registry payload (``last_computed``, ``n_groups``,
-            ``n_contexts``).
-        saver: ``Saver`` instance.
-        bucket: S3 bucket holding the registry, or ``None`` for a local path.
-    """
-    # Écriture de l'entrée sous la racine "COHERENCE" (aucune fusion : entrée unique)
-    saver.save(
-        last_computation_path,
-        {_REGISTRY_ROOT: dict(entry)},
-        bucket=bucket,
-        indent=2,
-        ensure_ascii=False,
-    )
-    # Logging
-    logger.info(
-        f"Registre de cohérence mis à jour dans '{last_computation_path}'"
-    )
 
 # Fonction d'agrégation des rapports de contexte en un rapport d'exécution
 def _aggregate_reports(
@@ -454,8 +394,6 @@ def plan_coherence_contexts(
     synthesis_registry: FreshnessRegistry,
     requested: Mapping[str, str],
     force: ForceSpec,
-    *,
-    adopt_legacy_fingerprints: bool = False,
 ) -> Tuple[Dict[Unit, UnitPlan], Dict[Unit, datetime]]:
     """Decide which contexts the coherence recomputes.
 
@@ -472,7 +410,6 @@ def plan_coherence_contexts(
         synthesis_registry: Per-context registry of the synthesis.
         requested: Current fingerprint (:func:`coherence_requested`).
         force: One-off forcing.
-        adopt_legacy_fingerprints: Deployment migration flag.
 
     Returns:
         ``(plans, watermarks)``: the plans of the stale contexts and the
@@ -484,10 +421,7 @@ def plan_coherence_contexts(
         if entry is not None and entry.last_computed is not None:
             watermarks[unit] = entry.last_computed
     candidates = [unit for unit in units if unit in watermarks]
-    plans = units_to_compute(
-        candidates, registry, watermarks, requested, force, step=STEP,
-        adopt_legacy_fingerprints=adopt_legacy_fingerprints,
-    )
+    plans = units_to_compute(candidates, registry, watermarks, requested, force, step=STEP)
     return plans, watermarks
 
 # Fonction d'exécution de la partie « lecture -> run_coherence -> écriture »
@@ -715,7 +649,6 @@ def run_incremental_coherence(
     settings: IncrementalSettings,
     flow_codes: Optional[Sequence[int]] = None,
     vintages: Optional[str] = None,
-    adopt_legacy_fingerprints: bool = False,
     computed_at: Optional[datetime] = None,
     run_id: Optional[str] = None,
     tracker: Any = None,
@@ -749,7 +682,6 @@ def run_incremental_coherence(
         settings: Incremental settings.
         flow_codes: Flow codes of the synthesised directions.
         vintages: ``SYNTHESIS.VINTAGES``.
-        adopt_legacy_fingerprints: Deployment migration flag.
         computed_at: Instant recorded as ``last_computed``.
         run_id: Run identifier recorded on the snapshots.
         tracker: Tracker of the caller's open run (never entered here); the
@@ -788,8 +720,7 @@ def run_incremental_coherence(
     typed = {context_unit(context_columns, context): context for context in contexts}
     units = list(typed)
     outcome.plans, watermarks = plan_coherence_contexts(
-        units, registry, synthesis_registry, requested, force,
-        adopt_legacy_fingerprints=adopt_legacy_fingerprints,
+        units, registry, synthesis_registry, requested, force
     )
     selected, outcome.backlog = select_contexts(
         outcome.plans, units, settings.period_column, settings.max_contexts

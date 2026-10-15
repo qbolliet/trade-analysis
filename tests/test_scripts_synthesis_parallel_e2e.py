@@ -29,13 +29,8 @@ from tests.sqlite_catalog import (  # noqa: E402
     catalog_paths,
     open_catalog,
 )
-from kedro_pipeline.io.freshness import (  # noqa: E402
-    ForceSpec,
-    FreshnessRegistry,
-    RegistryEntry,
-    Unit,
-    parse_instant,
-)
+from kedro_pipeline.io.cursors import StepCursors  # noqa: E402
+from kedro_pipeline.io.freshness import ForceSpec, FreshnessRegistry  # noqa: E402
 from macroforecast.trade.aggregation import (  # noqa: E402
     CoherenceConfig,
     MethodSpec,
@@ -48,7 +43,6 @@ from scripts.compute_synthesis_coherence import (  # noqa: E402
 )
 from scripts.compute_synthetic_scores import (  # noqa: E402
     IncrementalSettings,
-    UpstreamMarks,
     context_registry,
     run_incremental_synthesis,
     synthesis_context_requested,
@@ -72,7 +66,6 @@ SOURCES = [
 ]
 FILTERS = {"WHERE": "p.\"indicators\" = 'VALUE_IN_EUROS' AND p.\"freq\" = 'A'", "LAST_N_PERIODS": None}
 FLOW_CODES = [1, 2]
-T0 = parse_instant("2026-01-01T00:00:00+00:00")
 
 # Méthodes : déterministes, aléatoires (SMAA, quantile de cône) et bootstrappées
 _METHODS = (
@@ -120,21 +113,13 @@ def _registry(root: Path, step: str) -> FreshnessRegistry:
     )
 
 
-def _marks(root: Path, sources) -> UpstreamMarks:
+def _cursors(root: Path) -> StepCursors:
+    """Curseurs de la synthèse sur ses sources (un fichier par racine de passe)."""
     registry = FreshnessRegistry(
-        f"{root.as_posix()}/partners/{{reporter}}.json", None, "partners",
-        shard_of=lambda unit: unit.get("reporter"),
+        f"{root.as_posix()}/cursors/{{step}}.json", None, "cursors",
+        shard_of=lambda unit: unit.get("step"),
     )
-    for reporter in sources.reporters:
-        for product in sources.products:
-            registry.upsert(RegistryEntry(
-                Unit.of(classification="HS2022", reporter=reporter, product=product), T0,
-                upstream_watermark=T0, reason="first",
-            ))
-    registry.save()
-    return UpstreamMarks.from_entries(
-        list(registry.iter_entries()), [], partner_label="HS2022", nomenclatures=None
-    )
+    return StepCursors(registry, "synthesis")
 
 
 def _reader(tmp_path: Path) -> ConnectionReader:
@@ -153,7 +138,7 @@ def _synthesise(sources, root: Path, name: str, *, n_jobs: int, sequential=(), c
         result_schema=name, diagnostics_schema=f"{name}_diag",
         registry=_registry(root, "synthesis"),
         requested=synthesis_context_requested(config, SOURCES, FILTERS, ["import", "export"], None),
-        marks=_marks(root, sources), force=ForceSpec(),
+        force=ForceSpec(), cursors=_cursors(root),
         settings=IncrementalSettings(
             n_jobs=n_jobs, sequential_methods=tuple(sequential), write_batch_contexts=3
         ),
@@ -271,6 +256,6 @@ def test_parallel_run_without_reader_is_refused(synthesis_source_tables, tmp_pat
             result_schema="x", diagnostics_schema="x_diag",
             registry=_registry(tmp_path, "synthesis"),
             requested=synthesis_context_requested(config, SOURCES, FILTERS, ["import", "export"], None),
-            marks=_marks(tmp_path, sources), force=ForceSpec(),
+            force=ForceSpec(), cursors=_cursors(tmp_path),
             settings=IncrementalSettings(n_jobs=2), flow_codes=FLOW_CODES,
         )
