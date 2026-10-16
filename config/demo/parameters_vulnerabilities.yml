@@ -8,6 +8,10 @@ vulnerabilities:
   # Une seule série historique (HS2017), seul millésime BACI de l'environnement
   VINTAGES: ["HS2017"]
   VULNERABILITIES:
+    # Catalogue des résultats propre à la demo : un catalogue DuckLake n'admet qu'un chemin
+    # de données, fixé à sa création, et la production utilise un autre chemin. Seul l'alias
+    # d'attachement reste `vulnerabilities`, les requêtes qualifiant les schémas par lui.
+    DBNAME: "demo_vulnerabilities"
     DS-045409:
       RESULT_SCHEMA: "demo_indicators"
       # Périmètre de produits restreint : résultats de démonstration

@@ -1,14 +1,13 @@
 # ─────────────────────────────────────────────────────────────────────────────
-# ENVIRONNEMENT DEMO — PÉRIMÈTRE PROVISOIRE : la maintenance doit viser les catalogues réellement écrits par
-# l'environnement : les sources brutes sont isolées (demo_eurostat, demo_comtrade, chemins
-# S3 sous trade/demo/). Le catalogue `vulnerabilities` garde son nom mais a, en demo, un
-# chemin de données propre (un catalogue DuckLake n'en admet qu'un, fixé à sa création :
-# s'y attacher avec un autre chemin est refusé). `serving` est partagé avec la production.
+# ENVIRONNEMENT DEMO — PÉRIMÈTRE PROVISOIRE : la maintenance doit viser les catalogues
+# réellement écrits par l'environnement : sources brutes et résultats sont isolés
+# (demo_eurostat, demo_comtrade, demo_vulnerabilities, chemins S3 sous trade/demo/).
+# `serving` est partagé avec la production (seul le schéma demo_dashboard est propre à la demo).
 # La liste est remplacée en entier : la fusion de configuration ne combine pas les listes.
 # ─────────────────────────────────────────────────────────────────────────────
 maintenance:
   CATALOGS:
     - {dbname: demo_eurostat,   catalog_alias: eurostat,        bucket: qbollietdgddi, data_path: trade/demo/datasets/comext}
     - {dbname: demo_comtrade,   catalog_alias: comtrade,        bucket: qbollietdgddi, data_path: trade/demo/datasets/comtrade}
-    - {dbname: vulnerabilities, catalog_alias: vulnerabilities, bucket: qbollietdgddi, data_path: trade/demo/datasets/vulnerabilities/}
+    - {dbname: demo_vulnerabilities, catalog_alias: vulnerabilities, bucket: qbollietdgddi, data_path: trade/demo/datasets/vulnerabilities/}
     - {dbname: serving,         catalog_alias: serving,         bucket: qbollietdgddi, data_path: trade/datasets/serving/}

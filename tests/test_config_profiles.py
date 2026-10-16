@@ -137,8 +137,21 @@ def test_demo_outputs_are_isolated() -> None:
                 "LAST_DOWNLOAD_PATH", "DATA_PATH", "PATH_TEMPLATE", "WORK_PATH",
             }:
                 assert str(value).startswith("trade/demo/"), (name, path, value)
-            if path == ("DOWNLOADS", "DBNAME"):
+            if path in {("DOWNLOADS", "DBNAME"), ("VULNERABILITIES", "DBNAME")}:
                 assert str(value).startswith("demo_"), (name, path, value)
+
+
+def test_demo_results_catalog_does_not_share_the_production_one() -> None:
+    """Catalogue des résultats distinct en demo : le chemin de données d'un catalogue est unique.
+
+    Attacher `vulnerabilities` avec le chemin demo est refusé quand la production l'a créé
+    avec le sien : la demo écrit donc dans son propre catalogue, de chemin sous trade/demo/.
+    """
+    demo = MERGED_DEMO["vulnerabilities"]["VULNERABILITIES"]
+    prod = BASE["vulnerabilities"]["VULNERABILITIES"]
+    assert demo["DBNAME"] == "demo_vulnerabilities" != prod["DBNAME"]
+    assert demo["DS-045409"]["PATHS"]["DATA_PATH"].startswith("trade/demo/")
+    assert demo["DS-045409"]["PATHS"]["DATA_PATH"] != prod["DS-045409"]["PATHS"]["DATA_PATH"]
 
 
 def test_demo_scope_and_synthesis_parameters() -> None:
