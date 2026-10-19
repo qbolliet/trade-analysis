@@ -20,8 +20,8 @@ VINTAGES = ("hs1992", "hs1996", "hs2002", "hs2007", "hs2012", "hs2017", "hs2022"
 
 # Tâche -> (tags, type de machine) attendus en environnement base
 EXPECTED: Dict[str, tuple] = {
-    "download_eurostat": ({"experiment.trade-01-downloads", "cadence.daily"}, "io-small"),
-    "download_comtrade": ({"experiment.trade-01-downloads", "cadence.daily"}, "io-small"),
+    "download_eurostat": ({"experiment.trade-01-downloads", "cadence.daily"}, "download"),
+    "download_comtrade": ({"experiment.trade-01-downloads", "cadence.daily"}, "download"),
     "prepare_baci": ({"experiment.trade-02-baci", "cadence.weekly"}, "compute-medium"),
     **{
         f"process_baci_{vintage}": ({"experiment.trade-02-baci", "cadence.weekly"}, "baci-large")

@@ -2615,7 +2615,7 @@ ACQUIS DE LA RECETTE PRÉCÉDENTE (déjà fait, à ne pas refaire)
   `kedro_pipeline.io.ducklake.build_connector`.
 - Incidents déjà corrigés (pour mémoire dans le rapport) : module `downloads` exclu par
   `.gitignore` ; clé primaire Comtrade contenant une colonne de libellé nulle (`statflows`
-  0.2.1) ; tables partenaires/réseau à l'ancienne clé ; `pytz` manquant ; maintenance demo
+  0.3.1) ; tables partenaires/réseau à l'ancienne clé ; `pytz` manquant ; maintenance demo
   visant des catalogues non écrits en demo ; `DATA_PATH` du catalogue `vulnerabilities`
   (un catalogue n'en admet qu'un) ; `glob()` DuckDB renvoyant « présent » pour un fichier
   S3 absent (état P0 fantôme) ; colonne `label_for` absente d'anciennes tables.
@@ -2625,11 +2625,11 @@ ACQUIS DE LA RECETTE PRÉCÉDENTE (déjà fait, à ne pas refaire)
 - Défaut d'idempotence découvert : la date `last_download` de `statflows` avance à chaque
   exécution d'une requête même sans nouvelle donnée, donc toutes les unités partenaires
   étaient recalculées (`freshness/units_new_data` = 17 752 à chaque `daily`). Corrigé par
-  la décision sur les données modifiées (`statflows` 0.3.0), seule règle depuis K-17c : à
+  la décision sur les données modifiées (`statflows` 0.3.1), seule règle depuis K-17c : à
   CONFIRMER ici par la seconde exécution (étape 3).
 
 ÉTAPES
-1. Pré-vol (lecture seule) : contexte `kubectl`, secrets (clés), image `sha-<tag fourni>`
+1. Pré-vol (lecture seule) : contexte `kubectl`, secrets (clés), image `sha-c460c40`
    publique, MLflow joignable, état des `CronWorkflow` (le cron de transition
    `trade-pipeline-transition-daily` doit rester SUSPENDU pendant toute la recette ; le
    vérifier), rendu demo + `--check` + `kubectl apply --dry-run=server`.
@@ -2662,7 +2662,7 @@ ACQUIS DE LA RECETTE PRÉCÉDENTE (déjà fait, à ne pas refaire)
    cohérent (rangs, libellés, `in_force`), latence à froid des graphiques en `cloud`.
 6. Forçage : `weekly` avec `force-steps=synthesis` → seuls synthèse et cohérence recalculent.
 7. Bascule de production (après confirmation) : fixer `deployment.tag` sur le tag
-   immuable `sha-<court>` avec `image_pull_policy: IfNotPresent` dans `config/base/argo.yml`,
+   immuable `sha-c460c40` avec `image_pull_policy: IfNotPresent` dans `config/base/argo.yml`,
    `render-argo --env cloud` puis `--check`, `kubectl apply` de `kubernetes/generated/`,
    les deux `CronWorkflow` actifs en env `cloud` ; suppression du workflow de transition
    (cron, template, dossier `kubernetes/transition/`) seulement après une exécution

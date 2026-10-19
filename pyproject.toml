@@ -117,7 +117,7 @@ dev = [
 override-dependencies = ["dt-ducklake-manager"]
 
 [tool.uv.sources]
-statflows = { git = "https://github.com/qbolliet/statflows", tag = "v0.3.0" }
+statflows = { git = "https://github.com/qbolliet/statflows", tag = "v0.3.1" }
 dt-ducklake-manager = { git = "https://github.com/qbolliet/dt-ducklake-manager", tag = "v0.4.1" }
 
 [tool.pytest.ini_options]

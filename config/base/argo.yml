@@ -34,6 +34,9 @@ runner:
 # (`memory/peak_mb` dans MLflow) s'approche de la limite.
 machine_types:
   io-small:       {mem: 2,  cpu: 1, num_gpu: 0, emph_storage: 5}
+  # Téléchargements : les lots écrits (centaines de milliers de lignes) et les réponses
+  # d'API tiennent en mémoire ; 2 Gi a causé un arrêt OOM de Comtrade sur base vierge
+  download:       {mem: 8,  cpu: 1, num_gpu: 0, emph_storage: 5}
   compute-medium: {mem: 16, cpu: 4, num_gpu: 0, emph_storage: 20}
   baci-large:     {mem: 32, cpu: 4, num_gpu: 0, emph_storage: 80}
   synthesis-cpu:  {mem: 32, cpu: 8, num_gpu: 0, emph_storage: 20}

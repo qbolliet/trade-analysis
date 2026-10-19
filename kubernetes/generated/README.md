@@ -32,8 +32,8 @@ onExit  maintain-ducklake*                                     (* : mutex, voir 
   exige `prepare-baci.Succeeded`. Le workflow reste `Failed` si une tâche a échoué.
 * **Mutex** : `publish-serving` (`trade-serving`) et la maintenance (`trade-maintenance`)
   sont sérialisés entre exécutions concurrentes : les deux cadences peuvent se recouvrir.
-* **Ressources** (`config/base/argo.yml`, `machine_types`) : téléchargements et
-  maintenance 1 CPU / 2 Gi ; BACI 4 / 32 Gi ; synthèse et cohérence 8 / 32 Gi ;
+* **Ressources** (`config/base/argo.yml`, `machine_types`) : téléchargements
+  1 CPU / 8 Gi, maintenance 1 CPU / 2 Gi ; BACI 4 / 32 Gi ; synthèse et cohérence 8 / 32 Gi ;
   autres 4 / 16 Gi. `parallelism: 8`.
 * **Reprises** : 1 sur erreur d'infrastructure (`OnError`), 0 pour les téléchargements.
 * **Suivi** : un run MLflow par tâche, dans l'expérience du tag `experiment.*` du nœud

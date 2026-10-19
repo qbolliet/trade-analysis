@@ -17,7 +17,7 @@ from kedro.pipeline import Pipeline
 from kedro_pipeline.pipelines._common import (
     CADENCE_DAILY,
     EXPERIMENT_DOWNLOADS,
-    IO_SMALL,
+    DOWNLOAD,
     reporting_outputs,
 )
 from kedro_pipeline.pipelines.downloads.nodes import (
@@ -88,7 +88,7 @@ def source_task(source: str, table: str, params: Mapping[str, Any]) -> FusedPipe
         ],
         name=task,
         tags=[EXPERIMENT_DOWNLOADS, CADENCE_DAILY],
-        machine_type=IO_SMALL,
+        machine_type=DOWNLOAD,
     )
 
 

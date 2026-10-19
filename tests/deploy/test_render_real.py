@@ -89,7 +89,7 @@ def test_experiment_resources_and_retries_per_task(template) -> None:
         assert _parameters(tasks[name])["experiment"] == experiment, name
     for name in ("download-eurostat", "download-comtrade"):
         assert _parameters(tasks[name])["retries"] == "0"
-        assert (_parameters(tasks[name])["cpu"], _parameters(tasks[name])["mem"]) == ("1", "2")
+        assert (_parameters(tasks[name])["cpu"], _parameters(tasks[name])["mem"]) == ("1", "8")
     assert _parameters(tasks["process-baci-hs2017"])["mem"] == "32"
     assert _parameters(tasks["compute-synthetic-scores"])["cpu"] == "8"
     assert _parameters(tasks["prepare-baci"])["retries"] == "1"

@@ -45,10 +45,10 @@ spec:
         tasks:
           - name: download-comtrade
             template: kedro
-            arguments: {parameters: [ {name: kedro-node, value: "download_comtrade"}, {name: experiment, value: "trade-01-downloads"}, {name: cpu, value: "1"}, {name: mem, value: "2"}, {name: retries, value: "0"} ]}
+            arguments: {parameters: [ {name: kedro-node, value: "download_comtrade"}, {name: experiment, value: "trade-01-downloads"}, {name: cpu, value: "1"}, {name: mem, value: "8"}, {name: retries, value: "0"} ]}
           - name: download-eurostat
             template: kedro
-            arguments: {parameters: [ {name: kedro-node, value: "download_eurostat"}, {name: experiment, value: "trade-01-downloads"}, {name: cpu, value: "1"}, {name: mem, value: "2"}, {name: retries, value: "0"} ]}
+            arguments: {parameters: [ {name: kedro-node, value: "download_eurostat"}, {name: experiment, value: "trade-01-downloads"}, {name: cpu, value: "1"}, {name: mem, value: "8"}, {name: retries, value: "0"} ]}
           - name: compute-partner-vulnerabilities
             depends: "(download-eurostat.Succeeded || download-eurostat.Failed)"
             template: kedro

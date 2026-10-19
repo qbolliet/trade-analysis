@@ -72,6 +72,7 @@ ON_EXIT = "onexit"
 
 # Types de machine des tâches (définis dans la configuration d'ordonnancement)
 IO_SMALL = "io-small"
+DOWNLOAD = "download"
 COMPUTE_MEDIUM = "compute-medium"
 BACI_LARGE = "baci-large"
 SYNTHESIS_CPU = "synthesis-cpu"
