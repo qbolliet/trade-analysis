@@ -120,3 +120,58 @@ def test_read_source_flows_casts_text_flow_codes_to_integers() -> None:
     flows = read_source_flows(conn, "src", "s", config=config)
     assert str(flows[config.flow_col].dtype) == "Int64"
     assert flows[config.flow_col].tolist() == [1]
+
+
+def _downward_table_2017_2012() -> "pd.DataFrame":
+    """Table descendante HS2017 -> HS2012 : un code inchangé, un code scindé, un code renommé."""
+    return pd.DataFrame(
+        {
+            "source_code": ["010121", "020110", "020120", "030311"],
+            "target_code": ["010121", "020110", "020110", "030399"],
+        }
+    )
+
+
+def test_build_stable_code_map_keeps_only_strict_identities() -> None:
+    from macroforecast.trade.processing import build_stable_code_map
+
+    stable = build_stable_code_map({("HS2017", "HS2012"): _downward_table_2017_2012()}, "H4", "HS2017")
+    # 020110 est lié à deux codes récents (n:1) ; 030311 devient 030399 (renommé)
+    assert stable == {"010121": "010121"}
+
+
+def test_harmonizer_carries_stable_codes_and_drops_changed_ones() -> None:
+    from macroforecast.trade.processing import HsHarmonizer
+
+    declarations = pd.DataFrame(
+        {
+            "classificationCode": ["H4", "H4", "H4", "H5"],
+            "cmdCode": ["010121", "020110", "030399", "030311"],
+            "period": ["2017"] * 4,
+            "primaryValue": [10.0, 20.0, 30.0, 40.0],
+        }
+    )
+    harmonizer = HsHarmonizer(
+        {("HS2017", "HS2012"): _downward_table_2017_2012()},
+        target_vintage="HS2017",
+        older_vintages="stable_codes",
+    )
+    out = harmonizer.fit_transform(declarations)
+    # Le code inchangé est repris au millésime cible, les autres codes HS2012 sont écartés
+    assert sorted(zip(out["cmdCode"], out["primaryValue"])) == [("010121", 10.0), ("030311", 40.0)]
+    assert set(out["classificationCode"]) == {"HS2017"}
+    report = harmonizer.report_
+    assert report.n_rows_older_dropped == 2
+    assert report.share_value_older_dropped == 0.5
+
+
+def test_harmonizer_still_refuses_older_vintages_by_default() -> None:
+    import pytest
+
+    from macroforecast.trade.processing import HsHarmonizer
+
+    declarations = pd.DataFrame(
+        {"classificationCode": ["H4"], "cmdCode": ["010121"], "period": ["2017"], "primaryValue": [1.0]}
+    )
+    with pytest.raises(ValueError, match="more recent"):
+        HsHarmonizer({}, target_vintage="HS2017").fit(declarations)

@@ -8,7 +8,7 @@
 #     sur les valeurs) ne met à jour que code_hash.
 CDI2:
   revision: 0
-  code_hash: d3d7a49b062a5a51
+  code_hash: 1215f487907954e2
   sources:
   - macroforecast/trade/vulnerabilities/metrics.py::ConcentrationDependencyIndex2
   - macroforecast/trade/vulnerabilities/base.py
@@ -16,7 +16,7 @@ CDI2:
   - macroforecast/trade/methodology.py
 CDI3:
   revision: 0
-  code_hash: 2edade5d965e560a
+  code_hash: 2be57489138aa6ef
   sources:
   - macroforecast/trade/vulnerabilities/metrics.py::ConcentrationDependencyIndex3
   - macroforecast/trade/vulnerabilities/base.py
@@ -24,7 +24,7 @@ CDI3:
   - macroforecast/trade/methodology.py
 CENTRALITY_RISK:
   revision: 0
-  code_hash: 4c5310be86e4fe96
+  code_hash: 53e4f35b91c77b7e
   sources:
   - macroforecast/trade/vulnerabilities/network_metrics.py::WeightedOutdegreeCentralityRisk
   - macroforecast/trade/vulnerabilities/base.py
@@ -33,7 +33,7 @@ CENTRALITY_RISK:
   - macroforecast/trade/vulnerabilities/graph.py
 CLUSTERING_W:
   revision: 0
-  code_hash: cc70c1e3fd97bc4e
+  code_hash: 9e1a0813c48778dd
   sources:
   - macroforecast/trade/vulnerabilities/network_metrics.py::WeightedClusteringCoefficient
   - macroforecast/trade/vulnerabilities/base.py
@@ -42,7 +42,7 @@ CLUSTERING_W:
   - macroforecast/trade/vulnerabilities/graph.py
 DIAMETER:
   revision: 0
-  code_hash: 76fdd90f2b3de30f
+  code_hash: ab1e41dc61849d2b
   sources:
   - macroforecast/trade/vulnerabilities/network_metrics.py::NetworkDiameter
   - macroforecast/trade/vulnerabilities/base.py
@@ -51,7 +51,7 @@ DIAMETER:
   - macroforecast/trade/vulnerabilities/graph.py
 HHI:
   revision: 0
-  code_hash: 91b6bcd5adc64ecd
+  code_hash: 0227d26cfbe1b0de
   sources:
   - macroforecast/trade/vulnerabilities/metrics.py::HerfindahlHirschmanIndex
   - macroforecast/trade/vulnerabilities/base.py
@@ -59,7 +59,7 @@ HHI:
   - macroforecast/trade/methodology.py
 SPOF:
   revision: 0
-  code_hash: 3550776fadea7288
+  code_hash: 3ea9e547ab54ae19
   sources:
   - macroforecast/trade/vulnerabilities/network_metrics.py::SinglePointOfFailureRisk
   - macroforecast/trade/vulnerabilities/base.py
@@ -68,7 +68,7 @@ SPOF:
   - macroforecast/trade/vulnerabilities/graph.py
 SPOF_DECILE:
   revision: 0
-  code_hash: 377d8736412082f3
+  code_hash: 58892b497dc19499
   sources:
   - macroforecast/trade/vulnerabilities/network_metrics.py::SinglePointOfFailureDecile
   - macroforecast/trade/vulnerabilities/base.py
@@ -77,7 +77,7 @@ SPOF_DECILE:
   - macroforecast/trade/vulnerabilities/graph.py
 WORLD_HHI:
   revision: 0
-  code_hash: 42c44fb2db6ed912
+  code_hash: 59b0fb5c5d19ebc0
   sources:
   - macroforecast/trade/vulnerabilities/network_metrics.py::WorldExportConcentration
   - macroforecast/trade/vulnerabilities/base.py
@@ -86,7 +86,7 @@ WORLD_HHI:
   - macroforecast/trade/vulnerabilities/graph.py
 baci:
   revision: 0
-  code_hash: 012f71b3470cd36a
+  code_hash: 166193c62df7695f
   sources:
   - macroforecast/trade/processing/baci.py
   - macroforecast/trade/processing/streaming.py
@@ -100,7 +100,7 @@ coherence:
   - macroforecast/trade/aggregation/diagnostics.py
 concordance:
   revision: 0
-  code_hash: 4b0eea71dcdd472b
+  code_hash: 35aad6f52faa480d
   sources:
   - macroforecast/trade/processing/classification.py
 synthesis:

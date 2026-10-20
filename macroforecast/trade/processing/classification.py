@@ -53,6 +53,8 @@ HS_VINTAGE_YEARS: Dict[str, str] = {
 
 # Politiques de traitement des codes non appariés
 UNMAPPED_POLICIES: Tuple[str, ...] = ("raise", "drop", "keep")
+# Traitements des déclarations d'une nomenclature plus ancienne que la cible
+OLDER_VINTAGE_POLICIES: Tuple[str, ...] = ("raise", "stable_codes")
 
 # Colonnes du schéma canonique des tables de correspondance (cf. unsd.parsing)
 _SOURCE_CODE, _TARGET_CODE = "source_code", "target_code"
@@ -200,6 +202,72 @@ def _map_from_table(df_table: pd.DataFrame, source: str, target: str) -> Dict[st
     return dict(zip(df_pairs[_SOURCE_CODE], df_pairs[_TARGET_CODE]))
 
 
+# Fonction de construction du dictionnaire des codes inchangés d'un millésime plus ancien
+def build_stable_code_map(
+    concordances: Mapping[Tuple[str, str], pd.DataFrame],
+    older: str,
+    target: str,
+) -> Dict[str, str]:
+    """List the codes of an older vintage that are unchanged in a more recent one.
+
+    UNSD publishes downward tables only (recent code -> older code), so an
+    older code cannot be converted into the recent vintage in general: the
+    inverse relation is one-to-many. A code is nevertheless safe to carry over
+    unchanged when the downward table links it to the very same code and to
+    nothing else, on both sides (a strict ``1:1`` identity).
+
+    Args:
+        concordances: Mapping ``(source, target) -> normalised table`` holding
+            the downward table ``(target, older)``. Keys accept any spelling
+            resolved by :func:`resolve_vintage`.
+        older: Older classification the declarations are expressed in.
+        target: More recent classification to carry the codes over to.
+
+    Returns:
+        Mapping ``code -> code`` of the unchanged codes (identity pairs).
+
+    Raises:
+        ValueError: If ``older`` is not older than ``target``, or if the
+            downward table ``(target, older)`` is not provided.
+
+    Examples:
+        >>> table = pd.DataFrame(
+        ...     {
+        ...         "source_code": ["010121", "010129", "010130"],
+        ...         "target_code": ["010121", "010121", "010130"],
+        ...     }
+        ... )
+        >>> build_stable_code_map({("HS2017", "HS2012"): table}, "H4", "HS2017")
+        {'010130': '010130'}
+    """
+    # Résolution des millésimes et contrôle du sens
+    older_year, target_year = resolve_vintage(older), resolve_vintage(target)
+    if not older_year < target_year:
+        raise ValueError(f"{older!r} is not older than {target!r}: nothing to carry over.")
+    indexed = _index_concordances(concordances)
+    df_table = indexed.get((target_year, older_year))
+    if df_table is None:
+        raise ValueError(
+            f"No downward concordance table {target!r} -> {older!r} to identify the "
+            f"unchanged codes. Available pairs: {sorted(indexed)}."
+        )
+
+    # Paires de codes distinctes, côté récent (source) et côté ancien (cible)
+    df_pairs = pd.DataFrame(
+        {
+            _SOURCE_CODE: normalise_codes(df_table[_SOURCE_CODE]),
+            _TARGET_CODE: normalise_codes(df_table[_TARGET_CODE]),
+        }
+    ).dropna().drop_duplicates()
+
+    # Identité stricte : même code, unique de chaque côté de la table
+    identical = df_pairs[_SOURCE_CODE] == df_pairs[_TARGET_CODE]
+    unique_recent = ~df_pairs[_SOURCE_CODE].duplicated(keep=False)
+    unique_older = ~df_pairs[_TARGET_CODE].duplicated(keep=False)
+    stable = df_pairs.loc[identical & unique_recent & unique_older, _SOURCE_CODE]
+    return {str(code): str(code) for code in stable}
+
+
 # Fonction de recherche d'un chemin de conversion par millésimes intermédiaires
 def _find_chain(
     indexed: Mapping[Tuple[str, str], pd.DataFrame], source_year: str, target_year: str
@@ -340,6 +408,11 @@ class HsHarmonizationReport:
             time with no counterpart in the concordance tables.
         share_value_unmapped: Share of the leading value column carried by the
             unmapped rows, measured **before** ``on_unmapped`` is applied.
+        n_rows_older_dropped: Rows of a vintage older than the target discarded
+            because their code is not unchanged in the target vintage
+            (``older_vintages="stable_codes"``); 0 otherwise.
+        share_value_older_dropped: Share of the leading value column carried by
+            those rows.
         share_rows_collapsed: Share of the retained rows absorbed by the
             re-aggregation, ``1 - n_output_rows / n_retained_rows``. Rows
             discarded by ``on_unmapped="drop"`` are excluded from the
@@ -358,6 +431,8 @@ class HsHarmonizationReport:
     n_codes_mapped: int = 0
     n_codes_unmapped: int = 0
     share_value_unmapped: float = float("nan")
+    n_rows_older_dropped: int = 0
+    share_value_older_dropped: float = float("nan")
     share_rows_collapsed: float = float("nan")
     relationship_distribution: Dict[str, int] = field(default_factory=dict)
 
@@ -429,6 +504,13 @@ class HsHarmonizer:
             **including their original vintage**, so the output stays
             heterogeneous and ``run_baci`` refuses it: ``"keep"`` is a
             diagnostic mode, not a production one).
+        older_vintages: What to do with declarations expressed in a vintage
+            older than the target — ``"raise"`` (default: only downward
+            conversions are unambiguous) or ``"stable_codes"`` (codes unchanged
+            between the two vintages, see :func:`build_stable_code_map`, are
+            carried over as target-vintage codes; every other code of an older
+            vintage is discarded whatever ``on_unmapped`` says, and measured by
+            ``report_.n_rows_older_dropped`` / ``share_value_older_dropped``).
 
     Attributes:
         target_vintage_: Vintage every mapped observation was converged to.
@@ -488,6 +570,7 @@ class HsHarmonizer:
         qty_col: str = "qty",
         qty_unit_col: str = "qtyUnitCode",
         on_unmapped: Literal["raise", "drop", "keep"] = "raise",
+        older_vintages: Literal["raise", "stable_codes"] = "raise",
     ) -> None:
         # Initialisation des attributs (stockage tel quel, convention sklearn)
         self.concordances = concordances
@@ -500,6 +583,7 @@ class HsHarmonizer:
         self.qty_col = qty_col
         self.qty_unit_col = qty_unit_col
         self.on_unmapped = on_unmapped
+        self.older_vintages = older_vintages
 
     # Méthode auxiliaire : contrôle des colonnes exploitables du jeu de données
     def _check_columns(self, df_data: pd.DataFrame) -> None:
@@ -620,6 +704,11 @@ class HsHarmonizer:
                 f"Unsupported on_unmapped policy {self.on_unmapped!r}. "
                 f"Expected one of {list(UNMAPPED_POLICIES)}."
             )
+        if self.older_vintages not in OLDER_VINTAGE_POLICIES:
+            raise ValueError(
+                f"Unsupported older_vintages policy {self.older_vintages!r}. "
+                f"Expected one of {list(OLDER_VINTAGE_POLICIES)}."
+            )
         self._check_columns(df_data)
 
         # Millésimes présents, du plus ancien au plus récent
@@ -646,7 +735,7 @@ class HsHarmonizer:
             for label in self.vintages_present_
             if resolve_vintage(label) < target_year
         ]
-        if older:
+        if older and self.older_vintages == "raise":
             raise ValueError(
                 f"Target vintage {target!r} ({target_year}) is more recent than "
                 f"the vintages {older} present in df_data. Only downward "
@@ -685,7 +774,11 @@ class HsHarmonizer:
                 continue
             converted.append(label)
 
-            conversion_map = build_conversion_map(self.concordances, label, target)
+            # Millésime plus ancien que la cible : seuls les codes inchangés sont repris
+            if source_year < target_year:
+                conversion_map = build_stable_code_map(self.concordances, label, target)
+            else:
+                conversion_map = build_conversion_map(self.concordances, label, target)
             codes_present = (
                 codes[df_data[self.classification_col] == label].dropna().unique()
             )
@@ -717,11 +810,20 @@ class HsHarmonizer:
         )
 
         # Échec au plus tôt : inutile de remapper si la politique est "raise"
-        if self.on_unmapped == "raise" and self.unmapped_codes_:
+        # Les codes modifiés d'un millésime plus ancien sont écartés par règle, ils ne comptent pas
+        blocking = [
+            pair
+            for pair in self.unmapped_codes_
+            if not (
+                self.older_vintages == "stable_codes"
+                and resolve_vintage(pair[0]) < target_year
+            )
+        ]
+        if self.on_unmapped == "raise" and blocking:
             raise ValueError(
-                f"{len(self.unmapped_codes_)} product codes have no counterpart "
+                f"{len(blocking)} product codes have no counterpart "
                 f"in the concordance tables towards {self.target_vintage_!r} "
-                f"(e.g. {list(self.unmapped_codes_[:5])}). Use "
+                f"(e.g. {blocking[:5]}). Use "
                 f"on_unmapped='drop' to discard them or 'keep' to leave them "
                 f"untouched."
             )
@@ -811,9 +913,34 @@ class HsHarmonizer:
             if total:
                 share_value_unmapped = float(values[~is_mapped].sum() / total)
 
+        # Lignes d'un millésime plus ancien que la cible dont le code n'est pas repris :
+        # écartées quelle que soit la politique, et mesurées à part
+        is_older = vintages.map(
+            {
+                label: resolve_vintage(label) < target_year
+                for label in vintages.dropna().unique()
+            }
+        ).fillna(False).astype(bool)
+        forced_drop = (
+            ~is_mapped & is_older
+            if self.older_vintages == "stable_codes"
+            else pd.Series(False, index=df_out.index)
+        )
+        n_rows_older_dropped = int(forced_drop.sum())
+        share_value_older_dropped = float("nan")
+        if value_columns and total:
+            share_value_older_dropped = float(values[forced_drop].sum() / total)
+        if n_rows_older_dropped:
+            logger.warning(
+                f"{n_rows_older_dropped} rows of a vintage older than "
+                f"{self.target_vintage_!r} carry a code that changed since: discarded "
+                f"({share_value_older_dropped:.2%} of "
+                f"{value_columns[0] if value_columns else 'value'})."
+            )
+
         # Application de la politique de traitement des codes non appariés
-        if (~is_mapped).any():
-            faulty = sorted(set(zip(vintages[~is_mapped], codes[~is_mapped])))
+        if (~is_mapped & ~forced_drop).any():
+            faulty = sorted(set(zip(vintages[~is_mapped & ~forced_drop], codes[~is_mapped & ~forced_drop])))
             if self.on_unmapped == "raise":
                 raise ValueError(
                     f"{len(faulty)} product codes have no counterpart in the "
@@ -821,7 +948,7 @@ class HsHarmonizer:
                     f"(e.g. {faulty[:5]}). Use on_unmapped='drop' or 'keep'."
                 )
             logger.warning(
-                f"{int((~is_mapped).sum())} rows carry a code with no "
+                f"{int((~is_mapped & ~forced_drop).sum())} rows carry a code with no "
                 f"counterpart towards {self.target_vintage_!r} "
                 f"({share_value_unmapped:.2%} of {value_columns[0] if value_columns else 'value'}): "
                 f"policy {self.on_unmapped!r} applied."
@@ -834,8 +961,9 @@ class HsHarmonizer:
         df_out[self.classification_col] = vintages.where(
             ~is_mapped, self.target_vintage_
         )
-        if self.on_unmapped == "drop":
-            df_out = df_out[is_mapped].reset_index(drop=True)
+        keep_rows = is_mapped if self.on_unmapped == "drop" else ~forced_drop
+        if not keep_rows.all():
+            df_out = df_out[keep_rows].reset_index(drop=True)
         n_retained_rows = len(df_out)
 
         # Ré-agrégation : la conversion descendante étant majoritairement n:1,
@@ -869,11 +997,17 @@ class HsHarmonizer:
         self.value_unmapped_ = (
             float(values[~is_mapped].sum()) if value_columns else float("nan")
         )
+        self.n_rows_older_dropped_ = n_rows_older_dropped
+        self.value_older_dropped_ = (
+            float(values[forced_drop].sum()) if value_columns else float("nan")
+        )
 
         # Mise à jour des champs volumétriques du rapport
         self.report_.n_input_rows = n_input_rows
         self.report_.n_output_rows = len(df_out)
         self.report_.share_value_unmapped = share_value_unmapped
+        self.report_.n_rows_older_dropped = n_rows_older_dropped
+        self.report_.share_value_older_dropped = share_value_older_dropped
         self.report_.share_rows_collapsed = (
             1.0 - len(df_out) / n_retained_rows if n_retained_rows else float("nan")
         )
@@ -970,6 +1104,8 @@ def merge_harmonization_reports(harmonizers: Sequence["HsHarmonizer"]) -> HsHarm
     n_retained = sum(harmonizer.n_retained_rows_ for harmonizer in harmonizers)
     value_total = sum(harmonizer.value_total_ for harmonizer in harmonizers)
     value_unmapped = sum(harmonizer.value_unmapped_ for harmonizer in harmonizers)
+    n_older_dropped = sum(harmonizer.n_rows_older_dropped_ for harmonizer in harmonizers)
+    value_older_dropped = sum(harmonizer.value_older_dropped_ for harmonizer in harmonizers)
     return HsHarmonizationReport(
         n_input_rows=int(n_input),
         n_output_rows=int(n_output),
@@ -979,6 +1115,10 @@ def merge_harmonization_reports(harmonizers: Sequence["HsHarmonizer"]) -> HsHarm
         n_codes_unmapped=len(unmapped),
         share_value_unmapped=(
             float(value_unmapped / value_total) if value_total else float("nan")
+        ),
+        n_rows_older_dropped=int(n_older_dropped),
+        share_value_older_dropped=(
+            float(value_older_dropped / value_total) if value_total else float("nan")
         ),
         share_rows_collapsed=(
             1.0 - n_output / n_retained if n_retained else float("nan")

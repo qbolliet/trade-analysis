@@ -474,7 +474,10 @@ def concordance_pairs(
     """List the ``(source, target)`` vintage pairs needed by the BACI targets.
 
     Every classification present in a year of a target's scope, other than the
-    target itself, must be converted into it.
+    target itself, must be converted into it. UNSD publishes downward tables
+    only: for a classification older than the target, the pair returned is the
+    downward table ``(target, older)``, from which the codes unchanged since
+    that vintage are identified.
 
     Args:
         classifications: Classifications present per year
@@ -487,6 +490,8 @@ def concordance_pairs(
     Examples:
         >>> concordance_pairs({2017: ["H5"], 2023: ["H5", "H6"]}, {"HS2017": [2017, 2023]})
         [('HS2022', 'HS2017')]
+        >>> concordance_pairs({2017: ["H4", "H5"]}, {"HS2017": [2017]})
+        [('HS2017', 'HS2012')]
     """
     from macroforecast.trade.processing import resolve_vintage
 
@@ -495,7 +500,12 @@ def concordance_pairs(
         for year in years:
             for code in classifications.get(int(year), ()):
                 source = f"HS{resolve_vintage(code)}"
-                if source != target:
+                if source == target:
+                    continue
+                # Nomenclature plus ancienne que la cible : table descendante (cible, ancienne)
+                if resolve_vintage(source) < resolve_vintage(target):
+                    pairs.add((target, source))
+                else:
                     pairs.add((source, target))
     return sorted(pairs)
 
@@ -530,7 +540,8 @@ def chapter_links(
 
     links: Set[Tuple[str, str]] = set()
     for source in sources:
-        if resolve_vintage(source) == resolve_vintage(target):
+        # Cible elle-même, ou nomenclature plus ancienne (codes inchangés, donc même chapitre)
+        if resolve_vintage(source) <= resolve_vintage(target):
             continue
         for code, converted in build_conversion_map(concordances, source, target).items():
             if code[:2] != converted[:2]:
@@ -1450,6 +1461,27 @@ def baci_inputs(dist: Optional[pd.DataFrame], geo: Optional[pd.DataFrame]) -> Di
 CONCORDANCE_CHECKSUMS_KEY = "concordance_checksums"
 
 
+# Fonction de sélection des tables de passage utilisées par un millésime cible
+def vintage_pairs(pairs: Iterable[Tuple[str, str]], label: str) -> List[Tuple[str, str]]:
+    """Select the correspondence pairs a target vintage may use.
+
+    Args:
+        pairs: ``(source, target)`` pairs of the loaded tables.
+        label: Target vintage.
+
+    Returns:
+        The pairs converting into ``label`` (more recent sources) and the downward
+        pairs ``(label, older)`` identifying the codes unchanged in older vintages.
+
+    Examples:
+        >>> vintage_pairs([("HS2022", "HS2017"), ("HS2017", "HS2012")], "HS2017")
+        [('HS2022', 'HS2017'), ('HS2017', 'HS2012')]
+        >>> vintage_pairs([("HS2022", "HS2017"), ("HS2017", "HS2012")], "HS2012")
+        [('HS2017', 'HS2012')]
+    """
+    return [pair for pair in pairs if label in (pair[0], pair[1])]
+
+
 # Fonction de lecture des sommes de contrôle de tables de passage
 def concordance_checksums(
     concordance_registry: Optional[Mapping[str, Any]], pairs: Iterable[Tuple[str, str]]
@@ -2149,7 +2181,7 @@ def prepare_baci(
         concordance_registry = JsonLoader().load(concordance_registry_file, bucket=bucket, missing_ok=True)
         scope.concordance_checksums = {
             label: concordance_checksums(
-                concordance_registry, [pair for pair in scope.concordances if pair[1] == label]
+                concordance_registry, vintage_pairs(scope.concordances, label)
             )
             for label in scope.targets
         }
@@ -2259,6 +2291,8 @@ def run_baci_vintage(
             weight_cols=(schema.netwgt_col,),
             qty_col=schema.qty_col,
             qty_unit_col=schema.qty_unit_col,
+            # Déclarations d'une nomenclature plus ancienne que la cible : codes inchangés repris
+            older_vintages="stable_codes",
         )
 
     # Point de reprise mis à jour après chaque année écrite

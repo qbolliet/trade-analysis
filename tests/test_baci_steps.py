@@ -95,10 +95,11 @@ def test_eligible_years_reads_a_registry_view() -> None:
 
 
 def test_concordance_pairs_and_chapter_links() -> None:
+    # Une nomenclature plus ancienne que la cible se résout par la table descendante (cible, ancienne)
     assert concordance_pairs({2017: ["H5"], 2023: ["H5", "H6"]}, {"HS2017": [2017, 2023], "HS2022": [2023]}) == [
-        ("HS2017", "HS2022"),
         ("HS2022", "HS2017"),
     ]
+    assert concordance_pairs({2017: ["H4", "H5"]}, {"HS2017": [2017]}) == [("HS2017", "HS2012")]
     table = pd.DataFrame({"source_code": ["850110", "840110", "010121"], "target_code": ["840110", "840110", "010121"]})
     assert chapter_links({("HS2022", "HS2017"): table}, ["H5", "H6"], "HS2017") == [("85", "84")]
 
@@ -398,3 +399,13 @@ def test_comtrade_reads_can_be_pinned_at_a_snapshot(comtrade_catalog) -> None:
     assert classifications_by_year(conn, "C_A_HS", years=[2019]) == {}
     assert sum(rows_by_chapter(conn, "C_A_HS", year=2019, at_snapshot=pinned).values()) > 0
     assert len(read_comtrade_year(conn, "C_A_HS", ["period"], year=2019, at_snapshot=pinned)) > 0
+
+
+def test_vintage_pairs_and_chapter_links_ignore_older_sources() -> None:
+    from kedro_pipeline.steps.baci import vintage_pairs
+
+    pairs = [("HS2022", "HS2017"), ("HS2017", "HS2012")]
+    assert vintage_pairs(pairs, "HS2017") == pairs
+    assert vintage_pairs(pairs, "HS2012") == [("HS2017", "HS2012")]
+    # Les codes inchangés d'une nomenclature plus ancienne gardent leur chapitre
+    assert chapter_links({("HS2017", "HS2012"): pd.DataFrame({"source_code": ["010121"], "target_code": ["010121"]})}, ["H4"], "HS2017") == []
