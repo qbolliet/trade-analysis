@@ -529,7 +529,7 @@ def read_source_flows(
         if columns is not None
         else list(dict.fromkeys([*config.key_columns, config.partner_col, config.value_col]))
     )
-    return _read_source_fact_table(
+    flows = _read_source_fact_table(
         conn,
         catalog_alias,
         source_schema,
@@ -539,6 +539,23 @@ def read_source_flows(
         reporters_products=reporters_products,
         where=where,
     )
+    # Codes de flux en entiers : l'API Comext les livre en texte ("1", "2"), alors que
+    # les codes configurés et la grille de sortie sont entiers (jointure impossible sinon)
+    if config.flow_col in flows.columns and not pd.api.types.is_integer_dtype(
+        flows[config.flow_col]
+    ):
+        # Conversion en numérique
+        numeric = pd.to_numeric(flows[config.flow_col], errors="coerce")
+        # Comptage des conversions invalides
+        n_invalid = int(numeric.isna().sum() - flows[config.flow_col].isna().sum())
+        if n_invalid:
+            # Logging
+            logger.warning(
+                f"{n_invalid} value(s) of column '{config.flow_col}' are not numeric "
+                "flow codes: they match no direction"
+            )
+        flows[config.flow_col] = numeric.astype("Int64")
+    return flows
 
 
 # Fonction de lecture du résultat de l'exécution précédente (diagnostics de dérive)

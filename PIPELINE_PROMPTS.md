@@ -2629,7 +2629,7 @@ ACQUIS DE LA RECETTE PRÉCÉDENTE (déjà fait, à ne pas refaire)
   CONFIRMER ici par la seconde exécution (étape 3).
 
 ÉTAPES
-1. Pré-vol (lecture seule) : contexte `kubectl`, secrets (clés), image `sha-c460c40`
+1. Pré-vol (lecture seule) : contexte `kubectl`, secrets (clés), image `sha-f7101da`
    publique, MLflow joignable, état des `CronWorkflow` (le cron de transition
    `trade-pipeline-transition-daily` doit rester SUSPENDU pendant toute la recette ; le
    vérifier), rendu demo + `--check` + `kubectl apply --dry-run=server`.
@@ -2662,7 +2662,7 @@ ACQUIS DE LA RECETTE PRÉCÉDENTE (déjà fait, à ne pas refaire)
    cohérent (rangs, libellés, `in_force`), latence à froid des graphiques en `cloud`.
 6. Forçage : `weekly` avec `force-steps=synthesis` → seuls synthèse et cohérence recalculent.
 7. Bascule de production (après confirmation) : fixer `deployment.tag` sur le tag
-   immuable `sha-c460c40` avec `image_pull_policy: IfNotPresent` dans `config/base/argo.yml`,
+   immuable `sha-f7101da` avec `image_pull_policy: IfNotPresent` dans `config/base/argo.yml`,
    `render-argo --env cloud` puis `--check`, `kubectl apply` de `kubernetes/generated/`,
    les deux `CronWorkflow` actifs en env `cloud` ; suppression du workflow de transition
    (cron, template, dossier `kubernetes/transition/`) seulement après une exécution

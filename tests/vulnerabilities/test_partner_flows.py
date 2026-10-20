@@ -96,3 +96,27 @@ def test_drift_is_measured_within_each_flow() -> None:
     # Le résultat précédent contient aussi l'import : aucune cellule « disparue »
     assert drift.n_disappeared_cells == 0 and drift.n_new_cells == 0
     assert drift.spearman["HHI"] == pytest.approx(1.0)
+
+
+def test_read_source_flows_casts_text_flow_codes_to_integers() -> None:
+    """Les codes de flux livrés en texte par l'API sont lus en entiers."""
+    import duckdb
+
+    from macroforecast.trade.vulnerabilities import VulnerabilityConfig
+    from macroforecast.trade.vulnerabilities.runner import read_source_flows
+
+    config = VulnerabilityConfig()
+    conn = duckdb.connect()
+    conn.execute("ATTACH ':memory:' AS src")
+    conn.execute("CREATE SCHEMA src.s")
+    columns = ", ".join(
+        f"'{c}' AS {c}" if c != config.flow_col else f"'1' AS {c}"
+        for c in config.key_columns
+    )
+    conn.execute(
+        f"CREATE TABLE src.s.fact_table AS SELECT {columns}, 'FR' AS {config.partner_col}, "
+        f"1.0 AS {config.value_col}"
+    )
+    flows = read_source_flows(conn, "src", "s", config=config)
+    assert str(flows[config.flow_col].dtype) == "Int64"
+    assert flows[config.flow_col].tolist() == [1]
