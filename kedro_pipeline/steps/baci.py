@@ -2307,6 +2307,9 @@ def run_baci_vintage(
             qty_unit_col=schema.qty_unit_col,
             # Déclarations d'une nomenclature plus ancienne que la cible : codes inchangés repris
             older_vintages="stable_codes",
+            # Codes sans correspondance vers la cible (ex. code supprimé d'une nomenclature
+            # récente mais déclaré sous son étiquette) : écartés, part mesurée dans le rapport
+            on_unmapped="drop",
         )
 
     # Point de reprise mis à jour après chaque année écrite

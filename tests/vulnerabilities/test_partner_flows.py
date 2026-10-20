@@ -175,3 +175,28 @@ def test_harmonizer_still_refuses_older_vintages_by_default() -> None:
     )
     with pytest.raises(ValueError, match="more recent"):
         HsHarmonizer({}, target_vintage="HS2017").fit(declarations)
+
+
+def test_harmonizer_drops_and_measures_recent_codes_without_counterpart() -> None:
+    from macroforecast.trade.processing import HsHarmonizer
+
+    # Table descendante HS2022 -> HS2017 : 284440 y est absent (code supprimé en HS2022)
+    table = pd.DataFrame({"source_code": ["010121"], "target_code": ["010121"]})
+    declarations = pd.DataFrame(
+        {
+            "classificationCode": ["H6", "H6"],
+            "cmdCode": ["010121", "284440"],
+            "period": ["2018"] * 2,
+            "primaryValue": [30.0, 10.0],
+        }
+    )
+    harmonizer = HsHarmonizer(
+        {("HS2022", "HS2017"): table},
+        target_vintage="HS2017",
+        older_vintages="stable_codes",
+        on_unmapped="drop",
+    )
+    out = harmonizer.fit_transform(declarations)
+    assert out["cmdCode"].tolist() == ["010121"]
+    assert harmonizer.report_.n_codes_unmapped == 1
+    assert harmonizer.report_.share_value_unmapped == 0.25
