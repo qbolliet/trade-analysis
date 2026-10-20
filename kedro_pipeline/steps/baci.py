@@ -677,7 +677,10 @@ def read_comtrade_year(
     """Read the projected Comtrade declarations of one year, read-only.
 
     The year (and the chapters of a block) are pushed down to SQL as bound
-    parameters; identifiers come from the configuration and are quoted.
+    parameters; identifiers come from the configuration and are quoted. The
+    product column is cut to its first six digits: national tariff lines
+    (8 to 13 digits) are sub-positions of an HS6 code, which the harmonisation
+    then re-aggregates.
 
     Args:
         conn: Open DuckDB / DuckLake connection.
@@ -700,10 +703,21 @@ def read_comtrade_year(
         ...                  "t(period, cmdCode, primaryValue)")
         >>> read_comtrade_year(conn, "s", ["primaryValue"], year=2017, chapters=["85"])["primaryValue"].tolist()
         [2.0]
+        >>> _ = conn.execute("INSERT INTO s.fact_table VALUES ('2017', '28051100000', 4.0)")
+        >>> read_comtrade_year(conn, "s", ["cmdCode"], year=2017, chapters=["28"])["cmdCode"].tolist()
+        ['280511']
     """
     from statflows.storage.ducklake.tables import FACT_TABLE
 
-    col_list = ", ".join(f'"{column}"' for column in columns)
+    # Lignes tarifaires nationales (7 à 13 chiffres) ramenées à leur sous-position SH6 :
+    # les six premiers chiffres sont communs à tous les pays, et l'harmonisation
+    # ré-agrège ensuite les lignes devenues identiques
+    col_list = ", ".join(
+        f'substr(CAST("{column}" AS VARCHAR), 1, 6) AS "{column}"'
+        if column == product_col
+        else f'"{column}"'
+        for column in columns
+    )
     sql = (
         f'SELECT {col_list} FROM "{source_schema}".{FACT_TABLE}{time_travel(at_snapshot)} '
         f"WHERE {_year_sql(period_col)} = ?"

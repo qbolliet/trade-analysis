@@ -409,3 +409,28 @@ def test_vintage_pairs_and_chapter_links_ignore_older_sources() -> None:
     assert vintage_pairs(pairs, "HS2012") == [("HS2017", "HS2012")]
     # Les codes inchangés d'une nomenclature plus ancienne gardent leur chapitre
     assert chapter_links({("HS2017", "HS2012"): pd.DataFrame({"source_code": ["010121"], "target_code": ["010121"]})}, ["H4"], "HS2017") == []
+
+
+def test_national_tariff_lines_are_aggregated_to_hs6() -> None:
+    """Les lignes tarifaires nationales d'une même sous-position SH6 sont sommées."""
+    import duckdb
+
+    from kedro_pipeline.steps.baci import read_comtrade_year
+    from macroforecast.trade.processing import HsHarmonizer
+
+    conn = duckdb.connect()
+    conn.execute("ATTACH ':memory:' AS src")
+    conn.execute("CREATE SCHEMA src.s")
+    conn.execute("USE src")
+    conn.execute(
+        "CREATE TABLE src.s.fact_table AS SELECT * FROM (VALUES "
+        "('2019', 'H5', '28051100', 3.0), ('2019', 'H5', '2805110000', 4.0), "
+        "('2019', 'H5', '280511', 1.0), ('2019', 'H5', '850110', 5.0)) "
+        "t(period, classificationCode, cmdCode, primaryValue)"
+    )
+    flows = read_comtrade_year(
+        conn, "s", ["period", "classificationCode", "cmdCode", "primaryValue"], year=2019
+    )
+    assert sorted(flows["cmdCode"]) == ["280511", "280511", "280511", "850110"]
+    out = HsHarmonizer({}, target_vintage="HS2017", qty_col="qty").fit_transform(flows)
+    assert dict(zip(out["cmdCode"], out["primaryValue"])) == {"280511": 8.0, "850110": 5.0}
