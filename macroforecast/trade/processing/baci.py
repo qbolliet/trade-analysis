@@ -1457,7 +1457,11 @@ class TonnageConverter:
     # Méthode auxiliaire : présence d'une déclaration exploitable d'un côté
     @staticmethod
     def _is_declared(qty: pd.Series, nw: pd.Series) -> pd.Series:
-        """Flag the sides carrying a quantity or a net weight.
+        """Flag the sides carrying a positive quantity or a positive net weight.
+
+        COMTRADE encodes an absent quantity as ``0`` (with unit code ``-1``), not as
+        a missing value: such a side declared nothing a tonnage could be derived
+        from, and must not count as a conversion failure.
 
         Args:
             qty: Declared quantities of one side.
@@ -1466,9 +1470,16 @@ class TonnageConverter:
         Returns:
             Boolean series, ``True`` where the side declared something a tonnage
             could have been derived from.
+
+        Examples:
+            >>> TonnageConverter._is_declared(
+            ...     pd.Series([0.0, 2.0, None, None]), pd.Series([None, None, 5.0, 0.0])
+            ... ).tolist()
+            [False, True, True, False]
         """
-        # Côté déclaré : quantité renseignée ou poids net strictement positif
-        return qty.notna() | (nw > 0)
+        # Côté déclaré : quantité ou poids net strictement positif (une quantité nulle
+        # est l'encodage COMTRADE d'une quantité absente)
+        return (qty > 0) | (nw > 0)
 
     # Méthode auxiliaire : conversion complète d'un côté vers la tonne
     def _to_tonnes(

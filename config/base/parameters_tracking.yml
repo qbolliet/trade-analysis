@@ -44,7 +44,13 @@ tracking:
       - {metric: coverage/years_eligible,                  op: ">",  threshold: 0,    severity: error,   label: "Au moins une année complète"}
       - {metric: output/flows,                             op: ">",  threshold: 0,    severity: error,   label: "Flux écrits"}
       - {metric: conversion/share_tonnage_missing,         op: "<=", threshold: 0.05, severity: warning, label: "Flux sans tonnage (1 − part convertie en tonnes)"}
-      - {metric: gravity/r_squared,                        op: ">=", threshold: 0.5,  severity: warning, label: "R² de l'équation de gravité"}
+      # Le R² de l'équation de gravité (gravity/r_squared) reste publié à titre informatif, sans seuil :
+      # le rapport des valeurs unitaires miroirs est très bruité (écart-type de l'ordre de 1,8 en log),
+      # si bien que le R² reste de l'ordre de 0,01 même quand l'effet de la distance est bien estimé.
+      # Les contrôles portent sur le taux de fret moyen prédit et sur la part de flux sans prédiction.
+      - {metric: gravity/mean_freight_rate,                op: ">=", threshold: 0,    severity: warning, label: "Taux de fret moyen prédit positif"}
+      - {metric: gravity/mean_freight_rate,                op: "<=", threshold: 0.2,  severity: warning, label: "Taux de fret moyen prédit plausible (≤ 20 %)"}
+      - {metric: gravity/share_flows_without_prediction,   op: "<=", threshold: 0.05, severity: warning, label: "Flux sans taux de fret prédit"}
       - {metric: valuation/share_clipped_to_zero,          op: "<=", threshold: 0.01, severity: warning, label: "Valeurs FOB tronquées à zéro"}
     # Métriques préfixées par sens de flux : un contrôle par sens, ignoré (« skipped ») pour
     # un sens absent de FLOWS ou non recalculé par ce run. Sous Kedro, un run par nœud : les

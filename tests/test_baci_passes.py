@@ -301,6 +301,31 @@ def test_tonnage_rates_are_partition_invariant(world) -> None:
     assert whole.conversion_rates_, "le jeu fictif doit valider des taux d'unités hors poids"
 
 
+def test_zero_quantity_sides_are_not_counted_as_conversion_failures() -> None:
+    """Une quantité nulle (encodage COMTRADE d'une quantité absente) n'est pas un côté déclaré."""
+    df_mirror = pd.DataFrame(
+        {
+            "product": ["850710", "850710", "850710"],
+            "year": [2019, 2019, 2019],
+            # Côté export : poids net, quantité nulle sans poids, quantité en pièces sans poids ni taux
+            "nw_x": [5000.0, np.nan, np.nan],
+            "unit_x": [-1.0, -1.0, 5.0],
+            "q_x": [0.0, 0.0, 3.0],
+            "v_x": [1.0, 1.0, 1.0],
+            "nw_m": [np.nan, np.nan, np.nan],
+            "unit_m": [-1.0, -1.0, -1.0],
+            "q_m": [0.0, 0.0, 0.0],
+            "v_m": [1.0, 1.0, 1.0],
+        }
+    )
+    converter = TonnageConverter().fit(df_mirror)
+    converter.transform(df_mirror)
+    # Deux côtés déclarés : le poids net (1) et la quantité en pièces sans taux validé (1)
+    assert converter.tally_.n_sides == 2
+    assert converter.report_.share_tonnage_from_netwgt == 0.5
+    assert converter.report_.share_tonnage_missing == 0.5
+
+
 # ──────────────────────────────────────────────────────────────────────
 # Médiane des valeurs unitaires en SQL (S1)
 # ──────────────────────────────────────────────────────────────────────

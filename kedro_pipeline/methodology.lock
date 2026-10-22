@@ -86,7 +86,7 @@ WORLD_HHI:
   - macroforecast/trade/vulnerabilities/graph.py
 baci:
   revision: 0
-  code_hash: 166193c62df7695f
+  code_hash: 8cddf79c67cc38a9
   sources:
   - macroforecast/trade/processing/baci.py
   - macroforecast/trade/processing/streaming.py
