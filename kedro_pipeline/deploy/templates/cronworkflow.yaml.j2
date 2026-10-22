@@ -24,7 +24,8 @@ spec:
   schedule: [[ entry.schedule | q ]]
 [% endif %]
   timezone: [[ config.timezone ]]
-  # Une exécution à la fois par point d'entrée ; les deux cadences peuvent se recouvrir
+  # Une exécution à la fois par point d'entrée ; l'exclusion entre cadences est le mutex
+  # d'exécution du WorkflowTemplate
   concurrencyPolicy: [[ config.concurrency_policy ]]
   startingDeadlineSeconds: [[ entry.settings.starting_deadline_seconds ]]
   successfulJobsHistoryLimit: [[ entry.settings.history_limit ]]

@@ -61,6 +61,8 @@ workflow:
   image_pull_policy: Always
   timezone: Europe/Paris
   concurrency_policy: Forbid
+  # Mutex tenu par toute une exécution : le weekly attend la fin du daily (et inversement)
+  run_mutex: trade-pipeline-run
   # Reprises sur erreur d'infrastructure (pod évincé, nœud perdu), par motif de nom de
   # nœud ; aucune pour les téléchargements, dont une reprise dépasserait le budget horaire
   retries:

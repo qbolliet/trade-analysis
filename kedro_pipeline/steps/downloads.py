@@ -28,6 +28,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 import itertools
 import logging
+import threading
 from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence, Tuple, TypeVar, Union
 
 # Modules de manipulation de données
@@ -57,7 +58,7 @@ from kedro_pipeline.io.registry_views import DownloadRegistryView, period_year, 
 from kedro_pipeline.steps.coverage import audit_coverage
 from kedro_pipeline.steps.reference import publish_reference
 from kedro_pipeline.steps.result import StepProgress, StepResult, capturing, mark
-from macroforecast.tracking import RunTracker
+from macroforecast.tracking import RunTracker, log_metrics_series
 
 # Initialisation du logger
 logger = logging.getLogger(__name__)
@@ -817,6 +818,10 @@ QUERY_SECTIONS: Dict[str, str] = {
 QUERY_SECTION = "download/query"
 
 
+# Requêtes regroupées par envoi de métriques (le client MLflow découpe en lots de 1 000 métriques)
+STREAM_BATCH_SIZE = 50
+
+
 # Fonction des métriques d'une requête de téléchargement
 def query_metrics(query_report: Any) -> Dict[str, float]:
     """Return the metrics of one downloaded query, ``/``-separated, by section.
@@ -878,32 +883,50 @@ def download_planned(
     downloads = params["DOWNLOADS"][plan.dataflow]
 
     # Suivi requête par requête : statflows ignore tout du suivi, le rappel est
-    # le seul point de contact
-    streamed_queries: List[QueryReport] = []
+    # le seul point de contact : les points sont groupés par
+    # paquets, un seul appel par paquet, et le rang de la requête reste l'abscisse
+    pending: List[Tuple[int, Dict[str, float]]] = []
+    queries_seen = itertools.count()
+    # Verrou : le téléchargeur peut appeler le rappel depuis plusieurs threads
+    buffer_lock = threading.Lock()
+
+    def flush_query_metrics() -> None:
+        """Send the buffered per-query metrics in one call."""
+        with buffer_lock:
+            if pending:
+                log_metrics_series(tracker, list(pending))
+                pending.clear()
 
     def stream_query_metrics(query_report: QueryReport) -> None:
-        """Send one query's diagnostics to the tracker."""
-        tracker.log_metrics(query_metrics(query_report), step=len(streamed_queries))
-        streamed_queries.append(query_report)
+        """Buffer one query's diagnostics, sending the buffer when it is full."""
+        with buffer_lock:
+            pending.append((next(queries_seen), query_metrics(query_report)))
+            full = len(pending) >= STREAM_BATCH_SIZE
+        if full:
+            flush_query_metrics()
 
     # Téléchargement incrémental (fetch_updates des clients)
     mark(progress, "téléchargement")
-    plan.report = download_updates(
-        client=client,
-        queries=plan.queries,
-        connector=table.connector(),
-        structures_path=downloads["PATHS"]["STRUCTURES_PATH"],
-        last_download_path=downloads["PATHS"]["LAST_DOWNLOAD_PATH"],
-        n_observations=downloads["N_LAST_OBSERVATIONS"],
-        fresh_registry=False,
-        max_runtime=max_runtime(downloads),
-        categorical_threshold=None,  # A supprimer avec la nouvelle version de la base de données
-        bucket=downloads["BUCKET"],
-        storage_options=None,
-        on_query_complete=stream_query_metrics,
-        # Partition du registre et des écritures
-        **download_buffering_options(downloads.get("BUFFERING"), shard_key=plan.shard_key),
-    )
+    try:
+        plan.report = download_updates(
+            client=client,
+            queries=plan.queries,
+            connector=table.connector(),
+            structures_path=downloads["PATHS"]["STRUCTURES_PATH"],
+            last_download_path=downloads["PATHS"]["LAST_DOWNLOAD_PATH"],
+            n_observations=downloads["N_LAST_OBSERVATIONS"],
+            fresh_registry=False,
+            max_runtime=max_runtime(downloads),
+            categorical_threshold=None,
+            bucket=downloads["BUCKET"],
+            storage_options=None,
+            on_query_complete=stream_query_metrics,
+            # Partition du registre et des écritures
+            **download_buffering_options(downloads.get("BUFFERING"), shard_key=plan.shard_key),
+        )
+    finally:
+        # Paquet incomplet envoyé même en cas d'interruption du téléchargement
+        flush_query_metrics()
     return plan.report
 
 

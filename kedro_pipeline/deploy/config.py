@@ -111,6 +111,8 @@ class RenderConfig:
         image_pull_policy: Image pull policy of the pods.
         timezone: Timezone of the schedules.
         concurrency_policy: Concurrency policy of the CronWorkflows.
+        run_mutex: Name of the mutex held by a whole run, so that runs of different
+            entry points never overlap; ``None`` lets them overlap.
         default_retries: Retries on infrastructure error of a task.
         node_retries: Retries by node name pattern (``fnmatch``), first match wins.
         strict_dependencies: Upstream nodes a node (by name pattern) requires to
@@ -148,6 +150,7 @@ class RenderConfig:
     image_pull_policy: str = "IfNotPresent"
     timezone: str = "UTC"
     concurrency_policy: str = "Forbid"
+    run_mutex: Optional[str] = None
     default_retries: int = 1
     node_retries: Mapping[str, int] = field(default_factory=dict)
     strict_dependencies: Mapping[str, Tuple[str, ...]] = field(default_factory=dict)
@@ -242,6 +245,7 @@ class RenderConfig:
             image_pull_policy=workflow.get("image_pull_policy", cls.image_pull_policy),
             timezone=workflow.get("timezone", cls.timezone),
             concurrency_policy=workflow.get("concurrency_policy", cls.concurrency_policy),
+            run_mutex=workflow.get("run_mutex", cls.run_mutex),
             default_retries=int(retries.get("default", cls.default_retries)),
             node_retries={str(k): int(v) for k, v in (retries.get("nodes") or {}).items()},
             strict_dependencies={

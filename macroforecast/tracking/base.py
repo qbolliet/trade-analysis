@@ -6,7 +6,7 @@ from importlib import metadata
 import logging
 import math
 import re
-from typing import Any, Dict, Mapping, Optional, Protocol
+from typing import Any, Dict, Mapping, Optional, Protocol, Sequence, Tuple
 # Modules de manipulation des données
 import pandas as pd
 
@@ -72,6 +72,37 @@ class RunTracker(Protocol):
 # ──────────────────────────────────────────────────────────────────────
 
 # Implémentation inerte du protocole (patron « objet nul »)
+# Série de métriques : couples (pas, métriques)
+MetricSeries = Sequence[Tuple[int, Mapping[str, float]]]
+
+
+# Fonction d'envoi groupé de métriques à plusieurs pas
+def log_metrics_series(tracker: "RunTracker", series: MetricSeries) -> None:
+    """Record metrics at several steps, in one server call when the tracker can.
+
+    Sending one point per call costs a network round trip each (about 0.3 s on
+    the shared server): thousands of points then dominate the run time. A tracker
+    exposing ``log_metrics_series`` receives the whole series at once; any other
+    falls back on one :meth:`RunTracker.log_metrics` call per step.
+
+    Args:
+        tracker: Tracker receiving the metrics.
+        series: ``(step, metrics)`` pairs, in logging order.
+
+    Examples:
+        >>> tracker = CapturingTracker()
+        >>> log_metrics_series(tracker, [(0, {"a": 1.0}), (1, {"a": 2.0})])
+        >>> tracker.metrics
+        {'a': 2.0}
+    """
+    batched = getattr(tracker, "log_metrics_series", None)
+    if batched is not None:
+        batched(series)
+        return
+    for step, metrics in series:
+        tracker.log_metrics(metrics, step=step)
+
+
 class NullTracker:
     """No-op :class:`RunTracker`: every call is discarded.
 
@@ -99,6 +130,13 @@ class NullTracker:
         Args:
             metrics: Ignored.
             step: Ignored.
+        """
+
+    def log_metrics_series(self, series: MetricSeries) -> None:
+        """Discard the series of metrics.
+
+        Args:
+            series: Ignored.
         """
 
     def log_dict(self, obj: Mapping[str, Any], artifact_file: str) -> None:
@@ -220,6 +258,16 @@ class CapturingTracker:
         self.metrics.update(metrics)
         self._target.log_metrics(metrics, step=step)
 
+    def log_metrics_series(self, series: MetricSeries) -> None:
+        """Forward and remember a series of metrics.
+
+        Args:
+            series: ``(step, metrics)`` pairs, in logging order.
+        """
+        for _, metrics in series:
+            self.metrics.update(metrics)
+        log_metrics_series(self._target, series)
+
     def log_dict(self, obj: Mapping[str, Any], artifact_file: str) -> None:
         """Forward and remember a mapping artifact.
 
@@ -325,6 +373,14 @@ class RecordingTracker:
             step: Optional step.
         """
         self._record("log_metrics", dict(metrics), step=step)
+
+    def log_metrics_series(self, series: MetricSeries) -> None:
+        """Record a series of metrics.
+
+        Args:
+            series: ``(step, metrics)`` pairs, in logging order.
+        """
+        self._record("log_metrics_series", [(step, dict(m)) for step, m in series])
 
     def log_dict(self, obj: Mapping[str, Any], artifact_file: str) -> None:
         """Record a mapping artifact.

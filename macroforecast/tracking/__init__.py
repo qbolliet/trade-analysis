@@ -9,6 +9,7 @@ from .base import (
     ArtifactCollector,
     flatten_metrics,
     flatten_params,
+    log_metrics_series,
     rekey_metrics,
     run_params,
 )
@@ -30,6 +31,7 @@ __all__ = [
     "ArtifactCollector",
     "flatten_metrics",
     "flatten_params",
+    "log_metrics_series",
     "rekey_metrics",
     "run_params",
     # Implémentation MLflow

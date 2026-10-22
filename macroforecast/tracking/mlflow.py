@@ -12,7 +12,7 @@ from typing import Any, Mapping, Optional
 # Modules de manipulation des données
 import pandas as pd
 # Modules du package
-from .base import NULL_TRACKER, RunTracker
+from .base import NULL_TRACKER, MetricSeries, RunTracker
 
 # Initialisation du logger
 logger = logging.getLogger(__name__)
@@ -28,6 +28,37 @@ _DEFAULT_HTTP_MAX_RETRIES = "1"
 # ──────────────────────────────────────────────────────────────────────
 
 # Suivi d'exécution adossé à MLflow
+# Nombre maximal de métriques par appel d'écriture accepté par MLflow
+_MAX_METRICS_PER_BATCH = 1000
+
+
+# Fonction de découpage d'une série en lots de métriques finies
+def _metric_batches(series: MetricSeries) -> list:
+    """Flatten a series into ``(name, value, step)`` triples, cut into server batches.
+
+    Args:
+        series: ``(step, metrics)`` pairs; the non-finite values are dropped, as
+            MLflow rejects them.
+
+    Returns:
+        Lists of at most ``_MAX_METRICS_PER_BATCH`` triples.
+
+    Examples:
+        >>> _metric_batches([(0, {"a": 1.0, "b": float("nan")}), (1, {"a": 2.0})])
+        [[('a', 1.0, 0), ('a', 2.0, 1)]]
+    """
+    triples = [
+        (name, float(value), int(step))
+        for step, metrics in series
+        for name, value in metrics.items()
+        if isinstance(value, (int, float)) and math.isfinite(float(value))
+    ]
+    return [
+        triples[start : start + _MAX_METRICS_PER_BATCH]
+        for start in range(0, len(triples), _MAX_METRICS_PER_BATCH)
+    ]
+
+
 class MlflowTracker:
     """:class:`~macroforecast.tracking.base.RunTracker` backed by MLflow.
 
@@ -160,6 +191,28 @@ class MlflowTracker:
         if not finite:
             return
         self._guard("log_metrics", lambda: self._mlflow.log_metrics(finite, step=step))
+
+    # Enregistrement d'une série de métriques à plusieurs pas
+    def log_metrics_series(self, series: MetricSeries) -> None:
+        """Record metrics at several steps, in as few server calls as possible.
+
+        Args:
+            series: ``(step, metrics)`` pairs, in logging order.
+        """
+        def _write() -> None:
+            client = self._mlflow.tracking.MlflowClient()
+            run_id = self._mlflow.active_run().info.run_id
+            timestamp = int(time.time() * 1000)
+            for batch in _metric_batches(series):
+                client.log_batch(
+                    run_id,
+                    metrics=[
+                        self._mlflow.entities.Metric(name, value, timestamp, step)
+                        for name, value, step in batch
+                    ],
+                )
+
+        self._guard("log_metrics_series", _write)
 
     # Enregistrement d'un dictionnaire en artefact
     def log_dict(self, obj: Mapping[str, Any], artifact_file: str) -> None:
@@ -356,6 +409,27 @@ class ActiveRunTracker:
             )
 
         self._guard("log_metrics", _write)
+
+    # Enregistrement d'une série de métriques à plusieurs pas
+    def log_metrics_series(self, series: MetricSeries) -> None:
+        """Record metrics at several steps, in as few server calls as possible.
+
+        Args:
+            series: ``(step, metrics)`` pairs, in logging order.
+        """
+
+        def _write(mlflow: Any, client: Any, run_id: str) -> None:
+            timestamp = int(time.time() * 1000)
+            for batch in _metric_batches(series):
+                client.log_batch(
+                    run_id,
+                    metrics=[
+                        mlflow.entities.Metric(name, value, timestamp, step)
+                        for name, value, step in batch
+                    ],
+                )
+
+        self._guard("log_metrics_series", _write)
 
     # Enregistrement d'un dictionnaire en artefact
     def log_dict(self, obj: Mapping[str, Any], artifact_file: str) -> None:

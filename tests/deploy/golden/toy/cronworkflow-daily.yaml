@@ -13,7 +13,8 @@ metadata:
 spec:
   schedules: [ "15 1 * * *" ]
   timezone: Europe/Paris
-  # Une exécution à la fois par point d'entrée ; les deux cadences peuvent se recouvrir
+  # Une exécution à la fois par point d'entrée ; l'exclusion entre cadences est le mutex
+  # d'exécution du WorkflowTemplate
   concurrencyPolicy: Forbid
   startingDeadlineSeconds: 600
   successfulJobsHistoryLimit: 3

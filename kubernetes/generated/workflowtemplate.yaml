@@ -16,6 +16,10 @@ spec:
   serviceAccountName: workflow
   # Maintenance DuckLake en fin d'exécution, quelle qu'en soit l'issue
   onExit: exit-handler
+  # Une seule exécution à la fois, toutes cadences confondues : le weekly lit les sorties
+  # du daily (Comtrade, indicateurs partenaires) et écrit dans le même catalogue, il
+  # attend donc la fin du daily au lieu de lire des données à moitié écrites
+  synchronization: {mutex: {name: trade-pipeline-run}}
   # Borne la plus large des points d'entrée ; chaque CronWorkflow impose la sienne
   activeDeadlineSeconds: 518400
   ttlStrategy: {secondsAfterSuccess: 259200, secondsAfterFailure: 604800}

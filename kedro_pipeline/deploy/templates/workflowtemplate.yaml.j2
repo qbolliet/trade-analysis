@@ -28,6 +28,12 @@ spec:
   # Maintenance DuckLake en fin d'exécution, quelle qu'en soit l'issue
   onExit: [[ exit_template ]]
 [% endif %]
+[% if config.run_mutex %]
+  # Une seule exécution à la fois, toutes cadences confondues : le weekly lit les sorties
+  # du daily (Comtrade, indicateurs partenaires) et écrit dans le même catalogue, il
+  # attend donc la fin du daily au lieu de lire des données à moitié écrites
+  synchronization: {mutex: {name: [[ config.run_mutex ]]}}
+[% endif %]
   # Borne la plus large des points d'entrée ; chaque CronWorkflow impose la sienne
   activeDeadlineSeconds: [[ active_deadline_seconds ]]
   ttlStrategy: {secondsAfterSuccess: [[ config.ttl_seconds_after_success ]], secondsAfterFailure: [[ config.ttl_seconds_after_failure ]]}

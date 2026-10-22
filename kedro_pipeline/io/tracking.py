@@ -36,7 +36,8 @@ from typing import Any, Callable, Dict, Iterator, List, Mapping, Optional, Seque
 # Modules de manipulation des données
 import pandas as pd
 # Modules du package
-from macroforecast.tracking import NULL_TRACKER, ActiveRunTracker, RunTracker
+from macroforecast.tracking import NULL_TRACKER, ActiveRunTracker, RunTracker, log_metrics_series
+from macroforecast.tracking.base import MetricSeries
 from macroforecast.tracking.report import (
     CheckResult,
     RunReport,
@@ -556,6 +557,14 @@ class UnitTracker:
             step: Step of the call; the unit's step when ``None``.
         """
         self.inner.log_metrics(metrics, step=self.step if step is None else step)
+
+    def log_metrics_series(self, series: MetricSeries) -> None:
+        """Forward a series of metrics, each at its own step.
+
+        Args:
+            series: ``(step, metrics)`` pairs, in logging order.
+        """
+        log_metrics_series(self.inner, series)
 
     def log_dict(self, obj: Mapping[str, Any], artifact_file: str) -> None:
         """Forward a mapping artifact under the unit's folder.

@@ -134,6 +134,8 @@ def test_workflow_parameters_and_spec(template) -> None:
     assert set(parameters) == {"image-tag", "force-steps", "force-metrics", "force-methods", "extra-params"}
     assert parameters["force-steps"] == parameters["force-metrics"] == parameters["force-methods"] == ""
     assert (spec["serviceAccountName"], spec["parallelism"]) == ("workflow", 8)
+    # Un seul run à la fois, toutes cadences confondues
+    assert spec["synchronization"] == {"mutex": {"name": "trade-pipeline-run"}}
 
 
 def test_crons(manifests) -> None:

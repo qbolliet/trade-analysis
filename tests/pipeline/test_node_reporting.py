@@ -152,3 +152,18 @@ def test_every_reporting_node_reads_the_tracking_parameters() -> None:
     ]
     assert set(expected) <= set(reporting)
     assert any(fnmatchcase(name, "process_baci_*") for name in reporting)
+
+
+
+def test_stream_sends_every_query_in_batches_and_flushes_the_remainder() -> None:
+    from macroforecast.tracking import CapturingTracker, RecordingTracker, log_metrics_series
+
+    # Le suivi groupé conserve chaque point à son pas
+    recorder = RecordingTracker()
+    series = [(rank, {"download/query/duration_seconds": float(rank)}) for rank in range(120)]
+    log_metrics_series(recorder, series)
+    assert len(recorder.calls) == 1  # un seul appel pour la série
+
+    replayed = CapturingTracker()
+    recorder.replay(replayed)
+    assert replayed.metrics["download/query/duration_seconds"] == 119.0
