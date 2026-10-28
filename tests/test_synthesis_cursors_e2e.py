@@ -41,7 +41,7 @@ from kedro_pipeline.steps.synthesis import (  # noqa: E402
     run_incremental_synthesis,
     synthesis_context_requested,
 )
-from macroforecast.trade.aggregation import MethodSpec, SynthesisConfig, run_synthesis  # noqa: E402
+from tradestat.trade.aggregation import MethodSpec, SynthesisConfig, run_synthesis  # noqa: E402
 
 # Sources : grille partenaires, réseau joint par année et sens (bloc CHANGE)
 SOURCES = [

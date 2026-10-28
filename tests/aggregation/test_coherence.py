@@ -1,4 +1,4 @@
-"""Tests du runner de cohérence (``macroforecast.trade.aggregation.coherence``).
+"""Tests du runner de cohérence (``tradestat.trade.aggregation.coherence``).
 
 ``run_coherence`` est une fonction pure : table de cellules + table longue de
 scores (S-2.4) → table longue de diagnostics (S-2.6, familles ``metrics`` et
@@ -17,15 +17,15 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from macroforecast.trade.aggregation.coherence import (
+from tradestat.trade.aggregation.coherence import (
     COHERENCE_FAMILIES,
     CoherenceConfig,
     CoherenceRunReport,
     pareto_front_share_expected,
     run_coherence,
 )
-from macroforecast.trade.aggregation.methods import MethodSpec
-from macroforecast.trade.aggregation.synthesis import (
+from tradestat.trade.aggregation.methods import MethodSpec
+from tradestat.trade.aggregation.synthesis import (
     GROUP_SENTINEL,
     ITEM_SENTINEL,
     SynthesisConfig,

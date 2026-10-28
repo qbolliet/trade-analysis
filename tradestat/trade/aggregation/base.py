@@ -7,8 +7,8 @@ scheme, aggregation function, bootstrap draws...) lives on the sklearn
 estimator that uses it, following the sklearn convention of self-contained,
 independently configurable estimators rather than one large configuration
 object threaded through every function — appropriate here since each brick
-(:mod:`~macroforecast.trade.aggregation.preprocessing`,
-:mod:`~macroforecast.trade.aggregation.estimators`) is already an
+(:mod:`~tradestat.trade.aggregation.preprocessing`,
+:mod:`~tradestat.trade.aggregation.estimators`) is already an
 ``sklearn.base.BaseEstimator`` with its own constructor arguments.
 """
 # Importation des modules
@@ -105,7 +105,7 @@ def split_frame(
 
     Args:
         df_data: Wide table (e.g. the output of
-            :func:`~macroforecast.trade.vulnerabilities.run_vulnerabilities`)
+            :func:`~tradestat.trade.vulnerabilities.run_vulnerabilities`)
             carrying ``config.id_columns`` and ``config.metric_columns``.
         config: Column conventions.
 

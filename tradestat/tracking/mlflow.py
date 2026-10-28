@@ -60,10 +60,10 @@ def _metric_batches(series: MetricSeries) -> list:
 
 
 class MlflowTracker:
-    """:class:`~macroforecast.tracking.base.RunTracker` backed by MLflow.
+    """:class:`~tradestat.tracking.base.RunTracker` backed by MLflow.
 
     ``mlflow`` is imported **lazily**, inside :meth:`__enter__`, so importing
-    ``macroforecast`` never requires the optional dependency. Every write is
+    ``tradestat`` never requires the optional dependency. Every write is
     guarded: a failure warns and the tracker degrades to a no-op for the rest
     of the run rather than interrupting the computation.
 
@@ -277,7 +277,7 @@ class MlflowTracker:
 
 # Suivi adossé au run MLflow actif, ouvert et fermé par un tiers
 class ActiveRunTracker:
-    """:class:`~macroforecast.tracking.base.RunTracker` writing into the active MLflow run.
+    """:class:`~tradestat.tracking.base.RunTracker` writing into the active MLflow run.
 
     The run belongs to someone else (the kedro-mlflow hook opens it before the
     first node and closes it after the last one): entering or leaving the
@@ -513,7 +513,7 @@ def get_tracker(
 ) -> RunTracker:
     """Return an MLflow-backed tracker, or a no-op one.
 
-    Falls back to :data:`~macroforecast.tracking.base.NULL_TRACKER` when
+    Falls back to :data:`~tradestat.tracking.base.NULL_TRACKER` when
     ``tracking_uri`` is empty, when the ``mlflow`` package is not installed, or
     when the server is unreachable. The ``MLFLOW_TRACKING_URI`` environment
     variable **overrides** the argument, following the MLflow convention and
@@ -531,7 +531,7 @@ def get_tracker(
         the shared null tracker otherwise.
 
     Examples:
-        >>> from macroforecast.tracking import NullTracker
+        >>> from tradestat.tracking import NullTracker
         >>> isinstance(get_tracker(tracking_uri=None), NullTracker)
         True
     """

@@ -6,8 +6,8 @@ import narwhals as nw
 import pandas as pd
 import pytest
 
-import macroforecast.trade.vulnerabilities.network_metrics as network_metrics
-from macroforecast.trade.vulnerabilities import (
+import tradestat.trade.vulnerabilities.network_metrics as network_metrics
+from tradestat.trade.vulnerabilities import (
     NetworkVulnerabilityConfig,
     compute_network_vulnerabilities,
     default_network_metrics,

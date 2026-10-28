@@ -34,7 +34,7 @@ import pandas as pd
 from kedro_pipeline.io.registry_views import period_year, products_key, split_codes
 from kedro_pipeline.steps.baci import completeness_by_year
 from kedro_pipeline.steps.result import StepResult, capturing
-from macroforecast.tracking import RunTracker
+from tradestat.tracking import RunTracker
 
 # Initialisation du logger
 logger = logging.getLogger(__name__)

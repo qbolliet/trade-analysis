@@ -24,7 +24,7 @@ weight-independent consensus rankings of §6.6 (:func:`borda_rank`,
 
 Every ranking here follows the "rank 1 = most vulnerable" convention — the
 opposite of the "higher score = more vulnerable" convention used by
-:mod:`~macroforecast.trade.aggregation.functions`, since a *rank* is exactly
+:mod:`~tradestat.trade.aggregation.functions`, since a *rank* is exactly
 what this module's consensus functions are asked to produce.
 """
 # Importation des modules
@@ -423,7 +423,7 @@ def front_rank_summary(
 
     Args:
         front_mask: Boolean mask of shape ``(n,)`` flagging the non-dominated
-            products (:func:`~macroforecast.trade.aggregation.pareto.pareto_front`).
+            products (:func:`~tradestat.trade.aggregation.pareto.pareto_front`).
         scores: Score vector of shape ``(n,)``, higher meaning more
             vulnerable.
 
@@ -491,7 +491,7 @@ def bootstrap_rank_stability(
         pipeline_factory: Zero-state factory building a fresh, unfitted
             estimator exposing ``fit(X).predict(X)`` (a
             ``sklearn.pipeline.Pipeline`` or a
-            :class:`~macroforecast.trade.aggregation.estimators.WeightedAggregator`),
+            :class:`~tradestat.trade.aggregation.estimators.WeightedAggregator`),
             given the (unchanged, here) configuration. Methods with no fitted
             state (Pareto, MPI) have no bootstrap of this kind.
         n_boot: Number of bootstrap draws, kept small by default: the whole
@@ -507,7 +507,7 @@ def bootstrap_rank_stability(
 
     Examples:
         >>> import pandas as pd
-        >>> from macroforecast.trade.aggregation.estimators import WeightedAggregator
+        >>> from tradestat.trade.aggregation.estimators import WeightedAggregator
         >>> df = pd.DataFrame({"id": ["a", "b", "c"], "HHI": [0.8, 0.3, 0.5]})
         >>> config = AggregationConfig(id_columns=("id",), metric_columns=("HHI",))
         >>> result = bootstrap_rank_stability(
@@ -591,7 +591,7 @@ def smaa_rank_acceptability(
 
     The exact formalisation of "unable to rank the criteria": ``n_draws``
     weight vectors are drawn uniformly on the simplex
-    (:func:`~macroforecast.trade.aggregation.weights.dirichlet_weights`), the
+    (:func:`~tradestat.trade.aggregation.weights.dirichlet_weights`), the
     induced ranking is computed for each, and the rank distribution of every
     product is accumulated (algorithm 5 of the note).
 
@@ -605,8 +605,8 @@ def smaa_rank_acceptability(
         X: Metric matrix of shape ``(n, d)``, already preprocessed
             (oriented, winsorised, normalised).
         aggregation_fn: A weight-taking aggregation function of
-            :mod:`~macroforecast.trade.aggregation.functions` (e.g.
-            :func:`~macroforecast.trade.aggregation.functions.weighted_sum_score`).
+            :mod:`~tradestat.trade.aggregation.functions` (e.g.
+            :func:`~tradestat.trade.aggregation.functions.weighted_sum_score`).
         aggregation_params: Extra keyword arguments forwarded to
             ``aggregation_fn``.
         k: Rank depth stored and depth of the reported confidence factor,
@@ -618,7 +618,7 @@ def smaa_rank_acceptability(
             ``weight_draws`` is supplied.
         weight_draws: Pre-drawn simplex sample of shape ``(T, d)`` to reuse
             instead of drawing a fresh one — how
-            :class:`~macroforecast.trade.aggregation.estimators.SmaaScorer`
+            :class:`~tradestat.trade.aggregation.estimators.SmaaScorer`
             keeps the draws fixed between ``fit`` and ``predict``, and how the
             same sample is shared with the cone quantile (A-01).
 
@@ -631,7 +631,7 @@ def smaa_rank_acceptability(
 
     Examples:
         >>> import numpy as np
-        >>> from macroforecast.trade.aggregation.functions import weighted_sum_score
+        >>> from tradestat.trade.aggregation.functions import weighted_sum_score
         >>> X = np.array([[0.8, 0.2], [0.1, 0.9], [0.5, 0.5]])
         >>> result = smaa_rank_acceptability(
         ...     X, weighted_sum_score, k=1, n_draws=200, random_state=0)
@@ -720,7 +720,7 @@ def leave_one_metric_out(
 
     Examples:
         >>> import pandas as pd
-        >>> from macroforecast.trade.aggregation.estimators import WeightedAggregator
+        >>> from tradestat.trade.aggregation.estimators import WeightedAggregator
         >>> df = pd.DataFrame({
         ...     "id": ["a", "b", "c"], "HHI": [0.8, 0.3, 0.5], "CDI2": [0.6, 0.4, 0.5],
         ... })
@@ -1056,7 +1056,7 @@ def compute_coherence_report(
             everything in the first and nothing in the second (M-10). The
             effective threshold is ``max(1, round(dispute_fraction · n))``.
         front_mask: Boolean mask of the non-dominated products; computed with
-            :func:`~macroforecast.trade.aggregation.pareto.pareto_front_sweep`
+            :func:`~tradestat.trade.aggregation.pareto.pareto_front_sweep`
             when omitted, and worth passing whenever the caller has already
             computed the front.
         large_n_threshold: Forwarded to :func:`dominance_violation_rate`.

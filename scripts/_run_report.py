@@ -2,7 +2,7 @@
 
 Transitional module: it holds what only scripts do (read the ``tracking`` parameters and
 the environment, measure the run, wrap the body of ``main()``). The pure logic lives in
-``macroforecast.tracking`` and the publication in ``kedro_pipeline.io.tracking``, both
+``tradestat.tracking`` and the publication in ``kedro_pipeline.io.tracking``, both
 reused as is by the Kedro nodes, which will make this module obsolete with the scripts.
 
 Typical use in a script::
@@ -37,8 +37,8 @@ from kedro_pipeline.io.tracking import (  # noqa: F401  (flow_run_metrics ré-ex
     run_metrics,
 )
 from kedro_pipeline.steps.result import StepResult, UnitRun, UnitRuns
-from macroforecast.tracking import CapturingTracker, RunTracker, get_tracker
-from macroforecast.tracking.report import (
+from tradestat.tracking import CapturingTracker, RunTracker, get_tracker
+from tradestat.tracking.report import (
     Check,
     RunReport,
     Section,
@@ -111,7 +111,7 @@ class RunScope:
 
     Args:
         node: Node (script) name, e.g. ``"process_baci_HS2017"``; it selects the
-            configured checks (:func:`~macroforecast.tracking.report.checks_for_node`).
+            configured checks (:func:`~tradestat.tracking.report.checks_for_node`).
         params: The ``tracking`` block; read from the Kedro parameters when ``None``.
         step: Last step reached; scripts update it as they progress so a failure
             report can name it.
@@ -165,7 +165,7 @@ class RunScope:
         """Return the checks configured for the node.
 
         Returns:
-            Checks of :func:`~macroforecast.tracking.report.checks_for_node`.
+            Checks of :func:`~tradestat.tracking.report.checks_for_node`.
         """
         return checks_for_node(self.node, self.params)
 
@@ -198,7 +198,7 @@ class RunScope:
             title: Heading; the node name when empty.
 
         Returns:
-            The :class:`~macroforecast.tracking.report.RunReport`.
+            The :class:`~tradestat.tracking.report.RunReport`.
         """
         context = self.context()
         all_metrics = {**metrics, **run_metrics(context)}

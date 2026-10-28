@@ -89,7 +89,7 @@ def test_comext_rows_feed_the_partner_vulnerabilities(
     ducklake_conn, synthetic_world
 ) -> None:
     """Les lignes Comext fictives alimentent les métriques partenaires (HHI, CDI2, CDI3)."""
-    from macroforecast.trade.vulnerabilities.runner import run_vulnerabilities
+    from tradestat.trade.vulnerabilities.runner import run_vulnerabilities
 
     conn, alias = ducklake_conn
     iso2 = {c.iso3: c.iso2 for c in synthetic_world.config.countries}

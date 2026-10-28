@@ -25,7 +25,7 @@ from typing import Any, Optional
 from statflows import EurostatClient
 
 # Module de suivi d'exécution
-from macroforecast.tracking import CapturingTracker, get_tracker
+from tradestat.tracking import CapturingTracker, get_tracker
 from kedro_pipeline.config import experiment_name, load_parameters, read_config_file
 from kedro_pipeline.io.ducklake import (
     DuckLakeTable,

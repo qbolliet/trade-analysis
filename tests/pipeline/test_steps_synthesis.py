@@ -22,7 +22,7 @@ from kedro_pipeline.io.freshness import FreshnessRegistry  # noqa: E402
 from kedro_pipeline.steps import synthesis as synthesis_step  # noqa: E402
 from kedro_pipeline.steps.coherence import run_coherence_step  # noqa: E402
 from kedro_pipeline.steps.synthesis import context_registry, run_synthesis_step  # noqa: E402
-from macroforecast.tracking import CapturingTracker  # noqa: E402
+from tradestat.tracking import CapturingTracker  # noqa: E402
 from sqlite_catalog import ALIAS, SqliteCatalogConnector, catalog_paths, open_catalog  # noqa: E402
 
 pytestmark = pytest.mark.slow

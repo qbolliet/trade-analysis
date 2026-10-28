@@ -1,4 +1,4 @@
-"""Paramètres méthodologiques des empreintes de fraîcheur (``macroforecast``).
+"""Paramètres méthodologiques des empreintes de fraîcheur (``tradestat``).
 
 Vérifie que les listes d'exclusion de l'empreinte ne nomment que des champs
 existants et purement diagnostiques, et que les seuils d'alerte (qui changent les
@@ -11,12 +11,12 @@ from dataclasses import dataclass, fields
 
 import pytest
 
-from macroforecast.trade.methodology import methodology_params
-from macroforecast.trade.processing import (
+from tradestat.trade.methodology import methodology_params
+from tradestat.trade.processing import (
     BACI_FINGERPRINT_EXCLUDED,
     BaciConfig,
 )
-from macroforecast.trade.vulnerabilities import (
+from tradestat.trade.vulnerabilities import (
     DEFAULT_METRIC_CLASSES,
     DEFAULT_NETWORK_METRIC_CLASSES,
     NETWORK_FINGERPRINT_EXCLUDED,

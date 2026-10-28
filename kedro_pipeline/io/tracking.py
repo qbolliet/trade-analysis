@@ -1,7 +1,7 @@
 """Run tracking of the pipeline: run report, trackers of the Kedro nodes, stale runs.
 
-The report itself is built by pure code (``macroforecast.tracking.report``); this
-module sends it to a :class:`~macroforecast.tracking.RunTracker`: the
+The report itself is built by pure code (``tradestat.tracking.report``); this
+module sends it to a :class:`~tradestat.tracking.RunTracker`: the
 description in the *Overview* tab, the tags, the ``checks/*`` metrics and the
 artifacts (``report/summary.md``, ``report/report.html``, ``report/checks.csv``,
 ``failures.csv``, ``tables/*.csv``). It is shared by the transitional scripts
@@ -36,9 +36,9 @@ from typing import Any, Callable, Dict, Iterator, List, Mapping, Optional, Seque
 # Modules de manipulation des données
 import pandas as pd
 # Modules du package
-from macroforecast.tracking import NULL_TRACKER, ActiveRunTracker, RunTracker, log_metrics_series
-from macroforecast.tracking.base import MetricSeries
-from macroforecast.tracking.report import (
+from tradestat.tracking import NULL_TRACKER, ActiveRunTracker, RunTracker, log_metrics_series
+from tradestat.tracking.base import MetricSeries
+from tradestat.tracking.report import (
     CheckResult,
     RunReport,
     Section,
@@ -174,8 +174,8 @@ def publish_run_report(
             ``HTML``, ``PLOTLY_JS``, ``MAX_DESCRIPTION_CHARS``, ``MAX_TABLE_ROWS``).
 
     Examples:
-        >>> from macroforecast.tracking import CapturingTracker
-        >>> from macroforecast.tracking.report import RunReport, Units
+        >>> from tradestat.tracking import CapturingTracker
+        >>> from tradestat.tracking.report import RunReport, Units
         >>> tracker = CapturingTracker()
         >>> publish_run_report(tracker, RunReport(node="n", units=Units(1, 1, 0)), {"REPORT": {"HTML": False}})
         >>> tracker.tags["health"], sorted(tracker.texts)
@@ -253,7 +253,7 @@ def publish_failure(
         context: Execution context (``workflow_id``, ``links``…).
 
     Examples:
-        >>> from macroforecast.tracking import CapturingTracker
+        >>> from tradestat.tracking import CapturingTracker
         >>> tracker = CapturingTracker()
         >>> publish_failure(tracker, "n", ValueError("boom"), {})
         >>> tracker.tags["health"], tracker.tags[DESCRIPTION_TAG].splitlines()[0]
@@ -295,12 +295,12 @@ def flow_run_metrics(report: Any, family: str) -> Dict[str, float]:
         Slash-separated metric names mapped to their values.
 
     Examples:
-        >>> from macroforecast.trade.vulnerabilities import VulnerabilityReport
+        >>> from tradestat.trade.vulnerabilities import VulnerabilityReport
         >>> report = VulnerabilityReport(flows={"export": VulnerabilityReport(cells=3)})
         >>> flow_run_metrics(report, "partners")["partners/export/cells/n_total"]
         3.0
     """
-    from macroforecast.tracking import rekey_metrics
+    from tradestat.tracking import rekey_metrics
 
     metrics: Dict[str, float] = {}
     for flow, sub in report.flows.items():
@@ -327,7 +327,7 @@ def report_layout(step: str) -> Tuple[Optional[Callable[..., Any]], Optional[Cal
         >>> report_layout("unknown")
         (None, None)
     """
-    from macroforecast.tracking import figures
+    from tradestat.tracking import figures
 
     layouts = {
         "download": (figures.key_figures_downloads, figures.sections_downloads),
@@ -373,9 +373,9 @@ def build_step_report(
         title: Heading; the node name when empty.
 
     Returns:
-        The :class:`~macroforecast.tracking.report.RunReport`.
+        The :class:`~tradestat.tracking.report.RunReport`.
     """
-    from macroforecast.tracking.report import Units, build_report, checks_for_node
+    from tradestat.tracking.report import Units, build_report, checks_for_node
 
     context = dict(context or {})
     metrics = {**result.metrics, **run_metrics(context)}
@@ -438,8 +438,8 @@ def build_tracker(*, log_tables: bool = True) -> RunTracker:
             node, written by its artifacts dataset.
 
     Returns:
-        An :class:`~macroforecast.tracking.ActiveRunTracker`, or
-        :data:`~macroforecast.tracking.NULL_TRACKER`.
+        An :class:`~tradestat.tracking.ActiveRunTracker`, or
+        :data:`~tradestat.tracking.NULL_TRACKER`.
 
     Examples:
         >>> build_tracker() is NULL_TRACKER  # no active run
@@ -521,7 +521,7 @@ class UnitTracker:
         step: Step of the unit's metrics; ``None`` keeps the step of each call.
 
     Examples:
-        >>> from macroforecast.tracking import CapturingTracker
+        >>> from tradestat.tracking import CapturingTracker
         >>> inner = CapturingTracker()
         >>> unit = UnitTracker(inner, "HS2017", 2017)
         >>> unit.set_tags({"created": "True"})
@@ -627,7 +627,7 @@ def node_unit_runs(tracker: Optional[RunTracker] = None) -> Any:
         The :class:`~kedro_pipeline.steps.result.UnitRuns` factory.
 
     Examples:
-        >>> from macroforecast.tracking import CapturingTracker
+        >>> from tradestat.tracking import CapturingTracker
         >>> inner = CapturingTracker()
         >>> with node_unit_runs(inner)("HS2022", {"vintage": "HS2022"}) as run:
         ...     run.tracker.log_metrics({"network/import/cells/n_total": 1.0})
@@ -755,7 +755,7 @@ def build_node_report(
         context: Execution context (:func:`node_context`).
 
     Returns:
-        The :class:`~macroforecast.tracking.report.RunReport`.
+        The :class:`~tradestat.tracking.report.RunReport`.
 
     Examples:
         >>> from kedro_pipeline.steps.result import StepResult

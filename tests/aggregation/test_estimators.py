@@ -1,4 +1,4 @@
-"""Tests des estimateurs sklearn (``macroforecast.trade.aggregation.estimators``).
+"""Tests des estimateurs sklearn (``tradestat.trade.aggregation.estimators``).
 
 Couverture des deux estimateurs qui refusent de choisir une pondération et
 explorent le simplexe entier — :class:`ConeQuantileScorer` (A-01) et
@@ -11,7 +11,7 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from macroforecast.trade.aggregation.estimators import (
+from tradestat.trade.aggregation.estimators import (
     AGGREGATION_REGISTRY,
     _WEIGHT_FREE_AGGREGATIONS,
     ConeQuantileScorer,

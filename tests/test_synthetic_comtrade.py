@@ -125,7 +125,7 @@ def test_baci_runs_on_synthetic_declarations(
     synthetic_world, synthetic_reference, synthetic_section
 ) -> None:
     """Le redressement BACI complet s'exécute sur les déclarations fictives (6 étapes)."""
-    from macroforecast.trade.processing import BaciConfig, required_columns, run_baci
+    from tradestat.trade.processing import BaciConfig, required_columns, run_baci
 
     section = {**synthetic_section, "REPORTING": {**synthetic_section["REPORTING"], "REPORT_PROBABILITY": 0.95}}
     frames = [

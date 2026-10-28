@@ -15,7 +15,7 @@ swapping the roles of imports (M) and exports (X). The polarity is unchanged —
 a higher value means a more vulnerable cell in both directions — and so are the
 alert thresholds (0.5 for HHI and CDI2, parity 1.0 for CDI3).
 
-All metrics share the :class:`~macroforecast.trade.vulnerabilities.base.VulnerabilityMetric`
+All metrics share the :class:`~tradestat.trade.vulnerabilities.base.VulnerabilityMetric`
 API and are expressed in narwhals, so they run on any supported backend.
 """
 # Importation des modules

@@ -218,7 +218,7 @@ def chunks_by_year(df: pd.DataFrame, *, blocks: int = 1) -> List[Tuple[object, p
     Returns:
         List of ``(ChunkKey, frame)``, year-major.
     """
-    from macroforecast.trade.processing import ChunkKey
+    from tradestat.trade.processing import ChunkKey
 
     chapters = sorted(df["cmdCode"].str[:2].unique())
     groups = np.array_split(np.array(chapters), blocks)

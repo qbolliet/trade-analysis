@@ -1746,7 +1746,7 @@ wheels = [
 ]
 
 [[package]]
-name = "macroforecast"
+name = "tradestat"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [

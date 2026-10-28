@@ -77,7 +77,7 @@ def test_bump_and_accept(tmp_path: Path) -> None:
 
 
 def test_revision_enters_the_fingerprints_only_when_positive(monkeypatch) -> None:
-    from macroforecast.trade.vulnerabilities import VulnerabilityConfig
+    from tradestat.trade.vulnerabilities import VulnerabilityConfig
 
     from kedro_pipeline.steps.partners import partner_requested
 

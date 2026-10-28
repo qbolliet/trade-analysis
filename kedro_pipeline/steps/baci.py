@@ -2,7 +2,7 @@
 
 Pure functions, I/O adapters and step functions shared by the BACI script and the
 Kedro nodes. The methodology lives in
-``macroforecast.trade.processing``; this module only moves data.
+``tradestat.trade.processing``; this module only moves data.
 
 * **Completeness gate** — :func:`completeness_by_year` and :func:`eligible_years`:
   a year enters the BACI scope once its planned Comtrade batches have all been
@@ -17,7 +17,7 @@ Kedro nodes. The methodology lives in
   next to a JSON registry recording, for every pair actually downloaded, the
   download date, source URL, row count and content checksum.
 * **Chunked passes** — :class:`DuckDBPassIO` implements
-  ``macroforecast.trade.processing.BaciPassIO``: Comtrade read one year at a time
+  ``tradestat.trade.processing.BaciPassIO``: Comtrade read one year at a time
   (``WHERE year = ?``, split into blocks of whole HS chapters when a year exceeds
   ``MAX_ROWS_PER_CHUNK``, see :func:`chapter_blocks`), harmonised to the vintage,
   intermediate mirror flows written as Parquet work files by DuckDB
@@ -76,10 +76,10 @@ from kedro_pipeline.steps.result import (
     mark,
     shared_runs,
 )
-from macroforecast.trade.methodology import methodology_params
-from macroforecast.trade.processing import BACI_FINGERPRINT_EXCLUDED, BaciConfig
-from macroforecast.trade.processing import DEFAULT_CONFIG  # noqa: F401  (exemples des docstrings)
-from macroforecast.tracking import RunTracker
+from tradestat.trade.methodology import methodology_params
+from tradestat.trade.processing import BACI_FINGERPRINT_EXCLUDED, BaciConfig
+from tradestat.trade.processing import DEFAULT_CONFIG  # noqa: F401  (exemples des docstrings)
+from tradestat.tracking import RunTracker
 
 # Initialisation du logger
 logger = logging.getLogger(__name__)
@@ -493,7 +493,7 @@ def concordance_pairs(
         >>> concordance_pairs({2017: ["H4", "H5"]}, {"HS2017": [2017]})
         [('HS2017', 'HS2012')]
     """
-    from macroforecast.trade.processing import resolve_vintage
+    from tradestat.trade.processing import resolve_vintage
 
     pairs: Set[Tuple[str, str]] = set()
     for target, years in scopes.items():
@@ -536,7 +536,7 @@ def chapter_links(
         >>> chapter_links({("HS2022", "HS2017"): table}, ["H6"], "HS2017")
         [('85', '84')]
     """
-    from macroforecast.trade.processing import build_conversion_map, resolve_vintage
+    from tradestat.trade.processing import build_conversion_map, resolve_vintage
 
     links: Set[Tuple[str, str]] = set()
     for source in sources:
@@ -801,7 +801,7 @@ class DuckDBPassIO:
     * ``spill`` / ``read``: ``COPY (SELECT …) TO '<root>/<kind>/year=<y>/block=<b>.parquet'``
       and ``read_parquet`` with column projection.
     * ``median_uv``: the query of
-      ``macroforecast.trade.processing.world_median_unit_values_sql`` over every
+      ``tradestat.trade.processing.world_median_unit_values_sql`` over every
       mirror file, run chapter by chapter of products (exact: the median is per
       product), which bounds DuckDB's memory.
     * ``quantiles``: ``quantile_cont`` (linear interpolation, as pandas).
@@ -825,7 +825,7 @@ class DuckDBPassIO:
 
     Examples:
         >>> import duckdb, tempfile
-        >>> from macroforecast.trade.processing import ChunkKey
+        >>> from tradestat.trade.processing import ChunkKey
         >>> io = DuckDBPassIO(duckdb.connect(), source_schema="s", years=[2020],
         ...                   root=tempfile.mkdtemp(), writer=lambda year, blocks: None)
         >>> io.spill("freight", ChunkKey(2020), pd.DataFrame({"cif_rate": [0.1, 0.3, None]}))
@@ -912,7 +912,7 @@ class DuckDBPassIO:
 
     def comtrade_chunks(self, columns: Sequence[str]) -> Iterator[Tuple[Any, pd.DataFrame]]:
         """Yield the harmonised declarations, year by year (and block by block)."""
-        from macroforecast.trade.processing import ChunkKey
+        from tradestat.trade.processing import ChunkKey
 
         for year in self.years:
             counts = rows_by_chapter(
@@ -942,7 +942,7 @@ class DuckDBPassIO:
 
     def harmonization_report(self) -> Any:
         """Exact report of the harmonisation of every chunk read (``None`` if none)."""
-        from macroforecast.trade.processing.classification import merge_harmonization_reports
+        from tradestat.trade.processing.classification import merge_harmonization_reports
 
         return merge_harmonization_reports(self.harmonizers) if self.harmonizers else None
 
@@ -965,7 +965,7 @@ class DuckDBPassIO:
         prefer_netwgt: bool,
     ) -> pd.Series:
         """``UV^k`` per product over every mirror work file, chapter by chapter."""
-        from macroforecast.trade.processing import world_median_unit_values_sql
+        from tradestat.trade.processing import world_median_unit_values_sql
 
         pattern = f"{self.root}/mirror/*/*.parquet"
         if not self._exists(pattern):
@@ -1344,7 +1344,7 @@ def baci_section_metrics(report: Any) -> Dict[str, float]:
         Metric name -> finite value.
 
     Examples:
-        >>> from macroforecast.trade.processing.baci import BaciReport
+        >>> from tradestat.trade.processing.baci import BaciReport
         >>> metrics = baci_section_metrics(BaciReport(flows=12, regime_country_years=3))
         >>> metrics["output/flows"], metrics["valuation/regime_country_years"]
         (12.0, 3.0)
@@ -1353,7 +1353,7 @@ def baci_section_metrics(report: Any) -> Dict[str, float]:
     """
     from dataclasses import fields as dataclass_fields
 
-    from macroforecast.tracking import flatten_metrics
+    from tradestat.tracking import flatten_metrics
 
     metrics: Dict[str, float] = {}
     for item in dataclass_fields(report):
@@ -1378,11 +1378,11 @@ def harmonization_metrics(report: Any) -> Dict[str, float]:
         Metric name -> finite value (``harmonization/n_codes_mapped``…).
 
     Examples:
-        >>> from macroforecast.trade.processing.classification import HsHarmonizationReport
+        >>> from tradestat.trade.processing.classification import HsHarmonizationReport
         >>> harmonization_metrics(HsHarmonizationReport(n_codes_mapped=4))["harmonization/n_codes_mapped"]
         4.0
     """
-    from macroforecast.tracking import flatten_metrics
+    from tradestat.tracking import flatten_metrics
 
     return flatten_metrics(report, prefix=HARMONIZATION_SECTION, sep="/")
 
@@ -2050,7 +2050,7 @@ def prepare_baci(
     Raises:
         ValueError: If a requested target is not configured.
     """
-    from macroforecast.storage import Loader as TableLoader, Saver as TableSaver
+    from tradestat.storage import Loader as TableLoader, Saver as TableSaver
     from kedro_pipeline.steps._config import (
         baci_config_from_params,
         resolve_target_start_years,
@@ -2260,7 +2260,7 @@ def run_baci_vintage(
     Raises:
         Exception: Any failure of the pass, once the resume point is recorded.
     """
-    from macroforecast.trade.processing import HsHarmonizer, run_baci_passes
+    from tradestat.trade.processing import HsHarmonizer, run_baci_passes
     from kedro_pipeline.steps._config import schema_name
 
     tracker = capturing(tracker)

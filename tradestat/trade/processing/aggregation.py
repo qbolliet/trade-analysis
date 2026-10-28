@@ -3,10 +3,10 @@
 Holds the single re-aggregation primitive shared by the two places where a trade
 table has to be collapsed onto a coarser key:
 
-* :func:`~macroforecast.trade.processing.baci._aggregate_side`, which folds the
+* :func:`~tradestat.trade.processing.baci._aggregate_side`, which folds the
   customs/mode sub-dimensions of one declaration side onto the flow grain
   ``(exporter, importer, product, year)``;
-* :class:`~macroforecast.trade.processing.classification.HsHarmonizer`, which
+* :class:`~tradestat.trade.processing.classification.HsHarmonizer`, which
   folds the ``n:1`` collisions produced by a downward HS conversion.
 
 Both face the same trap, which is why the logic lives here rather than being
@@ -31,7 +31,7 @@ Warning:
        downstream chain converges to.
 
     The practical impact is bounded, because ``netWgt`` is summed over every
-    sub-line and :class:`~macroforecast.trade.processing.baci.TonnageConverter`
+    sub-line and :class:`~tradestat.trade.processing.baci.TonnageConverter`
     prefers it (``prefer_netwgt=True``): the retained ``(quantity, unit)`` pair
     mostly acts as a fallback when the net weight is missing, and as calibration
     sample for the conversion rates.

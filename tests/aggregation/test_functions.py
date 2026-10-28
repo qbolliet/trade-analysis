@@ -1,4 +1,4 @@
-"""Tests des fonctions d'agrégation (``macroforecast.trade.aggregation.functions``).
+"""Tests des fonctions d'agrégation (``tradestat.trade.aggregation.functions``).
 
 Monotonie stricte sur les paires dominantes (somme pondérée, moyenne
 géométrique, TOPSIS, VIKOR, rang moyen), monotonie faible du quantile de
@@ -13,7 +13,7 @@ import numpy as np
 import pytest
 from scipy import stats
 
-from macroforecast.trade.aggregation.functions import (
+from tradestat.trade.aggregation.functions import (
     _inverse_sqrt,
     cone_quantile_bounds,
     cone_quantile_score,
@@ -26,8 +26,8 @@ from macroforecast.trade.aggregation.functions import (
     weighted_sum_score,
     whitened_projection_score,
 )
-from macroforecast.trade.aggregation.weights import dirichlet_weights
-from macroforecast.trade.aggregation.pareto import pareto_dominance_matrix
+from tradestat.trade.aggregation.weights import dirichlet_weights
+from tradestat.trade.aggregation.pareto import pareto_dominance_matrix
 
 
 @pytest.fixture

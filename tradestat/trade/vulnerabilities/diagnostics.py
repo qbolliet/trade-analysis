@@ -15,7 +15,7 @@ feeding it:
 
 The volumetry, coverage, distribution and drift computations are **metric- and
 family-agnostic**: they read a configuration only through the
-:class:`~macroforecast.trade.vulnerabilities.base.ScoreConfig` fields, so the
+:class:`~tradestat.trade.vulnerabilities.base.ScoreConfig` fields, so the
 network family reuses them verbatim. What is family-specific is the coherence
 check — :class:`AggregateQualityReport` for the partner aggregates,
 :class:`GraphQualityReport` for the shape of the trade graphs — and the summary
@@ -244,8 +244,8 @@ def metric_alert_threshold(config: ScoreConfig, metric: AnyMetric) -> float:
     """Return the alert threshold a metric's score is compared against.
 
     The per-metric value configured in
-    :attr:`~macroforecast.trade.vulnerabilities.base.ScoreConfig.metric_alert_thresholds`,
-    or :attr:`~macroforecast.trade.vulnerabilities.base.ScoreConfig.high_score_threshold`
+    :attr:`~tradestat.trade.vulnerabilities.base.ScoreConfig.metric_alert_thresholds`,
+    or :attr:`~tradestat.trade.vulnerabilities.base.ScoreConfig.high_score_threshold`
     when the metric is absent from that mapping. Single source of truth shared by
     the persisted alert columns (:func:`append_alert_flags`) and the
     ``alerts_summary`` artifact (:func:`_log_alerts`), so the two can never
@@ -259,7 +259,7 @@ def metric_alert_threshold(config: ScoreConfig, metric: AnyMetric) -> float:
         The threshold as a float.
 
     Examples:
-        >>> from macroforecast.trade.vulnerabilities import (
+        >>> from tradestat.trade.vulnerabilities import (
         ...     HerfindahlHirschmanIndex, DEFAULT_CONFIG)
         >>> metric_alert_threshold(DEFAULT_CONFIG, HerfindahlHirschmanIndex())
         0.5
@@ -306,7 +306,7 @@ def append_alert_flags(
 
     Examples:
         >>> import pandas as pd
-        >>> from macroforecast.trade.vulnerabilities import (
+        >>> from tradestat.trade.vulnerabilities import (
         ...     HerfindahlHirschmanIndex, VulnerabilityConfig)
         >>> config = VulnerabilityConfig(key_columns=("flow",))
         >>> df = pd.DataFrame({"flow": [1, 2], "HHI": [0.7, 0.2]})
@@ -376,7 +376,7 @@ class AggregateQualityReport:
     The most valuable group of the report: it covers the module's most likely
     and least visible failure mode — a cell silently dropped by the inner join
     on its ``WORLD`` / ``EXT_EU`` aggregate — and directly checks that
-    :func:`~macroforecast.trade.vulnerabilities.base.individual_partner_expr`
+    :func:`~tradestat.trade.vulnerabilities.base.individual_partner_expr`
     still filters out every aggregate of the source nomenclature.
 
     Attributes:
@@ -455,7 +455,7 @@ class GraphQualityReport:
 
         Args:
             report: Report of the graph-building pass (see
-                :func:`~macroforecast.trade.vulnerabilities.graph.compute_graph_features`).
+                :func:`~tradestat.trade.vulnerabilities.graph.compute_graph_features`).
             share_rows_dropped_null: Share of input rows dropped upstream for a
                 null endpoint or value, measured around the runner's
                 ``drop_nulls``.
@@ -464,7 +464,7 @@ class GraphQualityReport:
             The :class:`GraphQualityReport` of the run.
 
         Examples:
-            >>> from macroforecast.trade.vulnerabilities.graph import GraphReport
+            >>> from tradestat.trade.vulnerabilities.graph import GraphReport
             >>> GraphQualityReport.from_graph_report(GraphReport(n_graphs=7)).n_graphs
             7
         """
@@ -935,7 +935,7 @@ def compute_shares_frame(
     Deliberately joins the aggregate with a **left** join, unlike the metrics:
     an ``inner`` join here would hide the very cells the diagnostic looks for.
     The individual-partner filter is
-    :func:`~macroforecast.trade.vulnerabilities.base.individual_partner_expr`
+    :func:`~tradestat.trade.vulnerabilities.base.individual_partner_expr`
     itself, so that what is checked is the rule the metrics actually apply.
 
     Args:

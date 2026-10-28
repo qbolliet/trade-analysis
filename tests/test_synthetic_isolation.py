@@ -82,7 +82,7 @@ def test_no_production_code_depends_on_synthetic_code() -> None:
     """Seuls les fichiers fictifs (et leurs tests) référencent le code fictif."""
     pattern = re.compile(r"kedro_pipeline\.synthetic|synthetic_comtrade|synthetic_comext|SYNTHETIC_CONFIG_PATH")
     offenders = []
-    for base in ("macroforecast", "kedro_pipeline", "scripts", "config", "docker", ".github"):
+    for base in ("tradestat", "kedro_pipeline", "scripts", "config", "docker", ".github"):
         for path in (ROOT / base).rglob("*"):
             if not path.is_file() or path.suffix in {".pyc"} or "__pycache__" in path.parts:
                 continue

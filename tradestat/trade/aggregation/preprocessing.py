@@ -5,7 +5,7 @@ raw metric matrix ``X`` (shape ``(n, d)``) before any weighting or aggregation
 is attempted. All transformers follow the scikit-learn ``BaseEstimator`` /
 ``TransformerMixin`` contract (``fit``/``transform``/``fit_transform``), so
 they compose in a real :class:`sklearn.pipeline.Pipeline` alongside the
-estimators of :mod:`~macroforecast.trade.aggregation.estimators`.
+estimators of :mod:`~tradestat.trade.aggregation.estimators`.
 
 Two normalisation schemes are custom rather than thin sklearn wrappers,
 deliberately:
@@ -110,7 +110,7 @@ class Winsorizer(BaseEstimator, TransformerMixin):
     Stabilises scale statistics (min-max range, standard deviation) without
     reordering observations below the cap — a strictly increasing
     per-coordinate transform leaves the Pareto-dominance relation invariant
-    (see :mod:`~macroforecast.trade.aggregation.pareto`).
+    (see :mod:`~tradestat.trade.aggregation.pareto`).
 
     Above the cap, however, it destroys exactly the discrimination the
     exercise is after: capping at 0.99 then min-max scaling sends the top 1%

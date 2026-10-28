@@ -1,6 +1,6 @@
 """Tests du protocole de comparaison et des classements consensus.
 
-Module ``macroforecast.trade.aggregation.diagnostics`` : concordance (τ_b, τ
+Module ``tradestat.trade.aggregation.diagnostics`` : concordance (τ_b, τ
 pondéré, W), recouvrement de tête (RBO), cohérence avec la dominance
 (inversions strictes contre ex æquo, rang des membres du front), stabilité
 (bootstrap sur la population complète, SMAA à stockage ``(n, k)``), consensus
@@ -13,10 +13,10 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from macroforecast.trade.aggregation.base import AggregationConfig
-from macroforecast.trade.aggregation.estimators import WeightedAggregator
-from macroforecast.trade.aggregation.functions import weighted_sum_score
-from macroforecast.trade.aggregation.diagnostics import (
+from tradestat.trade.aggregation.base import AggregationConfig
+from tradestat.trade.aggregation.estimators import WeightedAggregator
+from tradestat.trade.aggregation.functions import weighted_sum_score
+from tradestat.trade.aggregation.diagnostics import (
     bootstrap_rank_stability,
     borda_rank,
     compute_coherence_report,

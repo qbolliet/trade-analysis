@@ -1,4 +1,4 @@
-"""Suite de tests unitaires du module ``macroforecast.trade.aggregation``.
+"""Suite de tests unitaires du module ``tradestat.trade.aggregation``.
 
 Fige les comportements corrects (proprietes mathematiques, invariants S-4 de
 ``AGREGATION_ARCHITECTURE.md``) et documente, par des tests ``xfail(strict=True)``,

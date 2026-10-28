@@ -1,4 +1,4 @@
-"""Tests des pondérations endogènes (``macroforecast.trade.aggregation.weights``).
+"""Tests des pondérations endogènes (``tradestat.trade.aggregation.weights``).
 
 Entropie, CRITIC, ACP (direction et variante OCDE), méta-pondération ``auto``,
 tirage de Dirichlet et *benefit of the doubt*. Les ``xfail`` I-04 et I-06 ont
@@ -10,8 +10,8 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from macroforecast.trade.aggregation.estimators import WeightedAggregator
-from macroforecast.trade.aggregation.weights import (
+from tradestat.trade.aggregation.estimators import WeightedAggregator
+from tradestat.trade.aggregation.weights import (
     auto_weights,
     benefit_of_doubt_weights,
     critic_weights,

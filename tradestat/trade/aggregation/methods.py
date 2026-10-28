@@ -2,7 +2,7 @@
 
 The configuration files list methods as mappings (``kind``, ``params``,
 ``normalization``, ...); the runner of
-:mod:`~macroforecast.trade.aggregation.synthesis` needs ``sklearn`` estimators.
+:mod:`~tradestat.trade.aggregation.synthesis` needs ``sklearn`` estimators.
 This module is the single translation point:
 
 * :class:`MethodSpec` -- one configured method, frozen (S-1.2);
@@ -169,12 +169,12 @@ def _make_reducer(value: Any) -> Optional[MetricReducer]:
 
 # Fabrique du scoreur de dominance de Pareto
 def _build_pareto(**params: Any) -> ParetoScorer:
-    """Build a :class:`~macroforecast.trade.aggregation.pareto.ParetoScorer`.
+    """Build a :class:`~tradestat.trade.aggregation.pareto.ParetoScorer`.
 
     Args:
         **params: Constructor arguments, with the YAML aliases ``layers``
             (for ``compute_layers``) and ``reduce`` (mapping converted to a
-            :class:`~macroforecast.trade.aggregation.pareto.MetricReducer`).
+            :class:`~tradestat.trade.aggregation.pareto.MetricReducer`).
 
     Returns:
         An unfitted scorer.
@@ -200,7 +200,7 @@ def _build_rank_mean(**params: Any) -> WeightedAggregator:
 
     Returns:
         An unfitted
-        :class:`~macroforecast.trade.aggregation.estimators.WeightedAggregator`.
+        :class:`~tradestat.trade.aggregation.estimators.WeightedAggregator`.
 
     Examples:
         >>> _build_rank_mean().weighting
@@ -226,7 +226,7 @@ def _build_weighted(**params: Any) -> WeightedAggregator:
 
     Returns:
         An unfitted
-        :class:`~macroforecast.trade.aggregation.estimators.WeightedAggregator`.
+        :class:`~tradestat.trade.aggregation.estimators.WeightedAggregator`.
 
     Examples:
         >>> _build_weighted(weighting="critic").aggregation
@@ -245,11 +245,11 @@ def _fixed_aggregation_factory(
     (``{weighting: "critic", v: 0.5}``); the factory routes the weighting keys
     to the weighting scheme and every other key to the aggregation function,
     so that a configuration file never has to mirror the internal signature of
-    :class:`~macroforecast.trade.aggregation.estimators.WeightedAggregator`.
+    :class:`~tradestat.trade.aggregation.estimators.WeightedAggregator`.
 
     Args:
         aggregation: Key of
-            :data:`~macroforecast.trade.aggregation.estimators.AGGREGATION_REGISTRY`.
+            :data:`~tradestat.trade.aggregation.estimators.AGGREGATION_REGISTRY`.
         weight_free: Whether the aggregation ignores the weights (MPI,
             Mahalanobis, whitened projection): the weighting is then forced to
             ``"none"``.
@@ -300,7 +300,7 @@ def _build_kantorovich(**params: Any) -> BaseEstimator:
 
     Returns:
         An unfitted
-        :class:`~macroforecast.trade.aggregation.optimal_transport.OrientedKantorovichScorer`.
+        :class:`~tradestat.trade.aggregation.optimal_transport.OrientedKantorovichScorer`.
 
     Examples:
         >>> _build_kantorovich(alert="radial").alert_score
@@ -464,7 +464,7 @@ def method_metrics(spec: MethodSpec, config: "SynthesisConfig") -> Tuple[str, ..
             ``config.metric_columns``.
 
     Examples:
-        >>> from macroforecast.trade.aggregation.synthesis import SynthesisConfig
+        >>> from tradestat.trade.aggregation.synthesis import SynthesisConfig
         >>> config = SynthesisConfig(metric_columns=("HHI", "CDI2"))
         >>> method_metrics(MethodSpec(name="mpi", kind="mpi"), config)
         ('HHI', 'CDI2')
@@ -502,7 +502,7 @@ def resolve_normalization(spec: MethodSpec, config: "SynthesisConfig") -> str:
             ``kind``.
 
     Examples:
-        >>> from macroforecast.trade.aggregation.synthesis import SynthesisConfig
+        >>> from tradestat.trade.aggregation.synthesis import SynthesisConfig
         >>> config = SynthesisConfig(normalization="minmax")
         >>> resolve_normalization(MethodSpec(name="p", kind="pareto"), config)
         'none'
@@ -562,7 +562,7 @@ def build_method(spec: MethodSpec, config: "SynthesisConfig") -> Pipeline:
             is not admissible for the ``kind``.
 
     Examples:
-        >>> from macroforecast.trade.aggregation.synthesis import SynthesisConfig
+        >>> from tradestat.trade.aggregation.synthesis import SynthesisConfig
         >>> config = SynthesisConfig(metric_columns=("HHI", "CDI2"))
         >>> pipeline = build_method(MethodSpec(name="mpi", kind="mpi"), config)
         >>> [name for name, _ in pipeline.steps]

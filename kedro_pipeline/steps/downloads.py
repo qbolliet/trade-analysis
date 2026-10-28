@@ -58,7 +58,7 @@ from kedro_pipeline.io.registry_views import DownloadRegistryView, period_year, 
 from kedro_pipeline.steps.coverage import audit_coverage
 from kedro_pipeline.steps.reference import publish_reference
 from kedro_pipeline.steps.result import StepProgress, StepResult, capturing, mark
-from macroforecast.tracking import RunTracker, log_metrics_series
+from tradestat.tracking import RunTracker, log_metrics_series
 
 # Initialisation du logger
 logger = logging.getLogger(__name__)

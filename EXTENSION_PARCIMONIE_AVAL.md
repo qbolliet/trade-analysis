@@ -29,7 +29,7 @@
 ## E1 — Propagation des suppressions (partenaires, réseau, BACI)
 
 **Problème** (FN-3 de l'audit). Les écritures des partenaires et du réseau sont des upserts purs
-(`macroforecast/trade/vulnerabilities/runner.py:131`). Une cellule qui disparaît d'un recalcul reste
+(`tradestat/trade/vulnerabilities/runner.py:131`). Une cellule qui disparaît d'un recalcul reste
 en table indéfiniment. Exemples :
 - partenaire retiré d'une nomenclature ;
 - produit absent d'un millésime après réestimation BACI ;

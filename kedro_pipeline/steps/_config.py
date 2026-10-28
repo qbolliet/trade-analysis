@@ -20,14 +20,14 @@ from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
 from kedro_pipeline.config import active_targets
 from kedro_pipeline.io.ducklake import DuckLakeLocation
 from kedro_pipeline.parallel import resolve_n_jobs
-from macroforecast.trade.aggregation import (
+from tradestat.trade.aggregation import (
     CoherenceConfig,
     SynthesisConfig,
     method_spec_from_mapping,
 )
-from macroforecast.trade.processing import DEFAULT_CONFIG as DEFAULT_BACI_CONFIG
-from macroforecast.trade.processing import BaciConfig, ComtradeSchema
-from macroforecast.trade.vulnerabilities import (
+from tradestat.trade.processing import DEFAULT_CONFIG as DEFAULT_BACI_CONFIG
+from tradestat.trade.processing import BaciConfig, ComtradeSchema
+from tradestat.trade.vulnerabilities import (
     DEFAULT_CONFIG,
     DEFAULT_NETWORK_CONFIG,
     NetworkVulnerabilityConfig,
@@ -308,13 +308,13 @@ def synthesis_config_from_params(params: Optional[Mapping[str, Any]]) -> Synthes
     unknown keys are dropped with a warning. YAML lists are coerced to the tuple
     types the frozen dataclass expects, nested pairs included (``polarities``).
     The ``methods`` list is routed through
-    :func:`~macroforecast.trade.aggregation.method_spec_from_mapping`, one
+    :func:`~tradestat.trade.aggregation.method_spec_from_mapping`, one
     ``MethodSpec`` per entry.
 
     Args:
         params: The ``SYNTHESIS.PARAMETERS`` mapping of
             ``config/synthesis.yaml`` (or ``None``, meaning the defaults of
-            :class:`~macroforecast.trade.aggregation.SynthesisConfig`).
+            :class:`~tradestat.trade.aggregation.SynthesisConfig`).
 
     Returns:
         A ``SynthesisConfig`` reflecting the configured overrides.
@@ -551,7 +551,7 @@ def coherence_config_from_params(
     Args:
         params: The ``COHERENCE.PARAMETERS`` mapping of
             the ``synthesis`` parameters (or ``None``, meaning the defaults of
-            :class:`~macroforecast.trade.aggregation.CoherenceConfig`).
+            :class:`~tradestat.trade.aggregation.CoherenceConfig`).
 
     Returns:
         A ``CoherenceConfig`` reflecting the configured overrides.

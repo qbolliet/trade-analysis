@@ -25,7 +25,7 @@ from scripts.compute_synthesis_coherence import (  # noqa: E402
     coherence_config_from_params,
     distinct_contexts,
 )
-from macroforecast.trade.aggregation import (  # noqa: E402
+from tradestat.trade.aggregation import (  # noqa: E402
     CoherenceConfig,
     CoherenceLevelReport,
     CoherenceRunReport,

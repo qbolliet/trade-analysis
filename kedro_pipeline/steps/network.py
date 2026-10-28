@@ -3,7 +3,7 @@
 Recomputes, for every HS vintage of the BACI reconstruction, the metrics of the
 world graph of a product's trade — centrality risk, weighted clustering,
 diameter, concentration of world exports and single point of failure risk (see
-``macroforecast.trade.vulnerabilities.network_metrics``). The output cell is a
+``tradestat.trade.vulnerabilities.network_metrics``). The output cell is a
 quadruplet ``nomenclature x product x year x flow``, the vintage being an extra
 primary-key column the partner table does not carry.
 
@@ -84,13 +84,13 @@ from kedro_pipeline.steps.result import (
 
 # Module de suivi d'exécution
 from kedro_pipeline.io.tracking import flow_run_metrics
-from macroforecast.tracking import RecordingTracker
+from tradestat.tracking import RecordingTracker
 # Module de calcul des indicateurs
-from macroforecast.trade.vulnerabilities import (
+from tradestat.trade.vulnerabilities import (
     DEFAULT_NETWORK_METRIC_CLASSES,
     NetworkVulnerabilityConfig,
 )
-from macroforecast.trade.vulnerabilities.runner import (
+from tradestat.trade.vulnerabilities.runner import (
     compute_network_vintage,
     read_previous_network_result,
     write_network_vintage,

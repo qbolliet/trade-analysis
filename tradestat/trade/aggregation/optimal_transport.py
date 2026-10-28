@@ -35,12 +35,12 @@ Scaling (D-11):
 Optional dependency:
     Only this module needs ``jax`` and ``ott-jax`` (the Sinkhorn solver and
     its entropic, out-of-sample transport map) — the rest of
-    :mod:`macroforecast.trade.aggregation` imports and runs without them.
+    :mod:`tradestat.trade.aggregation` imports and runs without them.
     Install the ``optimal-transport`` extra
-    (``pip install macroforecast[optimal-transport]``) to use this module;
+    (``pip install tradestat[optimal-transport]``) to use this module;
     every public entry point raises a clear :class:`ImportError` otherwise,
     the same convention followed by
-    :func:`~macroforecast.trade.processing.baci` for ``dt-ducklake-manager``.
+    :func:`~tradestat.trade.processing.baci` for ``dt-ducklake-manager``.
 
 The ellipticity diagnostic (:func:`ellipticity_screen`) is **reported, not a
 gate** (D-07): it says whether the transport added anything to its linear
@@ -100,7 +100,7 @@ def _require_ott():
         raise ImportError(
             "The oriented Kantorovitch score requires the optional "
             f"'{_EXTRA_NAME}' extra: install it with "
-            f"`pip install macroforecast[{_EXTRA_NAME}]` "
+            f"`pip install tradestat[{_EXTRA_NAME}]` "
             "(jax + ott-jax)."
         ) from error
     return jnp, pointcloud, linear_problem, sinkhorn
@@ -264,7 +264,7 @@ class OrientedKantorovichScorer(BaseEstimator):
         pole_quantile: Marginal quantile defining the synthetic "maximally
             vulnerable" pole ``x⁺`` used to fix the orientation — the same
             construction as
-            :func:`~macroforecast.trade.aggregation.functions.whitened_projection_score`,
+            :func:`~tradestat.trade.aggregation.functions.whitened_projection_score`,
             so that the two scores share a direction and stay comparable.
         seed: Seed of the reference-grid Sobol engine and of the subsampling
             and calibration draws.
@@ -757,12 +757,12 @@ def ellipticity_screen(
         scorer: A fitted :class:`OrientedKantorovichScorer`.
         covariance_estimator: ``"mcd"``, ``"ledoit_wolf"`` or ``"empirical"``,
             forwarded to both linear references — see
-            :func:`~macroforecast.trade.aggregation.functions.mahalanobis_score`.
+            :func:`~tradestat.trade.aggregation.functions.mahalanobis_score`.
 
     Returns:
         Mapping with two entries: ``"tau_proj"``, Kendall's ``τ_b`` between the
         oriented score and
-        :func:`~macroforecast.trade.aggregation.functions.whitened_projection_score`,
+        :func:`~tradestat.trade.aggregation.functions.whitened_projection_score`,
         and ``"tau_rank"``, ``τ_b`` between the center-outward rank and the
         Mahalanobis distance to the robust centre.
 

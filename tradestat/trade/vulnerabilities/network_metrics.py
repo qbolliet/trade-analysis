@@ -18,7 +18,7 @@ trade graph of a product** rather than the sourcing of one declaring country:
 The input is the BACI reconciled-flow table (one row per
 ``exporter x importer x product x year``) and a cell of the output grid is a
 ``nomenclature x product x year`` triple. All metrics share the
-:class:`~macroforecast.trade.vulnerabilities.base.NetworkVulnerabilityMetric`
+:class:`~tradestat.trade.vulnerabilities.base.NetworkVulnerabilityMetric`
 API, so the registry is iterated exactly like the partner-level one.
 
 **Two directions.** The metrics score a product, never a country, but four of
@@ -35,15 +35,15 @@ vulnerability. These export mirrors are **proposed by analogy, without
 anchoring in the literature**. The polarity is the same in both directions —
 higher means more vulnerable. The transposition never touches the
 configuration: the oriented formulas name their columns by role
-(:attr:`~macroforecast.trade.vulnerabilities.base.NetworkVulnerabilityMetric.counterpart_col`,
-:attr:`~macroforecast.trade.vulnerabilities.base.NetworkVulnerabilityMetric.exposed_col`).
+(:attr:`~tradestat.trade.vulnerabilities.base.NetworkVulnerabilityMetric.counterpart_col`,
+:attr:`~tradestat.trade.vulnerabilities.base.NetworkVulnerabilityMetric.exposed_col`).
 ``CLUSTERING_W`` and ``DIAMETER`` are measures of the symmetrised graph
 (``w_ij + w_ji``), hence identical in both directions: they declare
 ``orientation_invariant`` and the runner computes them once.
 
 Four of the six metrics are pure narwhals and therefore run on any supported
 backend. Only the two topological measures — clustering and diameter — delegate
-to :mod:`macroforecast.trade.vulnerabilities.graph`, which materialises each
+to :mod:`tradestat.trade.vulnerabilities.graph`, which materialises each
 cell as a dense NumPy matrix and hands the result back **in the caller's
 backend** (see that module's ``Notes:`` for why a graph library would be slower
 here). They each pay for their own scan: building the adjacency matrices is
@@ -97,7 +97,7 @@ class WeightedOutdegreeCentralityRisk(NetworkVulnerabilityMetric):
     a wide dispersion. The literature flags a centrality risk above 2.5, which
     corresponds to the world's first exporter supplying about two thirds of
     world exports (see
-    :attr:`~macroforecast.trade.vulnerabilities.base.NetworkVulnerabilityConfig.centrality_risk_threshold`);
+    :attr:`~tradestat.trade.vulnerabilities.base.NetworkVulnerabilityConfig.centrality_risk_threshold`);
     at the export the same threshold is read by symmetry — the world's first
     importer absorbing about two thirds of world imports — without a
     calibration of its own in the literature.
@@ -189,7 +189,7 @@ class WeightedClusteringCoefficient(NetworkVulnerabilityMetric):
     countries (``w_ij + w_ji``): the measure is identical in both directions
     (``orientation_invariant``), and the runner computes it once and copies it
     onto the import and export rows. Cells with fewer than
-    :attr:`~macroforecast.trade.vulnerabilities.base.NetworkVulnerabilityConfig.min_graph_nodes`
+    :attr:`~tradestat.trade.vulnerabilities.base.NetworkVulnerabilityConfig.min_graph_nodes`
     countries are left null rather than scored on a degenerate graph.
 
     Examples:
@@ -247,7 +247,7 @@ class NetworkDiameter(NetworkVulnerabilityMetric):
     diameter of the whole graph infinite; the value reported is therefore that
     of the **largest connected component**, the fragmentation being carried
     alongside by
-    :attr:`~macroforecast.trade.vulnerabilities.graph.GraphReport.share_graphs_disconnected`.
+    :attr:`~tradestat.trade.vulnerabilities.graph.GraphReport.share_graphs_disconnected`.
 
     Measured on the undirected graph, hence identical in both directions
     (``orientation_invariant``): computed once and copied onto both flows.
@@ -308,7 +308,7 @@ class WorldExportConcentration(NetworkVulnerabilityMetric):
       world demand is (monopsony risk), whoever sells.
 
     Distinct from
-    :class:`~macroforecast.trade.vulnerabilities.metrics.HerfindahlHirschmanIndex`,
+    :class:`~tradestat.trade.vulnerabilities.metrics.HerfindahlHirschmanIndex`,
     which measures the concentration of the partners *of one country*: the
     scale differs (the world graph of a product), hence two classes, while the
     direction is the same ``flow`` hyperparameter. Second component of the SPOF
@@ -451,7 +451,7 @@ def _spof_frame(metric: NetworkVulnerabilityMetric, data: nw.DataFrame) -> nw.Da
     import is never ranked against a product scored at the export.
 
     Each component is turned into a **percentile within its ranking group**
-    (:attr:`~macroforecast.trade.vulnerabilities.base.NetworkVulnerabilityConfig.spof_rank_keys`,
+    (:attr:`~tradestat.trade.vulnerabilities.base.NetworkVulnerabilityConfig.spof_rank_keys`,
     i.e. products are ranked against the products of the same nomenclature and
     year, never across vintages), the two percentiles being then averaged.
     Combining percentiles rather than raw ranks keeps the score comparable
@@ -560,7 +560,7 @@ class SinglePointOfFailureDecile(NetworkVulnerabilityMetric):
     """Quantile group of the single-point-of-failure risk.
 
     Discretisation of :class:`SinglePointOfFailureRisk` into
-    :attr:`~macroforecast.trade.vulnerabilities.base.NetworkVulnerabilityConfig.spof_n_quantiles`
+    :attr:`~tradestat.trade.vulnerabilities.base.NetworkVulnerabilityConfig.spof_n_quantiles`
     groups (deciles in the literature), from 1 (least exposed) to
     ``spof_n_quantiles`` (most exposed). Products in the top groups are those
     the methodology designates as vulnerable at world level.

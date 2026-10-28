@@ -1,19 +1,19 @@
 """sklearn-facing weighting + aggregation estimators.
 
 The bridge between the weighting schemes of
-:mod:`~macroforecast.trade.aggregation.weights`, the aggregation functions of
-:mod:`~macroforecast.trade.aggregation.functions` and a real
+:mod:`~tradestat.trade.aggregation.weights`, the aggregation functions of
+:mod:`~tradestat.trade.aggregation.functions` and a real
 ``sklearn.pipeline.Pipeline``: :class:`WeightedAggregator` is a genuine
 ``sklearn.base.BaseEstimator`` with ``fit``/``predict``, so it composes with
 the transformers of
-:mod:`~macroforecast.trade.aggregation.preprocessing` exactly like any
+:mod:`~tradestat.trade.aggregation.preprocessing` exactly like any
 scikit-learn estimator::
 
     from sklearn.pipeline import Pipeline
-    from macroforecast.trade.aggregation.preprocessing import (
+    from tradestat.trade.aggregation.preprocessing import (
         PolarityOrienter, Winsorizer, make_normalizer,
     )
-    from macroforecast.trade.aggregation.estimators import WeightedAggregator
+    from tradestat.trade.aggregation.estimators import WeightedAggregator
 
     pipeline = Pipeline([
         ("orient", PolarityOrienter(polarities)),
@@ -24,7 +24,7 @@ scikit-learn estimator::
     scores = pipeline.fit(X).predict(X)
 
 Three estimators live here, matching the three kinds of weighting of
-:mod:`~macroforecast.trade.aggregation.weights` (M-05):
+:mod:`~tradestat.trade.aggregation.weights` (M-05):
 
 * :class:`WeightedAggregator` — shared **simplicial** weights plus an
   aggregation function. ``fit`` now checks that the weights really are a point
@@ -267,7 +267,7 @@ class WeightedAggregator(BaseEstimator):
 
 # Estimateur sklearn du comptage de dominance (sans poids)
 class DominanceCountScorer(BaseEstimator):
-    """Weight-free scorer wrapping :func:`~macroforecast.trade.aggregation.pareto.dominance_count`.
+    """Weight-free scorer wrapping :func:`~tradestat.trade.aggregation.pareto.dominance_count`.
 
     Same ``fit``/``predict`` contract as :class:`WeightedAggregator`, so it
     drops into the same pipeline slot as a parameter-free baseline — the
@@ -335,7 +335,7 @@ class PcaProjectionScorer(BaseEstimator):
         scale_: Per-column standard deviation (floored at ``1`` on a constant
             column), shape ``(d,)``.
         direction_: Unit-norm loading vector, shape ``(d,)``.
-        report_: The :class:`~macroforecast.trade.aggregation.weights.PcaWeightingReport`
+        report_: The :class:`~tradestat.trade.aggregation.weights.PcaWeightingReport`
             of the fit -- in particular ``has_negative_loadings``, which flags
             a violation of monotonicity.
 
@@ -430,13 +430,13 @@ class BenefitOfDoubtScorer(BaseEstimator):
     linear programme per row **against those fixed constraints**, so a
     product can be scored outside the sample that defined the frontier -- the
     ``fit``/``predict`` separation the bare
-    :func:`~macroforecast.trade.aggregation.weights.benefit_of_doubt_weights`
+    :func:`~tradestat.trade.aggregation.weights.benefit_of_doubt_weights`
     function does not offer (I-04).
 
     Args:
         restriction: ``"assurance_region"`` (default), ``"shares"`` or
             ``None`` -- see
-            :func:`~macroforecast.trade.aggregation.weights.benefit_of_doubt_weights`
+            :func:`~tradestat.trade.aggregation.weights.benefit_of_doubt_weights`
             for the exact meaning and the properties each one buys.
         rho: Assurance-region ratio bound, ``>= 1``; ``None`` removes it.
         kappa: Share-restriction parameter in ``(0, 1]``.
@@ -705,7 +705,7 @@ class SmaaScorer(BaseEstimator):
     """Score by the SMAA confidence factor: "in the top ``k`` how often?".
 
     Turns the robustness protocol of
-    :func:`~macroforecast.trade.aggregation.diagnostics.smaa_rank_acceptability`
+    :func:`~tradestat.trade.aggregation.diagnostics.smaa_rank_acceptability`
     into a method in its own right: the score of a product is the share of
     admissible weightings under which it ranks within the top ``k`` — the
     statement fit for an administrative report, and a genuine
@@ -713,7 +713,7 @@ class SmaaScorer(BaseEstimator):
 
     As for :class:`ConeQuantileScorer`, the simplex sample is drawn once at
     ``fit`` time and reused by ``predict``. ``predict`` stores the full
-    :class:`~macroforecast.trade.aggregation.diagnostics.SmaaResult` of the
+    :class:`~tradestat.trade.aggregation.diagnostics.SmaaResult` of the
     call in ``result_``, so the rank acceptabilities and the central weights
     stay available for the report.
 
@@ -727,7 +727,7 @@ class SmaaScorer(BaseEstimator):
 
     Attributes:
         weight_draws_: Simplex sample of shape ``(n_draws, d)``.
-        result_: :class:`~macroforecast.trade.aggregation.diagnostics.SmaaResult`
+        result_: :class:`~tradestat.trade.aggregation.diagnostics.SmaaResult`
             of the last ``predict`` call.
 
     Examples:

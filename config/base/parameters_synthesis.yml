@@ -195,7 +195,7 @@ synthesis:
       # Graine d'où sont dérivées les graines par groupe
       random_state: 0
       # Liste de méthodes ; chaque entrée -> un MethodSpec (name et kind obligatoires,
-      # kind = clé du registre de méthodes de macroforecast, params transmis à la fabrique d'estimateur)
+      # kind = clé du registre de méthodes de tradestat, params transmis à la fabrique d'estimateur)
       methods:
         # Dominance de Pareto : front epsilon glouton, couches, réduction préalable de d
         - {name: "pareto", kind: "pareto",

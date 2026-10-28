@@ -26,7 +26,7 @@ from scripts.compute_synthetic_scores import (  # noqa: E402
 from scripts.compute_synthesis_coherence import (  # noqa: E402
     run_from_connections as run_coherence_from_connections,
 )
-from macroforecast.trade.aggregation import (  # noqa: E402
+from tradestat.trade.aggregation import (  # noqa: E402
     CoherenceConfig,
     MethodSpec,
     SynthesisConfig,

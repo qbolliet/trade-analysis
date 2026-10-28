@@ -538,7 +538,7 @@ class RunReport:
             Markdown text.
 
         Examples:
-            >>> from macroforecast.tracking.report import Check, CheckResult
+            >>> from tradestat.tracking.report import Check, CheckResult
             >>> bad = CheckResult(Check("r2", ">=", 0.5, "warning", "R² de la gravité"), 0.42, "warning")
             >>> report = RunReport(node="process_baci_HS2017", health="warning",
             ...                    units=Units(1, 1, 0, "1 millésime"), checks=[bad])

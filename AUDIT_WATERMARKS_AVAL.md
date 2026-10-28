@@ -138,7 +138,7 @@ flowchart LR
 
 **FN-3 — Moyenne — les suppressions ne sont pas propagées**
 
-- Partenaires et réseau ne font que des upserts (`macroforecast/trade/vulnerabilities/runner.py:131`,
+- Partenaires et réseau ne font que des upserts (`tradestat/trade/vulnerabilities/runner.py:131`,
   `partners.py:1111-1115`, `network.py:742-747`).
 - Une cellule qui disparaît reste en table. Exemples :
   - code partenaire retiré ;
@@ -427,12 +427,12 @@ révisions sans dépendre de l'arborescence du dépôt.
 ```yaml
 # methodology.lock — généré par `python -m kedro_pipeline.methodology lock`
 HHI:
-  sources: ["macroforecast/trade/vulnerabilities/metrics.py::HerfindahlHirschmanIndex",
-            "macroforecast/trade/vulnerabilities/base.py"]
+  sources: ["tradestat/trade/vulnerabilities/metrics.py::HerfindahlHirschmanIndex",
+            "tradestat/trade/vulnerabilities/base.py"]
   code_hash: 3f9a1c0e5b7d2e11
   revision: 0
 baci:
-  sources: ["macroforecast/trade/processing/baci.py", "kedro_pipeline/steps/baci.py"]
+  sources: ["tradestat/trade/processing/baci.py", "kedro_pipeline/steps/baci.py"]
   code_hash: 0c77d1f3e9a24b58
   revision: 2
 ```

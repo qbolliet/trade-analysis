@@ -12,7 +12,7 @@ on:
       - "docs/**"
       - "mkdocs.yml"
       - "kedro_pipeline/**"
-      - "macroforecast/**"
+      - "tradestat/**"
       - "config/base/**"
       # Sources incluses dans les pages (README, architecture, tableaux de bord)
       - "README.md"

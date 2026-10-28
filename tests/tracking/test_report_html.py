@@ -7,8 +7,8 @@ import sys
 import pandas as pd
 import pytest
 
-from macroforecast.tracking import figures
-from macroforecast.tracking.report import Check, RunReport, Section, Units, build_report
+from tradestat.tracking import figures
+from tradestat.tracking.report import Check, RunReport, Section, Units, build_report
 
 
 def _report(sections) -> RunReport:

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from macroforecast.tracking.report import (
+from tradestat.tracking.report import (
     Check,
     RunReport,
     Units,

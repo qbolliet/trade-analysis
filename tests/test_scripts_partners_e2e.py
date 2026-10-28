@@ -22,7 +22,7 @@ import pytest
 pytest.importorskip("dt_ducklake_manager")
 
 from kedro_pipeline.io.freshness import ForceSpec, UpstreamMark  # noqa: E402
-from macroforecast.trade.vulnerabilities import VulnerabilityConfig  # noqa: E402
+from tradestat.trade.vulnerabilities import VulnerabilityConfig  # noqa: E402
 from scripts.compute_trade_vulnerabilities import (  # noqa: E402
     partner_registry,
     partner_requested,

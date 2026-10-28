@@ -12,8 +12,8 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from macroforecast.trade.aggregation.methods import MethodSpec
-from macroforecast.trade.aggregation.synthesis import (
+from tradestat.trade.aggregation.methods import MethodSpec
+from tradestat.trade.aggregation.synthesis import (
     CONSENSUS_PREFIX,
     SynthesisConfig,
     run_synthesis,

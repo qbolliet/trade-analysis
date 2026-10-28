@@ -1,4 +1,4 @@
-"""Tests de la couche déclarative (``macroforecast.trade.aggregation.methods``).
+"""Tests de la couche déclarative (``tradestat.trade.aggregation.methods``).
 
 Le registre S-1.4 et ``build_method`` sont le seul point de traduction entre la
 configuration YAML et les estimateurs : une normalisation inadmissible doit être
@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import pytest
 
-from macroforecast.trade.aggregation.methods import (
+from tradestat.trade.aggregation.methods import (
     METHOD_REGISTRY,
     MethodSpec,
     build_method,
@@ -18,8 +18,8 @@ from macroforecast.trade.aggregation.methods import (
     registry_entry,
     resolve_normalization,
 )
-from macroforecast.trade.aggregation.pareto import MetricReducer, ParetoScorer
-from macroforecast.trade.aggregation.synthesis import DEFAULT_METHODS, SynthesisConfig
+from tradestat.trade.aggregation.pareto import MetricReducer, ParetoScorer
+from tradestat.trade.aggregation.synthesis import DEFAULT_METHODS, SynthesisConfig
 
 
 @pytest.fixture

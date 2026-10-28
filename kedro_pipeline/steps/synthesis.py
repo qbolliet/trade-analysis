@@ -6,7 +6,7 @@ synthetic scores: one row per ``reporter x product`` cell of a context
 ``(hs_vintage, freq, flow, indicators, TIME_PERIOD)`` and per aggregation method,
 with three ``(score, rank)`` pairs, one per comparison level (``by_product``,
 ``by_reporter``, ``global``). The multi-criteria methodology is carried by
-``macroforecast.trade.aggregation.run_synthesis``, a pure function: this module
+``tradestat.trade.aggregation.run_synthesis``, a pure function: this module
 does the I/O (DuckLake read of the sources, SQL join, writes of the result
 schemas, freshness registry, run tracking). The fit diagnostics (``fit``
 family) are written into the long table of the coherence step.
@@ -117,7 +117,7 @@ import numpy as np
 import pandas as pd
 
 # Module de suivi d'exécution (objet nul par défaut)
-from macroforecast.tracking import (
+from tradestat.tracking import (
     ArtifactCollector,
     CapturingTracker,
     RecordingTracker,
@@ -127,14 +127,14 @@ from macroforecast.tracking import (
 # Parallélisme intra-pod (carte parallèle, erreurs transmissibles)
 from kedro_pipeline.parallel import parallel_map, serialisable_exception
 # Méthodologie de synthèse multiniveau (fonction pure)
-from macroforecast.trade.methodology import methodology_params
-from macroforecast.trade.aggregation import (
+from tradestat.trade.methodology import methodology_params
+from tradestat.trade.aggregation import (
     LevelReport,
     SynthesisConfig,
     SynthesisReport,
     run_synthesis,
 )
-from macroforecast.trade.aggregation.methods import (
+from tradestat.trade.aggregation.methods import (
     DRAW_PARAMETERS,
     SEED_PARAMETERS,
     MethodSpec,
@@ -142,7 +142,7 @@ from macroforecast.trade.aggregation.methods import (
     registry_entry,
     resolve_normalization,
 )
-from macroforecast.trade.aggregation.synthesis import CONSENSUS_PREFIX, FIT_FAMILY
+from tradestat.trade.aggregation.synthesis import CONSENSUS_PREFIX, FIT_FAMILY
 
 # Initialisation du logger
 logger = logging.getLogger(__name__)
@@ -1507,14 +1507,14 @@ def compute_synthesis_context(
         config: Synthesis configuration.
         methods: Methods to fit (``None``: all; empty: consensus alone).
         df_existing_scores: Stored scores of the methods left out, fed to the
-            consensus (see :func:`~macroforecast.trade.aggregation.run_synthesis`).
+            consensus (see :func:`~tradestat.trade.aggregation.run_synthesis`).
         tracker: Experiment tracker receiving the artifacts (null by default).
         log_artifacts: Whether to log the artifacts.
 
     Returns:
         ``(df_scores, df_fit, report)`` of the context.
     """
-    from macroforecast.tracking import NULL_TRACKER
+    from tradestat.tracking import NULL_TRACKER
 
     return run_synthesis(
         df_context,
@@ -1725,13 +1725,13 @@ def run_from_connections(
 
     Returns:
         Tuple ``(reports, failures, created_any, n_contexts)``: one
-        :class:`~macroforecast.trade.aggregation.SynthesisReport` per
+        :class:`~tradestat.trade.aggregation.SynthesisReport` per
         successfully synthesised context, the per-context exceptions keyed by
         their string representation, whether either schema was created on
         this call, and the number of contexts attempted.
     """
     if tracker is None:
-        from macroforecast.tracking import NULL_TRACKER
+        from tradestat.tracking import NULL_TRACKER
 
         tracker = NULL_TRACKER
     # Enregistrement de ce qui est journalisé : source des contrôles et du rapport de run
@@ -1994,7 +1994,7 @@ def run_incremental_synthesis(
         RuntimeError: If the catalog exposes no snapshot to pin the reads at.
     """
     if tracker is None:
-        from macroforecast.tracking import NULL_TRACKER
+        from tradestat.tracking import NULL_TRACKER
 
         tracker = NULL_TRACKER
     tracker = CapturingTracker(tracker)

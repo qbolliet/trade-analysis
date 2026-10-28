@@ -4,9 +4,9 @@ Two entry points:
 
 * :func:`run_aggregation` — apply a caller-chosen set of named methods
   (``sklearn.pipeline.Pipeline`` or
-  :class:`~macroforecast.trade.aggregation.estimators.WeightedAggregator`
+  :class:`~tradestat.trade.aggregation.estimators.WeightedAggregator`
   instances) to the same metric matrix and assemble the coherence dashboard
-  (:mod:`~macroforecast.trade.aggregation.diagnostics`) comparing them —
+  (:mod:`~tradestat.trade.aggregation.diagnostics`) comparing them —
   the generic building block.
 * :func:`recommended_workflow` — the priority-ordered sequence of §7 of the
   methodological note: the Pareto front and dominance count first (free, no
@@ -55,7 +55,7 @@ class AggregationReport:
         coherence: Comparison-and-robustness dashboard (§6 of the note).
         pareto_front_size: Number of products on the Pareto front.
         bootstrap: Rank-stability intervals
-            (:func:`~macroforecast.trade.aggregation.diagnostics.bootstrap_rank_stability`),
+            (:func:`~tradestat.trade.aggregation.diagnostics.bootstrap_rank_stability`),
             ``None`` when not requested.
         smaa: SMAA rank-acceptability result, ``None`` when not requested.
         ellipticity_tau_proj: Kendall τ_b between the oriented Kantorovitch
@@ -126,7 +126,7 @@ def default_pipeline(
     rather than to hardcoded code paths.
 
     The default weighting is the meta-selection ``"auto"``
-    (:func:`~macroforecast.trade.aggregation.weights.auto_weights`), which
+    (:func:`~tradestat.trade.aggregation.weights.auto_weights`), which
     picks the scheme fitting the group's own diagnostics rather than
     imposing one on every group.
 
@@ -140,19 +140,19 @@ def default_pipeline(
 
     Args:
         config: Column conventions (``polarities`` sizes
-            :class:`~macroforecast.trade.aggregation.preprocessing.PolarityOrienter`).
+            :class:`~tradestat.trade.aggregation.preprocessing.PolarityOrienter`).
         normalization: Name forwarded to
-            :func:`~macroforecast.trade.aggregation.preprocessing.make_normalizer`.
+            :func:`~tradestat.trade.aggregation.preprocessing.make_normalizer`.
         winsorize_quantile: Upper quantile capped by
-            :class:`~macroforecast.trade.aggregation.preprocessing.Winsorizer`.
+            :class:`~tradestat.trade.aggregation.preprocessing.Winsorizer`.
             ``None`` (the default) disables the capping: winsorising before a
             min-max scaling ties the top 1% of every metric at the value 1,
             i.e. 50 products out of 5 000 tied at the maximum, precisely
             where the ranking matters most (M-08, D-12).
         weighting: Name forwarded to
-            :class:`~macroforecast.trade.aggregation.estimators.WeightedAggregator`.
+            :class:`~tradestat.trade.aggregation.estimators.WeightedAggregator`.
         aggregation: Name forwarded to
-            :class:`~macroforecast.trade.aggregation.estimators.WeightedAggregator`.
+            :class:`~tradestat.trade.aggregation.estimators.WeightedAggregator`.
         weighting_params: Extra keyword arguments for the weighting scheme.
         aggregation_params: Extra keyword arguments for the aggregation
             function.
@@ -206,7 +206,7 @@ def run_aggregation(
         methods: Mapping of method name to an unfitted estimator exposing
             ``fit(X).predict(X)`` — typically built with
             :func:`default_pipeline`, or any ``sklearn.pipeline.Pipeline`` /
-            :class:`~macroforecast.trade.aggregation.estimators.WeightedAggregator`.
+            :class:`~tradestat.trade.aggregation.estimators.WeightedAggregator`.
         dispute_fraction: Fraction of the group size above which a rank
             spread flags a product as disputed in the coherence report
             (M-10); the effective threshold is

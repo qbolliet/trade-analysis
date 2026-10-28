@@ -11,7 +11,7 @@ are produced here, and they are *not* interchangeable (M-05):
 * **Directions** — :func:`pca_weights` with ``rotate=False``: a unit-norm
   vector whose components may be negative, defining a linear score on
   *standardised* data. It has no business in a geometric mean or in TOPSIS;
-  :class:`~macroforecast.trade.aggregation.estimators.PcaProjectionScorer`
+  :class:`~tradestat.trade.aggregation.estimators.PcaProjectionScorer`
   is the estimator that applies it correctly.
 * **Individual weightings** — :func:`benefit_of_doubt_weights`: one weight
   vector *per product*, so no shared vector at all, and a score rather than a
@@ -21,7 +21,7 @@ are produced here, and they are *not* interchangeable (M-05):
 simplex for the SMAA protocol rather than estimating any.
 
 Every scheme returns plain ``numpy`` arrays; the sklearn-facing layer lives in
-:mod:`~macroforecast.trade.aggregation.estimators`.
+:mod:`~tradestat.trade.aggregation.estimators`.
 """
 # Importation des modules
 from __future__ import annotations
@@ -359,7 +359,7 @@ def pca_weights(
       Components may be negative: this is *not* a point of the simplex, it
       defines a linear score on *standardised* data and must not be handed to
       a geometric mean or to TOPSIS (M-05). Use
-      :class:`~macroforecast.trade.aggregation.estimators.PcaProjectionScorer`,
+      :class:`~tradestat.trade.aggregation.estimators.PcaProjectionScorer`,
       which standardises internally.
     * ``rotate=True`` — the **OECD/JRC weighting** (Nardo et al. 2008,
       pp. 89-90, after Nicoletti et al. 2000): axes of eigenvalue above
@@ -828,7 +828,7 @@ def benefit_of_doubt_weights(
         delta: Floor added to ``X`` in the share restrictions, ``> 0``.
         restrict_to_front: When ``True``, the non-domination constraint is
             only imposed against the **exact** Pareto front
-            (:func:`~macroforecast.trade.aggregation.pareto.pareto_front`,
+            (:func:`~tradestat.trade.aggregation.pareto.pareto_front`,
             never the ``epsilon`` front): the maximum of a linear form with
             non-negative coefficients over a finite set is attained at a
             non-dominated point, so the restriction is exact, not an

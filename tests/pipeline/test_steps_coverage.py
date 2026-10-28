@@ -10,7 +10,7 @@ import pytest
 
 from kedro_pipeline.io.ducklake import DuckLakeTable
 from kedro_pipeline.steps.coverage import audit_coverage, coverage_metrics_of, coverage_query
-from macroforecast.tracking import CapturingTracker
+from tradestat.tracking import CapturingTracker
 
 T0 = datetime(2026, 9, 1, tzinfo=timezone.utc)
 RUNTIME = {"ANALYSIS_START_YEAR": {"eurostat": 1988, "comtrade": 1994}}

@@ -1,6 +1,6 @@
 """Accumulateurs de statistiques suffisantes : oracles et invariance par partition.
 
-Chaque accumulateur de ``macroforecast.trade.processing.streaming`` est confronté à
+Chaque accumulateur de ``tradestat.trade.processing.streaming`` est confronté à
 l'estimateur monobloc qu'il remplace (pandas, ``statsmodels``, ``linearmodels``) et
 alimenté par des partitions arbitraires des observations, dont sept tranches de
 tailles inégales.
@@ -16,7 +16,7 @@ import pytest
 import statsmodels.api as sm
 from statsmodels.stats.outliers_influence import OLSInfluence
 
-from macroforecast.trade.processing.streaming import (
+from tradestat.trade.processing.streaming import (
     AbsorbedWLSAccumulator,
     CookFilter,
     WelfordGroupStats,

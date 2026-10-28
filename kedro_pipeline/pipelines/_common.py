@@ -41,7 +41,7 @@ import pandas as pd
 from kedro_pipeline.io.freshness import ForceSpec
 from kedro_pipeline.io.ducklake import workflow_run_id
 from kedro_pipeline.steps.result import StepResult
-from macroforecast.tracking import RunTracker
+from tradestat.tracking import RunTracker
 
 # Initialisation du logger
 logger = logging.getLogger(__name__)

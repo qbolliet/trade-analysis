@@ -17,7 +17,7 @@ from kedro_pipeline.io.ducklake import (
 )
 from kedro_pipeline.io.tracking import build_step_report, report_layout
 from kedro_pipeline.steps.result import StepResult, failure_message, mark, shared_runs
-from macroforecast.tracking import CapturingTracker
+from tradestat.tracking import CapturingTracker
 
 ROOT = Path(__file__).resolve().parents[2]
 LOCATION = DuckLakeLocation(

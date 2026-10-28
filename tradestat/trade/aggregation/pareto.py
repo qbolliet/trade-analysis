@@ -6,7 +6,7 @@ agrees; the salient object is the Pareto front, the set of products no other
 product dominates on every metric at once.
 
 Every function expects ``X`` already oriented in positive polarity (see
-:class:`~macroforecast.trade.aggregation.preprocessing.PolarityOrienter`):
+:class:`~tradestat.trade.aggregation.preprocessing.PolarityOrienter`):
 dominance is only meaningful once "higher = more vulnerable" holds uniformly.
 
 Choosing an implementation (M-18, A-07): each pair of routines below returns
@@ -598,7 +598,7 @@ class MetricReducer(BaseEstimator, TransformerMixin):
     the reduction invariant under a strictly increasing transformation applied
     coordinate by coordinate — the very invariance Pareto dominance enjoys, so
     the reduction smuggles in no scale assumption. (Contrast with
-    :class:`~macroforecast.trade.aggregation.preprocessing.RankScaler`, which
+    :class:`~tradestat.trade.aggregation.preprocessing.RankScaler`, which
     ranks against the training sample; here the ranks are recomputed on the
     matrix being transformed.)
 

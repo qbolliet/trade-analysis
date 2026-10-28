@@ -5,7 +5,7 @@ preprocessing des flux bilatéraux jusqu'aux métriques de dépendance et de ré
 
 ## Structure
 
-- **`macroforecast/`** — le package. Aucune valeur méthodologique n'y est
+- **`tradestat/`** — le package. Aucune valeur méthodologique n'y est
   hardcodée : les paramètres sont fournis à l'exécution via les fichiers de
   `config/`.
   - `trade/processing/` — redressement des flux BACI (conversion tonnage, modèle
@@ -59,7 +59,7 @@ preprocessing des flux bilatéraux jusqu'aux métriques de dépendance et de ré
 L'API publique du package expose les points d'entrée des pipelines :
 
 ```python
-from macroforecast import (
+from tradestat import (
     run_baci,
     run_vulnerabilities,
     run_network_vulnerabilities,
@@ -75,7 +75,7 @@ SDMX, rate limiting, orchestration des mises à jour) et le stockage générique
 (JSON, tables DuckLake, connexion S3) sont fournis par la dépendance externe
 **`statflows`** (tirée avec les extras `s3` et `ducklake`). Frontière :
 `statflows` gère l'acquisition et la persistance des données brutes,
-`macroforecast` ne porte que la méthodologie.
+`tradestat` ne porte que la méthodologie.
 
 L'écriture DuckLake (`statflows.storage.ducklake.tables.write_dataframe`) est le
 seul point qui requiert `dt-ducklake-manager` : son absence lève une `ImportError`
@@ -87,7 +87,7 @@ explicite, le reste du package s'importe et s'exécute sans lui.
 pip install -e .
 # suivi d'expériences MLflow
 pip install -e ".[tracking]"
-# score de Kantorovitch orienté (macroforecast.trade.aggregation.optimal_transport) :
+# score de Kantorovitch orienté (tradestat.trade.aggregation.optimal_transport) :
 # dépendance lourde jax/ott-jax, import paresseux, ImportError explicite en son absence
 pip install -e ".[optimal-transport]"
 ```

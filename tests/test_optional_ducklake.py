@@ -34,26 +34,26 @@ def ducklake_manager_absent(monkeypatch: pytest.MonkeyPatch) -> None:
 # ──────────────────────────────────────────────────────────────────────
 
 
-def test_import_macroforecast_without_ducklake_manager(
+def test_import_tradestat_without_ducklake_manager(
     ducklake_manager_absent: None, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """``import macroforecast`` réussit sans la dépendance optionnelle."""
+    """``import tradestat`` réussit sans la dépendance optionnelle."""
     # Purge du cache : le package est déjà importé par le reste de la suite,
     # l'importation doit être rejouée à froid pour être significative.
     # `monkeypatch` réinstalle les modules d'origine au démontage.
     for name in [
-        k for k in sys.modules if k == "macroforecast" or k.startswith("macroforecast.")
+        k for k in sys.modules if k == "tradestat" or k.startswith("tradestat.")
     ]:
         monkeypatch.delitem(sys.modules, name)
 
-    module = importlib.import_module("macroforecast")
+    module = importlib.import_module("tradestat")
 
     # Les symboles de calcul restent exposés
     assert hasattr(module, "run_vulnerabilities")
     assert hasattr(module, "run_baci")
 
     # Loader / Saver tabulaires accessibles, helpers DuckLake sans écriture aussi
-    storage = importlib.import_module("macroforecast.storage")
+    storage = importlib.import_module("tradestat.storage")
     assert storage.__all__ == ["Loader", "Saver"]
 
     tables = importlib.import_module("statflows.storage.ducklake.tables")

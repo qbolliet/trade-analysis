@@ -49,6 +49,7 @@
 | 2026-10-11 (K-14) | **Maintenance DuckLake implémentée** : `kedro_pipeline/io/maintenance.py` (métadonnées, procédures en SQL direct à horloge injectée, `VACUUM`, `pg_dump | gzip` vers S3, rétention), `kedro_pipeline/steps/maintenance.py::run_maintenance(catalogs, *, params, tracker, now)`, nœud `maintain_ducklake` (entrée `ducklake.catalogs`, clôture des runs orphelins conditionnée par `maintenance.STALE_RUNS`), `DuckLakeCatalogs.connector` / `has_postgres`, rapport (chiffres clés, section, `maintenance.csv`), contrôle `maintain_ducklake` ; `compact_after_update=False` explicite partout (test d'analyse du code) ; paramètre `TIMEZONE`. Résultats de vérification sur DuckDB 1.5.3 consignés en PS-24 : seuil d'inlining par défaut de 10 lignes (suppressions comprises, mesurer après `flush`), `DuckLakeMaintenance` avale ses erreurs et lit l'horloge système, mesure de `compact_after_update` (`True` : 586 snapshots contre 202). `dt-ducklake-manager` était déjà en 0.4.1 | C-08, PD-16, PD-21, PS-24, PS-31.4, PS-31.5, PR-07, PR-20 |
 | 2026-10-11 (K-15) | **Rendu Argo implémenté** : `config/base/argo.yml` (partie argo-kedro + bloc projet `workflow` : service account, `parallelism: 8`, planifications, délais, reprises par motif, dépendances strictes, environnement et secrets), `kedro_pipeline/deploy/{config,render}.py` (`build_dag` seul appelant de `get_argo_dag`, `TaskSpec`, `exit_task`, `cron_schedule`, `schedule_field`, `render_manifests`, `diff_manifests`), gabarits `kedro_pipeline/deploy/templates/*.yaml.j2` (délimiteurs Jinja en crochets), `kedro trade render-argo [--env] [--image-tag] [--output-dir] [--check]`, `kubernetes/generated/` (3 manifestes + README), contrôle en CI, tests `tests/deploy/` (fichiers de référence jouets, pipeline réel, schéma JSON minimal, `jsonschema` en groupe `dev`). Constats : `kedro run` est **toujours** la commande d'argo-kedro (les commandes globales de plugin passent avant les commandes projet) et ignore `--params` ; `python -m kedro_pipeline` était cassé (`find_run_command` cherche `kedro_pipeline.cli.run`) → **commande `run` projet** (FusedRunner + `runtime_params`), appelée par les pods ; hook argo-kedro réactivé, repli `context.argo` de `TradeRunHooks` retiré ; surcharge d'`entrypoint` / `activeDeadlineSeconds` par `workflowSpec` avec `workflowTemplateRef` confirmée sur le source v3.6.10 (`JoinWorkflowSpec` : Workflow > WorkflowTemplate > défauts). Écarts : **`KEDRO_ENV` figé** à l'environnement du rendu (plus de paramètre `kedro-env` : le fan-out BACI en dépend ; démo rendue hors dépôt), paramètre **`extra-params`** au lieu de `max-runtime-hours`, mutex portés par des enveloppes `steps` (motif validé par la transition), `emph_storage` non rendu, étiquette d'image par défaut `qb-vulnerabilities` (`imagePullPolicy: Always`) à épingler en K-17, pas d'annotation de SHA (sortie indépendante du commit) | PD-14, PS-03, PS-11, PS-20, PS-21 |
 | 2026-10-15 (K-17c) | **Bases vierges, règles de décision uniques** : la production repart de catalogues, registres de téléchargement et registres de fraîcheur vierges ; retrait de tout code de cohabitation avec d'anciennes bases (registres de fraîcheur v1 et adoption des empreintes, `tools/migrate_indicators_key.py`, alignement de `label_for`, repli dérivé des colonnes de nomenclature du service, chemins `LAST_COMPUTATION_PATH` / `LAST_PROCESSING_PATH`, registres globaux de synthèse et de cohérence) et des modes `legacy` / `shadow` (`STATE.DECISION_MODE`) ; les partenaires et BACI décident sur `UpstreamMark` (`upstream_mark_is_newer`), la synthèse sur ses curseurs DuckLake ; `RECENT_PERIODS` et `UpstreamMarks` retirés. Conservé : le repli par dates de `upstream_mark_is_newer` quand `statflows` n'a relevé aucun snapshot (écriture sans rapport), `upstream_is_newer` pour les cascades aval (réseau, cohérence). PQ-22 résolu | PD-10, PD-12, PS-10, PS-17, §5.3, §8, §12 |
+| 2026-10-28 | **Renommage du package de méthodologie `macroforecast` → `tradestat`** (`tradekit` pris sur PyPI) : renommage franc, sans recalcul (`revision` inchangées, `code_hash` accepté), `scope.pkl` à régénérer | PD-25 |
 
 ## Sommaire
 
@@ -107,7 +108,7 @@ Vocabulaire :
 
 Conventions de code inchangées (cf. `CLAUDE.md`) : commentaires en français à formulation
 nominale, docstrings Google Style en anglais, type hints systématiques, API sklearn pour
-les transformations, **aucune valeur méthodologique en dur** dans `macroforecast/`.
+les transformations, **aucune valeur méthodologique en dur** dans `tradestat/`.
 
 ---
 
@@ -124,20 +125,20 @@ gravité pour la mise en production (🔴 bloquant, 🟠 à traiter avant le ré
 | C-03 | ✅ | `os.environ["AWS_SESSION_TOKEN"]` est lu sans défaut dans les neuf constructions de connecteur. Avec les **clés Minio permanentes** du secret `trade-s3-credentials`, il n'y a pas de jeton de session : `KeyError` au démarrage de chaque pod. *(Traité en phase 0, 2026-09-18 : `AWS_SESSION_TOKEN` optionnel dans `kedro_pipeline.io.ducklake.s3_credentials_from_env` (None si absent ou vide).)* | tous les `scripts/*.py` |
 | C-04 | ✅ | La construction `DuckLakeConnector.from_postgres(...)` est dupliquée neuf fois, avec des divergences : `admin_user="postgres"` codé en dur (absent de `process_baci*.py`), `admin_dbname=os.environ["PGDATABASE"]`. *(Traité en phase 0, 2026-09-18 : fabrique unique `kedro_pipeline.io.ducklake.build_connector` ; `admin_user` = `PGADMINUSER` (défaut `postgres`) partout, `process_baci_hs.py` compris.)* | `scripts/*.py` |
 | C-05 | ✅ | Identifiants de dataflow en dur (`DATAFLOW = "C_A_HS"`, `"DS-045409"`) dans les `main()`, contraire à la règle « aucune valeur en dur qui présage de l'exécution ». *(Traité en phase 0, 2026-09-18 : clé `DATAFLOW` dans `config/datasets/{comtrade,eurostat}.yaml`, lue par tous les scripts.)* | `scripts/*.py` |
-| C-06 | 🔴 | `process_baci*.py` lit **toute** la table de faits Comtrade dans un DataFrame pandas (`SELECT cols FROM comtrade.fact_table`), puis `run_baci` enchaîne les six étapes sur ce bloc unique. À partir de 1994 et en HS6 bilatéral (≈ 10 à 13 millions de flux miroirs par année récente), un millésime long comme `HS1992` (1994 → aujourd'hui) représente plusieurs centaines de millions de lignes : dépassement mémoire certain. Or **quatre estimations sont mises en commun sur toutes les années du millésime** (taux de conversion en tonnes, médiane mondiale des valeurs unitaires, équation de gravité avec indicatrices d'année, ANOVA de qualité des déclarants), ce qui interdit un simple traitement année par année. La solution retenue est l'expression de ces estimateurs par **statistiques suffisantes accumulées tranche par tranche** (PD-22, PS-14) : exacte et à mémoire bornée. | `scripts/process_baci_hs.py:484`, `scripts/process_baci.py:288`, `macroforecast/trade/processing/baci.py` |
+| C-06 | 🔴 | `process_baci*.py` lit **toute** la table de faits Comtrade dans un DataFrame pandas (`SELECT cols FROM comtrade.fact_table`), puis `run_baci` enchaîne les six étapes sur ce bloc unique. À partir de 1994 et en HS6 bilatéral (≈ 10 à 13 millions de flux miroirs par année récente), un millésime long comme `HS1992` (1994 → aujourd'hui) représente plusieurs centaines de millions de lignes : dépassement mémoire certain. Or **quatre estimations sont mises en commun sur toutes les années du millésime** (taux de conversion en tonnes, médiane mondiale des valeurs unitaires, équation de gravité avec indicatrices d'année, ANOVA de qualité des déclarants), ce qui interdit un simple traitement année par année. La solution retenue est l'expression de ces estimateurs par **statistiques suffisantes accumulées tranche par tranche** (PD-22, PS-14) : exacte et à mémoire bornée. | `scripts/process_baci_hs.py:484`, `scripts/process_baci.py:288`, `tradestat/trade/processing/baci.py` |
 | C-07 | 🟠 | Les registres de fraîcheur sont des fichiers JSON uniques, **relus puis réécrits en entier** à chaque mise à jour, sans verrou. Deux pods parallèles qui écrivent le même registre (ex. deux millésimes BACI) perdent des entrées (*last writer wins*). | `process_baci_hs.py:608-622`, `compute_*` |
 | C-08 | 🔴 | Dans `statflows.core.download.SDMXDownloader._process_query`, le registre des téléchargements est **réécrit intégralement sur S3 après chaque requête**, et chaque requête non vide déclenche un upsert DuckLake avec `compact_after_update=True`. Pour 10⁴ à 10⁵ requêtes, le coût devient quadratique (PUT de fichiers de plusieurs Mo, compaction répétée, un snapshot par requête). | `statflows/core/download.py:593-602`, `statflows/storage/ducklake/tables.py:171-175` |
 | C-09 | 🟠 | Le client Eurostat décide de l'incrémental à partir de la date de mise à jour **du dataflow entier** (`get_data_last_update`) : après chaque publication Comext, toutes les requêtes déjà téléchargées redeviennent éligibles (10 dernières observations chacune). Le client Comtrade décide, lui, par période (`lastReleased`). | `statflows/sources/eurostat/client.py:733-786`, `statflows/sources/comtrade/client.py:871-925` |
 | C-10 | 🟠 | Les règles de fraîcheur ignorent les **changements de méthodologie** : corriger une formule ou ajouter une métrique ne déclenche aucun recalcul. Seuls `SYNTHESIS.FORCE` et `COHERENCE.FORCE` existent ; les étapes partenaires, réseau et BACI n'ont pas de forçage. | `scripts/compute_*.py` |
 | C-11 | 🟠 | La synthèse filtre en dur le flux import (`p."flow" = 1`) et les 5 dernières périodes. La jointure réseau ne retient que `HS2022`, y compris pour les années antérieures à 2022, dont les codes Comext sont pourtant déclarés dans un millésime plus ancien : la jointure `substr(product,1,6)` est alors **fausse pour tout code redéfini entre les millésimes** (PD-20). *(Traité en K-06b, 2026-10-06 : jointure `n."classification" = p."hs_vintage"`, flux généré depuis `FLOWS`.)* | `config/synthesis.yaml:55-64` |
-| C-12 | 🟡 | Côté partenaires, `HHI` est calculé pour les deux flux ; `CDI2` et `CDI3` ne sont définis que pour l'import (valeur nulle ailleurs). Aucune métrique d'export dédiée n'existe. Les métriques de réseau portent sur le graphe mondial d'un produit (une valeur par produit, aucune par pays) mais **ne sont pas toutes indépendantes de l'orientation** : `CENTRALITY_RISK` (degré sortant pondéré), `EXPORT_HHI` (parts des exportateurs), `SPOF` et `SPOF_DECILE` mesurent la concentration de l'**offre** mondiale (lecture « import ») et changent quand on transpose le graphe ; seuls `CLUSTERING_W` et `DIAMETER` sont invariants, parce que le graphe est symétrisé (`w_ij + w_ji`). Les joindre tels quels aux lignes export appliquerait une lecture côté offre à un exportateur. *(Révisions : définitions d'export partenaires retenues, PD-09 ; miroirs réseau par transposition, PD-09, 2026-10-05 ; implémenté le 2026-10-05.)* | `macroforecast/trade/vulnerabilities/metrics.py` |
+| C-12 | 🟡 | Côté partenaires, `HHI` est calculé pour les deux flux ; `CDI2` et `CDI3` ne sont définis que pour l'import (valeur nulle ailleurs). Aucune métrique d'export dédiée n'existe. Les métriques de réseau portent sur le graphe mondial d'un produit (une valeur par produit, aucune par pays) mais **ne sont pas toutes indépendantes de l'orientation** : `CENTRALITY_RISK` (degré sortant pondéré), `EXPORT_HHI` (parts des exportateurs), `SPOF` et `SPOF_DECILE` mesurent la concentration de l'**offre** mondiale (lecture « import ») et changent quand on transpose le graphe ; seuls `CLUSTERING_W` et `DIAMETER` sont invariants, parce que le graphe est symétrisé (`w_ij + w_ji`). Les joindre tels quels aux lignes export appliquerait une lecture côté offre à un exportateur. *(Révisions : définitions d'export partenaires retenues, PD-09 ; miroirs réseau par transposition, PD-09, 2026-10-05 ; implémenté le 2026-10-05.)* | `tradestat/trade/vulnerabilities/metrics.py` |
 | C-13 | ✅ | ~~L'upsert de `dt_ducklake_manager` ne sait pas ajouter une colonne~~ **Résolu par `dt-ducklake-manager 0.3.1`** : `DatabaseUpdater.update_database(..., allow_new_columns=True)` ajoute les colonnes absentes (`ALTER TABLE … ADD COLUMN … DEFAULT NULL` + ligne de métadonnées) avant l'upsert, et `add_columns(df)` diffuse une nouvelle colonne sur les lignes existantes par clé primaire en une seule mise à jour. Reste à faire : `statflows.write_dataframe` ne transmet ni `allow_new_columns` ni `compact_after_update` (PS-27, PD-11). *(K-08, 2026-10-06 : `statflows 0.1.1` transmet ces options ; toutes les étapes de calcul écrivent par la poignée `DuckLakeTable`. La version 0.4.0 n'est pas retenue (champs nuls de `metadata` écrits `'None'` depuis une entrée pandas, upserts ultérieurs en échec) : 0.3.1 conservée, même API.)* | `dt_ducklake_manager/operations/updater.py:176-372`, `statflows/storage/ducklake/tables.py:165-175` |
 | C-14 | 🔴 | Le `Dockerfile` part de `python:3.12-slim` alors que `requires-python = ">=3.13"`, copie un dossier `parameters/` inexistant, n'installe aucun extra (`tracking`, `optimal-transport`) et utilise `uv:latest` (non reproductible). | `docker/Dockerfile` |
 | C-15 | 🔴 | `kubernetes/workflow.yaml` déclare `kind: Workflow` avec des champs de `CronWorkflow` (`schedule`, `concurrencyPolicy`…), invalides pour ce type ; il référence un script `trade-script` inexistant et un secret `comtrade-credentials` qui ne correspond pas aux secrets créés (`comtrade-api-credentials`, `trade-s3-credentials`). À traiter comme un exemple, pas comme une base. | `kubernetes/workflow.yaml` |
 | C-16 | ✅ | `config/base/catalog.yaml` et `config/base/parameters.yaml` existent mais sont vides : amorce d'une arborescence Kedro. *(Traité en K-10, 2026-10-08 : fichiers vides supprimés, `config/base/` porte désormais les `parameters_*.yml`, `catalog.yml`, `credentials.yml` et `experiments.yml`.)* | `config/base/` |
 | C-17 | ✅ | Incohérence des chemins CEPII : `process_baci.py` préfixe `s3://{bucket}/` **et** passe `bucket=`, alors que `process_baci_hs.py` passe le chemin relatif et `bucket=`. *(Traité en phase 0, 2026-09-18 : `process_baci.py` supprimé (doublon mono-millésime de `process_baci_hs.py`), ainsi que les clés mortes `baci.PATHS.RESULT_*`.)* | `process_baci.py:257-264` vs `process_baci_hs.py:453-454` |
 | C-18 | ✅ | `scripts/test_baci.py` (écriture `df_reconciled.xlsx` en local) est un script de mise au point, hors pipeline. *(Traité en phase 0, 2026-09-18 : `scripts/test_baci.py` et l'entry point `test-baci-script` supprimés.)* | `scripts/test_baci.py` |
-| C-19 | ✅ | Le suivi MLflow crée une expérience par script, avec des noms de métriques séparés par des points (`gravity.r2`) : l'interface MLflow ne regroupe pas automatiquement les graphiques par étape. *(Traité en phase 0, 2026-09-21 : les scripts journalisent leurs métriques avec `/` (`rekey_metrics`, `flatten_metrics(sep="/")`, préfixes des rapports conservés : `baci/gravity/r_squared`, `download/errors`, `synthesis/by_product/n_groups`) et une expérience par bloc (`trade-01-downloads`…). MLflow 3.15 regroupe les graphiques par préfixe complet (sections `baci`, `baci/gravity`, `baci/tonnage`…) : constat PQ-19.)* *(K-13, 2026-10-09 : sections cibles de PD-13 appliquées par les fonctions d'étape — `gravity/r_squared`, `conversion/…`, `output/flows`, `http/…` —, scripts et nœuds compris.)* | `macroforecast/tracking/` |
+| C-19 | ✅ | Le suivi MLflow crée une expérience par script, avec des noms de métriques séparés par des points (`gravity.r2`) : l'interface MLflow ne regroupe pas automatiquement les graphiques par étape. *(Traité en phase 0, 2026-09-21 : les scripts journalisent leurs métriques avec `/` (`rekey_metrics`, `flatten_metrics(sep="/")`, préfixes des rapports conservés : `baci/gravity/r_squared`, `download/errors`, `synthesis/by_product/n_groups`) et une expérience par bloc (`trade-01-downloads`…). MLflow 3.15 regroupe les graphiques par préfixe complet (sections `baci`, `baci/gravity`, `baci/tonnage`…) : constat PQ-19.)* *(K-13, 2026-10-09 : sections cibles de PD-13 appliquées par les fonctions d'étape — `gravity/r_squared`, `conversion/…`, `output/flows`, `http/…` —, scripts et nœuds compris.)* | `tradestat/tracking/` |
 | C-20 | 🔴 | **Accès au cluster impossible depuis le poste local** : le jeton de rafraîchissement OIDC de `sspcloud_access_script.txt` est lié à une preuve DPoP (`oauth2: "invalid_grant" "DPoP proof is missing"`), que le fournisseur `oidc` de `kubectl` ne sait pas produire. Voir PQ-09. | `sspcloud_access_script.txt` |
 | C-21 | 🟡 | Aucune documentation mkdocs, aucun workflow GitHub Actions, aucun `.dockerignore` dans le dépôt. `sspcloud_access_script.txt` et `Trade deployment.md` sont bien ignorés par git, mais **seraient copiés dans une image** construite avec `COPY . .`. | racine |
 | C-22 | 🟠 | **Aucune table de référence** (libellés de produits par millésime, libellés de pays, tables de passage HS exposées) n'est produite : un tableau de bord ne peut afficher que des codes. Les codelists sont pourtant téléchargées à chaque exécution (`fetch_dimension_codelists`) et les concordances UNSD sont en cache Parquet. *(Traité en phase 0, K-03b, 2026-09-21 : `publish_reference` / `publish_hs_reference` appelées par `download_*.py` et `process_baci_hs.py`, PS-28.4.)* | `scripts/download_*.py`, `scripts/process_baci_hs.py:_ensure_concordances` |
@@ -148,7 +149,7 @@ gravité pour la mise en production (🔴 bloquant, 🟠 à traiter avant le ré
 
 Points solides sur lesquels on s'appuie :
 
-- séparation nette méthodologie pure (`macroforecast/trade/*`, sans I/O) / scripts (I/O) ;
+- séparation nette méthodologie pure (`tradestat/trade/*`, sans I/O) / scripts (I/O) ;
 - runners isolant l'échec d'une unité (millésime, contexte) sans interrompre les autres ;
 - registres écrits **après** succès de l'écriture, date capturée **avant** le calcul ;
 - rapports structurés (`to_metrics()`) et protocole `RunTracker` pensé pour kedro-mlflow ;
@@ -179,7 +180,7 @@ Points solides sur lesquels on s'appuie :
 ├──────────────────────────────────────────────────────────────────────────────┤
 │ scripts/   (TRANSITOIRES — enveloppes CLI de la phase 0, supprimées en K-18)   │
 ├──────────────────────────────────────────────────────────────────────────────┤
-│ macroforecast/  (INCHANGÉ dans son rôle — méthodologie pure, sans I/O ;       │
+│ tradestat/  (INCHANGÉ dans son rôle — méthodologie pure, sans I/O ;       │
 │                  BACI réécrit en estimateurs « par passes », PS-14)           │
 ├──────────────────────────────────────────────────────────────────────────────┤
 │ statflows (dépendance externe — acquisition, registres de téléchargement,     │
@@ -261,12 +262,12 @@ local, `kedro run` exécute tout le DAG dans un seul processus. Sur Argo, chaque
 
 **Décision.**
 - Nouveau package Python **`kedro_pipeline/`** à la racine du dépôt, à côté de
-  `macroforecast/` et (transitoirement) `scripts/`. Déclaration dans `pyproject.toml` :
+  `tradestat/` et (transitoirement) `scripts/`. Déclaration dans `pyproject.toml` :
   `[tool.kedro] package_name = "kedro_pipeline"`, `project_name = "trade-analysis"`,
   `kedro_init_version = "1.6.0"`, `source_dir = "."`.
 - *Nom.* `kedro_pipeline` (et non `kedro_pipeline`, ni `pipeline`) : le nom dit ce que
   contient le dossier — le projet Kedro et rien d'autre — et le distingue sans ambiguïté
-  de `macroforecast/` (la méthodologie) et de `kedro.pipeline` (module de la
+  de `tradestat/` (la méthodologie) et de `kedro.pipeline` (module de la
   bibliothèque, sans conflit d'import puisque le paquet racine diffère). Un simple
   `pipeline/` serait trop générique ; `kedro_pipeline` laissait croire que la
   méthodologie « trade » y vivait. Les noms des ressources Kubernetes (`trade-pipeline`,
@@ -277,20 +278,20 @@ local, `kedro run` exécute tout le DAG dans un seul processus. Sur Argo, chaque
   - `local` : surcharges de poste (non versionné, sauf `.gitkeep`) ;
   - `cloud` : surcharges d'exécution dans Argo (chemins S3, `n_jobs`, budgets) ;
   - `demo` : périmètre réduit pour la présentation (PD-19, PS-04.4).
-- `macroforecast/` reste de la méthodologie pure : **aucune dépendance à Kedro** n'y est
+- `tradestat/` reste de la méthodologie pure : **aucune dépendance à Kedro** n'y est
   introduite.
 
 **Justification.** Kedro impose un package projet qui contient `settings.py` et
-`pipeline_registry.py`. Le placer dans `macroforecast/` mêlerait orchestration et
+`pipeline_registry.py`. Le placer dans `tradestat/` mêlerait orchestration et
 méthodologie, alors que `CLAUDE.md` exige de les séparer. `source_dir = "."` évite de
-déplacer `macroforecast/` et `scripts/` sous `src/`, ce qui casserait les entrées
+déplacer `tradestat/` et `scripts/` sous `src/`, ce qui casserait les entrées
 `[project.scripts]` et les imports des tests. Enfin, le dossier `config/` existe déjà et
 contient l'amorce `config/base/` (C-16).
 
 **Alternatives écartées.** Un layout `src/` standard (déplacements massifs, imports
 cassés) ; un dépôt Kedro séparé (deux images, deux versions de configuration).
 
-**Conséquences.** `hatchling` doit empaqueter `macroforecast`, `scripts` et
+**Conséquences.** `hatchling` doit empaqueter `tradestat`, `scripts` et
 `kedro_pipeline` (PS-02). Les scripts voient leurs chemins de configuration par défaut
 changer (PD-03).
 
@@ -431,7 +432,7 @@ si les trois conditions suivantes sont réunies** :
 2. **domaine d'échec ou profil de ressources distinct** : API et quota différents, besoin
    mémoire différent, risque d'OOM à isoler ;
 3. **durée ≫ coût de démarrage d'un pod** (≈ 30 à 90 s : tirage d'image, import de
-   `macroforecast`, connexion au catalogue), soit plus de 10 minutes environ.
+   `tradestat`, connexion au catalogue), soit plus de 10 minutes environ.
 
 Dans le cas contraire, on parallélise **à l'intérieur du pod** (processus `joblib`/`loky`,
 un seul écrivain qui collecte les résultats et écrit par lots).
@@ -726,7 +727,7 @@ Mise en œuvre, identique pour `VulnerabilityMetric` et `NetworkVulnerabilityMet
   fraîcheur est donc `"<métrique>/<flux>"`.
 
 Implémentation (2026-10-05) : le cadre est porté par une classe parente commune
-(`_DirectedMetric` dans `macroforecast/trade/vulnerabilities/base.py` : validation,
+(`_DirectedMetric` dans `tradestat/trade/vulnerabilities/base.py` : validation,
 `fingerprint_key`, `fingerprint_params()`), la correspondance sens → code
 (`flow_code_map`) et sens → rôles (`NetworkVulnerabilityMetric._roles`) n'étant écrite
 qu'une fois. Un nom de métrique non qualifié (`HHI`) désigne ses deux sens pour le
@@ -867,7 +868,7 @@ complétion par relecture n'est donc nécessaire.
   recalculées) ;
 - `add_columns(df, overwrite=False, …)` pour les migrations (runbook §5.3) ;
 - `writer(build_options, run_id, commit_message)` : écrivain injecté dans les
-  runners de `macroforecast` (paramètre `writer` de `run_vulnerabilities*` et
+  runners de `tradestat` (paramètre `writer` de `run_vulnerabilities*` et
   `run_network_vulnerabilities`), qui ne connaissent ni DuckLake ni `kedro_pipeline`.
 
 `perform_cleanup=False` est indispensable : par défaut, `delete_rows` supprime les
@@ -1007,14 +1008,14 @@ Le registre global actuel (C-10) serait « tout ou rien ».
 
 - Le protocole `RunTracker` est conservé et gagne deux méthodes, `log_text(text,
   artifact_file)` et `set_tags(tags)` (implémentées par `NullTracker` et
-  `MlflowTracker`). Une implémentation s'ajoute dans `macroforecast/tracking/` :
+  `MlflowTracker`). Une implémentation s'ajoute dans `tradestat/tracking/` :
   **`ActiveRunTracker`**, qui journalise dans le run actif ouvert par kedro-mlflow.
   Toute erreur de journalisation est journalisée en WARNING et **jamais propagée** (un
   serveur MLflow injoignable n'interrompt pas un calcul).
 - Le **rapport de run** est construit par du code pur, testable sans MLflow :
-  `macroforecast/tracking/report.py` (`Check`, `CheckResult`, `evaluate_checks`,
+  `tradestat/tracking/report.py` (`Check`, `CheckResult`, `evaluate_checks`,
   `RunReport` avec `to_markdown()` et `to_html()`) et
-  `macroforecast/tracking/figures.py` (figures Plotly, import paresseux, extra
+  `tradestat/tracking/figures.py` (figures Plotly, import paresseux, extra
   `reports`). Sa publication (`publish_run_report(tracker, report, params)`) vit dans
   `kedro_pipeline/io/tracking.py`. Le hook `on_node_error` publie une description
   réduite (étape, exception tronquée, `health=failed`) ; les runs laissés `RUNNING` par
@@ -1026,7 +1027,7 @@ Le registre global actuel (C-10) serait « tout ou rien ».
 
 - **Correspondance des sections**, établie sur les champs réels des rapports et appliquée
   dans `kedro_pipeline/steps/` (`baci_section_metrics`, `harmonization_metrics`,
-  `query_metrics`), jamais dans `macroforecast` :
+  `query_metrics`), jamais dans `tradestat` :
 
   | Champ réel | Avant (K-03d) | Métrique (K-13) |
   |---|---|---|
@@ -1039,7 +1040,7 @@ Le registre global actuel (C-10) serait « tout ou rien ».
   | `BaciReport.quality_value` / `quality_quantity` (`QualityReport`) | `baci/quality_value/*`, `baci/quality_quantity/*` | `quality/value/*`, `quality/quantity/*` |
   | `BaciReport.nes` (`NesReport`) | `baci/nes/*` | `nes/*` |
   | `HsHarmonizationReport` | `hs/*` | `harmonization/*` |
-  | `run_baci_passes` (journalisé par `macroforecast`, inchangé) | `timing/seconds`, `output/rows` (`step` = année), `passes/<passe>/seconds`, `memory/*` | inchangés |
+  | `run_baci_passes` (journalisé par `tradestat`, inchangé) | `timing/seconds`, `output/rows` (`step` = année), `passes/<passe>/seconds`, `memory/*` | inchangés |
   | `QueryReport` (une requête, `step` = rang de la requête) | `query/*`, `query/http/*`, `query/rate_limit/*`, `query/fetch/*` | `download/query/*`, `http/*`, `rate_limit/*`, `download/fetch/*` |
   | `DownloadReport` (run), couverture, fraîcheur, partenaires, réseau, synthèse, cohérence, service | `download/*`, `coverage/*`, `freshness/*`, `partners/<flux>/*`, `network/<flux>/*`, `synthesis/<niveau>/*`, `coherence/<niveau>/*`, `serving/*` | inchangés |
 
@@ -1580,6 +1581,36 @@ agrégats calculés dessus.
 
 ---
 
+### PD-25 — Renommage du package de méthodologie en `tradestat`
+
+**Contexte.** Le package s'appelait `macroforecast`, nom hérité qui ne décrit plus son
+contenu. Il devient une boîte à outils d'analyse du commerce international, appelée à
+s'enrichir (réorganisation des flux après un choc, impact des chocs sur les entreprises) et,
+après la mise en production, à vivre dans son propre dépôt (logique pure), l'outillage
+Kedro / Argo / MLflow partant dans un dépôt commun.
+
+**Décision.** Le package, le nom d'import et le nom de distribution deviennent
+`tradestat` (`git mv macroforecast tradestat`). Le dépôt garde son nom `trade-analysis` et le
+projet Kedro reste `kedro_pipeline`. Aucun module de compatibilité `macroforecast` : le
+renommage est franc. `tradekit` (premier choix) est déjà pris sur PyPI ; `tradestat` était
+libre au 2026-10-28, comme `trademetrics` et `tradeflows`.
+
+**Absence de recalcul.** Les empreintes de fraîcheur n'intègrent que la `revision` de chaque
+nom méthodologique ; elle est inchangée. Le `code_hash` du verrou, empreinte de l'arbre
+syntaxique, change en revanche pour les 13 noms, car cet arbre contient les noms d'import
+et les chaînes `macroforecast` : le verrou a été régénéré avec `--accept` (aucune valeur
+ne change). Le code source ne diffère de l'ancien que par la substitution textuelle du nom,
+vérifiée fichier par fichier.
+
+**Point d'attention : objets sérialisés.** Le jeu `baci.scope` (`PickleDataset`,
+`scope.pkl`) enregistre les chemins de module des classes pickle-es : un `scope.pkl` écrit
+avant le renommage n'est plus lisible (`ModuleNotFoundError: macroforecast`). Il est réécrit à
+chaque préparation BACI ; les bases demo sont vidées en K-17d. Pour un futur renommage en
+production : régénérer le périmètre avant toute lecture, ou lire avec un `Unpickler`
+dont `find_class` redirige l'ancien nom de module.
+
+---
+
 ## 4. Spécifications détaillées
 
 ### PS-01 — Arborescence cible
@@ -1618,7 +1649,7 @@ trade-analysis/
 ├── superset/
 │   ├── README.md                            # guide pas à pas (connexion DuckDB, PS-30)
 │   └── vulnerabilites/                      # export Superset versionné (datasets, charts, dashboard)
-├── macroforecast/ (inchangé dans son rôle ; baci.py réorganisé en estimateurs par passes, PS-14 ;
+├── tradestat/ (inchangé dans son rôle ; baci.py réorganisé en estimateurs par passes, PS-14 ;
 │                   tracking/report.py et tracking/figures.py : rapport de run pur, PS-31)
 ├── scripts/ (phase 0 → enveloppes minces → supprimés en K-18, PD-02)
 ├── tools/ (utilitaires hors pipeline : mesures ponctuelles, construction de la documentation)
@@ -1691,11 +1722,11 @@ kedro_init_version = "1.6.0"
 source_dir = "."
 
 [tool.hatch.build.targets.wheel]
-packages = ["macroforecast", "scripts", "kedro_pipeline"]   # "scripts" retiré en K-18
+packages = ["tradestat", "scripts", "kedro_pipeline"]   # "scripts" retiré en K-18
 ```
 
 Remarques : l'ancien extra `dashboards` devient `reports` (révision 2 : rapport HTML de
-run, PD-13) ; plotly n'est importé que par `macroforecast/tracking/figures.py`, de façon
+run, PD-13) ; plotly n'est importé que par `tradestat/tracking/figures.py`, de façon
 paresseuse (sans l'extra, le rapport est produit sans figures). `psutil` est requis par
 les métriques système de MLflow. Plus aucun usage direct de `psycopg2` pour la
 restitution (PD-21). `kedro-viz` n'est pas dans l'image (inutile à l'exécution).
@@ -2343,7 +2374,7 @@ Invariants communs (hérités des scripts, à conserver) :
 > | `baci.py` | `prepare_baci(comtrade, state, registry_view, planned, available_products, *, params, comtrade_params, runtime, targets, force, …) -> BaciScope` ; `run_baci_vintage(vintage, scope, comtrade, state, *, params, tracker, progress, run_id, passes_runner)` ; `run_baci_vintages(scope, comtrade, state, *, params, runs, …)` | la planification Comtrade (API) est faite par l'appelant et passée en `planned` ; collaborateurs injectables (`concordance_client_factory`, `concordances_loader`, `reference_publisher`, `passes_runner`, `loader`/`saver`) ; `run_baci_vintage` **lève** en cas d'échec (le millésime est toute l'unité de son run) ; deux connexions au lieu d'une (préparation, puis tous les millésimes) |
 > | `partners.py` | `run_partner_vulnerabilities(source, result, state, download_registry, *, params, runtime, dataflow, runs, concordances_loader, …)` ; `plan_partner_passes` | `runs` au lieu de `tracker` (un run par passe) ; tables de passage chargées par `concordances_loader(vintages, nomenclatures)` |
 > | `network.py` | `run_network_vulnerabilities(baci, result, state, baci_state, *, params, runtime, dataflow, runs, n_jobs, …)` | `runs` au lieu de `tracker` (un run par millésime) |
-> | `synthesis.py` | `run_synthesis_step(scores, diagnostics, state, upstream_partners, upstream_network, *, params, vulnerability_params, runtime, tracker, n_jobs, eurostat, force, cadence_check, run_id)` | nommée `run_synthesis_step` (`run_synthesis` est la méthodologie de `macroforecast`) ; registres amont par famille ; la table des scores porte aussi la lecture des métriques ; `cadence_check` décidé par l'appelant |
+> | `synthesis.py` | `run_synthesis_step(scores, diagnostics, state, upstream_partners, upstream_network, *, params, vulnerability_params, runtime, tracker, n_jobs, eurostat, force, cadence_check, run_id)` | nommée `run_synthesis_step` (`run_synthesis` est la méthodologie de `tradestat`) ; registres amont par famille ; la table des scores porte aussi la lecture des métriques ; `cadence_check` décidé par l'appelant |
 > | `coherence.py` | `run_coherence_step(scores, diagnostics, state, synthesis_state, *, params, vulnerability_params, runtime, tracker, n_jobs, force, cadence_check, run_id)` | idem |
 > | `serving.py` | `publish_serving(sources, serving, *, params, runtime, tracker) -> StepResult` | `sources` reste `Mapping[str, SourceTable]` : le catalogue de service attache des catalogues entiers en lecture seule, pas des tables |
 > | `reference.py` | `publish_reference(codelists, table, *, source, params, conn=None) -> StepResult` | `table` est un connecteur (ou une connexion ouverte `conn`) |
@@ -2706,7 +2737,7 @@ table.
 
 #### PS-14.2 Analyse : quelles estimations mettent en commun plusieurs années
 
-Lecture de `macroforecast/trade/processing/baci.py` (état au 2026-09-18, confirmée à
+Lecture de `tradestat/trade/processing/baci.py` (état au 2026-09-18, confirmée à
 l'implémentation K-07 le 2026-10-06), de la note LaTeX et de Gaulier & Zignago (2010) :
 
 | Étape (`run_baci`) | Objet estimé | Portée dans le code | Portée dans la méthodologie | Décomposable par tranche ? |
@@ -2864,9 +2895,9 @@ des conditions est vraie :
 `last_computed` du millésime : toute passe BACI le rend périmé, ce qui est voulu (les
 métriques réseau dépendent de toutes les années).
 
-#### PS-14.7 Organisation du code (`macroforecast/`, sans I/O)
+#### PS-14.7 Organisation du code (`tradestat/`, sans I/O)
 
-- `macroforecast/trade/processing/streaming.py` : accumulateurs réutilisables,
+- `tradestat/trade/processing/streaming.py` : accumulateurs réutilisables,
   convention sklearn `partial_fit(…) → self`, `finalize() → self` / `solve()` :
   `WelfordGroupStats` (tonnage), `WeightedLeastSquaresAccumulator` (facteur `R` ;
   `A`, `b`, `c` en propriétés ; `solve(colonnes)` → `WlsSolution`), `CookFilter`
@@ -2959,7 +2990,7 @@ métriques réseau dépendent de toutes les années).
 > `tests/test_ducklake_table.py`, scénario ci-dessous complet) : la poignée gagne
 > `upsert_many(frames, keys, delete_where=…)` (suppression d'une tranche et upsert
 > dans une seule transaction) et `writer(...)` (écrivain injecté dans les runners de
-> `macroforecast`). La branche « table existante » appelle `DatabaseUpdater`
+> `tradestat`). La branche « table existante » appelle `DatabaseUpdater`
 > directement (aucune dépendance aux options de `statflows`). Constat : les colonnes
 > absentes du DataFrame sont **préservées** (PD-11). Version : 0.3.1 (0.4.0 écartée,
 > PD-11).
@@ -3098,7 +3129,7 @@ pas les résultats des méthodes calculées : un test d'équivalence le vérifie
 
 > **Implémentation (K-09).** `kedro_pipeline/parallel.py` (`resolve_n_jobs`,
 > `parallel_map`, `ContextFailure`), `kedro_pipeline/io/ducklake.py` (`ConnectionReader`,
-> `BorrowedReader`), `macroforecast/tracking` (`RecordingTracker`, `ArtifactCollector`).
+> `BorrowedReader`), `tradestat/tracking` (`RecordingTracker`, `ArtifactCollector`).
 > Tests : `tests/test_parallel.py`, `tests/test_scripts_synthesis_parallel_e2e.py`,
 > `tests/test_scripts_network_parallel_e2e.py` (catalogue local SQLite, `tests/sqlite_catalog.py`).
 > - **Un seul chemin de code** : `n_jobs=1` passe par la même enveloppe que `n_jobs>1`
@@ -3167,7 +3198,7 @@ Conventions :
 - les nœuds renvoient `StepResult.metrics` vers `mlflow.metrics.<nœud>`
   (`MlflowMetricsHistoryDataset`, format `{nom: [{"value": v, "step": 0}]}`) et
   `StepResult.artifacts` vers des `MlflowArtifactDataset` ;
-- les runners de `macroforecast` continuent de journaliser **pendant** le calcul via le
+- les runners de `tradestat` continuent de journaliser **pendant** le calcul via le
   `RunTracker` (métriques par étape BACI, artefacts) ; le tracker reçu par les étapes est
   l'`ActiveRunTracker` renvoyé par `kedro_pipeline/io/tracking.py::build_tracker(...)`
   (`NullTracker` si aucun run n'est actif) ; toute exception de journalisation est
@@ -3449,7 +3480,7 @@ COPY pyproject.toml uv.lock README.md ./
 RUN --mount=type=cache,target=/root/.cache/uv \
     uv sync --frozen --no-dev --no-install-project \
       --extra tracking --extra reports --extra optimal-transport
-COPY macroforecast/ macroforecast/
+COPY tradestat/ tradestat/
 COPY scripts/ scripts/
 COPY kedro_pipeline/ kedro_pipeline/
 COPY config/base/ config/base/
@@ -3745,7 +3776,7 @@ Pour un reporter `r`, un millésime cible `V` et une période `t ≥ entrée(V)`
 Quand `vintage_in_force(t) = V`, l'étape 2 est l'identité : les lignes « en vigueur »
 sont produites par le même chemin (une seule implémentation).
 
-**Implémentation (K-06b).** `macroforecast.trade.processing.harmonize_partner_flows`
+**Implémentation (K-06b).** `tradestat.trade.processing.harmonize_partner_flows`
 (enveloppe de `HsHarmonizer`, colonne de millésime temporaire, type de `product`
 conservé : `BIGINT` en table) ; `prepare_vintage_flows` (script partenaires) groupe
 les lignes par millésime source `vintage_in_force(t)` et convertit chaque groupe vers
@@ -4330,7 +4361,7 @@ couverture (`download_report_result`) : métriques `coverage/*`, section « Couv
 `coverage_by_reporter` et `errors`. `prepare_baci` publie la table `scope` (millésimes à
 réestimer, années, raison) ; `maintain_ducklake` la métrique `mlflow/stale_runs_closed`.
 
-Les figures sont construites par `macroforecast/tracking/figures.py` à partir des
+Les figures sont construites par `tradestat/tracking/figures.py` à partir des
 métriques et des DataFrames d'artefacts que les étapes produisent déjà ; aucune
 relecture de données. Chaque figure a un équivalent tabulaire (CSV) : si le rendu HTML
 n'est pas disponible dans l'interface (PQ-19), l'information reste accessible.
@@ -4741,8 +4772,8 @@ accepté.
 
 ## 11. Références
 
-- Code : `scripts/*.py`, `macroforecast/tracking/`, `macroforecast/trade/vulnerabilities/`,
-  `macroforecast/trade/processing/baci.py`, `macroforecast/trade/aggregation/`.
+- Code : `scripts/*.py`, `tradestat/tracking/`, `tradestat/trade/vulnerabilities/`,
+  `tradestat/trade/processing/baci.py`, `tradestat/trade/aggregation/`.
 - Dépendances : `statflows/core/download.py` (`SDMXDownloader`, `download_updates`),
   `statflows/sources/{comtrade,eurostat}/client.py` (`fetch_updates`),
   `statflows/storage/ducklake/tables.py` (`write_dataframe`),

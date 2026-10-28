@@ -19,7 +19,7 @@ pytest.importorskip("dt_ducklake_manager")
 from kedro_pipeline.io.ducklake import DuckLakeLocation, DuckLakeTable  # noqa: E402
 from kedro_pipeline.steps.partners import partner_registry, run_partner_vulnerabilities  # noqa: E402
 from kedro_pipeline.steps.result import StepResult, UnitRun  # noqa: E402
-from macroforecast.tracking import CapturingTracker  # noqa: E402
+from tradestat.tracking import CapturingTracker  # noqa: E402
 from sqlite_catalog import SqliteCatalogConnector, catalog_paths  # noqa: E402
 from test_scripts_partners_e2e import (  # noqa: E402
     _CONCORDANCES,

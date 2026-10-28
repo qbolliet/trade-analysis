@@ -93,9 +93,9 @@ from scripts.download_comtrade import (
 )
 from statflows import ComtradeClient, UNSDClient
 # Modules de chargement/sauvegarde de données (xls/parquet)
-from macroforecast.storage import Loader as TableLoader, Saver as TableSaver
+from tradestat.storage import Loader as TableLoader, Saver as TableSaver
 # Module d'implémentation du traitement BACI
-from macroforecast.trade.processing import run_baci_passes
+from tradestat.trade.processing import run_baci_passes
 from scripts._run_report import script_runs, timestamp
 
 

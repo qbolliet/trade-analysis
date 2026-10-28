@@ -38,7 +38,7 @@ from kedro_pipeline.io.ducklake import (
 from kedro_pipeline.config import experiment_name, load_parameters
 from kedro_pipeline.io.serving import ServingCatalog
 from kedro_pipeline.steps.serving import publish_serving, source_tables
-from macroforecast.tracking import CapturingTracker, get_tracker
+from tradestat.tracking import CapturingTracker, get_tracker
 from scripts._run_report import RunScope, guarded_run, run_name
 
 # Logger

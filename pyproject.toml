@@ -1,7 +1,7 @@
 [project]
-name = "macroforecast"
+name = "tradestat"
 version = "0.1.0"
-description = "Macroeconomic forecasting pipeline"
+description = "International trade analysis toolkit"
 readme = "README.md"
 requires-python = ">=3.13,<3.15"
 dependencies = [
@@ -41,12 +41,12 @@ tracking = [
     # Métriques système (CPU, mémoire, disque, réseau) de l'onglet « System metrics »
     "psutil>=5.9",
 ]
-# Rapport HTML de run (figures Plotly, macroforecast.tracking.figures) : import
+# Rapport HTML de run (figures Plotly, tradestat.tracking.figures) : import
 # paresseux, sans plotly le rapport garde ses tables mais perd ses figures.
 reports = [
     "plotly>=5.24",
 ]
-# Score de Kantorovitch orienté (macroforecast.trade.aggregation.optimal_transport) :
+# Score de Kantorovitch orienté (tradestat.trade.aggregation.optimal_transport) :
 # dépendance lourde, non requise pour le reste du package (import paresseux,
 # ImportError explicite en son absence).
 optimal-transport = [
@@ -88,10 +88,10 @@ build-backend = "hatchling.build"
 [tool.hatch.build.targets.wheel]
 # Paquets construits : la méthodologie, le projet Kedro et les scripts transitoires,
 # cibles des entry points ci-dessus (« scripts » retiré à leur suppression)
-packages = ["macroforecast", "kedro_pipeline", "scripts"]
+packages = ["tradestat", "kedro_pipeline", "scripts"]
 
 [tool.kedro]
-# Projet Kedro à la racine du dépôt : paquet `kedro_pipeline` à côté de `macroforecast`
+# Projet Kedro à la racine du dépôt : paquet `kedro_pipeline` à côté de `tradestat`
 # (source_dir = "." évite un layout src/ qui casserait imports et entry points)
 package_name = "kedro_pipeline"
 project_name = "trade-analysis"

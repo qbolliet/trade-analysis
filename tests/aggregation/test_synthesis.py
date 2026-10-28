@@ -1,4 +1,4 @@
-"""Tests du runner de synthèse (``macroforecast.trade.aggregation.synthesis``).
+"""Tests du runner de synthèse (``tradestat.trade.aggregation.synthesis``).
 
 ``run_synthesis`` est une fonction pure : table de cellules → table longue de
 scores (S-2.4), diagnostics d'ajustement (S-2.5.c) et rapport (S-2.7). Les
@@ -14,8 +14,8 @@ import pandas as pd
 import pytest
 from scipy import stats
 
-from macroforecast.trade.aggregation.methods import MethodSpec
-from macroforecast.trade.aggregation.synthesis import (
+from tradestat.trade.aggregation.methods import MethodSpec
+from tradestat.trade.aggregation.synthesis import (
     CONSENSUS_PREFIX,
     GROUP_SENTINEL,
     ITEM_SENTINEL,
@@ -286,7 +286,7 @@ def test_group_seed_depends_on_random_state_and_group_only() -> None:
     """La graine d'un groupe dérive de ``random_state`` et de sa clé, jamais de l'exécution."""
     import pickle
 
-    from macroforecast.trade.aggregation.synthesis import _group_seed
+    from tradestat.trade.aggregation.synthesis import _group_seed
 
     config = SynthesisConfig(random_state=7)
     seed = _group_seed(config, ("A", 1), "by_product", "85411000")
@@ -321,7 +321,7 @@ def test_random_methods_do_not_depend_on_the_order_of_the_contexts(
 
 def test_group_seed_does_not_depend_on_the_type_of_the_key_values() -> None:
     """Un même groupe lu en int32, int64, float ou texte reçoit la même graine."""
-    from macroforecast.trade.aggregation.synthesis import _group_seed
+    from tradestat.trade.aggregation.synthesis import _group_seed
 
     config = SynthesisConfig(random_state=7)
     seeds = {

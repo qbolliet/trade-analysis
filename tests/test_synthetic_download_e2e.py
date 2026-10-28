@@ -61,7 +61,7 @@ def test_seed_then_baci_gate_and_reconciliation(
     ducklake_conn, synthetic_world, synthetic_reference, synthetic_section, tmp_path
 ) -> None:
     """Téléchargement fictif → registre complet → lecture SQL → BACI, sans adaptation des étapes aval."""
-    from macroforecast.trade.processing import BaciConfig, required_columns, run_baci
+    from tradestat.trade.processing import BaciConfig, required_columns, run_baci
 
     conn, alias = ducklake_conn
     client = SyntheticComtradeClient(

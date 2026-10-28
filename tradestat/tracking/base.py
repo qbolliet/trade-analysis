@@ -638,7 +638,7 @@ def run_params(
     context: Optional[Mapping[str, Any]] = None,
     *,
     prefix: str = "config",
-    package: str = "macroforecast",
+    package: str = "tradestat",
 ) -> Dict[str, str]:
     """Assemble the parameters describing a pipeline run.
 
@@ -655,7 +655,7 @@ def run_params(
             logs the configuration and the version alone.
         prefix: Prefix given to the configuration keys.
         package: Distribution whose version is recorded as
-            ``macroforecast_version``. Absent from a non-installed source tree,
+            ``tradestat_version``. Absent from a non-installed source tree,
             in which case ``"unknown"`` is recorded.
 
     Returns:
@@ -666,7 +666,7 @@ def run_params(
         ...     {"cook_factor": 4.0}, {"n_rows": 7}, package="not-installed")
         >>> params["config.cook_factor"], params["n_rows"]
         ('4.0', '7')
-        >>> params["macroforecast_version"]
+        >>> params["tradestat_version"]
         'unknown'
     """
     # Version du paquet : absente d'une arborescence non installée
@@ -679,6 +679,6 @@ def run_params(
     params = flatten_params(config, prefix=prefix)
     # Contexte de l'exécution, complété de la version du paquet
     params.update(
-        flatten_params({**dict(context or {}), "macroforecast_version": version})
+        flatten_params({**dict(context or {}), "tradestat_version": version})
     )
     return params

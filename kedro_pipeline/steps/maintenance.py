@@ -41,7 +41,7 @@ from kedro_pipeline.io.cursors import oldest_cursors
 from kedro_pipeline.io.ducklake import DuckLakeLocation
 from kedro_pipeline.io.freshness import FreshnessRegistry, utc_now
 from kedro_pipeline.steps.result import StepResult, capturing, failure_message
-from macroforecast.tracking import RunTracker
+from tradestat.tracking import RunTracker
 
 # Initialisation du logger
 logger = logging.getLogger(__name__)

@@ -1,4 +1,4 @@
-"""Tests du prétraitement (``macroforecast.trade.aggregation.preprocessing``).
+"""Tests du prétraitement (``tradestat.trade.aggregation.preprocessing``).
 
 Polarité, winsorisation, normalisations (rang, médiane/MAD) et diagnostics de
 corrélation (KMO, Bartlett). I-11 est corrigé : ``Winsorizer(quantile=None)``
@@ -10,8 +10,8 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from macroforecast.trade.aggregation.base import AggregationConfig, split_frame
-from macroforecast.trade.aggregation.preprocessing import (
+from tradestat.trade.aggregation.base import AggregationConfig, split_frame
+from tradestat.trade.aggregation.preprocessing import (
     GaussianQuantileScaler,
     MedianMadScaler,
     PolarityOrienter,
@@ -212,7 +212,7 @@ def test_split_frame_propagates_missing_values(df_metrics_toy) -> None:
     assert np.isnan(X).sum() == 3
     assert len(index) == 40
 
-    from macroforecast.trade.aggregation.estimators import WeightedAggregator
+    from tradestat.trade.aggregation.estimators import WeightedAggregator
 
     with pytest.raises(ValueError):
         WeightedAggregator(weighting="equal").fit(X)

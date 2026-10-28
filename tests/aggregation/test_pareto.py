@@ -1,4 +1,4 @@
-"""Tests de la dominance de Pareto (``macroforecast.trade.aggregation.pareto``).
+"""Tests de la dominance de Pareto (``tradestat.trade.aggregation.pareto``).
 
 Couvre les invariants testables de S-1.3, les propriétés mathématiques de
 l'ordre partiel, et l'équivalence exacte entre les implémentations de
@@ -14,7 +14,7 @@ import numpy as np
 import pytest
 from sklearn.base import clone
 
-from macroforecast.trade.aggregation.pareto import (
+from tradestat.trade.aggregation.pareto import (
     MetricReducer,
     ParetoScorer,
     dominance_count,

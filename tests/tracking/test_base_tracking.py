@@ -7,7 +7,7 @@ from dataclasses import dataclass
 import pandas as pd
 import pytest
 
-from macroforecast.tracking import (
+from tradestat.tracking import (
     NULL_TRACKER,
     CapturingTracker,
     MlflowTracker,

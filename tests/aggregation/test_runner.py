@@ -1,4 +1,4 @@
-"""Tests de l'orchestration (``macroforecast.trade.aggregation.runner``).
+"""Tests de l'orchestration (``tradestat.trade.aggregation.runner``).
 
 I-01 est corrigé : ``run_aggregation`` oriente ``X`` une seule fois en tête et
 utilise cette matrice pour le front, le comptage et le rapport de cohérence.
@@ -10,9 +10,9 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from macroforecast.trade.aggregation.base import AggregationConfig
-from macroforecast.trade.aggregation.pareto import pareto_front
-from macroforecast.trade.aggregation.runner import default_pipeline, run_aggregation
+from tradestat.trade.aggregation.base import AggregationConfig
+from tradestat.trade.aggregation.pareto import pareto_front
+from tradestat.trade.aggregation.runner import default_pipeline, run_aggregation
 
 
 @pytest.fixture

@@ -3,12 +3,12 @@
 Implements §5 of the methodological note: once a weight vector is available
 (or not — MPI needs none), how the metrics are combined into a single score.
 This is an independent question from *how the weights were obtained*
-(§4 / :mod:`~macroforecast.trade.aggregation.weights`): it is about how far a
+(§4 / :mod:`~tradestat.trade.aggregation.weights`): it is about how far a
 favourable metric can buy back an unfavourable one.
 
 Every function shares the signature ``f(X, weights=None, **params) ->
 np.ndarray`` — a vector of shape ``(n,)``, higher meaning more vulnerable —
-so that :mod:`~macroforecast.trade.aggregation.estimators` can dispatch on a
+so that :mod:`~tradestat.trade.aggregation.estimators` can dispatch on a
 name through a plain registry.
 
 The family spans the whole compensation spectrum: fully compensatory
@@ -659,7 +659,7 @@ def cone_quantile_bounds(
         X: Metric matrix of shape ``(n, d)``, positive polarity. Rank-based,
             so any monotone per-column transformation leaves it unchanged.
         weight_draws: Simplex sample of shape ``(T, d)``, e.g. from
-            :func:`~macroforecast.trade.aggregation.weights.dirichlet_weights`.
+            :func:`~tradestat.trade.aggregation.weights.dirichlet_weights`.
         block_size: Number of draws scored at once; caps the temporary
             ``(n, block_size)`` projection matrix.
 

@@ -31,7 +31,7 @@ from tests.sqlite_catalog import (  # noqa: E402
 )
 from kedro_pipeline.io.cursors import StepCursors  # noqa: E402
 from kedro_pipeline.io.freshness import ForceSpec, FreshnessRegistry  # noqa: E402
-from macroforecast.trade.aggregation import (  # noqa: E402
+from tradestat.trade.aggregation import (  # noqa: E402
     CoherenceConfig,
     MethodSpec,
     SynthesisConfig,

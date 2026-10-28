@@ -1,7 +1,7 @@
 """Partner-metrics step: concentration of the trading partners of each reporter.
 
 Computes the partner vulnerability metrics (HHI, CDI2, CDI3 — see
-``macroforecast.trade.vulnerabilities``) for every flow direction of ``FLOWS``
+``tradestat.trade.vulnerabilities``) for every flow direction of ``FLOWS``
 (root of the ``vulnerabilities`` parameters: ``import``, ``export``) and writes
 them into a single table whose key carries the nomenclature
 (``classification``). Two families of rows live in it:
@@ -126,22 +126,22 @@ from kedro_pipeline.steps.result import (
 )
 # Module de suivi d'exécution (objet nul par défaut)
 from kedro_pipeline.io.tracking import flow_run_metrics
-from macroforecast.tracking import NULL_TRACKER
+from tradestat.tracking import NULL_TRACKER
 # Module de calcul des indicateurs
-from macroforecast.trade.vulnerabilities import (
+from tradestat.trade.vulnerabilities import (
     DEFAULT_METRIC_CLASSES,
     VulnerabilityConfig,
     VulnerabilityMetric,
     VulnerabilityReport,
     flow_code_map,
 )
-from macroforecast.trade.vulnerabilities.runner import (
+from tradestat.trade.vulnerabilities.runner import (
     read_previous_result,
     read_source_flows,
     run_vulnerabilities_on_frame,
 )
 # Conversion des flux vers un millésime antérieur (mêmes règles que BACI)
-from macroforecast.trade.processing import (
+from tradestat.trade.processing import (
     build_conversion_map,
     conversion_preimage,
     harmonize_partner_flows,
@@ -430,7 +430,7 @@ def prepare_vintage_flows(
     The single path of both kinds of rows. Each row is declared in the HS
     vintage in force at its period; the rows are grouped by that source
     vintage and converted into ``target_vintage``
-    (:func:`~macroforecast.trade.processing.harmonize_partner_flows`):
+    (:func:`~tradestat.trade.processing.harmonize_partner_flows`):
 
     - rows in force (``target_vintage=None``): each group is converted into
       its own vintage, i.e. left untouched, and the classification is the one
@@ -1049,7 +1049,7 @@ def load_partner_concordances(
     Returns:
         Mapping ``(source, target) -> table``.
     """
-    from macroforecast.storage import Loader as TableLoader, Saver as TableSaver
+    from tradestat.storage import Loader as TableLoader, Saver as TableSaver
 
     if client_factory is None:
         from statflows import UNSDClient as client_factory

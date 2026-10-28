@@ -4,9 +4,9 @@ COMTRADE declarations carry the HS vintage in force at the time of the
 declaration (``H4`` for HS2012, ``H5`` for HS2017, ``H6`` for HS2022), so any
 panel spanning more than a few years mixes several nomenclatures. Comparing a
 2019 flow to a 2023 flow on the same six-digit code is only meaningful once both
-sit on the same vintage classification system : :func:`~macroforecast.trade.processing.baci.run_baci`
+sit on the same vintage classification system : :func:`~tradestat.trade.processing.baci.run_baci`
 therefore refuses a heterogeneous input (see
-:func:`~macroforecast.trade.processing.baci._assert_homogeneous_classification`)
+:func:`~tradestat.trade.processing.baci._assert_homogeneous_classification`)
 and expects the caller to have run :class:`HsHarmonizer` upstream, on the raw
 fact table.
 
@@ -23,7 +23,7 @@ the key ``(reporter, partner, flow, product, period, …)`` is no longer unique,
 the table *must* be re-aggregated — and the rule differs across measures. Values
 and weights are additive, quantities are not: they are summed per unit code, and
 the unit carrying the largest cumulated quantity is kept. That rule lives in
-:func:`~macroforecast.trade.processing.aggregation.aggregate_measures`, shared
+:func:`~tradestat.trade.processing.aggregation.aggregate_measures`, shared
 with the mirror-flow construction of ``baci.py``.
 """
 # Importation des modules

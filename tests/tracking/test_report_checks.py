@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from macroforecast.tracking.report import (
+from tradestat.tracking.report import (
     Check,
     CheckResult,
     checks_for_node,

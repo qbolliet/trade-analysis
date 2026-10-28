@@ -31,7 +31,7 @@ import pandas as pd
 
 # Modules du package
 from kedro_pipeline.io.tracking import active_run_id, vintage_step
-from macroforecast.tracking import ActiveRunTracker
+from tradestat.tracking import ActiveRunTracker
 
 # Initialisation du logger
 logger = logging.getLogger(__name__)

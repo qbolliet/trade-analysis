@@ -132,7 +132,7 @@ class ComtradeSchema:
             :func:`_assert_homogeneous_classification` to check that
             ``df_comtrade`` carries a single vintage before any estimation runs
             — :func:`run_baci` never converts between vintages itself (see
-            :class:`macroforecast.trade.processing.classification.HsHarmonizer`).
+            :class:`tradestat.trade.processing.classification.HsHarmonizer`).
         dist_iso_o_col: CEPII distance column with the origin ISO-3 code.
         dist_iso_d_col: CEPII distance column with the destination ISO-3 code.
         distance_column: CEPII distance column to use (population-weighted).
@@ -310,7 +310,7 @@ def build_gravity_data(
 
     Args:
         df_dist: Raw ``dist_cepii`` table, already loaded (e.g. via
-            :class:`macroforecast.storage.Loader`).
+            :class:`tradestat.storage.Loader`).
         df_geo: Raw ``geo_cepii`` table, already loaded.
         dist_iso_o_col: Distance-table column with the origin ISO-3 code.
         dist_iso_d_col: Distance-table column with the destination ISO-3 code.
@@ -1854,7 +1854,7 @@ class GravityFit:
     # Construction depuis une solution des moindres carrés pondérés
     @classmethod
     def from_solution(cls, solution: WlsSolution) -> "GravityFit":
-        """Wrap a :class:`~macroforecast.trade.processing.streaming.WlsSolution`.
+        """Wrap a :class:`~tradestat.trade.processing.streaming.WlsSolution`.
 
         Args:
             solution: Weighted least-squares solution.
@@ -1903,9 +1903,9 @@ class CifGravityModel:
 
     1. ``phase="fit"`` (:meth:`partial_fit` then :meth:`finalize`): first fit,
        from the QR factor of ``[√w·X | √w·y]``
-       (:class:`~macroforecast.trade.processing.streaming.WeightedLeastSquaresAccumulator`);
+       (:class:`~tradestat.trade.processing.streaming.WeightedLeastSquaresAccumulator`);
     2. ``phase="cook"``: Cook's distance of each observation from the first fit
-       (:class:`~macroforecast.trade.processing.streaming.CookFilter`), cut-off
+       (:class:`~tradestat.trade.processing.streaming.CookFilter`), cut-off
        ``cook_factor / N``; the kept observations feed the final fit. The final
        fit replaces the first only when more observations than design columns
        remain and at least one was dropped.
@@ -2695,7 +2695,7 @@ class ReportingQualityModel:
         The ANOVA ``RD ~ exporter + importer + year`` (product absorbed) is pooled
         over **every** chunk, in two passes over the same chunks:
         ``phase="fit"`` accumulates the cross-products and the per-product sums
-        (:class:`~macroforecast.trade.processing.streaming.AbsorbedWLSAccumulator`),
+        (:class:`~tradestat.trade.processing.streaming.AbsorbedWLSAccumulator`),
         :meth:`finalize` solves the coefficients, ``phase="cov"`` accumulates the
         robust meat and the second :meth:`finalize` derives ``σ̂``.
 
@@ -3715,7 +3715,7 @@ def _assert_homogeneous_classification(
 
     :func:`run_baci` only checks homogeneity — it never converts between HS
     vintages, that conversion belongs to
-    :class:`macroforecast.trade.processing.classification.HsHarmonizer`, run
+    :class:`tradestat.trade.processing.classification.HsHarmonizer`, run
     upstream by the caller.
 
     Args:
@@ -3746,7 +3746,7 @@ def _assert_homogeneous_classification(
     if len(codes) > 1:
         raise ValueError(
             f"Heterogeneous HS classifications found in df_comtrade: {codes}. "
-            "Run macroforecast.trade.processing.classification.HsHarmonizer "
+            "Run tradestat.trade.processing.classification.HsHarmonizer "
             "first to convert every observation to a single vintage (the "
             "oldest one is unambiguous)."
         )

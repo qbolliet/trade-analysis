@@ -26,7 +26,7 @@ from kedro_pipeline.steps.baci import (
     eligible_years,
     work_root,
 )
-from macroforecast.trade.processing import (
+from tradestat.trade.processing import (
     BaciConfig,
     HsHarmonizer,
     run_baci,
@@ -416,7 +416,7 @@ def test_national_tariff_lines_are_aggregated_to_hs6() -> None:
     import duckdb
 
     from kedro_pipeline.steps.baci import read_comtrade_year
-    from macroforecast.trade.processing import HsHarmonizer
+    from tradestat.trade.processing import HsHarmonizer
 
     conn = duckdb.connect()
     conn.execute("ATTACH ':memory:' AS src")

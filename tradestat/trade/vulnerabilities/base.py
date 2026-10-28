@@ -8,13 +8,13 @@ between the reporter country and its trading partners.
 All metrics share a uniform, backend-agnostic API (narwhals) so that new metrics
 can be added with minimal boilerplate and the whole registry can be iterated over
 a dataset uniformly. :class:`VulnerabilityMetric` is the abstract parent; concrete
-metrics live in :mod:`macroforecast.trade.vulnerabilities.metrics`.
+metrics live in :mod:`tradestat.trade.vulnerabilities.metrics`.
 
 A second, sibling family scores the *world trade graph of a product* rather than
 the sourcing of one declaring country: :class:`NetworkVulnerabilityMetric` and
 :class:`NetworkVulnerabilityConfig`, whose cell is a
 ``nomenclature x product x year`` triple over the BACI reconciled flows, with
-concrete metrics in :mod:`macroforecast.trade.vulnerabilities.network_metrics`.
+concrete metrics in :mod:`tradestat.trade.vulnerabilities.network_metrics`.
 The two families share no partner-aggregate machinery, only the
 :class:`ScoreConfig` fields the metric-agnostic diagnostics read.
 
@@ -390,7 +390,7 @@ class _DirectedMetric(ABC):
             ``"<name>/<flow>"``.
 
         Examples:
-            >>> from macroforecast.trade.vulnerabilities import SinglePointOfFailureRisk
+            >>> from tradestat.trade.vulnerabilities import SinglePointOfFailureRisk
             >>> SinglePointOfFailureRisk(flow="export").fingerprint_key
             'SPOF/export'
         """
@@ -406,7 +406,7 @@ class _DirectedMetric(ABC):
             hyperparameter.
 
         Examples:
-            >>> from macroforecast.trade.vulnerabilities import HerfindahlHirschmanIndex
+            >>> from tradestat.trade.vulnerabilities import HerfindahlHirschmanIndex
             >>> params = HerfindahlHirschmanIndex(flow="export").fingerprint_params()
             >>> params["flow"], "artifact_top_n" in params
             ('export', False)
@@ -461,7 +461,7 @@ class VulnerabilityMetric(_DirectedMetric):
             for the metrics that do not declare it.
 
     Examples:
-        >>> from macroforecast.trade.vulnerabilities import HerfindahlHirschmanIndex
+        >>> from tradestat.trade.vulnerabilities import HerfindahlHirschmanIndex
         >>> metric = HerfindahlHirschmanIndex(flow="export")
         >>> metric.own_flow_code, metric.other_flow_code, metric.fingerprint_key
         (2, 1, 'HHI/export')
@@ -826,7 +826,7 @@ class NetworkVulnerabilityMetric(_DirectedMetric):
             ``effective_suppliers_median`` diagnostic.
 
     Examples:
-        >>> from macroforecast.trade.vulnerabilities import WorldExportConcentration
+        >>> from tradestat.trade.vulnerabilities import WorldExportConcentration
         >>> metric = WorldExportConcentration(flow="export")
         >>> metric.counterpart_col, metric.exposed_col
         ('importer', 'exporter')
@@ -853,7 +853,7 @@ class NetworkVulnerabilityMetric(_DirectedMetric):
             the importers the exposed side; at the export, the reverse.
 
         Examples:
-            >>> from macroforecast.trade.vulnerabilities import WorldExportConcentration
+            >>> from tradestat.trade.vulnerabilities import WorldExportConcentration
             >>> WorldExportConcentration()._roles()
             ('exporter', 'importer')
         """

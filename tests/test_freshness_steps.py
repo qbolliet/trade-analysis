@@ -26,8 +26,8 @@ from kedro_pipeline.io.freshness import (
     UpstreamMark,
     qualifiers_to_compute,
 )
-from macroforecast.trade.processing import DEFAULT_CONFIG as BACI_DEFAULT_CONFIG
-from macroforecast.trade.vulnerabilities import (
+from tradestat.trade.processing import DEFAULT_CONFIG as BACI_DEFAULT_CONFIG
+from tradestat.trade.vulnerabilities import (
     NetworkVulnerabilityConfig,
     VulnerabilityConfig,
 )

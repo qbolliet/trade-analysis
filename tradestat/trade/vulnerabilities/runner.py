@@ -161,7 +161,7 @@ def _metrics_for_flows(metrics: Sequence[_Metric], flows: Sequence[str]) -> List
         ValueError: If ``flows`` is empty or names an unknown direction.
 
     Examples:
-        >>> from macroforecast.trade.vulnerabilities import HerfindahlHirschmanIndex
+        >>> from tradestat.trade.vulnerabilities import HerfindahlHirschmanIndex
         >>> both = [HerfindahlHirschmanIndex(flow="import"), HerfindahlHirschmanIndex(flow="export")]
         >>> [m.flow for m in _metrics_for_flows(both, ["export"])]
         ['export']
@@ -185,7 +185,7 @@ def _unique_by_name(metrics: Sequence[_Metric]) -> List[_Metric]:
         The first instance of each name, in registry order.
 
     Examples:
-        >>> from macroforecast.trade.vulnerabilities import HerfindahlHirschmanIndex
+        >>> from tradestat.trade.vulnerabilities import HerfindahlHirschmanIndex
         >>> both = [HerfindahlHirschmanIndex(flow="import"), HerfindahlHirschmanIndex(flow="export")]
         >>> [m.flow for m in _unique_by_name(both)]
         ['import']
@@ -210,7 +210,7 @@ def _check_required_columns(data: nw.DataFrame, metrics: Sequence[Any]) -> None:
 
     Examples:
         >>> import pandas as pd
-        >>> from macroforecast.trade.vulnerabilities import HerfindahlHirschmanIndex
+        >>> from tradestat.trade.vulnerabilities import HerfindahlHirschmanIndex
         >>> frame = nw.from_native(pd.DataFrame({"partner": ["CN"]}), eager_only=True)
         >>> _check_required_columns(frame, [HerfindahlHirschmanIndex()])  # doctest: +ELLIPSIS
         Traceback (most recent call last):
@@ -278,7 +278,7 @@ def compute_vulnerabilities(
         Tuple ``(df_result, report)``: the scores — ``config.key_columns``, one
         column per metric, and one boolean ``{metric}_ALERT`` column flagging the
         cells above the metric's alert threshold (see
-        :func:`~macroforecast.trade.vulnerabilities.diagnostics.append_alert_flags`)
+        :func:`~tradestat.trade.vulnerabilities.diagnostics.append_alert_flags`)
         — and the :class:`VulnerabilityReport` of the run, one sub-report per
         direction in ``report.flows`` (``created`` is left ``False``; the
         caller sets it once the result is persisted).
@@ -290,7 +290,7 @@ def compute_vulnerabilities(
 
     Examples:
         >>> import pandas as pd
-        >>> from macroforecast.trade.vulnerabilities import (
+        >>> from tradestat.trade.vulnerabilities import (
         ...     HerfindahlHirschmanIndex, VulnerabilityConfig)
         >>> df = pd.DataFrame({
         ...     "flow": [1, 1, 1, 2, 2], "partner": ["CN", "US", "WORLD", "CN", "WORLD"],
@@ -708,7 +708,7 @@ def run_vulnerabilities(
             recomputes the whole fact table (initialisation, notebooks); an
             empty collection is a no-op (nothing is read or written).
         metrics: Metric instances to apply. Defaults to
-            :func:`~macroforecast.trade.vulnerabilities.metrics.default_metrics`
+            :func:`~tradestat.trade.vulnerabilities.metrics.default_metrics`
             instantiated for ``flows``; explicit instances of another direction
             are ignored.
         config: Column and partner-code conventions.
@@ -853,7 +853,7 @@ def run_vulnerabilities_on_frame(
         result_catalog_alias: Alias of the result catalog.
         result_schema: Schema to create or upsert the scores into.
         metrics: Metric instances to apply. Defaults to
-            :func:`~macroforecast.trade.vulnerabilities.metrics.default_metrics`
+            :func:`~tradestat.trade.vulnerabilities.metrics.default_metrics`
             instantiated for ``flows``.
         config: Column and partner-code conventions.
         flows: Directions to compute.
@@ -988,7 +988,7 @@ def compute_network_vulnerabilities(
 
     What differs from the partner family is the coherence check — the shape of
     the graphs
-    (:class:`~macroforecast.trade.vulnerabilities.diagnostics.GraphQualityReport`)
+    (:class:`~tradestat.trade.vulnerabilities.diagnostics.GraphQualityReport`)
     rather than the coherence of partner aggregates, which a BACI flow table
     does not carry. It does not depend on the direction and is computed once.
 
@@ -1014,7 +1014,7 @@ def compute_network_vulnerabilities(
         Tuple ``(df_result, report)``: the scores — ``config.key_columns``, one
         column per metric, one boolean ``{metric}_ALERT`` column per metric
         (see
-        :func:`~macroforecast.trade.vulnerabilities.diagnostics.append_alert_flags`)
+        :func:`~tradestat.trade.vulnerabilities.diagnostics.append_alert_flags`)
         and the ``flow_col`` column — and the
         :class:`NetworkVulnerabilityReport` of the run, one sub-report per
         direction in ``report.flows`` (``created`` is left ``False``; the
@@ -1027,7 +1027,7 @@ def compute_network_vulnerabilities(
 
     Examples:
         >>> import pandas as pd
-        >>> from macroforecast.trade.vulnerabilities import (
+        >>> from tradestat.trade.vulnerabilities import (
         ...     NetworkVulnerabilityConfig, WorldExportConcentration)
         >>> df = pd.DataFrame({
         ...     "product": ["01", "01"],
@@ -1445,7 +1445,7 @@ def run_network_vulnerabilities(
         result_catalog_alias: Alias of the result catalog. Required whenever
             ``result_conn`` is supplied; defaults to ``source_catalog_alias``.
         metrics: Metric instances to apply. Defaults to
-            :func:`~macroforecast.trade.vulnerabilities.network_metrics.default_network_metrics`
+            :func:`~tradestat.trade.vulnerabilities.network_metrics.default_network_metrics`
             instantiated for ``flows``; explicit instances of another direction
             are ignored.
         config: Column conventions and thresholds.

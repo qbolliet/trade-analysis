@@ -1,6 +1,6 @@
 """Coherence runner: how much do the metrics, and the syntheses, agree?
 
-:func:`~macroforecast.trade.aggregation.synthesis.run_synthesis` produces one
+:func:`~tradestat.trade.aggregation.synthesis.run_synthesis` produces one
 score and one rank per cell and per method (S-2.4); it never says whether those
 methods rank the cells alike, nor whether the input metrics measure the same
 thing. This module answers both questions and writes the answers into the long
@@ -23,7 +23,7 @@ ellipticity diagnostic and the method clusters.
 tracker, so it becomes a Kedro node without a rewrite.
 
 Not to be confused with
-:class:`~macroforecast.trade.aggregation.diagnostics.CoherenceReport`, which
+:class:`~tradestat.trade.aggregation.diagnostics.CoherenceReport`, which
 summarises **one** group in memory; :class:`CoherenceRunReport` summarises a
 whole run and only carries the aggregates MLflow needs (S-2.7).
 """
@@ -276,7 +276,7 @@ class _GroupData:
         """Return the exact Pareto front of the oriented matrix.
 
         Computed on first access by
-        :func:`~macroforecast.trade.aggregation.pareto.pareto_front_sweep`
+        :func:`~tradestat.trade.aggregation.pareto.pareto_front_sweep`
         (linear in memory, D-11) and cached: a group whose methods were all
         skipped never pays for it.
 
@@ -550,7 +550,7 @@ def _axis1_share(X: np.ndarray) -> float:
     """Return ``lambda_1 / d``, the variance share of the first principal axis.
 
     Computed on the correlation matrix of the standardised matrix ``Z``, the
-    definition :func:`~macroforecast.trade.aggregation.weights.auto_weights`
+    definition :func:`~tradestat.trade.aggregation.weights.auto_weights`
     uses, so that the ``metrics`` family and the ``fit`` family report the same
     number on the same group.
 
@@ -1126,7 +1126,7 @@ def run_coherence(
     """Measure the coherence of the metrics and of the syntheses (S-1.7).
 
     The loop runs context -> level -> group, the same groups
-    :func:`~macroforecast.trade.aggregation.synthesis.run_synthesis` scored.
+    :func:`~tradestat.trade.aggregation.synthesis.run_synthesis` scored.
     Each group is extracted **once**: one oriented matrix and one Pareto front
     serve both the ``metrics`` family (S-2.5.a) and the ``methods`` family
     (S-2.5.b). The scores are read from ``df_scores`` through a single pivot
@@ -1159,8 +1159,8 @@ def run_coherence(
         AssertionError: If the primary key of S-2.6 is not unique.
 
     Examples:
-        >>> from macroforecast.trade.aggregation.methods import MethodSpec
-        >>> from macroforecast.trade.aggregation.synthesis import run_synthesis
+        >>> from tradestat.trade.aggregation.methods import MethodSpec
+        >>> from tradestat.trade.aggregation.synthesis import run_synthesis
         >>> df = pd.DataFrame({
         ...     "freq": ["A"] * 4, "flow": [1] * 4,
         ...     "indicators": ["V"] * 4, "TIME_PERIOD": ["2024"] * 4,
@@ -1467,7 +1467,7 @@ def _diagnostics_frame(
 
     Returns:
         A frame carrying the context columns then the columns of
-        :data:`~macroforecast.trade.aggregation.synthesis.DIAGNOSTIC_COLUMNS`,
+        :data:`~tradestat.trade.aggregation.synthesis.DIAGNOSTIC_COLUMNS`,
         ``value`` as a float and ``n`` as a nullable integer.
     """
     columns = _diagnostic_columns(config)

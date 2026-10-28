@@ -14,7 +14,7 @@ from kedro_pipeline.parallel import (
     resolve_n_jobs,
     serialisable_exception,
 )
-from macroforecast.tracking import CapturingTracker, RecordingTracker
+from tradestat.tracking import CapturingTracker, RecordingTracker
 
 
 # ──────────────────────────────────────────────────────────────────────

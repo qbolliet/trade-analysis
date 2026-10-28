@@ -23,8 +23,8 @@ import statsmodels.api as sm
 from statsmodels.stats.outliers_influence import OLSInfluence
 
 from baci_synthetic import cepii_tables, chunks_by_year, comtrade_declarations
-from macroforecast.tracking import CapturingTracker
-from macroforecast.trade.processing import (
+from tradestat.tracking import CapturingTracker
+from tradestat.trade.processing import (
     BaciConfig,
     CifGravityModel,
     Fobizer,
@@ -39,7 +39,7 @@ from macroforecast.trade.processing import (
     world_median_unit_values,
     world_median_unit_values_sql,
 )
-from macroforecast.trade.processing.baci import _ls_mean_to_sigma
+from tradestat.trade.processing.baci import _ls_mean_to_sigma
 
 RTOL = 1e-8
 KEYS = ["exporter", "importer", "product", "year"]

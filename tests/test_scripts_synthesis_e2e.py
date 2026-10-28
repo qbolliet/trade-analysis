@@ -21,8 +21,8 @@ from scripts.compute_synthetic_scores import (  # noqa: E402
     build_source_query,
     run_from_connections,
 )
-from macroforecast.trade.aggregation import MethodSpec, SynthesisConfig  # noqa: E402
-from macroforecast.trade.aggregation.synthesis import score_columns  # noqa: E402
+from tradestat.trade.aggregation import MethodSpec, SynthesisConfig  # noqa: E402
+from tradestat.trade.aggregation.synthesis import score_columns  # noqa: E402
 
 
 # ──────────────────────────────────────────────────────────────────────

@@ -22,7 +22,7 @@ from kedro_pipeline.io.freshness import (
     mark_pending,
     parse_instant,
 )
-from macroforecast.trade.aggregation import MethodSpec, SynthesisConfig
+from tradestat.trade.aggregation import MethodSpec, SynthesisConfig
 from scripts.compute_synthetic_scores import (
     CONSENSUS_FINGERPRINT,
     INPUTS_FINGERPRINT,

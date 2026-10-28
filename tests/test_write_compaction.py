@@ -13,7 +13,7 @@ from pathlib import Path
 import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
-SOURCES = ("kedro_pipeline", "macroforecast", "scripts", "tools")
+SOURCES = ("kedro_pipeline", "tradestat", "scripts", "tools")
 
 
 def _calls(name: str):

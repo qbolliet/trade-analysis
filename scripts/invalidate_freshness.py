@@ -65,7 +65,7 @@ from kedro_pipeline.io.freshness import (
     split_qualified,
 )
 # Métriques calculées par les étapes de vulnérabilité
-from macroforecast.trade.vulnerabilities import (
+from tradestat.trade.vulnerabilities import (
     DEFAULT_METRIC_CLASSES,
     DEFAULT_NETWORK_METRIC_CLASSES,
     FLOW_NAMES,

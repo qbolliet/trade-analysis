@@ -1,4 +1,4 @@
-"""Tests du transport optimal (``macroforecast.trade.aggregation.optimal_transport``).
+"""Tests du transport optimal (``tradestat.trade.aggregation.optimal_transport``).
 
 La grille de référence est testable sans ``jax`` ; le solveur de Sinkhorn est
 ignoré proprement en son absence (marqueur ``requires_ott``). Les tests de
@@ -17,7 +17,7 @@ import numpy as np
 import pytest
 from scipy import stats
 
-from macroforecast.trade.aggregation.optimal_transport import (
+from tradestat.trade.aggregation.optimal_transport import (
     OrientedKantorovichScorer,
     ellipticity_screen,
     spherical_uniform_grid,

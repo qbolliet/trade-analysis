@@ -14,8 +14,8 @@ from kedro_pipeline.io.tracking import (
     publish_run_report,
     run_metrics,
 )
-from macroforecast.tracking import CapturingTracker, MlflowTracker, NullTracker
-from macroforecast.tracking.report import Check, Section, Units, build_report
+from tradestat.tracking import CapturingTracker, MlflowTracker, NullTracker
+from tradestat.tracking.report import Check, Section, Units, build_report
 from scripts._run_report import RunScope, guarded_run, load_tracking_config, run_name
 
 PARAMS = {"REPORT": {"HTML": True, "PLOTLY_JS": "cdn", "MAX_DESCRIPTION_CHARS": 7500, "MAX_TABLE_ROWS": 5}}

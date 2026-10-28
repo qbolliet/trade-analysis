@@ -19,13 +19,13 @@ import narwhals as nw
 import numpy as np
 import pandas as pd
 
-from macroforecast.trade.processing import (
+from tradestat.trade.processing import (
     HsHarmonizer,
     conversion_preimage,
     harmonize_partner_flows,
 )
-from macroforecast.trade.vulnerabilities import VulnerabilityConfig, default_metrics
-from macroforecast.trade.vulnerabilities.runner import compute_vulnerabilities
+from tradestat.trade.vulnerabilities import VulnerabilityConfig, default_metrics
+from tradestat.trade.vulnerabilities.runner import compute_vulnerabilities
 from scripts.compute_trade_vulnerabilities import (
     annotate_nomenclature,
     historical_conversions,

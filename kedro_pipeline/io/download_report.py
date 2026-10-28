@@ -11,7 +11,7 @@ decision that belongs to the caller, hence this module rather than ``statflows``
 from collections import Counter
 from typing import Any, Dict, Optional
 # Modules du package
-from macroforecast.tracking import rekey_metrics
+from tradestat.tracking import rekey_metrics
 
 # Nombre maximal de types d'erreur détaillés dans le message
 _MAX_ERROR_TYPES = 3

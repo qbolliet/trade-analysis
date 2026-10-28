@@ -51,11 +51,11 @@ REVISION_KEY = "methodology_revision"
 
 # Modules partagés par les familles de métriques
 _VULNERABILITY_SHARED = (
-    "macroforecast/trade/vulnerabilities/base.py",
-    "macroforecast/trade/vulnerabilities/runner.py",
-    "macroforecast/trade/methodology.py",
+    "tradestat/trade/vulnerabilities/base.py",
+    "tradestat/trade/vulnerabilities/runner.py",
+    "tradestat/trade/methodology.py",
 )
-_NETWORK_SHARED = (*_VULNERABILITY_SHARED, "macroforecast/trade/vulnerabilities/graph.py")
+_NETWORK_SHARED = (*_VULNERABILITY_SHARED, "tradestat/trade/vulnerabilities/graph.py")
 _PARTNER_METRICS = {
     "HHI": "HerfindahlHirschmanIndex",
     "CDI2": "ConcentrationDependencyIndex2",
@@ -69,26 +69,26 @@ _NETWORK_METRICS = {
     "SPOF": "SinglePointOfFailureRisk",
     "SPOF_DECILE": "SinglePointOfFailureDecile",
 }
-_AGGREGATION = "macroforecast/trade/aggregation"
+_AGGREGATION = "tradestat/trade/aggregation"
 
 # Code dont dépendent les valeurs de chaque nom méthodologique (empreintes du même nom)
 METHODOLOGY_SOURCES: Mapping[str, Tuple[str, ...]] = {
     **{
-        name: (f"macroforecast/trade/vulnerabilities/metrics.py::{cls}", *_VULNERABILITY_SHARED)
+        name: (f"tradestat/trade/vulnerabilities/metrics.py::{cls}", *_VULNERABILITY_SHARED)
         for name, cls in _PARTNER_METRICS.items()
     },
     **{
-        name: (f"macroforecast/trade/vulnerabilities/network_metrics.py::{cls}", *_NETWORK_SHARED)
+        name: (f"tradestat/trade/vulnerabilities/network_metrics.py::{cls}", *_NETWORK_SHARED)
         for name, cls in _NETWORK_METRICS.items()
     },
     # Conversion des lignes historiques vers un millésime SH antérieur (partenaires)
-    "concordance": ("macroforecast/trade/processing/classification.py",),
+    "concordance": ("tradestat/trade/processing/classification.py",),
     # Redressement BACI : toutes les étapes sont couplées (une empreinte par millésime)
     "baci": (
-        "macroforecast/trade/processing/baci.py",
-        "macroforecast/trade/processing/streaming.py",
-        "macroforecast/trade/processing/aggregation.py",
-        "macroforecast/trade/processing/classification.py",
+        "tradestat/trade/processing/baci.py",
+        "tradestat/trade/processing/streaming.py",
+        "tradestat/trade/processing/aggregation.py",
+        "tradestat/trade/processing/classification.py",
     ),
     # Synthèse multicritère : toutes les méthodes et le consensus
     "synthesis": tuple(

@@ -4,7 +4,7 @@ Second step of the synthesis, modelled on :mod:`.synthesis`. It reads two
 tables of the ``vulnerabilities`` catalog — the combined metric table (same
 query as the synthesis) and the long table of the scores written by the
 synthesis (``SYNTHESIS.RESULT_SCHEMA``) — calls the pure runner
-``macroforecast.trade.aggregation.run_coherence`` and writes the long table of
+``tradestat.trade.aggregation.run_coherence`` and writes the long table of
 the coherence diagnostics into ``COHERENCE.RESULT_SCHEMA``
 (``synthesis_diagnostics``): ``metrics`` family (coherence of the metrics with
 each other) and ``methods`` family (coherence of the syntheses); the ``fit``
@@ -50,7 +50,7 @@ from statflows.core.download import _now
 import pandas as pd
 
 # Module de suivi d'exécution (objet nul par défaut)
-from macroforecast.tracking import (
+from tradestat.tracking import (
     ArtifactCollector,
     CapturingTracker,
     RecordingTracker,
@@ -58,7 +58,7 @@ from macroforecast.tracking import (
     rekey_metrics,
 )
 # Méthodologie de cohérence (fonction pure) et configuration de la synthèse
-from macroforecast.trade.aggregation import (
+from tradestat.trade.aggregation import (
     CoherenceConfig,
     CoherenceLevelReport,
     CoherenceRunReport,
@@ -105,7 +105,7 @@ from kedro_pipeline.io.freshness import (
     units_to_compute,
 )
 from kedro_pipeline.steps.result import StepResult, capturing
-from macroforecast.trade.methodology import methodology_params
+from tradestat.trade.methodology import methodology_params
 # Macros SQL de nomenclature (référentiel des millésimes)
 from kedro_pipeline.config import nomenclature_macros_sql
 
@@ -224,7 +224,7 @@ def compute_coherence_context(
     Returns:
         ``(df_diagnostics, report)`` of the context.
     """
-    from macroforecast.tracking import NULL_TRACKER
+    from tradestat.tracking import NULL_TRACKER
 
     return run_coherence(
         df_metrics,
@@ -482,13 +482,13 @@ def run_from_connections(
 
     Returns:
         Tuple ``(reports, failures, created_any, n_contexts)``: one
-        :class:`~macroforecast.trade.aggregation.CoherenceRunReport` per
+        :class:`~tradestat.trade.aggregation.CoherenceRunReport` per
         successfully analysed context, the per-context exceptions keyed by
         their string representation, whether the diagnostics schema was
         created on this call, and the number of contexts attempted.
     """
     if tracker is None:
-        from macroforecast.tracking import NULL_TRACKER
+        from tradestat.tracking import NULL_TRACKER
 
         tracker = NULL_TRACKER
     # Enregistrement de ce qui est journalisé : source des contrôles et du rapport de run
@@ -698,7 +698,7 @@ def run_incremental_coherence(
         ValueError: If several processes are requested without a ``reader``.
     """
     if tracker is None:
-        from macroforecast.tracking import NULL_TRACKER
+        from tradestat.tracking import NULL_TRACKER
 
         tracker = NULL_TRACKER
     tracker = CapturingTracker(tracker)

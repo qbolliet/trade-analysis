@@ -14,7 +14,7 @@ import pytest
 from kedro_pipeline.io.tracking import build_node_report, node_unit_runs
 from kedro_pipeline.pipelines._common import NodeReporting, finish_step
 from kedro_pipeline.steps.result import StepResult
-from macroforecast.tracking import CapturingTracker
+from tradestat.tracking import CapturingTracker
 
 TRACKING = {
     "CHECKS": {
@@ -87,7 +87,7 @@ def test_the_report_is_published_after_the_registries_and_before_the_failure() -
 
 
 def test_every_baci_report_field_lands_in_a_pd13_section() -> None:
-    from macroforecast.trade.processing.baci import BaciReport
+    from tradestat.trade.processing.baci import BaciReport
     from kedro_pipeline.steps.baci import BACI_REPORT_SECTIONS, baci_section_metrics
 
     report = BaciReport(flows=3, regime_country_years=2, total_reconciled_value=1.5)
@@ -156,7 +156,7 @@ def test_every_reporting_node_reads_the_tracking_parameters() -> None:
 
 
 def test_stream_sends_every_query_in_batches_and_flushes_the_remainder() -> None:
-    from macroforecast.tracking import CapturingTracker, RecordingTracker, log_metrics_series
+    from tradestat.tracking import CapturingTracker, RecordingTracker, log_metrics_series
 
     # Le suivi groupé conserve chaque point à son pas
     recorder = RecordingTracker()

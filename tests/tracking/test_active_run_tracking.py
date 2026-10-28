@@ -22,7 +22,7 @@ from kedro_pipeline.io.tracking import (  # noqa: E402
     build_tracker,
     close_stale_runs,
 )
-from macroforecast.tracking import NULL_TRACKER, ActiveRunTracker  # noqa: E402
+from tradestat.tracking import NULL_TRACKER, ActiveRunTracker  # noqa: E402
 
 
 @pytest.fixture

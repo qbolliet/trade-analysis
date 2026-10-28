@@ -8,112 +8,112 @@
 #     sur les valeurs) ne met à jour que code_hash.
 CDI2:
   revision: 0
-  code_hash: 1215f487907954e2
+  code_hash: 1edfda5ec5379727
   sources:
-  - macroforecast/trade/vulnerabilities/metrics.py::ConcentrationDependencyIndex2
-  - macroforecast/trade/vulnerabilities/base.py
-  - macroforecast/trade/vulnerabilities/runner.py
-  - macroforecast/trade/methodology.py
+  - tradestat/trade/vulnerabilities/metrics.py::ConcentrationDependencyIndex2
+  - tradestat/trade/vulnerabilities/base.py
+  - tradestat/trade/vulnerabilities/runner.py
+  - tradestat/trade/methodology.py
 CDI3:
   revision: 0
-  code_hash: 2be57489138aa6ef
+  code_hash: 9775fe8082dc1e55
   sources:
-  - macroforecast/trade/vulnerabilities/metrics.py::ConcentrationDependencyIndex3
-  - macroforecast/trade/vulnerabilities/base.py
-  - macroforecast/trade/vulnerabilities/runner.py
-  - macroforecast/trade/methodology.py
+  - tradestat/trade/vulnerabilities/metrics.py::ConcentrationDependencyIndex3
+  - tradestat/trade/vulnerabilities/base.py
+  - tradestat/trade/vulnerabilities/runner.py
+  - tradestat/trade/methodology.py
 CENTRALITY_RISK:
   revision: 0
-  code_hash: 53e4f35b91c77b7e
+  code_hash: 62fe123a3f185e66
   sources:
-  - macroforecast/trade/vulnerabilities/network_metrics.py::WeightedOutdegreeCentralityRisk
-  - macroforecast/trade/vulnerabilities/base.py
-  - macroforecast/trade/vulnerabilities/runner.py
-  - macroforecast/trade/methodology.py
-  - macroforecast/trade/vulnerabilities/graph.py
+  - tradestat/trade/vulnerabilities/network_metrics.py::WeightedOutdegreeCentralityRisk
+  - tradestat/trade/vulnerabilities/base.py
+  - tradestat/trade/vulnerabilities/runner.py
+  - tradestat/trade/methodology.py
+  - tradestat/trade/vulnerabilities/graph.py
 CLUSTERING_W:
   revision: 0
-  code_hash: 9e1a0813c48778dd
+  code_hash: 29cbd8c15f44b250
   sources:
-  - macroforecast/trade/vulnerabilities/network_metrics.py::WeightedClusteringCoefficient
-  - macroforecast/trade/vulnerabilities/base.py
-  - macroforecast/trade/vulnerabilities/runner.py
-  - macroforecast/trade/methodology.py
-  - macroforecast/trade/vulnerabilities/graph.py
+  - tradestat/trade/vulnerabilities/network_metrics.py::WeightedClusteringCoefficient
+  - tradestat/trade/vulnerabilities/base.py
+  - tradestat/trade/vulnerabilities/runner.py
+  - tradestat/trade/methodology.py
+  - tradestat/trade/vulnerabilities/graph.py
 DIAMETER:
   revision: 0
-  code_hash: ab1e41dc61849d2b
+  code_hash: c8498694a5d94360
   sources:
-  - macroforecast/trade/vulnerabilities/network_metrics.py::NetworkDiameter
-  - macroforecast/trade/vulnerabilities/base.py
-  - macroforecast/trade/vulnerabilities/runner.py
-  - macroforecast/trade/methodology.py
-  - macroforecast/trade/vulnerabilities/graph.py
+  - tradestat/trade/vulnerabilities/network_metrics.py::NetworkDiameter
+  - tradestat/trade/vulnerabilities/base.py
+  - tradestat/trade/vulnerabilities/runner.py
+  - tradestat/trade/methodology.py
+  - tradestat/trade/vulnerabilities/graph.py
 HHI:
   revision: 0
-  code_hash: 0227d26cfbe1b0de
+  code_hash: 75b8e3d2fdc588c7
   sources:
-  - macroforecast/trade/vulnerabilities/metrics.py::HerfindahlHirschmanIndex
-  - macroforecast/trade/vulnerabilities/base.py
-  - macroforecast/trade/vulnerabilities/runner.py
-  - macroforecast/trade/methodology.py
+  - tradestat/trade/vulnerabilities/metrics.py::HerfindahlHirschmanIndex
+  - tradestat/trade/vulnerabilities/base.py
+  - tradestat/trade/vulnerabilities/runner.py
+  - tradestat/trade/methodology.py
 SPOF:
   revision: 0
-  code_hash: 3ea9e547ab54ae19
+  code_hash: de7597874ebe4d8a
   sources:
-  - macroforecast/trade/vulnerabilities/network_metrics.py::SinglePointOfFailureRisk
-  - macroforecast/trade/vulnerabilities/base.py
-  - macroforecast/trade/vulnerabilities/runner.py
-  - macroforecast/trade/methodology.py
-  - macroforecast/trade/vulnerabilities/graph.py
+  - tradestat/trade/vulnerabilities/network_metrics.py::SinglePointOfFailureRisk
+  - tradestat/trade/vulnerabilities/base.py
+  - tradestat/trade/vulnerabilities/runner.py
+  - tradestat/trade/methodology.py
+  - tradestat/trade/vulnerabilities/graph.py
 SPOF_DECILE:
   revision: 0
-  code_hash: 58892b497dc19499
+  code_hash: 1729a123a796e44d
   sources:
-  - macroforecast/trade/vulnerabilities/network_metrics.py::SinglePointOfFailureDecile
-  - macroforecast/trade/vulnerabilities/base.py
-  - macroforecast/trade/vulnerabilities/runner.py
-  - macroforecast/trade/methodology.py
-  - macroforecast/trade/vulnerabilities/graph.py
+  - tradestat/trade/vulnerabilities/network_metrics.py::SinglePointOfFailureDecile
+  - tradestat/trade/vulnerabilities/base.py
+  - tradestat/trade/vulnerabilities/runner.py
+  - tradestat/trade/methodology.py
+  - tradestat/trade/vulnerabilities/graph.py
 WORLD_HHI:
   revision: 0
-  code_hash: 59b0fb5c5d19ebc0
+  code_hash: f26212af4c25c55d
   sources:
-  - macroforecast/trade/vulnerabilities/network_metrics.py::WorldExportConcentration
-  - macroforecast/trade/vulnerabilities/base.py
-  - macroforecast/trade/vulnerabilities/runner.py
-  - macroforecast/trade/methodology.py
-  - macroforecast/trade/vulnerabilities/graph.py
+  - tradestat/trade/vulnerabilities/network_metrics.py::WorldExportConcentration
+  - tradestat/trade/vulnerabilities/base.py
+  - tradestat/trade/vulnerabilities/runner.py
+  - tradestat/trade/methodology.py
+  - tradestat/trade/vulnerabilities/graph.py
 baci:
   revision: 0
-  code_hash: 8cddf79c67cc38a9
+  code_hash: 7d01d6b659c9ba75
   sources:
-  - macroforecast/trade/processing/baci.py
-  - macroforecast/trade/processing/streaming.py
-  - macroforecast/trade/processing/aggregation.py
-  - macroforecast/trade/processing/classification.py
+  - tradestat/trade/processing/baci.py
+  - tradestat/trade/processing/streaming.py
+  - tradestat/trade/processing/aggregation.py
+  - tradestat/trade/processing/classification.py
 coherence:
   revision: 0
-  code_hash: 2629f8862819e6b4
+  code_hash: 07cf9901f57e4dd3
   sources:
-  - macroforecast/trade/aggregation/coherence.py
-  - macroforecast/trade/aggregation/diagnostics.py
+  - tradestat/trade/aggregation/coherence.py
+  - tradestat/trade/aggregation/diagnostics.py
 concordance:
   revision: 0
-  code_hash: 35aad6f52faa480d
+  code_hash: 56e601e182c04934
   sources:
-  - macroforecast/trade/processing/classification.py
+  - tradestat/trade/processing/classification.py
 synthesis:
   revision: 0
-  code_hash: 59faabb0106ef567
+  code_hash: c3ce2076e0c09404
   sources:
-  - macroforecast/trade/aggregation/base.py
-  - macroforecast/trade/aggregation/estimators.py
-  - macroforecast/trade/aggregation/functions.py
-  - macroforecast/trade/aggregation/methods.py
-  - macroforecast/trade/aggregation/optimal_transport.py
-  - macroforecast/trade/aggregation/pareto.py
-  - macroforecast/trade/aggregation/preprocessing.py
-  - macroforecast/trade/aggregation/runner.py
-  - macroforecast/trade/aggregation/synthesis.py
-  - macroforecast/trade/aggregation/weights.py
+  - tradestat/trade/aggregation/base.py
+  - tradestat/trade/aggregation/estimators.py
+  - tradestat/trade/aggregation/functions.py
+  - tradestat/trade/aggregation/methods.py
+  - tradestat/trade/aggregation/optimal_transport.py
+  - tradestat/trade/aggregation/pareto.py
+  - tradestat/trade/aggregation/preprocessing.py
+  - tradestat/trade/aggregation/runner.py
+  - tradestat/trade/aggregation/synthesis.py
+  - tradestat/trade/aggregation/weights.py

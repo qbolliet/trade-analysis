@@ -26,7 +26,7 @@ from typing import Any, Callable, ContextManager, Dict, Iterator, Mapping, Optio
 import pandas as pd
 
 # Modules du package
-from macroforecast.tracking import CapturingTracker, NULL_TRACKER, RunTracker
+from tradestat.tracking import CapturingTracker, NULL_TRACKER, RunTracker
 
 # Longueur maximale d'un message d'échec conservé par unité
 MAX_FAILURE_CHARS = 1000

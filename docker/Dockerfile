@@ -36,7 +36,7 @@ RUN --mount=type=cache,target=/root/.cache/uv \
     uv sync --frozen --no-dev --no-install-project ${UV_EXTRAS}
 
 # Code source et configuration (config/local/ est exclu par .dockerignore)
-COPY macroforecast/ macroforecast/
+COPY tradestat/ tradestat/
 COPY scripts/ scripts/
 COPY kedro_pipeline/ kedro_pipeline/
 COPY config/ config/
@@ -74,4 +74,4 @@ USER 1000
 # Pas d'entrypoint : les pods Argo appellent explicitement la commande
 # (comtrade-script, baci-hs-script, ...)
 ENTRYPOINT []
-CMD ["python", "-c", "import macroforecast; print('ok')"]
+CMD ["python", "-c", "import tradestat; print('ok')"]

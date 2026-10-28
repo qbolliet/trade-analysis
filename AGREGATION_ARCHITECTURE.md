@@ -1,7 +1,7 @@
-# Architecture — synthèse de métriques de vulnérabilité (`macroforecast.trade.aggregation`)
+# Architecture — synthèse de métriques de vulnérabilité (`tradestat.trade.aggregation`)
 
 Document de référence pour la révision de la méthodologie d'agrégation, la correction
-et l'extension du module `macroforecast/trade/aggregation`, l'ajout de deux scripts de
+et l'extension du module `tradestat/trade/aggregation`, l'ajout de deux scripts de
 pipeline (scores synthétiques, cohérence) et la réécriture de la note LaTeX. Il sert de
 source unique aux prompts listés dans `AGREGATION_PROMPTS.md` : chaque prompt renvoie aux
 identifiants ci-dessous (`M-xx` méthodologie, `I-xx` implémentation, `A-xx` ajouts,
@@ -9,7 +9,7 @@ identifiants ci-dessous (`M-xx` méthodologie, `I-xx` implémentation, `A-xx` aj
 
 Date de rédaction : 2026-09-10. État du dépôt : branche `qb-vulnerabilities`, commit
 `fcad92c` (« doc: metrics aggregation »). Les 52 doctests du module passent
-(`pytest --doctest-modules macroforecast/trade/aggregation`) ; aucun test unitaire dédié
+(`pytest --doctest-modules tradestat/trade/aggregation`) ; aucun test unitaire dédié
 n'existe. `jax` / `ott-jax` ne sont pas installés dans `.venv`. MiKTeX (`pdflatex`,
 `latexmk`, `bibtex`, `biber`) est disponible.
 
@@ -62,7 +62,7 @@ la documentation et dans les docstrings.
 
 ## 2. État des lieux
 
-### 2.1 Module `macroforecast/trade/aggregation` (3 478 lignes)
+### 2.1 Module `tradestat/trade/aggregation` (3 478 lignes)
 
 | Fichier | Contenu | Correspondance note |
 |---|---|---|
@@ -97,10 +97,10 @@ doivent reproduire :
 - écriture par `statflows.storage.ducklake.tables.write_dataframe(conn, df, primary_keys,
   catalog_alias=..., schema=...)` : **une seule `fact_table` par schéma**, création à la
   première rencontre, upsert par clé primaire ensuite ;
-- suivi MLflow via `macroforecast.tracking.get_tracker` (objet nul sans URI) ;
+- suivi MLflow via `tradestat.tracking.get_tracker` (objet nul sans URI) ;
   `tracker.log_params(run_params(config, context))` dans le runner, `report.to_metrics()`
   et `set_tags` dans le script ;
-- runner dans le package (`macroforecast/trade/<famille>/runner.py`) : méthodologie pure,
+- runner dans le package (`tradestat/trade/<famille>/runner.py`) : méthodologie pure,
   connexions passées en argument.
 
 ### 2.3 Table d'entrée
@@ -863,7 +863,7 @@ validation puis supprimé), `bibliography.bib` à la racine, `natbib`, compilati
 ### S-1.1 Arborescence
 
 ```
-macroforecast/trade/aggregation/
+tradestat/trade/aggregation/
 ├── __init__.py            # réexports (inchangé dans l'esprit)
 ├── base.py                # AggregationConfig (nettoyé), split_frame, attach_scores, complete_rows_mask
 ├── preprocessing.py       # + Winsorizer(quantile=None), RankScaler corrigé, make_preprocessing(spec)
@@ -1397,7 +1397,7 @@ Volumétrie indicative par contexte : `by_product` 5 000 groupes × ~200 lignes 
     métriques, trois niveaux, configuration, lecture des tables, diagnostics, cas
     `d = 6`).
 Annexes : A. Notations ; B. Algorithmes récapitulatifs ; C. Correspondance
-document ↔ code (`macroforecast.trade.aggregation`) ; D. Bibliographie.
+document ↔ code (`tradestat.trade.aggregation`) ; D. Bibliographie.
 
 ---
 

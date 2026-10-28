@@ -19,8 +19,8 @@ pytest.importorskip("dt_ducklake_manager")
 
 from kedro_pipeline.io.ducklake import ConnectionReader, DuckLakeTable  # noqa: E402
 from kedro_pipeline.parallel import parallel_map  # noqa: E402
-from macroforecast.trade.vulnerabilities import NetworkVulnerabilityConfig  # noqa: E402
-from macroforecast.trade.vulnerabilities.runner import (  # noqa: E402
+from tradestat.trade.vulnerabilities import NetworkVulnerabilityConfig  # noqa: E402
+from tradestat.trade.vulnerabilities.runner import (  # noqa: E402
     run_network_vulnerabilities,
     write_network_vintage,
 )

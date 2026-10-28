@@ -19,9 +19,9 @@ import numpy as np
 import pandas as pd
 import pytest
 from kedro_pipeline.config import load_parameters
-from macroforecast.tracking import CapturingTracker
+from tradestat.tracking import CapturingTracker
 from scripts._run_report import flow_run_metrics
-from macroforecast.tracking.report import Check, checks_for_node
+from tradestat.tracking.report import Check, checks_for_node
 
 ROOT = Path(__file__).resolve().parents[2]
 TRACKING = load_parameters("base")["tracking"]
@@ -173,7 +173,7 @@ def test_baci_and_network_checks_target_emitted_metrics(
     import datetime as dt
 
     from kedro_pipeline.synthetic.comtrade import ReportingConfig, SyntheticComtradeClient
-    from macroforecast.trade.processing import BaciConfig, HsHarmonizer, required_columns, run_baci
+    from tradestat.trade.processing import BaciConfig, HsHarmonizer, required_columns, run_baci
     from scripts.download_comtrade import build_split_queries
     from scripts.process_baci_hs import _read_comtrade_fact_table, coverage_metrics
     # Mise en forme des métriques par l'étape BACI (sections conversion/, gravity/, output/…)
@@ -222,7 +222,7 @@ def test_baci_and_network_checks_target_emitted_metrics(
     assert "gravity/coefficients.json" in tracker.dicts
 
     # Traitement par passes : mêmes métriques et mêmes artefacts que le monobloc
-    from macroforecast.trade.processing import ChunkKey, InMemoryPassIO, run_baci_passes
+    from tradestat.trade.processing import ChunkKey, InMemoryPassIO, run_baci_passes
 
     harmonised = HsHarmonizer({}, target_vintage="HS2017").fit_transform(declarations)
     years = harmonised["period"].astype(str).str[:4].astype(int)
@@ -239,8 +239,8 @@ def test_baci_and_network_checks_target_emitted_metrics(
     assert set(passes_tracker.tables) == set(tracker.tables) and set(passes_tracker.dicts) == set(tracker.dicts)
 
     # Vulnérabilités de réseau sur la table BACI écrite dans le catalogue
-    from macroforecast.trade.vulnerabilities.base import NetworkVulnerabilityConfig
-    from macroforecast.trade.vulnerabilities.runner import run_network_vulnerabilities
+    from tradestat.trade.vulnerabilities.base import NetworkVulnerabilityConfig
+    from tradestat.trade.vulnerabilities.runner import run_network_vulnerabilities
 
     write_dataframe(conn, result, config.primary_keys, catalog_alias=alias, schema="baci_hs2017")
     net_tracker = CapturingTracker()
@@ -256,7 +256,7 @@ def test_baci_and_network_checks_target_emitted_metrics(
 @slow
 def test_partner_vulnerabilities_checks_target_emitted_metrics(ducklake_conn, synthetic_world) -> None:
     from kedro_pipeline.synthetic.comext import ComextConfig, ComextTemplate, build_comext
-    from macroforecast.trade.vulnerabilities.runner import run_vulnerabilities
+    from tradestat.trade.vulnerabilities.runner import run_vulnerabilities
     from statflows.storage.ducklake.tables import write_dataframe
 
     conn, alias = ducklake_conn
@@ -284,7 +284,7 @@ def test_partner_vulnerabilities_checks_target_emitted_metrics(ducklake_conn, sy
 
 
 def _synthesis_config():
-    from macroforecast.trade.aggregation import MethodSpec, SynthesisConfig
+    from tradestat.trade.aggregation import MethodSpec, SynthesisConfig
 
     return SynthesisConfig(
         metric_columns=("HHI", "CDI2", "CDI3", "WORLD_HHI", "CENTRALITY_RISK", "CLUSTERING_W"),
@@ -324,7 +324,7 @@ def _query(catalog_alias: str) -> str:
 
 @slow
 def test_synthesis_and_coherence_checks_target_emitted_metrics(synthesis_source_tables) -> None:
-    from macroforecast.trade.aggregation import CoherenceConfig
+    from tradestat.trade.aggregation import CoherenceConfig
     from scripts.compute_synthesis_coherence import run_from_connections as run_coherence
     from scripts.compute_synthetic_scores import run_from_connections as run_synthesis
     from scripts._run_report import RunScope

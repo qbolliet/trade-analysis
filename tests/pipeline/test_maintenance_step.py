@@ -15,7 +15,7 @@ import pytest
 
 from kedro_pipeline.io import maintenance as ops
 from kedro_pipeline.steps import maintenance as step
-from macroforecast.tracking import CapturingTracker
+from tradestat.tracking import CapturingTracker
 
 ALIAS = "db"
 SCHEMA = "s1"

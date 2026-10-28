@@ -7,7 +7,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from macroforecast.trade.vulnerabilities import (
+from tradestat.trade.vulnerabilities import (
     VulnerabilityConfig,
     compute_vulnerabilities,
     default_metrics,
@@ -102,8 +102,8 @@ def test_read_source_flows_casts_text_flow_codes_to_integers() -> None:
     """Les codes de flux livrés en texte par l'API sont lus en entiers."""
     import duckdb
 
-    from macroforecast.trade.vulnerabilities import VulnerabilityConfig
-    from macroforecast.trade.vulnerabilities.runner import read_source_flows
+    from tradestat.trade.vulnerabilities import VulnerabilityConfig
+    from tradestat.trade.vulnerabilities.runner import read_source_flows
 
     config = VulnerabilityConfig()
     conn = duckdb.connect()
@@ -133,7 +133,7 @@ def _downward_table_2017_2012() -> "pd.DataFrame":
 
 
 def test_build_stable_code_map_keeps_only_strict_identities() -> None:
-    from macroforecast.trade.processing import build_stable_code_map
+    from tradestat.trade.processing import build_stable_code_map
 
     stable = build_stable_code_map({("HS2017", "HS2012"): _downward_table_2017_2012()}, "H4", "HS2017")
     # 020110 est lié à deux codes récents (n:1) ; 030311 devient 030399 (renommé)
@@ -141,7 +141,7 @@ def test_build_stable_code_map_keeps_only_strict_identities() -> None:
 
 
 def test_harmonizer_carries_stable_codes_and_drops_changed_ones() -> None:
-    from macroforecast.trade.processing import HsHarmonizer
+    from tradestat.trade.processing import HsHarmonizer
 
     declarations = pd.DataFrame(
         {
@@ -168,7 +168,7 @@ def test_harmonizer_carries_stable_codes_and_drops_changed_ones() -> None:
 def test_harmonizer_still_refuses_older_vintages_by_default() -> None:
     import pytest
 
-    from macroforecast.trade.processing import HsHarmonizer
+    from tradestat.trade.processing import HsHarmonizer
 
     declarations = pd.DataFrame(
         {"classificationCode": ["H4"], "cmdCode": ["010121"], "period": ["2017"], "primaryValue": [1.0]}
@@ -178,7 +178,7 @@ def test_harmonizer_still_refuses_older_vintages_by_default() -> None:
 
 
 def test_harmonizer_drops_and_measures_recent_codes_without_counterpart() -> None:
-    from macroforecast.trade.processing import HsHarmonizer
+    from tradestat.trade.processing import HsHarmonizer
 
     # Table descendante HS2022 -> HS2017 : 284440 y est absent (code supprimé en HS2022)
     table = pd.DataFrame({"source_code": ["010121"], "target_code": ["010121"]})

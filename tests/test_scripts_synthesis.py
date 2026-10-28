@@ -23,7 +23,7 @@ from scripts.compute_synthetic_scores import (  # noqa: E402
     synthesis_requested,
     validate_flow_context,
 )
-from macroforecast.trade.aggregation import SynthesisConfig  # noqa: E402
+from tradestat.trade.aggregation import SynthesisConfig  # noqa: E402
 
 UTC = timezone.utc
 

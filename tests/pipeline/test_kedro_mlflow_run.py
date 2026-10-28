@@ -152,7 +152,7 @@ def test_metrics_are_grouped_by_section(workflow) -> None:
 
 def test_every_configured_check_targets_a_metric_of_its_run(workflow) -> None:
     from kedro_pipeline.config import load_parameters
-    from macroforecast.tracking.report import checks_for_node
+    from tradestat.tracking.report import checks_for_node
 
     tracking = load_parameters("test")["tracking"]
     for task, run in _runs_of(workflow.client, WORKFLOW_ID).items():

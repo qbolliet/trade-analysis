@@ -77,7 +77,7 @@ from scripts.compute_synthetic_scores import (  # noqa: F401
 )
 # Paramètres d'exécution partagés (forçage ponctuel)
 from scripts.download_comtrade import load_runtime_config
-from macroforecast.tracking import CapturingTracker, get_tracker
+from tradestat.tracking import CapturingTracker, get_tracker
 from scripts._run_report import RunScope, guarded_run, run_name, timestamp
 
 # Configuration de logging

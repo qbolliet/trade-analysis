@@ -7,19 +7,19 @@ from typing import ClassVar
 import narwhals as nw
 import pytest
 
-from macroforecast.trade.vulnerabilities import (
+from tradestat.trade.vulnerabilities import (
     NetworkVulnerabilityConfig,
     NetworkVulnerabilityMetric,
     VulnerabilityConfig,
     VulnerabilityMetric,
     flow_code_map,
 )
-from macroforecast.trade.vulnerabilities.metrics import (
+from tradestat.trade.vulnerabilities.metrics import (
     ConcentrationDependencyIndex3,
     HerfindahlHirschmanIndex,
     default_metrics,
 )
-from macroforecast.trade.vulnerabilities.network_metrics import (
+from tradestat.trade.vulnerabilities.network_metrics import (
     NetworkDiameter,
     WeightedClusteringCoefficient,
     WorldExportConcentration,
