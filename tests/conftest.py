@@ -43,6 +43,10 @@ def aws_env(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "testing")
     monkeypatch.setenv("AWS_SESSION_TOKEN", "testing")
     monkeypatch.setenv("AWS_DEFAULT_REGION", "us-east-1")
+    # boto3 honore AWS_ENDPOINT_URL (posée sur Onyxia, vers MinIO) : les requêtes
+    # contourneraient alors le mock moto
+    monkeypatch.delenv("AWS_ENDPOINT_URL", raising=False)
+    monkeypatch.delenv("AWS_ENDPOINT_URL_S3", raising=False)
 
 
 @pytest.fixture

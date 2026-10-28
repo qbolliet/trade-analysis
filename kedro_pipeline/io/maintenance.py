@@ -327,7 +327,7 @@ def count_snapshots(conn: Any, alias: str) -> int:
     Returns:
         The number of snapshots.
     """
-    return int(conn.execute("SELECT count(*) FROM ducklake_snapshots(?)", [alias]).fetchone()[0])
+    return int(conn.execute("SELECT count(*) FROM ducklake_snapshots(?)", [alias]).fetchall()[0][0])
 
 
 # Procédure : vidage des données inlinées
@@ -420,13 +420,15 @@ def snapshot_time(conn: Any, alias: str, snapshot_id: int) -> Optional[datetime]
     Returns:
         The instant.
     """
-    row = conn.execute(
+    # fetchall() et non fetchone() : depuis DuckDB 2.0, un résultat non épuisé
+    # bloque la connexion (ResourceInUseException au prochain register())
+    rows = conn.execute(
         "SELECT snapshot_time FROM ducklake_snapshots(?) WHERE snapshot_id = ?",
         [alias, int(snapshot_id)],
-    ).fetchone()
-    if row is None or row[0] is None:
+    ).fetchall()
+    if not rows or rows[0][0] is None:
         return None
-    instant = row[0]
+    instant = rows[0][0]
     return instant.replace(tzinfo=timezone.utc) if instant.tzinfo is None else instant.astimezone(timezone.utc)
 
 

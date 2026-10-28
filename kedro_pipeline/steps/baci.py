@@ -908,7 +908,7 @@ class DuckDBPassIO:
         if not any(char in pattern for char in "*?["):
             folder, _, name = pattern.rpartition("/")
             pattern = f"{folder}/[{name[0]}]{name[1:]}"
-        return bool(self.conn.execute("SELECT count(*) FROM glob(?)", [pattern]).fetchone()[0])
+        return bool(self.conn.execute("SELECT count(*) FROM glob(?)", [pattern]).fetchall()[0][0])
 
     def comtrade_chunks(self, columns: Sequence[str]) -> Iterator[Tuple[Any, pd.DataFrame]]:
         """Yield the harmonised declarations, year by year (and block by block)."""
@@ -1001,7 +1001,7 @@ class DuckDBPassIO:
             f'SELECT quantile_cont("{column}", [{probs_sql}]) '
             f"FROM read_parquet('{self.root}/{kind}/*/*.parquet') "
             f'WHERE "{column}" IS NOT NULL AND NOT isnan("{column}")'
-        ).fetchone()[0]
+        ).fetchall()[0][0]
         if value is None:
             return [float("nan")] * len(probs)
         return [float(v) for v in value]

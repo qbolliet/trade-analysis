@@ -256,3 +256,6 @@ config/local/*
 data/
 # Statistiques de datasets écrites par le hook kedro-viz à chaque `kedro run`
 .viz/
+
+# Répertoires temporaires locaux (ex. basetemp pytest)
+/tmp/

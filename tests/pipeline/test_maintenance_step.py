@@ -118,7 +118,7 @@ def test_no_catalog_is_an_empty_result() -> None:
 def test_compacts_the_recently_written_tables_and_reports_before_after(lake) -> None:
     now = _now()
     tracker = CapturingTracker()
-    checksum = lake.execute(f"SELECT sum(k), sum(v), count(*) FROM {ALIAS}.{SCHEMA}.fact_table").fetchone()
+    checksum = lake.execute(f"SELECT sum(k), sum(v), count(*) FROM {ALIAS}.{SCHEMA}.fact_table").fetchall()[0]
 
     result = step.run_maintenance(_Catalogs(lake), params=_params(now), tracker=tracker, now=now)
 
@@ -137,7 +137,7 @@ def test_compacts_the_recently_written_tables_and_reports_before_after(lake) -> 
     assert list(report["table"]) == ["fact_table"] and report.loc[0, "files_before"] == 8
     assert report.loc[0, "operations"].split(",") == ["flush_inlined", "merge_adjacent_files"]
     # Les données ne changent pas
-    assert lake.execute(f"SELECT sum(k), sum(v), count(*) FROM {ALIAS}.{SCHEMA}.fact_table").fetchone() == checksum
+    assert lake.execute(f"SELECT sum(k), sum(v), count(*) FROM {ALIAS}.{SCHEMA}.fact_table").fetchall()[0] == checksum
 
 
 def test_tables_not_written_recently_are_left_alone(lake) -> None:

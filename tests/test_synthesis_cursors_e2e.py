@@ -190,7 +190,7 @@ def test_cursor_driven_synthesis(synthesis_source_tables, tmp_path: Path, monkey
         f'SELECT count(*) FROM "{alias}"."synthesis"."fact_table" '
         f"WHERE \"TIME_PERIOD\" = '{recent}' AND flow = 1 AND reporter = 'IT' "
         f"AND product = '{sources.products[0]}'"
-    ).fetchone()[0]
+    ).fetchall()[0][0]
     assert stored == 0
     _assert_equal_to_full_recomputation(sources)
 

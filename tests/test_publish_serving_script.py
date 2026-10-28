@@ -44,7 +44,7 @@ def test_script_publishes_and_exits_zero(tmp_path: Path, script_env, monkeypatch
     with world.catalog.connect() as conn:
         assert conn.execute(
             f"SELECT count(*) FROM {world.catalog.qualified_name('cell_scores')}"
-        ).fetchone()[0] > 0
+        ).fetchall()[0][0] > 0
 
 
 def test_script_exits_non_zero_on_failure(tmp_path: Path, script_env, monkeypatch) -> None:

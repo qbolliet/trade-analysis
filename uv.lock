@@ -1746,120 +1746,6 @@ wheels = [
 ]
 
 [[package]]
-name = "tradestat"
-version = "0.1.0"
-source = { editable = "." }
-dependencies = [
-    { name = "argo-kedro" },
-    { name = "boto3" },
-    { name = "duckdb" },
-    { name = "jinja2" },
-    { name = "joblib" },
-    { name = "kedro" },
-    { name = "kedro-datasets" },
-    { name = "kedro-mlflow" },
-    { name = "linearmodels" },
-    { name = "narwhals" },
-    { name = "openpyxl" },
-    { name = "pandas" },
-    { name = "pyarrow" },
-    { name = "pytz" },
-    { name = "pyyaml" },
-    { name = "s3fs" },
-    { name = "scikit-learn" },
-    { name = "scipy" },
-    { name = "statflows", extra = ["ducklake", "s3"] },
-    { name = "statsmodels" },
-    { name = "threadpoolctl" },
-    { name = "tqdm" },
-    { name = "xlrd" },
-]
-
-[package.optional-dependencies]
-docs = [
-    { name = "kedro-viz" },
-    { name = "mkdocs-material" },
-    { name = "ruamel-yaml" },
-]
-optimal-transport = [
-    { name = "jax" },
-    { name = "ott-jax" },
-]
-reports = [
-    { name = "plotly" },
-]
-tracking = [
-    { name = "mlflow" },
-    { name = "psutil" },
-]
-viz = [
-    { name = "kedro-viz" },
-]
-
-[package.dev-dependencies]
-dev = [
-    { name = "duckdb-engine" },
-    { name = "ipykernel" },
-    { name = "jsonschema" },
-    { name = "moto", extra = ["s3"] },
-    { name = "mypy" },
-    { name = "pandas-stubs" },
-    { name = "pytest" },
-    { name = "ruff" },
-    { name = "xlwt" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "argo-kedro", specifier = "==0.1.41" },
-    { name = "boto3", specifier = ">=1.43.34" },
-    { name = "duckdb", specifier = ">=1.4" },
-    { name = "jax", marker = "extra == 'optimal-transport'", specifier = ">=0.4.30" },
-    { name = "jinja2", specifier = ">=3.1" },
-    { name = "joblib", specifier = ">=1.4" },
-    { name = "kedro", specifier = ">=1.6,<2" },
-    { name = "kedro-datasets", specifier = ">=8" },
-    { name = "kedro-mlflow", specifier = "==2.0.3" },
-    { name = "kedro-viz", marker = "extra == 'docs'", specifier = "==12.4.0" },
-    { name = "kedro-viz", marker = "extra == 'viz'", specifier = "==12.4.0" },
-    { name = "linearmodels", specifier = ">=7.0" },
-    { name = "mkdocs-material", marker = "extra == 'docs'", specifier = ">=9.5" },
-    { name = "mlflow", marker = "extra == 'tracking'", specifier = ">=3,<4" },
-    { name = "narwhals", specifier = ">=2.22.1" },
-    { name = "openpyxl", specifier = ">=3.1.5" },
-    { name = "ott-jax", marker = "extra == 'optimal-transport'", specifier = ">=0.4.6" },
-    { name = "pandas", specifier = ">=3.0" },
-    { name = "plotly", marker = "extra == 'reports'", specifier = ">=5.24" },
-    { name = "psutil", marker = "extra == 'tracking'", specifier = ">=5.9" },
-    { name = "pyarrow", specifier = ">=24.0.0" },
-    { name = "pytz", specifier = ">=2024.1" },
-    { name = "pyyaml", specifier = ">=6.0.3" },
-    { name = "ruamel-yaml", marker = "extra == 'docs'", specifier = ">=0.18" },
-    { name = "s3fs", specifier = ">=0.4.2" },
-    { name = "scikit-learn", specifier = ">=1.5" },
-    { name = "scipy", specifier = ">=1.18.0" },
-    { name = "statflows", extras = ["s3", "ducklake"], git = "https://github.com/qbolliet/statflows?tag=v0.4.0" },
-    { name = "statsmodels", specifier = ">=0.14.6" },
-    { name = "threadpoolctl", specifier = ">=3.1" },
-    { name = "tqdm", specifier = ">=4.67" },
-    { name = "xlrd", specifier = ">=2.0.2" },
-]
-provides-extras = ["tracking", "reports", "optimal-transport", "viz", "docs"]
-
-[package.metadata.requires-dev]
-dev = [
-    { name = "duckdb-engine", specifier = ">=0.17.0" },
-    { name = "ipykernel", specifier = ">=7.1.0" },
-    { name = "jsonschema", specifier = ">=4.23" },
-    { name = "moto", extras = ["s3"], specifier = ">=5.2.3" },
-    { name = "mypy", specifier = ">=1.18" },
-    { name = "pandas-stubs", specifier = ">=3.0" },
-    { name = "pytest", specifier = ">=9.1.1" },
-    { name = "ruff", specifier = ">=0.14" },
-    { name = "xlwt", specifier = ">=1.3.0" },
-]
-
-[[package]]
 name = "mako"
 version = "1.4.1"
 source = { registry = "https://pypi.org/simple" }
@@ -3773,6 +3659,120 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/21/3b/6c24bec5be5e743ffd99576daa5cc077722fc7d5bbc00bd133fa0c698dc6/tqdm-4.70.0.tar.gz", hash = "sha256:55b0b0dbd97462d06ebee91e4dac24ed4d4702be82b24f07e6c1d27e08cea220", size = 795438, upload-time = "2026-07-27T11:33:15.271Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/f9/1c/01bfd571a64e7f270e6bab5e33777debe0edc56759233ce84f27dec92d14/tqdm-4.70.0-py3-none-any.whl", hash = "sha256:7f585706bfddbdebf89daac705b2dfcc16890130727d3197ca62c732b4310953", size = 80184, upload-time = "2026-07-27T11:33:13.167Z" },
+]
+
+[[package]]
+name = "tradestat"
+version = "0.1.0"
+source = { editable = "." }
+dependencies = [
+    { name = "argo-kedro" },
+    { name = "boto3" },
+    { name = "duckdb" },
+    { name = "jinja2" },
+    { name = "joblib" },
+    { name = "kedro" },
+    { name = "kedro-datasets" },
+    { name = "kedro-mlflow" },
+    { name = "linearmodels" },
+    { name = "narwhals" },
+    { name = "openpyxl" },
+    { name = "pandas" },
+    { name = "pyarrow" },
+    { name = "pytz" },
+    { name = "pyyaml" },
+    { name = "s3fs" },
+    { name = "scikit-learn" },
+    { name = "scipy" },
+    { name = "statflows", extra = ["ducklake", "s3"] },
+    { name = "statsmodels" },
+    { name = "threadpoolctl" },
+    { name = "tqdm" },
+    { name = "xlrd" },
+]
+
+[package.optional-dependencies]
+docs = [
+    { name = "kedro-viz" },
+    { name = "mkdocs-material" },
+    { name = "ruamel-yaml" },
+]
+optimal-transport = [
+    { name = "jax" },
+    { name = "ott-jax" },
+]
+reports = [
+    { name = "plotly" },
+]
+tracking = [
+    { name = "mlflow" },
+    { name = "psutil" },
+]
+viz = [
+    { name = "kedro-viz" },
+]
+
+[package.dev-dependencies]
+dev = [
+    { name = "duckdb-engine" },
+    { name = "ipykernel" },
+    { name = "jsonschema" },
+    { name = "moto", extra = ["s3"] },
+    { name = "mypy" },
+    { name = "pandas-stubs" },
+    { name = "pytest" },
+    { name = "ruff" },
+    { name = "xlwt" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "argo-kedro", specifier = "==0.1.41" },
+    { name = "boto3", specifier = ">=1.43.34" },
+    { name = "duckdb", specifier = ">=2.0,<3" },
+    { name = "jax", marker = "extra == 'optimal-transport'", specifier = ">=0.4.30" },
+    { name = "jinja2", specifier = ">=3.1" },
+    { name = "joblib", specifier = ">=1.4" },
+    { name = "kedro", specifier = ">=1.6,<2" },
+    { name = "kedro-datasets", specifier = ">=8" },
+    { name = "kedro-mlflow", specifier = "==2.0.3" },
+    { name = "kedro-viz", marker = "extra == 'docs'", specifier = "==12.4.0" },
+    { name = "kedro-viz", marker = "extra == 'viz'", specifier = "==12.4.0" },
+    { name = "linearmodels", specifier = ">=7.0" },
+    { name = "mkdocs-material", marker = "extra == 'docs'", specifier = ">=9.5" },
+    { name = "mlflow", marker = "extra == 'tracking'", specifier = ">=3,<4" },
+    { name = "narwhals", specifier = ">=2.22.1" },
+    { name = "openpyxl", specifier = ">=3.1.5" },
+    { name = "ott-jax", marker = "extra == 'optimal-transport'", specifier = ">=0.4.6" },
+    { name = "pandas", specifier = ">=3.0" },
+    { name = "plotly", marker = "extra == 'reports'", specifier = ">=5.24" },
+    { name = "psutil", marker = "extra == 'tracking'", specifier = ">=5.9" },
+    { name = "pyarrow", specifier = ">=24.0.0" },
+    { name = "pytz", specifier = ">=2024.1" },
+    { name = "pyyaml", specifier = ">=6.0.3" },
+    { name = "ruamel-yaml", marker = "extra == 'docs'", specifier = ">=0.18" },
+    { name = "s3fs", specifier = ">=0.4.2" },
+    { name = "scikit-learn", specifier = ">=1.5" },
+    { name = "scipy", specifier = ">=1.18.0" },
+    { name = "statflows", extras = ["s3", "ducklake"], git = "https://github.com/qbolliet/statflows?tag=v0.4.0" },
+    { name = "statsmodels", specifier = ">=0.14.6" },
+    { name = "threadpoolctl", specifier = ">=3.1" },
+    { name = "tqdm", specifier = ">=4.67" },
+    { name = "xlrd", specifier = ">=2.0.2" },
+]
+provides-extras = ["tracking", "reports", "optimal-transport", "viz", "docs"]
+
+[package.metadata.requires-dev]
+dev = [
+    { name = "duckdb-engine", specifier = ">=0.17.0" },
+    { name = "ipykernel", specifier = ">=7.1.0" },
+    { name = "jsonschema", specifier = ">=4.23" },
+    { name = "moto", extras = ["s3"], specifier = ">=5.2.3" },
+    { name = "mypy", specifier = ">=1.18" },
+    { name = "pandas-stubs", specifier = ">=3.0" },
+    { name = "pytest", specifier = ">=9.1.1" },
+    { name = "ruff", specifier = ">=0.14" },
+    { name = "xlwt", specifier = ">=1.3.0" },
 ]
 
 [[package]]

@@ -117,7 +117,7 @@ def test_backup_fails_when_pg_dump_fails(monkeypatch) -> None:
     assert client.uploads == []
 
 
-def test_prune_backups_keeps_the_newest(monkeypatch) -> None:
+def test_prune_backups_keeps_the_newest(aws_env) -> None:
     boto3 = pytest.importorskip("boto3")
     moto = pytest.importorskip("moto")
     with moto.mock_aws():
@@ -190,11 +190,11 @@ def test_recently_written_ignores_maintenance_snapshots(lake) -> None:
 
 
 def test_merge_reduces_the_files_and_keeps_the_data(lake) -> None:
-    checksum = lake.execute(f"SELECT sum(k), sum(v), count(*) FROM {ALIAS}.{SCHEMA}.t").fetchone()
+    checksum = lake.execute(f"SELECT sum(k), sum(v), count(*) FROM {ALIAS}.{SCHEMA}.t").fetchall()[0]
     processed, created = ops.merge_adjacent(lake, ALIAS, SCHEMA, "t")
     assert processed == 6 and created >= 1
     assert ops.measure_tables(lake, ALIAS)[(SCHEMA, "t")].files < 6
-    assert lake.execute(f"SELECT sum(k), sum(v), count(*) FROM {ALIAS}.{SCHEMA}.t").fetchone() == checksum
+    assert lake.execute(f"SELECT sum(k), sum(v), count(*) FROM {ALIAS}.{SCHEMA}.t").fetchall()[0] == checksum
     # Idempotence : rien de plus à fusionner
     assert ops.merge_adjacent(lake, ALIAS, SCHEMA, "t")[1] <= 1
 
@@ -254,7 +254,7 @@ def test_expire_and_cleanup_use_the_injected_clock(lake) -> None:
     assert ops.expire_snapshots(lake, ALIAS, later, 7) == 0
     assert ops.cleanup_old_files(lake, ALIAS, later, 7) == 0
     assert ops.delete_orphaned_files(lake, ALIAS, later, 7) == 0
-    assert lake.execute(f"SELECT count(*) FROM {ALIAS}.{SCHEMA}.t").fetchone()[0] == 120
+    assert lake.execute(f"SELECT count(*) FROM {ALIAS}.{SCHEMA}.t").fetchall()[0][0] == 120
 
 
 def test_expiration_never_passes_the_oldest_cursor_within_the_ceiling(lake) -> None:

@@ -147,7 +147,7 @@ def _cohere(sources, root: Path, config: SynthesisConfig):
 
 
 def _snapshot(conn, alias: str) -> int:
-    return int(conn.execute(f"SELECT max(snapshot_id) FROM ducklake_snapshots('{alias}')").fetchone()[0])
+    return int(conn.execute(f"SELECT max(snapshot_id) FROM ducklake_snapshots('{alias}')").fetchall()[0][0])
 
 
 def _changed_methods(conn, alias: str, start: int, end: int) -> set:

@@ -104,7 +104,7 @@ def test_partner_step_second_run_recomputes_nothing(ducklake_conn, tmp_path: Pat
     assert {plan.reason for plan in first.plans.values()} == {"first"}
     assert first.report is not None and first.report.cells > 0
     assert len(first.written) == len(REPORTERS)
-    n_rows = conn.execute(f'SELECT count(*) FROM "{alias}"."indicators"."fact_table"').fetchone()[0]
+    n_rows = conn.execute(f'SELECT count(*) FROM "{alias}"."indicators"."fact_table"').fetchall()[0][0]
     assert n_rows > 0
     fragment = json.loads(Path(first.written[0]).read_text(encoding="utf-8"))
     assert fragment["schema_version"] == 2
@@ -121,7 +121,7 @@ def test_partner_step_second_run_recomputes_nothing(ducklake_conn, tmp_path: Pat
     assert second.plans == {} and second.report is None and second.written == []
     assert conn.execute(
         f'SELECT count(*) FROM "{alias}"."indicators"."fact_table"'
-    ).fetchone()[0] == n_rows
+    ).fetchall()[0][0] == n_rows
 
     # Invalidation de HHI (formule corrigée) : toutes les unités, raison « fingerprint »
     registry = partner_registry(block)

@@ -74,13 +74,13 @@ def test_sql_macros_match_python_functions() -> None:
             "SELECT vintage_in_force(?), classification_of('854110', ?), "
             "classification_of(1012100, ?)",
             [year, year, year],
-        ).fetchone()
+        ).fetchall()[0]
         assert sql_vintage == vintage_in_force(year, HS)
         assert sql_hs6 == classification_of("854110", year, HS)
         assert sql_cn8 == classification_of(1012100, year, HS)
     # Année antérieure au premier millésime : NULL (la fonction Python lève)
-    assert conn.execute("SELECT vintage_in_force(1980)").fetchone()[0] is None
-    assert conn.execute("SELECT product_code(1012100), product_code('ALL')").fetchone() == (
+    assert conn.execute("SELECT vintage_in_force(1980)").fetchall()[0][0] is None
+    assert conn.execute("SELECT product_code(1012100), product_code('ALL')").fetchall()[0] == (
         "01012100", "ALL"
     )
 
@@ -115,5 +115,5 @@ def test_hs_vintage_of_macro_matches_python() -> None:
         conn.execute(statement)
     for year in range(1988, 2031):
         for classification in (f"CN{year}", "HS2017", "HS1992"):
-            sql = conn.execute("SELECT hs_vintage_of(?, ?)", [classification, year]).fetchone()[0]
+            sql = conn.execute("SELECT hs_vintage_of(?, ?)", [classification, year]).fetchall()[0][0]
             assert sql == hs_vintage_of(classification, year, HS)

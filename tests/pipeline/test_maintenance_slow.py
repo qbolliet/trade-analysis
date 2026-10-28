@@ -45,7 +45,7 @@ def _params(**overrides: Any) -> Dict[str, Any]:
 
 def _checksum(conn: Any, qualified: str) -> str:
     """Empreinte du contenu complet, ordonné (``SELECT * ORDER BY``)."""
-    frame = conn.execute(f"SELECT * FROM {qualified} ORDER BY 1, 2").df()
+    frame = conn.execute(f"SELECT * FROM {qualified} ORDER BY ALL").df()
     return hashlib.sha256(frame.to_csv(index=False).encode()).hexdigest()
 
 
@@ -54,7 +54,7 @@ def _live_files(conn: Any, qualified_alias: str, schema: str, table: str) -> int
     data, deletes = conn.execute(
         f"SELECT count(data_file), count(delete_file) "
         f"FROM ducklake_list_files('{qualified_alias}', '{table}', schema => '{schema}')"
-    ).fetchone()
+    ).fetchall()[0]
     return int(data) + int(deletes)
 
 

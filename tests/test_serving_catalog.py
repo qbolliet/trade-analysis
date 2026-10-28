@@ -59,7 +59,7 @@ def test_publish_is_a_single_transaction(serving_world) -> None:
             seen["cells"] = _read(cursor, world, "cells")
             seen["n_reporters"] = cursor.execute(
                 f"SELECT count(*) FROM {world.catalog.qualified_name('reporters')}"
-            ).fetchone()[0]
+            ).fetchall()[0][0]
             seen["cursor"] = cursor
 
         world.catalog.publish(_specs(world, 2.0), "full", before_commit=reader, conn=conn)

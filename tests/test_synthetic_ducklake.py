@@ -34,7 +34,7 @@ def test_comtrade_rows_are_written_then_upserted(
 
     assert write_dataframe(conn, df, keys, catalog_alias=alias, schema="C_A_HS") is True
     assert write_dataframe(conn, df, keys, catalog_alias=alias, schema="C_A_HS") is False
-    count = conn.execute('SELECT count(*) FROM "C_A_HS".fact_table').fetchone()[0]
+    count = conn.execute('SELECT count(*) FROM "C_A_HS".fact_table').fetchall()[0][0]
     assert count == len(df)
 
     # Un second run aligné sur les types de la table existante écrit sans erreur
@@ -45,7 +45,7 @@ def test_comtrade_rows_are_written_then_upserted(
     )
     again = aligned_client.fetch_updates(query, None)
     write_dataframe(conn, again, keys, catalog_alias=alias, schema="C_A_HS")
-    assert conn.execute('SELECT count(*) FROM "C_A_HS".fact_table').fetchone()[0] == len(df)
+    assert conn.execute('SELECT count(*) FROM "C_A_HS".fact_table').fetchall()[0][0] == len(df)
 
 
 def test_comext_rows_follow_the_existing_table(
@@ -81,7 +81,7 @@ def test_comext_rows_follow_the_existing_table(
     assert data["TIME_PERIOD"].dtype == real["TIME_PERIOD"].dtype and data["flow"].dtype == real["flow"].dtype
     write_dataframe(conn, data, keys, catalog_alias=alias, schema="comext")
     write_dataframe(conn, data, keys, catalog_alias=alias, schema="comext")
-    n = conn.execute('SELECT count(*) FROM comext.fact_table').fetchone()[0]
+    n = conn.execute('SELECT count(*) FROM comext.fact_table').fetchall()[0][0]
     assert n == len(data) + len(real)
 
 

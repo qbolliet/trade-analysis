@@ -108,13 +108,13 @@ def test_seed_then_baci_gate_and_reconciliation(
     assert baci_report.flows == len(result) > 50
 
     # Rejouer le remplissage ne change rien (requêtes déjà téléchargées, pas de doublon)
-    before = conn.execute('SELECT count(*) FROM "C_A_HS".fact_table').fetchone()[0]
+    before = conn.execute('SELECT count(*) FROM "C_A_HS".fact_table').fetchall()[0][0]
     download_updates(
         client=client, queries=queries, connector=_FakeConnector(conn, alias),
         structures_path=tmp_path / "structures.json", last_download_path=registry_path,
         bucket=None, max_runtime=None,
     )
-    assert conn.execute('SELECT count(*) FROM "C_A_HS".fact_table').fetchone()[0] == before
+    assert conn.execute('SELECT count(*) FROM "C_A_HS".fact_table').fetchall()[0][0] == before
 
 
 def test_buffered_sharded_download_is_read_by_the_view(

@@ -249,7 +249,7 @@ class ServingCatalog:
             conn.execute(
                 "SELECT count(*) FROM ducklake_list_files(?, ?, schema => ?)",
                 [self.location.catalog_alias, table, self.location.schema],
-            ).fetchone()[0]
+            ).fetchall()[0][0]
         )
 
     # Méthode d'écriture d'une table dans la transaction courante
@@ -297,7 +297,7 @@ class ServingCatalog:
                 )
             conn.execute(f"INSERT INTO {target} BY NAME SELECT * FROM ({sql}){order_by}")
 
-        rows = int(conn.execute(f"SELECT count(*) FROM {target}").fetchone()[0])
+        rows = int(conn.execute(f"SELECT count(*) FROM {target}").fetchall()[0][0])
         return TableStats(
             rows=rows, seconds=time.perf_counter() - start, mode=effective
         )
