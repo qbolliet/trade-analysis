@@ -8,24 +8,30 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 import pytest
 
 from kedro_pipeline.steps.serving import (
     build_context,
+    flow_label_sql,
     individual_partner_sql,
     publish_serving,
+    rank_uncertainty_sql,
     render_sql,
     source_tables,
     synthesis_pivot_sql,
+    total_partner_sql,
 )
 
 from conftest import (
     SERVING_NETWORK_EXPORT_SHIFT,
     SERVING_NETWORK_HHI,
     SERVING_PRODUCTS,
+    SERVING_QUANTITY_FACTOR,
     SERVING_REPORTERS,
     SERVING_YEARS,
+    SERVING_ZERO_QUANTITY_CELL,
     build_serving_world,
     serving_configs,
 )
@@ -72,6 +78,12 @@ def test_all_tables_published_with_metrics(published) -> None:
         assert f"serving/{table}/files" in tracker.metrics
     assert tracker.metrics["serving/mode_full"] == 1.0
     assert tracker.metrics["serving/n_failures"] == 0.0
+    # Métriques de qualité (serving.METRICS) : deux méthodes d'incertitude par cellule
+    # classée (auto_sum, critic_sum), échanges connus pour toutes les lignes en vigueur
+    for name in world.params["METRICS"]:
+        assert f"serving/{name}" in tracker.metrics
+    assert tracker.metrics["serving/cell_scores/uncertainty_coverage_by_reporter"] == 1.0
+    assert tracker.metrics["serving/cell_scores/trade_value_coverage"] == 1.0
 
 
 def test_cell_scores_columns_and_one_row_per_cell(published) -> None:
@@ -79,8 +91,9 @@ def test_cell_scores_columns_and_one_row_per_cell(published) -> None:
     df = _read(world, "cell_scores")
     params = world.params
     expected = {
-        "classification", "hs_vintage", "in_force", "year", "flow", "reporter",
-        "reporter_label", "product", "product_label", "product_level",
+        "classification", "hs_vintage", "in_force", "year", "flow", "flow_label", "reporter",
+        "reporter_label", "reporter_display", "product", "product_label", "product_display",
+        "product_level", "trade_value_eur", "trade_quantity_100kg",
         "HHI", "CDI2", "CDI3", "HHI_ALERT", "WORLD_HHI", "CENTRALITY_RISK",
         "CLUSTERING_W", "SPOF", "SPOF_ALERT",
     }
@@ -89,6 +102,8 @@ def test_cell_scores_columns_and_one_row_per_cell(published) -> None:
             expected |= {f"{method}_score_{level}", f"{method}_rank_{level}"}
     for level in params["LEVELS"]:
         expected |= {f"primary_score_{level}", f"primary_rank_{level}", f"primary_n_{level}"}
+        expected |= {f"rank_{kind}_{level}" for kind in ("min", "max", "q25", "q75", "spread")}
+        expected.add(f"n_methods_{level}")
     expected |= {f"{metric}_norm" for metric in params["NORM_METRICS"]}
     assert expected <= set(df.columns)
     # Méthode non retenue : absente des colonnes
@@ -169,15 +184,28 @@ def test_flows_bounded_to_top_partners(published) -> None:
     assert individual.groupby(cell).size().max() == top
     assert individual["rank"].between(1, top).all()
     aggregates = df[df["is_aggregate"]]
-    assert set(aggregates["partner"]) == {"WORLD", "EXT_EU"}
+    assert set(aggregates["partner"]) == {"WORLD", "EXT_EU", "EXT_EU27_2020"}
     assert aggregates["rank"].isna().all()
+    # Union sans agrégat WORLD : parts rapportées à EXT_EU27_2020 (PARTNERS.TOTAL)
+    union = df[df["reporter"] == "EU27_2020"]
+    assert "WORLD" not in set(union["partner"])
+    assert (union.loc[union["partner"] == "EXT_EU27_2020", "share"].round(9) == 1.0).all()
     # INT_EU27_2020 (agrégat à « _ ») jamais classé comme partenaire individuel
     assert "INT_EU27_2020" not in set(df["partner"])
     world_share = df.loc[df["partner"] == "WORLD", "share"]
     assert (world_share.round(9) == 1.0).all()
     # Rang 1 = premier partenaire (valeur maximale de la cellule)
-    first = individual[individual["rank"] == 1].set_index(cell)["value"].sort_index()
-    assert (first == individual.groupby(cell)["value"].max().sort_index()).all()
+    first = individual[individual["rank"] == 1].set_index(cell)["value_eur"].sort_index()
+    assert (first == individual.groupby(cell)["value_eur"].max().sort_index()).all()
+    # Quantité exposée (facteur fictif), NULL pour la cellule où Comext publie 0
+    reporter, product, flow, year = SERVING_ZERO_QUANTITY_CELL
+    zero = (
+        (df["reporter"] == reporter) & (df["product"] == str(product)) & (df["flow"] == str(flow))
+        & (df["year"] == int(year))
+    )
+    assert zero.any() and df.loc[zero, "quantity_100kg"].isna().all()
+    ratio = df.loc[~zero, "quantity_100kg"] / df.loc[~zero, "value_eur"]
+    assert ratio.round(9).eq(SERVING_QUANTITY_FACTOR).all()
     assert set(df["partner_label"].dropna()) >= {"World", "Country US"}
 
 
@@ -227,7 +255,8 @@ def test_missing_required_source_fails_without_writing(tmp_path: Path) -> None:
     world = build_serving_world(tmp_path, omit=("comext",))
     result = publish_serving(world.tables, world.catalog, params=world.params, runtime=world.runtime)
     assert result["tables"] == []
-    assert "flows" in result["failures"]
+    # cell_scores, première table publiée, lit Comext (échanges totaux) : elle échoue la première
+    assert "cell_scores" in result["failures"]
     with world.catalog.connect() as conn:
         # ROLLBACK complet : aucune table créée, pas même celles écrites avant flows
         assert not any(
@@ -309,3 +338,136 @@ def test_cell_scores_read_real_nomenclature_columns(tmp_path: Path) -> None:
     # Scores de synthèse (en vigueur seulement) : jamais reportés sur une ligne historique
     assert past["primary_score_by_reporter"].isna().all()
     assert df.loc[df["in_force"] & (df["reporter"] != "EU27_2020"), "primary_score_by_reporter"].notna().any()
+
+
+def test_cell_scores_labels_and_trade_totals(published) -> None:
+    world, _, _ = published
+    cells = _read(world, "cell_scores")
+    flows = _read(world, "flows")
+    # Libellé des flux et libellés « code — libellé » des filtres
+    assert dict(zip(cells["flow"], cells["flow_label"])) == {"1": "Import", "2": "Export"}
+    fr = cells[(cells["reporter"] == "FR") & (cells["product"] == "854110")].iloc[0]
+    assert fr["reporter_display"] == "FR — France"
+    assert fr["product_display"] == "854110 — Diodes (HS6)"
+    # Échanges totaux de la cellule = partenaire WORLD de flows (valeur et quantité),
+    # EXT_EU27_2020 pour l'Union qui n'a pas d'agrégat WORLD
+    keys = ["year", "reporter", "product", "flow"]
+    total_partner = flows["reporter"].map(lambda r: "EXT_EU27_2020" if r == "EU27_2020" else "WORLD")
+    world_flows = flows[flows["partner"] == total_partner].set_index(keys)
+    merged = cells.set_index(keys).join(world_flows[["value_eur", "quantity_100kg"]])
+    pd.testing.assert_series_equal(
+        merged["trade_value_eur"], merged["value_eur"], check_names=False
+    )
+    pd.testing.assert_series_equal(
+        merged["trade_quantity_100kg"], merged["quantity_100kg"], check_names=False
+    )
+    assert merged["trade_value_eur"].notna().all()
+    reporter, product, flow, year = SERVING_ZERO_QUANTITY_CELL
+    zero = merged.loc[(int(year), reporter, str(product), str(flow))]
+    assert pd.isna(zero["trade_quantity_100kg"]) and zero["trade_value_eur"] > 0
+
+
+def test_cell_scores_rank_uncertainty_matches_synthesis(published) -> None:
+    """Dispersion des rangs entre méthodes recalculée depuis la table de synthèse fictive."""
+    world, _, _ = published
+    cells = _read(world, "cell_scores")
+    methods = world.params["UNCERTAINTY_METHODS"]
+    synthesis_table = world.tables["synthesis"]
+    connector = world.factory(world.locations[synthesis_table.catalog_alias], None, None)
+    conn = connector.connect()
+    try:
+        synthesis = conn.execute(f"SELECT * FROM {synthesis_table.qualified_name}").df()
+    finally:
+        conn.close()
+    synthesis = synthesis[synthesis["method"].isin(methods)]
+    # Méthodes fictives présentes : auto_sum et critic_sum (pareto et le consensus exclus)
+    assert set(synthesis["method"]) == {"auto_sum", "critic_sum"}
+    synthesis = synthesis.assign(
+        product=synthesis["product"].str.zfill(8).where(synthesis["product"].str.len() > 6,
+                                                        synthesis["product"].str.zfill(6)),
+        year=synthesis["TIME_PERIOD"].astype(str).str[:4].astype(int),
+        flow=synthesis["flow"].astype(str),
+    )
+    keys = ["year", "reporter", "product", "flow"]
+    for level in world.params["LEVELS"]:
+        expected = synthesis.groupby(keys)[f"rank_{level}"].agg(
+            n="count", low="min", high="max",
+            q25=lambda s: s.quantile(0.25), q75=lambda s: s.quantile(0.75),
+        )
+        actual = cells.set_index(keys).loc[expected.index]
+        assert (actual[f"n_methods_{level}"] == expected["n"]).all()
+        assert np.allclose(actual[f"rank_min_{level}"], expected["low"])
+        assert np.allclose(actual[f"rank_max_{level}"], expected["high"])
+        assert np.allclose(actual[f"rank_q25_{level}"], expected["q25"])
+        assert np.allclose(actual[f"rank_spread_{level}"], expected["q75"] - expected["q25"])
+
+
+def _uncertainty_frame(methods, levels=("by_reporter",)) -> pd.DataFrame:
+    """Applique le fragment d'incertitude à une petite table de synthèse calculée à la main."""
+    import duckdb
+
+    rows = [
+        # Cellule A : quatre méthodes retenues, ex aequo (rang moyen 2) compris
+        ("A", "m1", 1.0), ("A", "m2", 2.0), ("A", "m3", 2.0), ("A", "m4", 7.0),
+        # Consensus et méthode hors liste : ignorés
+        ("A", "consensus_borda", 1.0), ("A", "other", 40.0),
+        # Cellule B : accord parfait de trois méthodes
+        ("B", "m1", 3.0), ("B", "m2", 3.0), ("B", "m3", 3.0),
+        # Cellule C : une seule méthode a classé la cellule (m2 absente, m3 non classée)
+        ("C", "m1", 5.0), ("C", "m3", None),
+    ]
+    conn = duckdb.connect()
+    conn.execute("CREATE TABLE s (cell VARCHAR, method VARCHAR, rank_by_reporter DOUBLE)")
+    conn.executemany("INSERT INTO s VALUES (?, ?, ?)", rows)
+    fragment = rank_uncertainty_sql(methods, list(levels))
+    return conn.execute(f"SELECT cell, {fragment} FROM s GROUP BY cell ORDER BY cell").df().set_index("cell")
+
+
+def test_rank_uncertainty_hand_computed() -> None:
+    df = _uncertainty_frame(["m1", "m2", "m3", "m4"])
+    a = df.loc["A"]
+    # Rangs [1, 2, 2, 7] : quantiles à interpolation linéaire (positions 0,75 et 2,25)
+    assert a["n_methods_by_reporter"] == 4
+    assert (a["rank_min_by_reporter"], a["rank_max_by_reporter"]) == (1.0, 7.0)
+    assert a["rank_q25_by_reporter"] == pytest.approx(1.75)
+    assert a["rank_q75_by_reporter"] == pytest.approx(3.25)
+    assert a["rank_spread_by_reporter"] == pytest.approx(1.5)
+    # Accord parfait : dispersion nulle
+    b = df.loc["B"]
+    assert b["n_methods_by_reporter"] == 3 and b["rank_spread_by_reporter"] == 0.0
+    # Un seul rang : aucune dispersion mesurable, colonnes NULL
+    c = df.loc["C"]
+    assert c["n_methods_by_reporter"] == 1
+    assert c[[f"rank_{k}_by_reporter" for k in ("min", "max", "q25", "q75", "spread")]].isna().all()
+
+
+def test_rank_uncertainty_all_non_consensus_methods() -> None:
+    df = _uncertainty_frame(None)
+    # Sans liste : toutes les méthodes hors consensus, « other » comprise
+    a = df.loc["A"]
+    assert a["n_methods_by_reporter"] == 5
+    assert a["rank_max_by_reporter"] == 40.0 and a["rank_min_by_reporter"] == 1.0
+
+
+def test_rank_uncertainty_rejects_bad_input() -> None:
+    with pytest.raises(ValueError):
+        rank_uncertainty_sql(["auto_sum'; DROP TABLE x"], ["by_reporter"])
+    with pytest.raises(ValueError):
+        rank_uncertainty_sql([], ["by_reporter"])
+    with pytest.raises(ValueError):
+        rank_uncertainty_sql(None, ["by_country"])
+
+
+def test_total_partner_sql() -> None:
+    in_list, priority = total_partner_sql(["WORLD", "EXT_EU27_2020"])
+    assert in_list == "'WORLD', 'EXT_EU27_2020'"
+    assert priority == "CASE partner WHEN 'WORLD' THEN 0 WHEN 'EXT_EU27_2020' THEN 1 END"
+    with pytest.raises(ValueError):
+        total_partner_sql([])
+
+
+def test_flow_label_sql() -> None:
+    assert flow_label_sql({}) == "g.flow"
+    assert flow_label_sql({"1": "Import d'O"}, "flow") == "CASE flow WHEN '1' THEN 'Import d''O' ELSE flow END"
+    with pytest.raises(ValueError):
+        flow_label_sql({"1": "Import"}, "g.flow; DROP")

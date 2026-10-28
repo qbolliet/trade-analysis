@@ -50,6 +50,7 @@
 | 2026-10-11 (K-15) | **Rendu Argo implémenté** : `config/base/argo.yml` (partie argo-kedro + bloc projet `workflow` : service account, `parallelism: 8`, planifications, délais, reprises par motif, dépendances strictes, environnement et secrets), `kedro_pipeline/deploy/{config,render}.py` (`build_dag` seul appelant de `get_argo_dag`, `TaskSpec`, `exit_task`, `cron_schedule`, `schedule_field`, `render_manifests`, `diff_manifests`), gabarits `kedro_pipeline/deploy/templates/*.yaml.j2` (délimiteurs Jinja en crochets), `kedro trade render-argo [--env] [--image-tag] [--output-dir] [--check]`, `kubernetes/generated/` (3 manifestes + README), contrôle en CI, tests `tests/deploy/` (fichiers de référence jouets, pipeline réel, schéma JSON minimal, `jsonschema` en groupe `dev`). Constats : `kedro run` est **toujours** la commande d'argo-kedro (les commandes globales de plugin passent avant les commandes projet) et ignore `--params` ; `python -m kedro_pipeline` était cassé (`find_run_command` cherche `kedro_pipeline.cli.run`) → **commande `run` projet** (FusedRunner + `runtime_params`), appelée par les pods ; hook argo-kedro réactivé, repli `context.argo` de `TradeRunHooks` retiré ; surcharge d'`entrypoint` / `activeDeadlineSeconds` par `workflowSpec` avec `workflowTemplateRef` confirmée sur le source v3.6.10 (`JoinWorkflowSpec` : Workflow > WorkflowTemplate > défauts). Écarts : **`KEDRO_ENV` figé** à l'environnement du rendu (plus de paramètre `kedro-env` : le fan-out BACI en dépend ; démo rendue hors dépôt), paramètre **`extra-params`** au lieu de `max-runtime-hours`, mutex portés par des enveloppes `steps` (motif validé par la transition), `emph_storage` non rendu, étiquette d'image par défaut `qb-vulnerabilities` (`imagePullPolicy: Always`) à épingler en K-17, pas d'annotation de SHA (sortie indépendante du commit) | PD-14, PS-03, PS-11, PS-20, PS-21 |
 | 2026-10-15 (K-17c) | **Bases vierges, règles de décision uniques** : la production repart de catalogues, registres de téléchargement et registres de fraîcheur vierges ; retrait de tout code de cohabitation avec d'anciennes bases (registres de fraîcheur v1 et adoption des empreintes, `tools/migrate_indicators_key.py`, alignement de `label_for`, repli dérivé des colonnes de nomenclature du service, chemins `LAST_COMPUTATION_PATH` / `LAST_PROCESSING_PATH`, registres globaux de synthèse et de cohérence) et des modes `legacy` / `shadow` (`STATE.DECISION_MODE`) ; les partenaires et BACI décident sur `UpstreamMark` (`upstream_mark_is_newer`), la synthèse sur ses curseurs DuckLake ; `RECENT_PERIODS` et `UpstreamMarks` retirés. Conservé : le repli par dates de `upstream_mark_is_newer` quand `statflows` n'a relevé aucun snapshot (écriture sans rapport), `upstream_is_newer` pour les cascades aval (réseau, cohérence). PQ-22 résolu | PD-10, PD-12, PS-10, PS-17, §5.3, §8, §12 |
 | 2026-10-28 | **Renommage du package de méthodologie `macroforecast` → `tradestat`** (`tradekit` pris sur PyPI) : renommage franc, sans recalcul (`revision` inchangées, `code_hash` accepté), `scope.pkl` à régénérer | PD-25 |
+| 2026-10-28 (K-03c v2) | **Tableau de bord « Vulnérabilités » v2** : parcours unique « une année, un flux, un pays OU un produit » (deux onglets, un tableau classé et deux courbes chacun) ; **incertitude du rang consensus par dispersion entre méthodes** calculée dans `serving` (`rank_min/max/q25/q75/spread_<niveau>`, `n_methods_<niveau>`, `UNCERTAINTY_METHODS`) ; `cell_scores` gagne `flow_label`, `*_display`, `trade_value_eur`, `trade_quantity_100kg` ; `flows` expose `value_eur` et `quantity_100kg` (rupture : `value` renommée) ; agrégats « total » ordonnés `PARTNERS.TOTAL` (Comext ne publie pas `WORLD` pour `EU27_2020`, seulement `EXT_EU27_2020`) ; métriques de qualité `serving.METRICS` ; top N des courbes par datasets virtuels Jinja (`ENABLE_TEMPLATE_PROCESSING`) ; archive importable `tools/superset_bundle.py` (option `--schema`) | PD-26, PS-29.2, PS-30, §5.8 |
 
 ## Sommaire
 
@@ -1608,6 +1609,68 @@ avant le renommage n'est plus lisible (`ModuleNotFoundError: macroforecast`). Il
 chaque préparation BACI ; les bases demo sont vidées en K-17d. Pour un futur renommage en
 production : régénérer le périmètre avant toute lecture, ou lire avec un `Unpickler`
 dont `find_class` redirige l'ancien nom de module.
+
+### PD-26 — Incertitude du rang consensus par dispersion entre méthodes
+
+**Contexte.** Le tableau de bord classe produits et pays par le rang consensus
+(`consensus_borda`). Un rang seul ne dit pas s'il est robuste : deux produits voisins
+peuvent être classés de façon très différente selon la méthode de synthèse retenue.
+
+**Décision.**
+- **Définition.** L'incertitude du rang d'une cellule, à un niveau donné (`by_reporter` :
+  produits d'un pays ; `by_product` : pays d'un produit), est la **dispersion des rangs**
+  que lui attribuent les méthodes de synthèse de `serving.UNCERTAINTY_METHODS` au même
+  niveau. Elle est exposée par `rank_min_<niveau>`, `rank_max_<niveau>`,
+  `rank_q25_<niveau>`, `rank_q75_<niveau>` et `rank_spread_<niveau>` (= q75 − q25), plus
+  `n_methods_<niveau>`, le nombre de méthodes ayant classé la cellule.
+  - Les quantiles sont à interpolation linéaire (`quantile_cont`, comme le défaut de
+    numpy).
+  - Les cinq colonnes de rang valent `NULL` sous deux méthodes : un rang isolé ne dit rien
+    de l'accord entre méthodes.
+  - Le tableau de bord l'affiche sous la forme « [q25–q75] (n) ».
+- **Lieu du calcul.** Dans le SQL de la couche de service (fragment `$rank_uncertainty`,
+  agrégats filtrés sur la même lecture de `synthesis`). Aucun calcul supplémentaire dans
+  la synthèse, aucun bootstrap du consensus.
+- **Méthodes retenues par défaut** : `auto_sum`, `auto_geo`, `critic_sum`, `entropy_sum`,
+  `topsis_critic`, `vikor_critic`, `whitened`, `mpi`, `rank_mean`, `bod`. Les règles sont
+  les suivantes ; les chiffres viennent du catalogue demo, sur le plus grand bloc
+  d'ex aequo d'un groupe, en part du groupe :
+
+  | Méthodes | Traitement | Raison |
+  |---|---|---|
+  | `consensus_*` | exclues | ce sont les règles d'agrégation elles-mêmes |
+  | `pareto` | exclue | couches de dominance ; plus grand bloc d'ex aequo de 14 % du groupe (`by_reporter`) et 18 % (`by_product`) |
+  | `cone_quantile` | exclue | probabilités discrètes ; blocs de 11 % et 28 % |
+  | `smaa` | exclue | probabilités discrètes ; blocs de 17 % et 85 % |
+  | `pareto_global`, `kantorovich` | exclues | aucun rang hors du niveau global |
+  | méthodes retenues | incluses | blocs de 2 à 12 % du groupe |
+
+  Les méthodes exclues pour ex aequo reçoivent des rangs moyens qui écrasent les quantiles
+  et ne sont pas comparables à un classement strict. `null` prend toutes les méthodes
+  non-consensus présentes.
+
+**Limites.**
+- **Pas une incertitude d'échantillonnage** : elle mesure le désaccord entre méthodes
+  (incertitude de modèle), pas la variabilité des données. Une dispersion nulle signifie
+  que les méthodes s'accordent, pas que le rang est exact.
+- **Peu de méthodes au niveau `by_product`.** Les méthodes pondérées ne sont pas ajustées
+  sur les groupes d'environ 22 pays (sous `min_group_size: 30`). La dispersion y repose sur
+  `bod`, `mpi` et `rank_mean` (n = 3), contre n = 10 au niveau `by_reporter`.
+- **Supports de rang.** Le rang d'une méthode porte sur les cellules qu'elle a classées. Le
+  consensus porte sur celles que toutes ont classées. Les deux supports coïncident, sauf
+  dans 2 groupes `by_reporter` sur 270 en demo (écart d'environ une cellule).
+- **Niveaux mélangés.** SH6 et NC8 sont classés ensemble, comme dans la synthèse.
+- **Ordres de grandeur en demo.** Au niveau `by_reporter`, l'écart interquartile médian
+  vaut 12,25 rangs, sur environ 100 produits par pays. Il est nul pour 178 cellules, dont
+  14 où les dix méthodes donnent le même rang. Au niveau `by_product`, l'écart médian vaut
+  1,5 rang, sur environ 22 pays.
+
+**Alternatives écartées.**
+- *Bootstrap du consensus* : coût d'une synthèse complète par rééchantillon, pour une
+  incertitude d'une autre nature.
+- *Intervalle bootstrap des méthodes principales* (`rank_low_` et `rank_high_` de
+  `critic_sum` et `auto_sum`) : il est propre à deux méthodes et absent du niveau
+  `by_product` en demo.
 
 ---
 
@@ -3934,12 +3997,17 @@ serving:
   LEVELS: [by_reporter, by_product]
   PRIMARY_METHOD: consensus_borda
   TOP_PARTNERS: 12
+  UNCERTAINTY_METHODS: [auto_sum, auto_geo, critic_sum, entropy_sum, topsis_critic,
+                        vikor_critic, whitened, mpi, rank_mean, bod]   # PD-26 ; null = hors consensus
+  FLOW_LABELS: {"1": Import, "2": Export}
   CELL_FILTER: indicators = 'VALUE_IN_EUROS' AND freq = 'A'   # sur p (indicators)
-  COMEXT_FILTER: idem sur c (DS_045409)
+  COMEXT_FILTER: indicators IN ('VALUE_IN_EUROS', 'QUANTITY_IN_100KG') AND freq = 'A'   # sur c
   NORM_METRICS: [HHI, CDI2, CDI3, WORLD_HHI, CENTRALITY_RISK, CLUSTERING_W, SPOF]
   NORM_PARTITION: [flow, year]
-  PARTNERS: {WORLD: WORLD, EXTRA_EU: EXT_EU, AGGREGATE_CODES: [WORLD, QW], EXCLUDE_UNDERSCORE: true}
+  PARTNERS: {WORLD: WORLD, EXTRA_EU: EXT_EU, AGGREGATE_CODES: [WORLD, QW], EXCLUDE_UNDERSCORE: true,
+             TOTAL: [WORLD, EXT_EU27_2020]}   # total avec le monde, par ordre de préférence
   OPTIONAL_SOURCES: {...}      # référentiels, network, synthesis, diagnostics
+  METRICS: {<nom>: <SQL scalaire>}   # métriques de qualité serving/<nom>, après publication
   MLFLOW: {TRACKING_URI: null, EXPERIMENT: serving}
   TABLES: {<table>: {PARTITIONED, SORT_BY, SQL}}     # gabarits string.Template
 ```
@@ -3949,7 +4017,8 @@ Les gabarits SQL référencent les tables sources par variables (`$indicators`, 
 `$ref_comtrade_products|reporters`, `$hs_concordance`, `$hs_vintages`), résolues par
 `kedro_pipeline.steps.serving.source_tables` depuis les fichiers de configuration des
 étapes amont (schémas `demo_*` du profil compris) ; les fragments `$synthesis_pivot`,
-`$norm_columns`, `$individual_partner`, `$top_partners`… sont générés depuis les
+`$rank_uncertainty` (PD-26), `$flow_label`, `$norm_columns`, `$individual_partner`,
+`$top_partners`, `$total_partners` / `$total_priority`… sont générés depuis les
 paramètres ; les macros de session `vintage_in_force(y)`, `classification_of(p, y)` et
 `product_code(p)` sont générées depuis `runtime.NOMENCLATURES.HS`
 (`kedro_pipeline.config.nomenclature_macros_sql`).
@@ -3973,14 +4042,21 @@ paramètres ; les macros de session `vintage_in_force(y)`, `classification_of(p,
 
 | Table | Grain | Colonnes |
 |---|---|---|
-| `cell_scores` (partitionnée `year`, tri `year, reporter, product`) | (classification, reporter, product, flow, year) | `classification`, `hs_vintage`, `in_force`, `year`, `time_period`, `freq`, `flow`, `indicators`, `reporter`, `reporter_label`, `product`, `product_label`, `product_level`, `HHI`, `CDI2`, `CDI3`, `WORLD_HHI`, `CENTRALITY_RISK`, `CLUSTERING_W`, `SPOF`, `<métrique>_ALERT` (×7), `<méthode>_score_<niveau>` et `<méthode>_rank_<niveau>` (METHODS × LEVELS), `primary_score_<niveau>`, `primary_rank_<niveau>`, `primary_n_<niveau>`, `<métrique>_norm` (min-max par `flow, year`, NORM_METRICS) |
+| `cell_scores` (partitionnée `year`, tri `year, reporter, product`) | (classification, reporter, product, flow, year) | `classification`, `hs_vintage`, `in_force`, `year`, `time_period`, `freq`, `flow`, `flow_label` (`FLOW_LABELS`), `indicators`, `reporter`, `reporter_label`, `reporter_display` (« code — libellé »), `product`, `product_label`, `product_level`, `product_display`, `trade_value_eur` et `trade_quantity_100kg` (échanges totaux avec le monde : premier agrégat de `PARTNERS.TOTAL` ; lignes en vigueur seulement ; quantité `NULL` si Comext publie 0 pour une valeur positive), `HHI`, `CDI2`, `CDI3`, `WORLD_HHI`, `CENTRALITY_RISK`, `CLUSTERING_W`, `SPOF`, `<métrique>_ALERT` (×7), `<méthode>_score_<niveau>` et `<méthode>_rank_<niveau>` (METHODS × LEVELS), `primary_score_<niveau>`, `primary_rank_<niveau>`, `primary_n_<niveau>`, `n_methods_<niveau>`, `rank_min_<niveau>`, `rank_max_<niveau>`, `rank_q25_<niveau>`, `rank_q75_<niveau>`, `rank_spread_<niveau>` (incertitude du rang consensus, PD-26 ; `NULL` sous deux méthodes), `<métrique>_norm` (min-max par `hs_vintage, flow, year`, NORM_METRICS) |
 | `coherence_metrics` | contexte × niveau × groupe × statistique × paire | `classification`, `hs_vintage`, `year`, `time_period`, `freq`, `flow`, `indicators`, `level`, `reporter` (NULL si ALL), `product` (NULL si ALL), `statistic`, `metric_a`, `metric_b`, `value`, `n` |
 | `coherence_methods` | idem | mêmes colonnes avec `method_a`, `method_b` (pour `lomo_*` et `score_metric_tau`, `method_b` est une métrique) |
-| `flows` (partitionnée `year`, tri `year, product, reporter`) | (reporter, product, flow, year, partner) | `classification`, `hs_vintage`, `year`, `reporter`, `reporter_label`, `product`, `product_label`, `product_level`, `flow`, `partner`, `partner_label`, `is_aggregate`, `value`, `share` (/ WORLD), `rank` (1 = premier partenaire ; NULL pour WORLD et EXT_EU) — `TOP_PARTNERS` partenaires individuels + WORLD + EXT_EU |
+| `flows` (partitionnée `year`, tri `year, product, reporter`) | (reporter, product, flow, year, partner) | `classification`, `hs_vintage`, `year`, `reporter`, `reporter_label`, `product`, `product_label`, `product_level`, `flow`, `partner`, `partner_label`, `is_aggregate`, `value_eur`, `quantity_100kg` (NULL si Comext publie 0 pour une valeur positive), `share` (`value_eur` / premier agrégat de `PARTNERS.TOTAL`), `rank` (1 = premier partenaire en valeur ; NULL pour les agrégats) — `TOP_PARTNERS` partenaires individuels + WORLD + EXT_EU + agrégats de `PARTNERS.TOTAL` |
 | `products` | (source, classification, code) | `source`, `classification`, `code`, `label`, `level`, `parent_code` |
 | `countries` | (source, code) | `source`, `code`, `label`, `iso3`, `m49`, `is_aggregate`, `is_reporter`, `is_partner` |
 | `hs_concordance` | clé de PS-28.4 | `source_classification`, `source_code`, `target_classification`, `target_code`, `relationship`, `checksum` |
 | `hs_vintages` | `classification` | `classification`, `entry_year`, `in_force_until` |
+
+Contrôles de publication (K-03c v2) : métriques `serving/cell_scores/uncertainty_coverage_<niveau>`
+et `serving/cell_scores/trade_value_coverage` (`serving.METRICS`, avertissement sous 0,95)
+et `serving/flows/rows > 0`. Mesuré en demo : couverture de l'incertitude 100 %
+(`by_reporter` : n = 10 pour 26 359 cellules classées, 3 pour 49 ; `by_product` : n = 3),
+échanges totaux pour 99,9 % des lignes en vigueur (180 cellules sans agrégat total dans
+Comext).
 
 `flow` vaut `'1'` (import) / `'2'` (export), en texte. Les métriques réseau de
 `cell_scores` sont jointes **aussi sur le flux** (`net.flow = g.flow`, après conversion
@@ -4071,6 +4147,9 @@ Superset. Au-delà, leviers dans l'ordre : cache des graphiques, `TOP_PARTNERS`,
    actifs par défaut ; la *drill to detail* aussi.
 
 #### PS-30.2 Structure : un tableau de bord, deux onglets, un parcours
+
+> **Remplacé par la structure v2 (PS-30.6, K-03c v2, 2026-10-28).** La structure
+> ci-dessous (v1, K-03c) est conservée pour l'historique.
 
 **Filtres natifs** (barre de gauche, appliqués aux deux onglets) : `reporter` (défaut
 `FR`), `year` (défaut : dernière année disponible, via *Default value → Last value*
@@ -4184,6 +4263,91 @@ natifs — exporté sous `superset/vulnerabilites/`, guide détaillé (mécanism
   « Cohérence pays × produit » en table plate plutôt qu'en *Pivot Table v2* ; graphiques
   PS-30.3 ajoutés (nuage HHI × CDI2, concordance des méthodes via `kendall_tau_b`, table
   de divergence des méthodes exposées, encadré méthodologique).
+
+#### PS-30.6 Structure v2 : parcours « un pays OU un produit » (K-03c v2, 2026-10-28)
+
+**Parcours.** Pour une année et un flux, l'utilisateur interroge soit un pays (onglet
+**Par pays**, `TAB-PAYS`), soit un produit (onglet **Par produit**, `TAB-PRODUIT`). Il y a un
+onglet par type de requête, car un tableau ne change pas de colonnes selon un filtre.
+Chaque onglet contient, de haut en bas :
+1. un bloc Markdown d'aide : lecture du rang (1 = le plus vulnérable), de l'incertitude
+   (PD-26) et sources ;
+2. un **tableau** trié par rang consensus croissant, à pagination serveur par 50 lignes ;
+3. deux **courbes** côte à côte.
+
+Le tableau lit `cell_scores` et affiche, dans l'ordre :
+1. code et libellé ;
+2. rang consensus (`primary_rank_<niveau>`) ;
+3. incertitude « [q25–q75] (n) » (colonne calculée `rank_iqr_<niveau>`) et
+   `rank_spread_<niveau>` ;
+4. score de consensus `1 − (rang − 1)/(n − 1)`. Le score brut de `consensus_borda` vaut
+   −rang ;
+5. les sept métriques, en rouge au-delà de leur seuil d'alerte (seuils de
+   `metric_alert_thresholds`, règle `>`), puis le nombre d'alertes.
+
+Le niveau est `by_reporter` (produits d'un pays) dans l'onglet Par pays, et `by_product`
+(pays d'un produit) dans l'onglet Par produit. Les deux courbes portent sur les unités les
+plus vulnérables :
+- les **échanges avec le monde** (`trade_value_eur` ou `trade_quantity_100kg`) ;
+- une **métrique** au choix (rang consensus par défaut, incertitude, score de consensus ou
+  l'une des sept métriques).
+
+**Filtres natifs** : sept par onglet, portés par onglet (`scope.rootPath`), chacun avec
+une valeur par défaut **explicite**.
+
+| Filtre | Colonne | Défaut | Portée |
+|---|---|---|---|
+| Année | `year` | dernière année classée (2021 en demo) ; `tools/superset_bundle.py --default-year` | tout l'onglet |
+| Flux | `flow_label` | Import | tout l'onglet |
+| Pays ou Produit | `reporter_display` ou `product_display` (« code — libellé ») | FR ; 850760 | tout l'onglet |
+| Nomenclature en vigueur | `in_force` | vrai | tout l'onglet |
+| Ajouter des produits / pays | `product_display` ou `reporter_display` | vide (multiple) | courbes seulement |
+| Grandeur | `measure` (dataset `series_options`) | Valeur (€) | courbe des échanges |
+| Métrique | `metric` (dataset `series_options`) | Rang consensus | courbe des métriques |
+
+Aucun filtre de niveau de nomenclature : SH6 et NC8 restent classés ensemble, comme dans
+la synthèse.
+
+**Mécanisme du top N.** Un filtre natif n'a pas de valeur par défaut dynamique. Les courbes
+lisent donc quatre datasets virtuels Jinja : `trade_series_by_reporter`,
+`metric_series_by_reporter`, `trade_series_by_product` et `metric_series_by_product`.
+1. Le gabarit lit les filtres par `filter_values('<colonne>', remove_filter=True)` et les
+   applique lui-même ; la requête englobante n'est pas filtrée.
+2. Il retient les `top_n` unités de meilleur rang l'année choisie. `top_n` vaut 5 et est
+   porté par les `template_params`.
+3. Il y ajoute les unités du filtre « Ajouter ».
+4. Il renvoie leurs séries sur toutes les années. La grandeur est choisie par un
+   dictionnaire Jinja libellé → colonne, et les libellés sont cités par `|where_in`.
+
+Ce mécanisme requiert `FEATURE_FLAGS["ENABLE_TEMPLATE_PROCESSING"] = True` dans
+`superset_config.py`, à porter par le chart Helm (K-17g). Il a été écarté au profit d'une
+colonne `top_n_<niveau>` calculée dans `serving` sur une année de référence fixe, qui ne
+suivrait pas l'année choisie. Un filtre portant sur une colonne absente d'un dataset est
+ignoré par Superset : c'est ce qui permet d'appliquer un même filtre au tableau et aux
+courbes par le nom de colonne.
+
+**Assets as code.** Le tableau de bord est construit par l'API, puis exporté sous
+`superset/vulnerabilites/`, les datasets visant le schéma de production `dashboard`. Il est
+réimporté à partir de l'archive de `tools/superset_bundle.py` :
+- `--schema demo_dashboard` substitue le schéma dans la clé `schema` et dans le SQL des
+  datasets virtuels ;
+- `--default-year` règle l'année par défaut ;
+- `--top-n` règle le nombre d'unités ;
+- l'outil valide les références croisées, les UUID de la mise en page et l'absence de mot
+  de passe.
+
+C'est l'outil du Job d'import de K-17g.
+
+**Mesures (demo, 2026-10-28, à froid, `force=true`)** :
+- tableaux : 0,8 à 1,1 s ;
+- courbes : 2,0 à 2,6 s, car elles lisent toutes les années d'un pays ou d'un produit et
+  ne s'appuient que sur les statistiques min/max du tri.
+
+Tout est sous l'objectif de 5 s (PS-29.4).
+
+**Éléments retirés de la v1** : 18 graphiques, les datasets `flows`, `coherence_metrics`,
+`coherence_methods`, `products`, `countries` et `cell_scores_metrics_long`. Les tables
+correspondantes restent publiées pour SQL Lab.
 
 ### PS-31 — Rapport de run MLflow (supervision)
 
@@ -4587,8 +4751,17 @@ nécessaire.
   `weekly` (synthèse, cohérence, réseau). Si un graphique affiche des données
   anciennes : vider le cache du graphique (*… → Force refresh*) ; le cache expire de
   toute façon après 24 h (PS-30.1).
-- Après modification du tableau de bord dans l'interface : *Export* → remplacer le
-  dossier `superset/vulnerabilites/` → commit. Après changement de tables de service
+- Après modification du tableau de bord dans l'interface :
+  1. *Export* ;
+  2. remplacer `charts/`, `datasets/` et `dashboards/` de `superset/vulnerabilites/`,
+     datasets ramenés au schéma `serving.dashboard` ;
+  3. vérifier par `python tools/superset_bundle.py superset/vulnerabilites -o /tmp/x.zip` ;
+  4. commit.
+
+  Réimport : archive de `tools/superset_bundle.py`, avec `--schema demo_dashboard` pour la
+  démonstration et `--default-year`, puis `POST /api/v1/dashboard/import/` ou
+  `superset import-dashboards` (PS-30.6). Les courbes exigent
+  `ENABLE_TEMPLATE_PROCESSING` dans `superset_config.py`. Après changement de tables de service
   (`parameters_serving.yml`) : republier (`argo submit … --entrypoint daily`, le
   changement de colonnes force le mode `full`) puis, dans Superset, *Datasets → Sync
   columns from source*.
@@ -4650,7 +4823,7 @@ ni le cluster.
 | PR-12 | Coût mémoire de JAX/Kantorovitch en parallèle `loky` | Moyenne / moyen | `n_jobs` spécifique à la méthode (`kantorovich` exécuté en séquentiel dans le processus parent), préallocation XLA désactivée |
 | PR-13 | Image lourde (JAX + MLflow 3) : démarrage de pod lent | Certaine / faible | Cache de nœud, `imagePullPolicy: IfNotPresent` avec étiquettes immuables (SHA) |
 | PR-14 | Version de DuckDB / de l'extension `ducklake` de l'image Superset **incompatible** avec celle du pipeline (catalogue illisible, ou lisible mais écrit dans un format plus récent) | Moyenne / fort pour la démonstration | Vérification en tête de K-03c (PS-30.1 point 0) ; épingler `duckdb==1.5.3` dans la configuration du chart ; toute montée de version DuckDB du pipeline s'accompagne de celle de Superset (§5.8). *(Vérifié en K-03c, 2026-09-22, conditions réelles : DuckDB 1.5.5 (Superset) lit sans erreur un catalogue `serving` écrit par DuckDB 1.5.3 (pipeline, cette même exécution) — `SHOW ALL TABLES`, `DESCRIBE`, lecture filtrée correctes ; écriture refusée. **Compatible en l'état, aucun épinglage nécessaire.** À revérifier à chaque montée de version de l'un des deux côtés.)* |
-| PR-15 | Latence des graphiques Superset (lecture de Parquet sur S3 à chaque requête non mise en cache) sur les volumes de production (`cell_scores` ~30 M, `flows` ~80 M lignes) | Moyenne / moyen | Partitionnement par `year` et tri d'insertion (PS-29.1), cache des graphiques 24 h, `TOP_PARTNERS`, `serving.YEARS_BACK`, `threads`/`memory_limit` de la connexion ; en dernier recours, tables d'agrégats dédiées dans `serving`. *(Mesuré en K-03c, 2026-09-22, volumes `demo` — `cell_scores` ~0,29 M lignes, `flows` ~2,8 M : requête filtrée `year`+`reporter` — **0,24 s à froid, 0,04 s à chaud** (SQL Lab, `threads=4`, `memory_limit=4GB`). Largement sous l'objectif de 5 s ; à remesurer aux volumes de production (K-17).)* |
+| PR-15 | Latence des graphiques Superset (lecture de Parquet sur S3 à chaque requête non mise en cache) sur les volumes de production (`cell_scores` ~30 M, `flows` ~80 M lignes) | Moyenne / moyen | Partitionnement par `year` et tri d'insertion (PS-29.1), cache des graphiques 24 h, `TOP_PARTNERS`, `serving.YEARS_BACK`, `threads`/`memory_limit` de la connexion ; en dernier recours, tables d'agrégats dédiées dans `serving`. *(Mesuré en K-03c, 2026-09-22, volumes `demo` — `cell_scores` ~0,29 M lignes, `flows` ~2,8 M : requête filtrée `year`+`reporter` — **0,24 s à froid, 0,04 s à chaud** (SQL Lab, `threads=4`, `memory_limit=4GB`). Largement sous l'objectif de 5 s ; à remesurer aux volumes de production (K-17).)* *(Remesuré en K-03c v2, 2026-10-28, tableau de bord v2 en demo, à froid : tableaux 0,8 à 1,1 s ; courbes, qui lisent toutes les années d'un pays ou d'un produit, 2,0 à 2,6 s.)* |
 | PR-16 | Tables `indicators` multipliées par ~3,6 au niveau SH6 (PD-20) : durée du calcul partenaires et volume | Certaine / faible | `VINTAGES` configurable, calcul incrémental par unité, partition par `classification` |
 | PR-17 | Recouvrement `daily`/`weekly` : `publish_serving` lu pendant une publication | Faible / faible | Publication en une transaction DuckLake (Superset lit le snapshot précédent jusqu'au `COMMIT`) ; mutex Argo (écrivain unique) |
 | PR-18 | Code reporter `EU27_2020` absent ou différent dans DS-045409 | Moyenne / moyen | PQ-17 : vérification de la codelist au premier téléchargement ; repli : agrégation des membres avec partenaires extra-UE seulement (documentée comme approximation) |

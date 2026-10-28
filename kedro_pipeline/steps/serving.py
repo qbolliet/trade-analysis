@@ -9,6 +9,12 @@ configurations of the upstream steps (``demo_*`` schemas of the profile
 included), and the generated fragments (synthesis pivot, normalised columns,
 partner predicate) come from the parameters.
 
+The synthesis fragments also carry the uncertainty of the consensus rank:
+for each exposed level, the spread of the ranks the uncertainty methods give
+to the same cell (minimum, maximum, quartiles, interquartile range and number
+of contributing methods). It measures the disagreement between synthesis
+methods, not a sampling uncertainty.
+
 The nomenclature columns (``classification``, ``hs_vintage``, ``in_force`` of
 the partner table, ``hs_vintage`` of the synthesis and coherence tables) are
 read as written by the upstream steps.
@@ -24,6 +30,7 @@ from string import Template
 from typing import Any, Dict, List, Mapping, Optional, Sequence, Set, Tuple
 
 # Modules internes
+from tradestat.trade.aggregation.synthesis import CONSENSUS_PREFIX
 from kedro_pipeline.config import nomenclature_macros_sql
 from kedro_pipeline.io.ducklake import DuckLakeLocation
 from kedro_pipeline.io.serving import ServingCatalog, ServingTableSpec
@@ -235,6 +242,110 @@ def synthesis_pivot_sql(
     return ",\n".join(columns)
 
 
+# Fonction de génération des colonnes d'incertitude du rang consensus
+def rank_uncertainty_sql(
+    methods: Optional[Sequence[str]],
+    levels: Sequence[str],
+    *,
+    alias: str = "s",
+) -> str:
+    """Generate the select list of the spread of ranks between synthesis methods.
+
+    For each level, the ranks given to the cell by the selected methods are
+    summarised in ``rank_min_<level>``, ``rank_max_<level>``,
+    ``rank_q25_<level>``, ``rank_q75_<level>`` (linear interpolation, as
+    ``quantile_cont`` and numpy's default) and ``rank_spread_<level>``
+    (``q75 - q25``), plus ``n_methods_<level>``, the number of methods that
+    ranked the cell. The five rank columns are ``NULL`` when fewer than two
+    methods ranked the cell: a single rank says nothing about the agreement
+    between methods. Meant for a query grouped by the cell keys, like
+    :func:`synthesis_pivot_sql`.
+
+    Args:
+        methods: Values of the ``method`` column taken into account; ``None``
+            takes every method except the consensus pseudo-methods (prefixed
+            ``consensus_``), which aggregate the others.
+        levels: Comparison levels (``by_product``, ``by_reporter``,
+            ``global``).
+        alias: Alias of the synthesis table in the query.
+
+    Returns:
+        Comma-separated aggregate expressions.
+
+    Raises:
+        ValueError: If a method, level or alias is not a plain identifier, a
+            level is unknown, or the method list is empty.
+
+    Examples:
+        >>> sql = rank_uncertainty_sql(["auto_sum", "mpi"], ["by_reporter"])
+        >>> print(sql.splitlines()[0])
+        count(s."rank_by_reporter") FILTER (WHERE s."method" IN ('auto_sum', 'mpi')) AS "n_methods_by_reporter",
+        >>> "NOT starts_with" in rank_uncertainty_sql(None, ["by_product"])
+        True
+    """
+    alias = _identifier(alias, "alias")
+    for level in levels:
+        if level not in _LEVELS:
+            raise ValueError(f"Unknown level '{level}', expected one of {_LEVELS}")
+
+    # Prédicat de sélection des méthodes (liste explicite, ou toutes hors consensus)
+    if methods is None:
+        predicate = f"NOT starts_with({alias}.\"method\", '{_literal(CONSENSUS_PREFIX)}')"
+    else:
+        if not methods:
+            raise ValueError("UNCERTAINTY_METHODS must be null or a non-empty list")
+        names = ", ".join(f"'{_identifier(method, 'method')}'" for method in methods)
+        predicate = f"{alias}.\"method\" IN ({names})"
+
+    columns: List[str] = []
+    for level in levels:
+        rank = f'{alias}."rank_{level}"'
+        n_methods = f"count({rank}) FILTER (WHERE {predicate})"
+
+        # Fonction de génération d'une statistique, NULL sous deux méthodes
+        def _statistic(expression: str, name: str) -> str:
+            return f'CASE WHEN {n_methods} >= 2 THEN {expression} END AS "{name}"'
+
+        q25 = f"quantile_cont({rank}, 0.25) FILTER (WHERE {predicate})"
+        q75 = f"quantile_cont({rank}, 0.75) FILTER (WHERE {predicate})"
+        columns += [
+            f'{n_methods} AS "n_methods_{level}"',
+            _statistic(f"min({rank}) FILTER (WHERE {predicate})", f"rank_min_{level}"),
+            _statistic(f"max({rank}) FILTER (WHERE {predicate})", f"rank_max_{level}"),
+            _statistic(q25, f"rank_q25_{level}"),
+            _statistic(q75, f"rank_q75_{level}"),
+            _statistic(f"{q75} - {q25}", f"rank_spread_{level}"),
+        ]
+    return ",\n".join(columns)
+
+
+# Fonction de génération du libellé des flux
+def flow_label_sql(labels: Mapping[Any, str], column: str = "g.flow") -> str:
+    """Generate the ``CASE`` expression labelling the flow codes.
+
+    Args:
+        labels: Flow code (``"1"``, ``"2"``) -> label (``"Import"``…).
+        column: Flow column (text code), possibly qualified by an alias.
+
+    Returns:
+        A SQL expression; unlisted codes keep their code as label.
+
+    Raises:
+        ValueError: If a part of ``column`` is not a plain identifier.
+
+    Examples:
+        >>> flow_label_sql({"1": "Import"})
+        "CASE g.flow WHEN '1' THEN 'Import' ELSE g.flow END"
+    """
+    column = ".".join(_identifier(part, "column") for part in column.split("."))
+    if not labels:
+        return column
+    cases = " ".join(
+        f"WHEN '{_literal(code)}' THEN '{_literal(label)}'" for code, label in labels.items()
+    )
+    return f"CASE {column} {cases} ELSE {column} END"
+
+
 # Fonction de génération des colonnes normalisées min-max
 def norm_columns_sql(metrics: Sequence[str], partition: Sequence[str]) -> str:
     """Generate the ``<metric>_norm`` min-max columns, per normalisation context.
@@ -301,6 +412,38 @@ def individual_partner_sql(partners: Mapping[str, Any], column: str = "partner")
     return "(" + " AND ".join(clauses) + ")"
 
 
+# Fonction de génération des fragments « échanges totaux avec le monde »
+def total_partner_sql(codes: Sequence[str], column: str = "partner") -> Tuple[str, str]:
+    """Generate the fragments selecting the total-trade partner aggregate of a cell.
+
+    Comext publishes the ``WORLD`` aggregate for the member states but only
+    extra-EU aggregates for the Union as a whole (``EU27_2020``): the total
+    of a cell is the first code of ``codes`` present for it.
+
+    Args:
+        codes: Total-trade aggregate codes, by order of preference.
+        column: Partner column.
+
+    Returns:
+        Tuple ``(in_list, priority)``: the quoted list of ``codes`` (for an
+        ``IN (...)`` predicate) and a ``CASE`` giving the preference rank of
+        ``column`` (for ``arg_min(value, priority)``).
+
+    Raises:
+        ValueError: If ``codes`` is empty or ``column`` is not a plain identifier.
+
+    Examples:
+        >>> total_partner_sql(["WORLD", "EXT_EU27_2020"])
+        ("'WORLD', 'EXT_EU27_2020'", "CASE partner WHEN 'WORLD' THEN 0 WHEN 'EXT_EU27_2020' THEN 1 END")
+    """
+    column = _identifier(column, "column")
+    if not codes:
+        raise ValueError("PARTNERS.TOTAL must list at least one aggregate code")
+    in_list = ", ".join(f"'{_literal(code)}'" for code in codes)
+    cases = " ".join(f"WHEN '{_literal(code)}' THEN {i}" for i, code in enumerate(codes))
+    return in_list, f"CASE {column} {cases} END"
+
+
 # Fonction de génération d'une table vide typée (source facultative absente)
 def empty_table_sql(columns: Mapping[str, str]) -> str:
     """Generate an empty, typed subquery standing for a missing source table.
@@ -353,6 +496,9 @@ def build_context(
         missing.append(name)
 
     partners = params.get("PARTNERS") or {}
+    total_partners, total_priority = total_partner_sql(
+        partners.get("TOTAL") or [partners.get("WORLD", "WORLD")]
+    )
     context.update(
         {
             "cell_filter": str(params["CELL_FILTER"]),
@@ -360,6 +506,10 @@ def build_context(
             "synthesis_pivot": synthesis_pivot_sql(
                 params["METHODS"], params["LEVELS"], params["PRIMARY_METHOD"]
             ),
+            "rank_uncertainty": rank_uncertainty_sql(
+                params.get("UNCERTAINTY_METHODS"), params["LEVELS"]
+            ),
+            "flow_label": flow_label_sql(params.get("FLOW_LABELS") or {}),
             "norm_columns": norm_columns_sql(
                 params["NORM_METRICS"], params["NORM_PARTITION"]
             ),
@@ -367,6 +517,8 @@ def build_context(
             "top_partners": str(int(params["TOP_PARTNERS"])),
             "world_code": _literal(partners.get("WORLD", "WORLD")),
             "extra_eu_code": _literal(partners.get("EXTRA_EU", "EXT_EU")),
+            "total_partners": total_partners,
+            "total_priority": total_priority,
         }
     )
     return context, missing
@@ -420,6 +572,38 @@ def build_table_specs(
             )
         )
     return specs
+
+
+# Fonction d'évaluation des métriques de qualité après publication
+def quality_metrics(
+    conn: Any, queries: Mapping[str, str], serving_schema: str
+) -> Dict[str, float]:
+    """Evaluate the scalar quality queries of ``serving.METRICS``.
+
+    Args:
+        conn: Open session on the published catalog.
+        queries: Metric name -> SQL template returning one value; ``$serving``
+            stands for the qualified serving schema.
+        serving_schema: Qualified serving schema (``ServingCatalog.schema``).
+
+    Returns:
+        ``serving/<name>`` -> value; a query returning no row or ``NULL``
+        (empty table) emits no metric.
+
+    Raises:
+        KeyError: If a query uses an unknown variable.
+
+    Examples:
+        >>> import duckdb
+        >>> quality_metrics(duckdb.connect(), {"t/one": "SELECT 1"}, "main")
+        {'serving/t/one': 1.0}
+    """
+    metrics: Dict[str, float] = {}
+    for name, template in queries.items():
+        rows = conn.execute(render_sql(template, {"serving": serving_schema})).fetchall()
+        if rows and rows[0][0] is not None:
+            metrics[f"serving/{name}"] = float(rows[0][0])
+    return metrics
 
 
 # Fonction de résolution du mode de publication
@@ -509,6 +693,7 @@ def publish_serving(
         "failures": {},
         "metrics": {},
     }
+    quality: Dict[str, float] = {}
 
     try:
         with serving.connect() as conn:
@@ -528,6 +713,11 @@ def publish_serving(
                 prelude=nomenclature_macros_sql(runtime["NOMENCLATURES"]["HS"]),
                 conn=conn,
             )
+            # Métriques de qualité, sur l'état validé (indicatives : un échec n'annule rien)
+            try:
+                quality = quality_metrics(conn, params.get("METRICS") or {}, serving.schema)
+            except Exception as exc:
+                logger.warning(f"Métriques de qualité non calculées : {exc}")
     except ServingPublicationError as exc:
         logger.error(f"Publication annulée : {exc}")
         result["failures"][exc.table or "publication"] = str(exc)[:1000]
@@ -543,6 +733,7 @@ def publish_serving(
         result["tables"].append(name)
         result["rows"][name] = table_stats.rows
         metrics.update(table_stats.to_metrics(name))
+    metrics.update(quality)
     # 1 si toutes les tables ont été recréées (mode full demandé ou repli), 0 sinon
     metrics["serving/mode_full"] = float(
         all(table_stats.mode == "full" for table_stats in stats.values())

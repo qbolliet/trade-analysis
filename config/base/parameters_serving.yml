@@ -16,8 +16,11 @@
 #     $ref_eurostat_partners, $ref_comtrade_products, $ref_comtrade_reporters,
 #     $hs_concordance, $hs_vintages ;
 #   - fragments générés depuis les paramètres ci-dessous : $cell_filter, $comext_filter,
-#     $synthesis_pivot (METHODS × LEVELS, et méthode principale), $norm_columns,
-#     $individual_partner, $top_partners, $world_code, $extra_eu_code ;
+#     $synthesis_pivot (METHODS × LEVELS, et méthode principale), $rank_uncertainty
+#     (dispersion des rangs entre UNCERTAINTY_METHODS, par niveau de LEVELS), $flow_label
+#     (FLOW_LABELS), $norm_columns, $individual_partner, $top_partners, $world_code,
+#     $extra_eu_code, $total_partners (liste SQL de PARTNERS.TOTAL), $total_priority
+#     (rang de préférence de la colonne partner dans PARTNERS.TOTAL) ;
 #   - macros SQL de session, générées depuis runtime.NOMENCLATURES.HS :
 #     vintage_in_force(année), classification_of(code, année), product_code(code)
 #     (restitue le zéro initial des codes stockés en entier), hs_vintage_of(classification, année).
@@ -59,11 +62,42 @@ serving:
   # Nombre de partenaires individuels conservés par cellule dans flows (plus WORLD, EXT_EU)
   TOP_PARTNERS: 12
 
+  # Incertitude du rang consensus : dispersion, pour une même cellule et un même niveau,
+  # des rangs attribués par les méthodes ci-dessous (rang_min/max/q25/q75, rank_spread =
+  # q75 - q25, n_methods). Ce n'est pas une incertitude d'échantillonnage : elle mesure le
+  # désaccord entre méthodes de synthèse. Méthodes retenues : celles dont le rang est un
+  # classement strict comparable à celui du consensus. Exclues : les règles de consensus
+  # elles-mêmes (consensus_*), les méthodes à ex aequo massifs (pareto : couches de
+  # dominance, cone_quantile et smaa : probabilités discrètes ; plus grand bloc d'ex aequo
+  # de 11 à 85 % du groupe sur les données de démonstration, contre 2 à 12 % ailleurs),
+  # dont les rangs moyens écraseraient les quantiles, et les méthodes sans rang aux
+  # niveaux exposés (pareto_global, kantorovich : niveau global seulement). Les méthodes
+  # pondérées ne sont pas ajustées par produit (groupes d'environ 22 pays, sous le plancher
+  # min_group_size) : au niveau by_product, la dispersion repose sur bod, mpi et rank_mean,
+  # d'où n_methods_<niveau>. null : toutes les méthodes non-consensus de la table.
+  UNCERTAINTY_METHODS:
+    - "auto_sum"
+    - "auto_geo"
+    - "critic_sum"
+    - "entropy_sum"
+    - "topsis_critic"
+    - "vikor_critic"
+    - "whitened"
+    - "mpi"
+    - "rank_mean"
+    - "bod"
+
+  # Libellés des codes de flux (colonne flow_label de cell_scores, filtre du tableau de bord)
+  FLOW_LABELS:
+    "1": "Import"
+    "2": "Export"
+
   # Grille de cell_scores : prédicat sur la table indicators (alias p), mêmes modalités
   # que les contextes de la synthèse (synthesis.SYNTHESIS.FILTERS), les deux flux gardés
   CELL_FILTER: 'CAST(p."indicators" AS VARCHAR) = ''VALUE_IN_EUROS'' AND CAST(p."freq" AS VARCHAR) = ''A'''
-  # Flux Comext retenus pour flows (alias c)
-  COMEXT_FILTER: 'CAST(c."indicators" AS VARCHAR) = ''VALUE_IN_EUROS'' AND CAST(c."freq" AS VARCHAR) = ''A'''
+  # Flux Comext retenus pour flows et les échanges totaux de cell_scores (alias c) : valeur
+  # et quantité, pivotées en colonnes par les requêtes
+  COMEXT_FILTER: 'CAST(c."indicators" AS VARCHAR) IN (''VALUE_IN_EUROS'', ''QUANTITY_IN_100KG'') AND CAST(c."freq" AS VARCHAR) = ''A'''
   # Métriques normalisées min-max (<métrique>_norm, dans [0, 1]) pour la heatmap, et
   # colonnes définissant le contexte de normalisation
   NORM_METRICS: ["HHI", "CDI2", "CDI3", "WORLD_HHI", "CENTRALITY_RISK", "CLUSTERING_W", "SPOF"]
@@ -77,6 +111,10 @@ serving:
     EXTRA_EU: "EXT_EU"
     AGGREGATE_CODES: ["WORLD", "QW"]
     EXCLUDE_UNDERSCORE: true
+    # Agrégats « échanges totaux avec le monde », par ordre de préférence : WORLD, puis
+    # EXT_EU27_2020 pour l'Union (EU27_2020), dont Comext ne publie que les flux extra-UE.
+    # Dénominateur de share (flows) et échanges totaux de cell_scores ; conservés dans flows.
+    TOTAL: ["WORLD", "EXT_EU27_2020"]
 
   # Sources facultatives : si la table n'existe pas encore (référentiels non publiés,
   # étape amont jamais exécutée), la variable est remplacée par une table VIDE typée et la
@@ -140,6 +178,23 @@ serving:
       value: "DOUBLE"
       n: "INTEGER"
 
+  # Métriques de qualité évaluées après la publication (requête scalaire, métrique
+  # serving/<nom>, contrôles de parameters_tracking.yml) ; $serving = schéma de service
+  # qualifié. Une requête sans résultat n'émet pas de métrique : les parts valent 1 quand
+  # il n'y a rien à couvrir, pour que les contrôles portent toujours sur une métrique émise.
+  METRICS:
+    # Part des cellules classées dont l'incertitude repose sur au moins deux méthodes
+    cell_scores/uncertainty_coverage_by_reporter: >-
+      SELECT coalesce(avg(CASE WHEN n_methods_by_reporter >= 2 THEN 1.0 ELSE 0.0 END), 1.0)
+      FROM $serving.cell_scores WHERE primary_rank_by_reporter IS NOT NULL
+    cell_scores/uncertainty_coverage_by_product: >-
+      SELECT coalesce(avg(CASE WHEN n_methods_by_product >= 2 THEN 1.0 ELSE 0.0 END), 1.0)
+      FROM $serving.cell_scores WHERE primary_rank_by_product IS NOT NULL
+    # Part des lignes en vigueur dont les échanges totaux avec le monde sont connus
+    cell_scores/trade_value_coverage: >-
+      SELECT coalesce(avg(CASE WHEN trade_value_eur IS NOT NULL THEN 1.0 ELSE 0.0 END), 1.0)
+      FROM $serving.cell_scores WHERE in_force
+
   # Suivi d'exécution MLflow : un run par publication (URI du serveur : variable
   # MLFLOW_TRACKING_URI, sinon aucun suivi ; nom d'expérience : experiments.yml).
 
@@ -148,7 +203,12 @@ serving:
   # d'insertion (statistiques min/max efficaces sur les filtres reporter / product).
   TABLES:
     # Une ligne par cellule (classification, reporter, product, flow, year) : métriques
-    # partenaires et réseau, alertes, scores et rangs de synthèse, métriques normalisées.
+    # partenaires et réseau, alertes, scores et rangs de synthèse, incertitude du rang
+    # consensus (dispersion entre méthodes), échanges totaux avec le monde (valeur et
+    # quantité, partenaire WORLD de Comext ; NULL sur les lignes historiques, dont les codes
+    # convertis n'ont pas de flux Comext propre ; premier agrégat de PARTNERS.TOTAL, soit
+    # EXT_EU27_2020 pour l'Union), libellés « code — libellé » des filtres du
+    # tableau de bord, métriques normalisées.
     # Lignes en vigueur (in_force) et historiques (flux convertis vers un millésime SH
     # antérieur) ; la jointure réseau se fait sur le millésime de rattachement de chaque
     # ligne (hs_vintage), les scores sur hs_vintage aussi. Elle porte enfin sur le flux :
@@ -204,9 +264,40 @@ serving:
             CAST(s."TIME_PERIOD" AS VARCHAR) AS time_period,
             CAST(s."reporter" AS VARCHAR) AS reporter,
             product_code(s."product") AS product,
-            $synthesis_pivot
+            $synthesis_pivot,
+            $rank_uncertainty
           FROM $synthesis AS s
           GROUP BY ALL
+        ),
+        trade_raw AS (
+          SELECT
+            CAST(substr(CAST(c."TIME_PERIOD" AS VARCHAR), 1, 4) AS INTEGER) AS year,
+            CAST(c."reporter" AS VARCHAR) AS reporter,
+            product_code(c."product") AS product,
+            CAST(c."flow" AS VARCHAR) AS flow,
+            CAST(c."partner" AS VARCHAR) AS partner,
+            max(CASE WHEN CAST(c."indicators" AS VARCHAR) = 'VALUE_IN_EUROS'
+                     THEN CAST(c."OBS_VALUE" AS DOUBLE) END) AS value_eur,
+            max(CASE WHEN CAST(c."indicators" AS VARCHAR) = 'QUANTITY_IN_100KG'
+                     THEN CAST(c."OBS_VALUE" AS DOUBLE) END) AS quantity_100kg
+          FROM $comext AS c
+          WHERE $comext_filter AND CAST(c."partner" AS VARCHAR) IN ($total_partners)
+          GROUP BY ALL
+        ),
+        trade AS (
+          -- Premier agrégat total disponible (WORLD, sinon extra-UE pour l'Union)
+          SELECT year, reporter, product, flow,
+                 arg_min(value_eur, $total_priority) AS value_eur,
+                 arg_min(quantity_100kg, $total_priority) AS quantity_raw
+          FROM trade_raw
+          GROUP BY ALL
+        ),
+        trade_totals AS (
+          -- Quantité nulle pour une valeur positive : quantité non déclarée, pas un flux nul
+          SELECT year, reporter, product, flow, value_eur,
+                 CASE WHEN quantity_raw = 0 AND value_eur > 0 THEN NULL
+                      ELSE quantity_raw END AS quantity_100kg
+          FROM trade
         ),
         product_labels AS (
           SELECT code, arg_max(label, classification) AS label
@@ -221,9 +312,14 @@ serving:
         cells AS (
           SELECT
             g.classification, g.hs_vintage, g.in_force,
-            g.year, g.time_period, g.freq, g.flow, g.indicators,
+            g.year, g.time_period, g.freq, g.flow, $flow_label AS flow_label, g.indicators,
             g.reporter, rl.label AS reporter_label,
+            CASE WHEN rl.label IS NULL THEN g.reporter
+                 ELSE g.reporter || ' — ' || rl.label END AS reporter_display,
             g.product, pl.label AS product_label, length(g.product) AS product_level,
+            CASE WHEN pl.label IS NULL THEN g.product
+                 ELSE g.product || ' — ' || pl.label END AS product_display,
+            tr.value_eur AS trade_value_eur, tr.quantity_100kg AS trade_quantity_100kg,
             g."HHI", g."CDI2", g."CDI3",
             net."WORLD_HHI", net."CENTRALITY_RISK", net."CLUSTERING_W", net."SPOF",
             g."HHI_ALERT", g."CDI2_ALERT", g."CDI3_ALERT",
@@ -242,6 +338,10 @@ serving:
            AND sc.freq = g.freq AND sc.flow = g.flow AND sc.indicators = g.indicators
            AND sc.time_period = g.time_period AND sc.reporter = g.reporter
            AND sc.product = g.product
+          LEFT JOIN trade_totals AS tr
+            ON g.in_force
+           AND tr.year = g.year AND tr.reporter = g.reporter AND tr.product = g.product
+           AND tr.flow = g.flow
           LEFT JOIN product_labels AS pl ON pl.code = g.product
           LEFT JOIN reporter_labels AS rl ON rl.code = g.reporter
         )
@@ -312,43 +412,60 @@ serving:
         WHERE CAST(d."family" AS VARCHAR) = 'methods'
 
     # Parts des partenaires par cellule (reporter, product, flow, year) : les TOP_PARTNERS
-    # premiers partenaires individuels (rank 1 = premier fournisseur / client) plus les
-    # agrégats WORLD et EXT_EU (rank NULL, is_aggregate vrai) ; share = value / WORLD.
+    # premiers partenaires individuels (rank 1 = premier fournisseur / client, en valeur)
+    # plus les agrégats WORLD, EXT_EU et ceux de PARTNERS.TOTAL (rank NULL, is_aggregate vrai) ; valeur en euros et
+    # quantité en 100 kg (NULL quand Comext publie 0 pour une valeur positive : quantité non
+    # déclarée) ; share = value_eur / premier agrégat de PARTNERS.TOTAL (WORLD ; EXT_EU27_2020
+    # pour l'Union).
     flows:
       PARTITIONED: true
       SORT_BY: ["year", "product", "reporter"]
       SQL: |
-        WITH f AS (
+        WITH f_raw AS (
           SELECT
             CAST(substr(CAST(c."TIME_PERIOD" AS VARCHAR), 1, 4) AS INTEGER) AS year,
             CAST(c."reporter" AS VARCHAR) AS reporter,
             product_code(c."product") AS product,
             CAST(c."flow" AS VARCHAR) AS flow,
             CAST(c."partner" AS VARCHAR) AS partner,
-            CAST(c."OBS_VALUE" AS DOUBLE) AS value
+            max(CASE WHEN CAST(c."indicators" AS VARCHAR) = 'VALUE_IN_EUROS'
+                     THEN CAST(c."OBS_VALUE" AS DOUBLE) END) AS value_eur,
+            max(CASE WHEN CAST(c."indicators" AS VARCHAR) = 'QUANTITY_IN_100KG'
+                     THEN CAST(c."OBS_VALUE" AS DOUBLE) END) AS quantity_100kg
           FROM $comext AS c
           WHERE $comext_filter
+          GROUP BY ALL
+        ),
+        f AS (
+          SELECT year, reporter, product, flow, partner, value_eur,
+                 CASE WHEN quantity_100kg = 0 AND value_eur > 0 THEN NULL
+                      ELSE quantity_100kg END AS quantity_100kg
+          FROM f_raw
+          -- Ligne de quantité sans valeur : hors du périmètre en valeur des tables de service
+          WHERE value_eur IS NOT NULL
         ),
         world AS (
-          SELECT year, reporter, product, flow, sum(value) AS world_value
+          -- Premier agrégat total disponible (WORLD, sinon extra-UE pour l'Union)
+          SELECT year, reporter, product, flow,
+                 arg_min(value_eur, $total_priority) AS world_value
           FROM f
-          WHERE partner = '$world_code'
+          WHERE partner IN ($total_partners)
           GROUP BY ALL
         ),
         ranked AS (
           SELECT f.*,
                  CAST(rank() OVER (PARTITION BY year, reporter, product, flow
-                                   ORDER BY value DESC NULLS LAST) AS INTEGER) AS rank,
+                                   ORDER BY value_eur DESC NULLS LAST) AS INTEGER) AS rank,
                  FALSE AS is_aggregate
           FROM f
           WHERE $individual_partner
           QUALIFY rank() OVER (PARTITION BY year, reporter, product, flow
-                               ORDER BY value DESC NULLS LAST) <= $top_partners
+                               ORDER BY value_eur DESC NULLS LAST) <= $top_partners
         ),
         aggregates AS (
           SELECT f.*, CAST(NULL AS INTEGER) AS rank, TRUE AS is_aggregate
           FROM f
-          WHERE partner IN ('$world_code', '$extra_eu_code')
+          WHERE partner IN ('$world_code', '$extra_eu_code') OR partner IN ($total_partners)
         ),
         partner_labels AS (
           SELECT code, first(label) AS label FROM $ref_eurostat_partners GROUP BY code
@@ -367,7 +484,8 @@ serving:
           r.year, r.reporter, rl.label AS reporter_label,
           r.product, pl.label AS product_label, length(r.product) AS product_level,
           r.flow, r.partner, ptl.label AS partner_label, r.is_aggregate,
-          r.value, r.value / NULLIF(w.world_value, 0) AS share, r.rank
+          r.value_eur, r.quantity_100kg, r.value_eur / NULLIF(w.world_value, 0) AS share,
+          r.rank
         FROM (SELECT * FROM ranked UNION ALL BY NAME SELECT * FROM aggregates) AS r
         LEFT JOIN world AS w
           ON w.year = r.year AND w.reporter = r.reporter AND w.product = r.product

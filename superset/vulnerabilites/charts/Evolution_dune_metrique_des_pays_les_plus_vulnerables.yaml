@@ -1,0 +1,36 @@
+slice_name: Évolution d'une métrique des pays les plus vulnérables
+description: null
+certified_by: null
+certification_details: null
+viz_type: echarts_timeseries_line
+params:
+  viz_type: echarts_timeseries_line
+  datasource: 15__table
+  x_axis: period
+  time_grain_sqla: P1Y
+  x_axis_time_format: '%Y'
+  metrics:
+  - expressionType: SQL
+    sqlExpression: MAX(value)
+    label: Métrique
+  groupby:
+  - unit
+  row_limit: 10000
+  adhoc_filters: []
+  show_legend: true
+  legendType: scroll
+  legendOrientation: bottom
+  rich_tooltip: true
+  tooltipSortByMetric: true
+  markerEnabled: true
+  markerSize: 4
+  y_axis_format: ~g
+  truncateYAxis: false
+  zoomable: true
+  x_axis_title: ''
+  y_axis_title: ''
+query_context: null
+cache_timeout: null
+uuid: e2cf75f7-f581-41b3-bce7-bd0d0093e301
+version: 1.0.0
+dataset_uuid: 08407e80-7fa3-4de9-ad8a-62a857a390b5

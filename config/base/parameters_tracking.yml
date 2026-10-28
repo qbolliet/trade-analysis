@@ -70,6 +70,11 @@ tracking:
     publish_serving:
       - {metric: serving/cell_scores/rows,                 op: ">",  threshold: 0,    severity: error,   label: "Table cell_scores non vide"}
       - {metric: serving/countries/rows,                   op: ">",  threshold: 0,    severity: error,   label: "Table countries non vide"}
+      - {metric: serving/flows/rows,                       op: ">",  threshold: 0,    severity: error,   label: "Table flows non vide"}
+      # Incertitude du rang consensus fondée sur au moins deux méthodes (serving.METRICS)
+      - {metric: serving/cell_scores/uncertainty_coverage_by_reporter, op: ">=", threshold: 0.95, severity: warning, label: "Cellules classées par pays avec incertitude du rang"}
+      # Échanges totaux avec le monde connus pour les lignes en vigueur (partenaire WORLD de Comext)
+      - {metric: serving/cell_scores/trade_value_coverage, op: ">=", threshold: 0.95, severity: warning, label: "Lignes en vigueur avec échanges totaux"}
     # Seuil aligné sur maintenance.MAX_FILES_PER_TABLE (la maintenance émet aussi un avertissement)
     maintain_ducklake:
       - {metric: ducklake/max_files_per_table,             op: "<=", threshold: 2000, severity: warning, label: "Fichiers par table après maintenance"}

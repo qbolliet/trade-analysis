@@ -402,6 +402,11 @@ SERVING_NETWORK_HHI = {"HS2017": 0.17, "HS2022": 0.22}
 # Écart des métriques réseau du flux export (graphe transposé) à celles de l'import
 SERVING_NETWORK_EXPORT_SHIFT = 0.5
 SERVING_METHODS: tuple[str, ...] = ("consensus_borda", "auto_sum", "critic_sum", "pareto")
+# Cellule (reporter, produit, flux, année) dont Comext publie une quantité nulle pour une
+# valeur positive : quantité non déclarée, exposée NULL par la couche de service
+SERVING_ZERO_QUANTITY_CELL: tuple = ("DE", 85412100, 1, "2019")
+# Facteur quantité / valeur des autres cellules fictives
+SERVING_QUANTITY_FACTOR = 3.0
 
 
 def serving_configs(profile: str = "base") -> dict:
@@ -477,8 +482,13 @@ def _serving_frames(rng: "np.random.Generator", nomenclatures: dict) -> dict:
                     total = float(values.sum())
                     for partner, value in zip(SERVING_PARTNERS, values):
                         comext_rows.append((reporter, partner, product, flow, str(year), float(value)))
-                    comext_rows.append((reporter, "WORLD", product, flow, str(year), total))
-                    comext_rows.append((reporter, "EXT_EU", product, flow, str(year), 0.6 * total))
+                    # L'Union n'a que des flux extra-UE : Comext ne publie pour elle ni WORLD ni
+                    # EXT_EU, mais l'agrégat EXT_EU27_2020 (son commerce avec le reste du monde)
+                    if reporter == "EU27_2020":
+                        comext_rows.append((reporter, "EXT_EU27_2020", product, flow, str(year), total))
+                    else:
+                        comext_rows.append((reporter, "WORLD", product, flow, str(year), total))
+                        comext_rows.append((reporter, "EXT_EU", product, flow, str(year), 0.6 * total))
                     comext_rows.append((reporter, "INT_EU27_2020", product, flow, str(year), 0.4 * total))
                     for indicator in ("VALUE_IN_EUROS", "QUANTITY_IN_100KG"):
                         hhi, cdi2, cdi3 = rng.uniform(0, 1, 3)
@@ -490,10 +500,15 @@ def _serving_frames(rng: "np.random.Generator", nomenclatures: dict) -> dict:
         comext_rows,
         columns=["reporter", "partner", "product", "flow", "TIME_PERIOD", "OBS_VALUE"],
     )
+    # Quantités : proportionnelles à la valeur, nulles pour la cellule non déclarée
+    zero_quantity = pd.Series(True, index=df_comext.index)
+    for column, value in zip(["reporter", "product", "flow", "TIME_PERIOD"], SERVING_ZERO_QUANTITY_CELL):
+        zero_quantity &= df_comext[column] == value
+    quantities = (df_comext["OBS_VALUE"] * SERVING_QUANTITY_FACTOR).where(~zero_quantity, 0.0)
     df_comext = pd.concat(
         [
             df_comext.assign(freq="A", indicators="VALUE_IN_EUROS"),
-            df_comext.assign(freq="A", indicators="QUANTITY_IN_100KG", OBS_VALUE=df_comext["OBS_VALUE"] * 3),
+            df_comext.assign(freq="A", indicators="QUANTITY_IN_100KG", OBS_VALUE=quantities),
         ],
         ignore_index=True,
     )
