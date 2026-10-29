@@ -3,7 +3,8 @@
 Tableau de bord versionné « as code » : ce dossier est le contenu décompressé d'un export
 Superset (`metadata.yaml`, `databases/`, `datasets/`, `charts/`, `dashboards/`). Il est
 réimporté par une archive construite avec `tools/superset_bundle.py`. C'est aussi cette
-archive que le Job d'import du chart Helm (K-17g) utilisera. Ce document décrit le
+archive que construit le Job d'import du chart Helm `trade-dashboard` (`helm/`), à partir
+d'une copie de ce dossier (`python tools/sync_chart_files.py`). Ce document décrit le
 parcours, le mécanisme de connexion, le mécanisme du « top N » et les pièges rencontrés.
 
 ## Parcours
@@ -119,8 +120,8 @@ Le mécanisme requiert, dans `superset_config.py` :
 FEATURE_FLAGS = {**globals().get("FEATURE_FLAGS", {}), "ENABLE_TEMPLATE_PROCESSING": True}
 ```
 
-Cette ligne doit être portée par le chart Helm (K-17g). Sur le service actuel, elle a été
-ajoutée hors Helm, au Secret `superset-899573-config`, puis web et worker ont été redémarrés.
+Cette ligne est portée par le chart Helm `trade-dashboard`
+(`helm/trade-dashboard/files/superset_serving.py`, réglage `catalog.templateProcessing`).
 
 ## Mécanisme de connexion
 
@@ -132,10 +133,13 @@ toucher aux connexions PostgreSQL et Redis. L'écouteur :
 - attache le catalogue `serving` en lecture seule (`ATTACH … (READ_ONLY)`). `DATA_PATH` est
   lu dans les métadonnées du catalogue.
 
-Les identifiants sont dans l'environnement des pods. Le Secret `superset-899573-env` reçoit
-les variables `PGHOST`, `PGPORT`, `PGUSER`, `PGPASSWORD` et `PGDATABASE` (copiées de
-`trade-postgres-credentials`), et `S3_ACCESS_KEY`, `S3_SECRET_KEY` (copiées de
-`trade-s3-credentials`).
+Les identifiants sont dans l'environnement des pods : le chart `trade-dashboard` y expose
+en entier les secrets `global.dashboard.readerSecret` (`PGHOST`, `PGPORT`, `PGUSER`,
+`PGPASSWORD` ; défaut `trade-postgres-credentials`, un rôle en lecture seule
+`superset_reader` est préférable) et `global.dashboard.s3Secret` (`S3_ACCESS_KEY`,
+`S3_SECRET_KEY` ; défaut `trade-s3-credentials`). L'écouteur est le fichier
+`helm/trade-dashboard/files/superset_serving.py`, monté dans les pods et exécuté à la fin
+de `superset_config.py`.
 
 Pourquoi pas un secret DuckDB persistant sur disque : le pod web et le worker Celery, qui
 exécute SQL Lab en asynchrone, n'ont pas de volume commun. L'export ne contient aucun mot
@@ -177,7 +181,7 @@ virtuels versionnés (avec un équivalent de `filter_values` et `|where_in`) et 
 la table `cell_scores` du monde fictif : une colonne absente ou un niveau mal appliqué y
 échoue.
 
-En production (K-17g), `--schema` est omis (les exports visent `dashboard`), et
+En production (Job d'import du chart, `dashboardImport.schema` vide), `--schema` est omis (les exports visent `dashboard`), et
 `--default-year` reçoit la dernière année classée.
 
 **Modifier le tableau de bord** : soit éditer directement les YAML de ce dossier (SQL des
@@ -266,9 +270,13 @@ qu'après un nouvel export : à faire aussitôt, sinon l'export versionné diver
   partition. Les courbes lisent toutes les années, mais d'un seul pays ou produit : elles
   s'appuient sur les statistiques min/max du tri d'insertion. Latences à froid mesurées en
   demo (K-03c v2) : 0,8 à 1,1 s pour les tableaux, 2,0 à 2,6 s pour les courbes.
-- **Patch hors Helm** : la version de chart déployée (`superset-0.1.12`) n'est plus dans
-  l'index du dépôt. Les Secrets `superset-899573-env` et `superset-899573-config` (écouteur
-  `connect`, `FEATURE_FLAGS`) ont donc été patchés directement. Un redéploiement depuis
-  l'interface Onyxia perd ce patch, qui doit alors être rejoué jusqu'à K-17g.
-- **Compatibilité DuckDB** : DuckDB 1.5.5 (Superset) lit le catalogue écrit par DuckDB 1.5.3
-  (pipeline). À revérifier à chaque montée de version de l'un des deux côtés.
+- **Configuration portée par Helm** : l'ancien service Onyxia `superset-899573` avait été
+  configuré en modifiant directement ses Secrets (`superset-899573-env`,
+  `superset-899573-config`), modification perdue à tout redéploiement depuis Onyxia. Le
+  Superset du chart `trade-dashboard` porte l'écouteur, `FEATURE_FLAGS` et les variables
+  dans sa propre release : un redéploiement les conserve.
+- **Compatibilité DuckDB** : DuckDB 1.5.5 (Superset) lisait le catalogue écrit par DuckDB
+  1.5.3 (pipeline). Le pipeline est passé à DuckDB 2.0.0, qui exige Python ≥ 3.11 ; l'image
+  Superset 4.1.1 (Python 3.10) reste en DuckDB 1.5.6, épinglé par le `bootstrapScript` du
+  chart. La lecture d'un catalogue écrit en 2.0 est à vérifier en recette (voir
+  `helm/README.md`, « Points de vigilance »).

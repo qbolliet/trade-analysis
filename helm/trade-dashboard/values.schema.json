@@ -1,0 +1,74 @@
+{
+  "$schema": "https://json-schema.org/draft-07/schema#",
+  "title": "Valeurs du chart trade-dashboard",
+  "type": "object",
+  "definitions": {
+    "dnsName": {"type": "string", "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$", "maxLength": 253},
+    "identifier": {"type": "string", "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"}
+  },
+  "required": ["platform", "catalog", "dashboardImport", "superset"],
+  "properties": {
+    "global": {
+      "type": "object",
+      "properties": {
+        "platform": {"enum": ["", "onyxia", "generic"]},
+        "dashboard": {
+          "type": "object",
+          "required": ["readerSecret", "s3Secret", "credentialsSecret"],
+          "properties": {
+            "readerSecret": {"$ref": "#/definitions/dnsName"},
+            "s3Secret": {"$ref": "#/definitions/dnsName"},
+            "credentialsSecret": {"$ref": "#/definitions/dnsName"}
+          },
+          "additionalProperties": false
+        }
+      }
+    },
+    "platform": {"enum": ["onyxia", "generic"]},
+    "nameOverride": {"type": "string"},
+    "catalog": {
+      "type": "object",
+      "required": ["database", "alias"],
+      "properties": {
+        "database": {"$ref": "#/definitions/identifier"},
+        "alias": {"$ref": "#/definitions/identifier"},
+        "s3Endpoint": {"type": "string", "minLength": 1},
+        "s3Region": {"type": "string", "minLength": 1},
+        "templateProcessing": {"type": "boolean"}
+      },
+      "additionalProperties": false
+    },
+    "credentials": {
+      "type": "object",
+      "properties": {"create": {"type": "boolean"}},
+      "additionalProperties": false
+    },
+    "dashboardImport": {
+      "type": "object",
+      "properties": {
+        "enabled": {"type": "boolean"},
+        "supersetUrl": {"type": "string", "pattern": "^$|^https?://"},
+        "schema": {"type": "string", "pattern": "^$|^[A-Za-z_][A-Za-z0-9_]*$"},
+        "defaultYear": {"type": ["string", "integer"], "pattern": "^$|^[0-9]{4}$", "minimum": 1900, "maximum": 2200},
+        "topN": {"type": ["string", "integer"], "pattern": "^$|^[1-9][0-9]*$", "minimum": 1},
+        "image": {
+          "type": "object",
+          "required": ["repository", "tag"],
+          "properties": {"repository": {"type": "string", "minLength": 1}, "tag": {"type": "string", "minLength": 1}},
+          "additionalProperties": false
+        },
+        "waitSeconds": {"type": "integer", "minimum": 0},
+        "backoffLimit": {"type": "integer", "minimum": 0},
+        "resources": {"type": "object", "properties": {"cpu": {"type": "string"}, "memory": {"type": "string"}}}
+      },
+      "additionalProperties": false
+    },
+    "superset": {
+      "type": "object",
+      "properties": {
+        "enabled": {"type": "boolean"},
+        "ingress": {"type": "object", "properties": {"enabled": {"type": "boolean"}, "hostname": {"type": "string"}}}
+      }
+    }
+  }
+}

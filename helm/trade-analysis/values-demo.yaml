@@ -1,0 +1,18 @@
+# Surcouche de recette (environnement Kedro demo), à combiner avec un préréglage :
+#
+#   helm upgrade --install trade helm/trade-analysis -f helm/trade-analysis/values-onyxia.yaml \
+#     -f helm/trade-analysis/values-demo.yaml --set dashboard.superset.ingress.hostname=…
+#
+# demo et production ne diffèrent que par ces valeurs : environnement Kedro (DAG à un
+# millésime BACI, catalogues demo_*), schéma lu par le tableau de bord et dernière année
+# classée. Planifications suspendues : exécutions lancées à la main pendant la recette.
+
+pipeline:
+  kedroEnv: demo
+  schedules:
+    suspend: true
+
+dashboard:
+  dashboardImport:
+    schema: demo_dashboard
+    defaultYear: "2021"

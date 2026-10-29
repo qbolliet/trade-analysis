@@ -1,0 +1,198 @@
+# Valeurs du chart trade-dashboard : restitution Superset d'un catalogue DuckLake.
+#
+# Trois éléments :
+# - configuration de Superset (fragment Python files/superset_serving.py, monté dans les
+#   pods et exécuté à la fin de superset_config.py) : lecture seule du catalogue depuis
+#   DuckDB, gabarits Jinja des datasets virtuels ;
+# - Superset lui-même, facultatif (`superset.enabled`, chart Superset d'Onyxia) ;
+# - Job d'import du tableau de bord versionné (files/dashboard/) après chaque installation
+#   ou mise à jour.
+
+# Valeurs partagées avec le chart parapluie et lisibles par les sous-charts Superset
+# (leurs gabarits `tpl` voient `.Values.global`)
+global:
+  # Plateforme cible, prioritaire sur `platform` quand elle est renseignée.
+  # Défaut : "" (la valeur `platform` s'applique). Exemple : onyxia
+  platform: ""
+  # Secrets existants lus par les pods Superset et par le Job d'import
+  dashboard:
+    # Identifiants PostgreSQL de lecture du catalogue : clés PGHOST, PGPORT, PGUSER,
+    # PGPASSWORD (secret exposé en entier dans les pods Superset). Un secret dédié à un
+    # rôle en lecture seule (superset_reader) est préférable à celui du pipeline.
+    # Défaut : trade-postgres-credentials. Exemple : trade-superset-reader
+    readerSecret: trade-postgres-credentials
+    # Clés S3 des fichiers Parquet : S3_ACCESS_KEY, S3_SECRET_KEY.
+    # Défaut : trade-s3-credentials. Exemple : dashboard-s3-credentials
+    s3Secret: trade-s3-credentials
+    # Compte et clés de Superset : SUPERSET_SECRET_KEY (chiffrement des sessions et des
+    # mots de passe enregistrés), ADMIN_USERNAME, ADMIN_PASSWORD (compte administrateur,
+    # utilisé par le Job d'import), DB_PASS (base de métadonnées embarquée).
+    # Défaut : trade-superset-credentials. Exemple : superset-credentials
+    credentialsSecret: trade-superset-credentials
+
+# Plateforme cible : `onyxia` ou `generic` (seuls les préréglages diffèrent).
+# Défaut : generic. Exemple : onyxia
+platform: generic
+
+# Surcharge du nom de base des ressources (labels `app.kubernetes.io/name`).
+# Défaut : "" (nom du chart). Exemple : forecast-dashboard
+nameOverride: ""
+
+# Catalogue DuckLake lu par Superset
+catalog:
+  # Base PostgreSQL des métadonnées du catalogue.
+  # Défaut : serving. Exemple : forecast_serving
+  database: serving
+  # Nom sous lequel le catalogue est attaché (préfixe des tables dans le SQL des datasets).
+  # Défaut : serving. Exemple : serving
+  alias: serving
+  # Point de terminaison et région S3 des fichiers Parquet.
+  # Défaut : minio.lab.sspcloud.fr, us-east-1. Exemple : s3.example.org, eu-west-3
+  s3Endpoint: minio.lab.sspcloud.fr
+  s3Region: us-east-1
+  # Gabarits Jinja dans le SQL (ENABLE_TEMPLATE_PROCESSING), requis par les datasets
+  # virtuels dont le SQL lit les filtres natifs.
+  # Défaut : true. Exemple : false
+  templateProcessing: true
+
+# Création du secret `global.dashboard.credentialsSecret` par le chart : valeurs tirées au
+# hasard à la première installation, puis conservées (relues sur le cluster) ; jamais
+# écrites dans un fichier. Le nom du compte administrateur est `admin`.
+credentials:
+  # Défaut : false (secret créé par l'utilisateur). Exemple : true
+  create: false
+
+# Import du tableau de bord versionné (files/dashboard/) par l'API REST
+dashboardImport:
+  # Exécution du Job après chaque installation ou mise à jour (hook Helm).
+  # Défaut : true. Exemple : false
+  enabled: true
+  # URL de Superset. Vide = service du Superset de ce chart (http://<release>-superset:8088).
+  # Défaut : "". Exemple : http://superset.analytics:8088
+  supersetUrl: ""
+  # Schéma du catalogue visé par les datasets. Vide = celui de l'export (dashboard,
+  # production) ; la recette lit le schéma demo_dashboard.
+  # Défaut : "". Exemple : demo_dashboard
+  schema: ""
+  # Valeur par défaut des filtres d'année : dernière année classée de l'environnement.
+  # Vide = valeur de l'export.
+  # Défaut : "". Exemple : "2021"
+  defaultYear: ""
+  # Nombre d'unités tracées par défaut dans les courbes. Vide = valeur de l'export (5).
+  # Défaut : "". Exemple : "8"
+  topN: ""
+  # Image du Job (Python, PyYAML et requests requis) : celle de Superset.
+  # Défaut : image de Superset 4.1.1. Exemple : {repository: python, tag: "3.12-slim"}
+  image:
+    repository: apachesuperset.docker.scarf.sh/apache/superset
+    tag: "4.1.1"
+  # Attente maximale de la disponibilité de Superset (/health), en secondes.
+  # Défaut : 900. Exemple : 1800
+  waitSeconds: 900
+  # Nouvelles tentatives du Job en cas d'échec.
+  # Défaut : 2. Exemple : 0
+  backoffLimit: 2
+  # Ressources du Job.
+  # Défaut : 0,5 CPU, 512 Mi. Exemple : {cpu: "1", memory: 1Gi}
+  resources:
+    cpu: 500m
+    memory: 512Mi
+
+# Superset d'Onyxia (dépendance facultative ; valeurs transmises au chart Superset
+# d'Onyxia, dont `superset.superset.*` est le chart amont apache/superset). Désactivé pour
+# configurer un Superset existant : y reporter alors à la main le montage du ConfigMap
+# <release>-superset-serving, les deux lignes de `configOverrides.trade_serving` et les
+# variables d'environnement (voir helm/README.md).
+superset:
+  # Installation de Superset par ce chart.
+  # Défaut : false. Exemple : true (préréglage Onyxia)
+  enabled: false
+  # Exposition web (Ingress du library-chart d'Onyxia). Nom d'hôte à fournir.
+  # Défaut : désactivée. Exemple : {enabled: true, hostname: user-x-trade.user.lab.sspcloud.fr}
+  ingress:
+    enabled: false
+    hostname: ""
+    ingressClassName: ""
+    tls: true
+  # Langue de l'interface. Défaut : fr. Exemple : en
+  userPreferences:
+    language: fr
+  # Chart amont apache/superset
+  superset:
+    # Configuration ajoutée à superset_config.py (chaque valeur passe par `tpl`) :
+    # exécution du fragment monté depuis le ConfigMap <release>-superset-serving.
+    # `secret` remplace la clé vide du chart d'Onyxia : la clé de Superset est lue dans
+    # SUPERSET_SECRET_KEY.
+    configOverrides:
+      secret: |
+        SECRET_KEY = os.environ["SUPERSET_SECRET_KEY"]
+      trade_serving: |
+        exec(open("/app/trade/superset_serving.py", encoding="utf-8").read(), globals())
+    # Secrets exposés en entier dans les pods (lecture du catalogue, S3, compte et clés)
+    envFromSecrets:
+      - "{{ .Values.global.dashboard.readerSecret }}"
+      - "{{ .Values.global.dashboard.s3Secret }}"
+      - "{{ .Values.global.dashboard.credentialsSecret }}"
+    # Montage du fragment de configuration
+    extraVolumes:
+      - name: trade-serving
+        configMap:
+          name: "{{ .Release.Name }}-superset-serving"
+    extraVolumeMounts:
+      - name: trade-serving
+        mountPath: /app/trade
+        readOnly: true
+    # Pilotes installés au démarrage des pods, versions épinglées : DuckDB doit relire le
+    # catalogue écrit par le pipeline (Python 3.10 de l'image Superset 4.1 : DuckDB ≤ 1.5)
+    bootstrapScript: |
+      #!/bin/bash
+      pip install --no-cache-dir \
+        duckdb==1.5.6 \
+        duckdb-engine==0.17.0 \
+        psycopg2-binary \
+        redis && \
+      if [ ! -f ~/bootstrap ]; then echo "Running Superset with uid {{ .Values.runAsUser }}" > ~/bootstrap; fi
+    # Pas de connexion importée par découverte : elle exposerait dans Superset les
+    # identifiants des services PostgreSQL du namespace
+    discovery:
+      hive: false
+      mongodb: false
+      postgres: false
+      elastic: false
+      trino: false
+      sparkThriftServer: false
+    extraConfigs:
+      import_datasources.yaml: |
+        databases: []
+    # Initialisation : schéma, rôles, compte administrateur lu dans le secret de compte
+    init:
+      createAdmin: true
+      loadExamples: false
+      initscript: |-
+        #!/bin/sh
+        set -eu
+        echo "Upgrading DB schema..."
+        superset db upgrade
+        echo "Initializing roles..."
+        superset init
+        echo "Creating admin user..."
+        superset fab create-admin \
+          --username "$ADMIN_USERNAME" \
+          --firstname Superset \
+          --lastname Admin \
+          --email admin@superset.local \
+          --password "$ADMIN_PASSWORD" \
+          || true
+    # Base de métadonnées : mot de passe lu dans le secret de compte (clé DB_PASS) ;
+    # nom distinct de la base `superset-db` d'un Superset Onyxia du même namespace
+    supersetNode:
+      connections:
+        db_host: "{{ .Release.Name }}-superset-db"
+    postgresql:
+      fullnameOverride: ""
+      nameOverride: superset-db
+      auth:
+        existingSecret: "{{ .Values.global.dashboard.credentialsSecret }}"
+        enablePostgresUser: false
+        secretKeys:
+          userPasswordKey: DB_PASS

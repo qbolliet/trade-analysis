@@ -1,0 +1,6 @@
+dependencies:
+- name: superset
+  repository: https://inseefrlab.github.io/helm-charts-datavisualization
+  version: 0.1.13
+digest: sha256:05d56e795e73b367ddf7f0d4c361a356061f06f52fccfad639e2d7c31203faf4
+generated: "2026-10-29T12:57:58.157618678Z"

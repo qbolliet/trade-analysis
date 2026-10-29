@@ -1,0 +1,21 @@
+Pipeline {{ .Values.workflow.name }} déployé (environnement Kedro {{ .Values.kedroEnv }}, image {{ .Values.image.repository }}:{{ include "trade-pipeline.imageTag" . }}).
+
+Plateforme : {{ include "trade-pipeline.platform" . }} ; contrôleur Argo {{ include "trade-pipeline.argoVersion" . }} (champ `{{ include "trade-pipeline.scheduleField" . }}`).
+{{- $dag := include "trade-pipeline.dag" . | fromYaml }}
+Planifications ({{ .Values.schedules.timezone }}){{ if .Values.schedules.suspend }}, toutes SUSPENDUES{{ end }} :
+{{- range $entry := $dag.entryPoints }}
+  - {{ $.Values.workflow.name }}-{{ $entry.name }} : {{ (index $.Values.schedules.entryPoints $entry.name | default dict).cron | default $entry.cron }} ({{ len $entry.tasks }} tâches)
+{{- end }}
+
+Contrôle de pré-vol (secrets, MLflow, PostgreSQL, S3, sans afficher de valeur) :
+  helm test {{ .Release.Name }} -n {{ .Release.Namespace }} --logs
+
+Exécution ponctuelle d'un point d'entrée :
+  kubectl create -f - <<'YAML'
+  apiVersion: argoproj.io/v1alpha1
+  kind: Workflow
+  metadata: {generateName: {{ .Values.workflow.name }}-{{ (first $dag.entryPoints).name }}-manual-}
+  spec:
+    workflowTemplateRef: {name: {{ .Values.workflow.name }}}
+    entrypoint: {{ (first $dag.entryPoints).name }}
+  YAML

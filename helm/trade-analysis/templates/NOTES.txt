@@ -1,0 +1,18 @@
+Release {{ .Release.Name }} (trade-analysis {{ .Chart.Version }}, plateforme {{ .Values.global.platform }}) dans le namespace {{ .Release.Namespace }}.
+{{- if .Values.pipeline.enabled }}
+
+Pipeline : WorkflowTemplate {{ .Values.pipeline.workflow.name | default "trade-pipeline" }}, environnement Kedro {{ .Values.pipeline.kedroEnv | default "cloud" }}
+{{- if (.Values.pipeline.schedules | default dict).suspend }}, planifications SUSPENDUES{{ end }}.
+  kubectl get workflowtemplate,cronworkflow -l app.kubernetes.io/instance={{ .Release.Name }}
+{{- end }}
+{{- if .Values.dashboard.enabled }}
+
+Tableau de bord : import par le Job {{ .Release.Name }}-dashboard-import
+{{- if .Values.dashboard.superset.enabled }}, Superset {{ .Release.Name }}-superset{{ with .Values.dashboard.superset.ingress.hostname }} (https://{{ . }}){{ end }}{{ end }}.
+  kubectl logs job/{{ .Release.Name }}-dashboard-import
+{{- end }}
+
+Contrôle de pré-vol (clés de secrets, MLflow, PostgreSQL, S3, Superset ; aucune valeur affichée) :
+  helm test {{ .Release.Name }} -n {{ .Release.Namespace }} --logs
+
+Documentation : helm/README.md du dépôt.

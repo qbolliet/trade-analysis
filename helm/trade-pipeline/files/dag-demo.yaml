@@ -1,0 +1,28 @@
+# Fichier généré par `kedro trade render-argo` (environnement demo) : ne pas modifier à la main.
+# Source : pipelines Kedro (tags des nœuds) et config/base/argo.yml (bloc `workflow`).
+# Lu par les gabarits du chart trade-pipeline (WorkflowTemplate, CronWorkflow).
+formatVersion: 1
+kedroEnv: demo
+podPipeline: __default__
+systemMetrics: {enabled: true, samplingSeconds: 30}
+entryPoints:
+- name: daily
+  tag: cadence.daily
+  cron: 0 1 * * *
+  tasks:
+  - {name: download-comtrade, node: download_comtrade, experiment: trade-01-downloads, cpu: 1, mem: 8, retries: 0}
+  - {name: download-eurostat, node: download_eurostat, experiment: trade-01-downloads, cpu: 1, mem: 8, retries: 0}
+  - {name: compute-partner-vulnerabilities, node: compute_partner_vulnerabilities, experiment: trade-03-vulnerabilities, cpu: 4, mem: 16, retries: 1, depends: (download-eurostat.Succeeded || download-eurostat.Failed)}
+  - {name: publish-serving, node: publish_serving, experiment: trade-04-serving, cpu: 4, mem: 16, retries: 1, depends: (compute-partner-vulnerabilities.Succeeded || compute-partner-vulnerabilities.Failed) && (download-comtrade.Succeeded || download-comtrade.Failed) && (download-eurostat.Succeeded || download-eurostat.Failed), mutex: trade-serving}
+- name: weekly
+  tag: cadence.weekly
+  cron: 0 2 * * 6
+  tasks:
+  - {name: prepare-baci, node: prepare_baci, experiment: trade-02-baci, cpu: 4, mem: 16, retries: 1}
+  - {name: process-baci-hs2017, node: process_baci_hs2017, experiment: trade-02-baci, cpu: 4, mem: 32, retries: 1, depends: prepare-baci.Succeeded}
+  - {name: compute-network-vulnerabilities, node: compute_network_vulnerabilities, experiment: trade-03-vulnerabilities, cpu: 4, mem: 16, retries: 1, depends: (process-baci-hs2017.Succeeded || process-baci-hs2017.Failed)}
+  - {name: compute-synthetic-scores, node: compute_synthetic_scores, experiment: trade-03-vulnerabilities, cpu: 8, mem: 32, retries: 1, depends: (compute-network-vulnerabilities.Succeeded || compute-network-vulnerabilities.Failed)}
+  - {name: compute-synthesis-coherence, node: compute_synthesis_coherence, experiment: trade-03-vulnerabilities, cpu: 8, mem: 32, retries: 1, depends: (compute-network-vulnerabilities.Succeeded || compute-network-vulnerabilities.Failed) && (compute-synthetic-scores.Succeeded || compute-synthetic-scores.Failed)}
+  - {name: publish-serving, node: publish_serving, experiment: trade-04-serving, cpu: 4, mem: 16, retries: 1, depends: (compute-network-vulnerabilities.Succeeded || compute-network-vulnerabilities.Failed) && (compute-synthesis-coherence.Succeeded || compute-synthesis-coherence.Failed) && (compute-synthetic-scores.Succeeded || compute-synthetic-scores.Failed) && (prepare-baci.Succeeded || prepare-baci.Failed), mutex: trade-serving}
+mutexes: [trade-serving]
+exit: {name: maintain-ducklake, node: maintain_ducklake, experiment: trade-00-maintenance, cpu: 1, mem: 2, retries: 1, mutex: trade-maintenance}

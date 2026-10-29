@@ -1,0 +1,21 @@
+{{- /*
+Fragment de configuration de Superset (lecture seule du catalogue DuckLake depuis DuckDB,
+gabarits Jinja) et ses réglages non secrets. Monté dans les pods Superset sur /app/trade
+et exécuté à la fin de superset_config.py (`configOverrides`). Sur un Superset existant,
+ce ConfigMap est à monter de la même façon (voir NOTES).
+*/ -}}
+{{- if and .Values.superset.enabled .Values.superset.ingress.enabled (not .Values.superset.ingress.hostname) }}
+{{- fail "superset.ingress.hostname : nom d'hôte requis quand l'ingress de Superset est activé" }}
+{{- end }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "trade-dashboard.servingConfigMap" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "trade-dashboard.labels" . | nindent 4 }}
+data:
+  superset_serving.py: |
+    {{- .Files.Get "files/superset_serving.py" | nindent 4 }}
+  serving.json: |
+    {{- dict "database" .Values.catalog.database "alias" .Values.catalog.alias "s3Endpoint" .Values.catalog.s3Endpoint "s3Region" .Values.catalog.s3Region "templateProcessing" .Values.catalog.templateProcessing | toPrettyJson | nindent 4 }}

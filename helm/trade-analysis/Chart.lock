@@ -1,0 +1,15 @@
+dependencies:
+- name: trade-pipeline
+  repository: file://../trade-pipeline
+  version: 0.1.0
+- name: trade-dashboard
+  repository: file://../trade-dashboard
+  version: 0.1.0
+- name: argo-workflows
+  repository: https://argoproj.github.io/argo-helm
+  version: 0.47.5
+- name: mlflow
+  repository: https://community-charts.github.io/helm-charts
+  version: 1.11.7
+digest: sha256:49ab716dca0381ad3b9a1ecdbdc760d1665e5e7a50464632fd8c5d9da3b5d76a
+generated: "2026-10-29T12:59:22.200259596Z"

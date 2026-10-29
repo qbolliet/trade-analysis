@@ -1,4 +1,4 @@
-"""Rendering of the production Argo manifests from the Kedro pipelines.
+"""Rendering of the Argo DAG data of the ``trade-pipeline`` Helm chart.
 
 The Argo DAG of each entry point is computed by argo-kedro (``get_argo_dag``,
 called in :func:`build_dag` only, the single place depending on its API), then
@@ -20,9 +20,14 @@ enriched from the tags of the nodes and the ``workflow`` block of ``argo.yml``:
 * **exit handler** — the node tagged ``onexit`` (DuckLake maintenance) leaves
   the DAGs and runs as the ``onExit`` handler, whatever the outcome.
 
-The output is deterministic (stable task order, no timestamp, no commit SHA),
-so that ``kedro trade render-argo --check`` can compare it with the versioned
-manifests.
+Helm cannot compute this DAG, and Kedro should not know the deployment: the
+rendering writes one data file per Kedro environment
+(``helm/trade-pipeline/files/dag-<env>.yaml``), which the chart templates turn
+into a ``WorkflowTemplate`` and its ``CronWorkflow`` resources, adding the
+deployment settings (image, namespace, service account, schedules, deadlines,
+secrets). The output is deterministic (stable task order, no timestamp, no
+commit SHA), so that ``kedro trade render-argo --check`` can compare it with
+the versioned files.
 """
 # Importation des modules
 from __future__ import annotations
@@ -30,19 +35,17 @@ from __future__ import annotations
 from dataclasses import dataclass
 import difflib
 from fnmatch import fnmatchcase
-import json
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Mapping, Optional, Tuple
+from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 
-# Rendu des gabarits et contrôle du YAML produit
-import jinja2
+# Sérialisation des fichiers de données
 import yaml
 
 # Kedro
 from kedro.pipeline import Pipeline
 
 # Modules du package
-from kedro_pipeline.deploy.config import EntryPointSettings, RenderConfig, load_render_config
+from kedro_pipeline.deploy.config import RenderConfig, chart_environments, load_render_config
 from kedro_pipeline.pipelines._common import ON_EXIT, TAG_SEPARATOR
 
 # Familles de tags lues par le rendu (forme « <famille>.<valeur> »)
@@ -50,19 +53,16 @@ EXPERIMENT_FAMILY = "experiment"
 MUTEX_FAMILY = "mutex"
 # Pipeline exécuté par chaque pod : la somme de tous les pipelines, filtrée par `--nodes`
 POD_PIPELINE = "__default__"
-# Template conteneur générique et préfixe des enveloppes sérialisées par un mutex
+# Template conteneur générique et préfixe des enveloppes sérialisées par un mutex (noms
+# repris par les gabarits du chart)
 KEDRO_TEMPLATE = "kedro"
 LOCKED_TEMPLATE_PREFIX = "locked-"
-EXIT_TEMPLATE = "exit-handler"
-# Fichiers produits
-WORKFLOW_TEMPLATE_FILE = "workflowtemplate.yaml"
-CRON_FILE_TEMPLATE = "cronworkflow-{entry_point}.yaml"
-# Dossier des gabarits Jinja et dossier de sortie par défaut (relatif à la racine du dépôt)
-TEMPLATES_DIR = Path(__file__).parent / "templates"
-DEFAULT_OUTPUT_DIR = Path("kubernetes") / "generated"
-# Version d'Argo Workflows à partir de laquelle un CronWorkflow accepte une liste de
-# planifications (`schedules`) ; avant, une seule (`schedule`)
-SCHEDULES_LIST_VERSION = (3, 6)
+# Fichier de données d'un environnement Kedro
+DAG_FILE_TEMPLATE = "dag-{env}.yaml"
+# Dossier de sortie par défaut (relatif à la racine du dépôt) : fichiers du chart
+DEFAULT_OUTPUT_DIR = Path("helm") / "trade-pipeline" / "files"
+# Version du format des fichiers de données, vérifiée par le chart
+DAG_FORMAT_VERSION = 1
 
 
 # Dépendance d'une tâche
@@ -149,7 +149,7 @@ class EntryPointSpec:
 
     Examples:
         >>> from kedro_pipeline.deploy.config import EntryPointSettings
-        >>> settings = EntryPointSettings("daily", "cadence.daily", 0, 1, False, 82800, 3600, 7)
+        >>> settings = EntryPointSettings("daily", "cadence.daily", 0, 1, False)
         >>> EntryPointSpec(settings, (), "0 1 * * *").settings.name
         'daily'
     """
@@ -226,9 +226,8 @@ def node_retries(node_name: str, config: RenderConfig) -> int:
 
     Examples:
         >>> from kedro_pipeline.deploy.config import MachineSpec
-        >>> config = RenderConfig(env="cloud", namespace="ns", image="i", image_tag="t",
-        ...     machine_types={"s": MachineSpec(1, 2)}, default_machine_type="s", name="p",
-        ...     node_retries={"download_*": 0})
+        >>> config = RenderConfig(env="cloud", machine_types={"s": MachineSpec(1, 2)},
+        ...     default_machine_type="s", node_retries={"download_*": 0})
         >>> node_retries("download_comtrade", config), node_retries("prepare_baci", config)
         (0, 1)
     """
@@ -252,9 +251,8 @@ def is_strict(node_name: str, upstream_name: str, config: RenderConfig) -> bool:
 
     Examples:
         >>> from kedro_pipeline.deploy.config import MachineSpec
-        >>> config = RenderConfig(env="cloud", namespace="ns", image="i", image_tag="t",
-        ...     machine_types={"s": MachineSpec(1, 2)}, default_machine_type="s", name="p",
-        ...     strict_dependencies={"process_baci_*": ("prepare_baci",)})
+        >>> config = RenderConfig(env="cloud", machine_types={"s": MachineSpec(1, 2)},
+        ...     default_machine_type="s", strict_dependencies={"process_baci_*": ("prepare_baci",)})
         >>> is_strict("process_baci_hs2017", "prepare_baci", config)
         True
         >>> is_strict("compute_network_vulnerabilities", "process_baci_hs2017", config)
@@ -312,8 +310,8 @@ def build_dag(pipeline: Pipeline, config: RenderConfig) -> List[TaskSpec]:
         >>> from argo_kedro.pipeline import Node
         >>> from kedro.pipeline import Pipeline
         >>> from kedro_pipeline.deploy.config import MachineSpec
-        >>> config = RenderConfig(env="cloud", namespace="ns", image="i", image_tag="t",
-        ...     machine_types={"s": MachineSpec(1, 2)}, default_machine_type="s", name="p")
+        >>> config = RenderConfig(env="cloud", machine_types={"s": MachineSpec(1, 2)},
+        ...     default_machine_type="s")
         >>> pipe = Pipeline([Node(lambda: 1, None, "a", name="make_a", tags=["experiment.x"]),
         ...                  Node(lambda a: a, "a", "b", name="use_a", tags=["experiment.x"])])
         >>> [(task.name, task.depends) for task in build_dag(pipe, config)]
@@ -377,8 +375,8 @@ def exit_task(pipeline: Pipeline, config: RenderConfig) -> Optional[TaskSpec]:
         >>> from argo_kedro.pipeline import Node
         >>> from kedro.pipeline import Pipeline
         >>> from kedro_pipeline.deploy.config import MachineSpec
-        >>> config = RenderConfig(env="cloud", namespace="ns", image="i", image_tag="t",
-        ...     machine_types={"s": MachineSpec(1, 2)}, default_machine_type="s", name="p")
+        >>> config = RenderConfig(env="cloud", machine_types={"s": MachineSpec(1, 2)},
+        ...     default_machine_type="s")
         >>> pipe = Pipeline([Node(lambda: 1, None, "m", name="clean", tags=["onexit", "experiment.x"])])
         >>> exit_task(pipe, config).node
         'clean'
@@ -426,54 +424,6 @@ def cron_schedule(minute: int, hour: int, weekly_day: Optional[int] = None) -> s
     return f"{minute} {hour} * * {(weekly_day + 1) % 7}"
 
 
-# Champ de planification selon la version d'Argo
-def schedule_field(argo_version: str) -> str:
-    """Return the CronWorkflow schedule field supported by an Argo version.
-
-    Args:
-        argo_version: Version of the Argo Workflows controller (``3.6.10``, ``v3.5.2``).
-
-    Returns:
-        ``"schedules"`` (list, Argo ≥ 3.6) or ``"schedule"`` (single string).
-
-    Examples:
-        >>> schedule_field("3.6.10"), schedule_field("v3.5.8")
-        ('schedules', 'schedule')
-    """
-    major, minor = (int(part) for part in argo_version.lstrip("v").split(".")[:2])
-    return "schedules" if (major, minor) >= SCHEDULES_LIST_VERSION else "schedule"
-
-
-# Chaîne YAML sûre
-def _quote(value: Any) -> str:
-    """Quote a scalar as a YAML (JSON) string."""
-    return json.dumps(str(value), ensure_ascii=False)
-
-
-# Environnement Jinja des gabarits
-def _jinja_environment(templates_dir: Path) -> jinja2.Environment:
-    """Return the Jinja environment of the manifest templates.
-
-    Délimiteurs en crochets : les accolades doubles appartiennent aux expressions
-    Argo (`{{workflow.parameters.…}}`), recopiées telles quelles dans les manifestes.
-    """
-    environment = jinja2.Environment(
-        loader=jinja2.FileSystemLoader(str(templates_dir)),
-        block_start_string="[%",
-        block_end_string="%]",
-        variable_start_string="[[",
-        variable_end_string="]]",
-        comment_start_string="[#",
-        comment_end_string="#]",
-        trim_blocks=True,
-        lstrip_blocks=True,
-        keep_trailing_newline=True,
-        undefined=jinja2.StrictUndefined,
-        autoescape=False,
-    )
-    environment.filters["q"] = _quote
-    return environment
-
 
 # Points d'entrée d'un pipeline complet
 def entry_point_specs(default: Pipeline, config: RenderConfig) -> List[EntryPointSpec]:
@@ -504,89 +454,161 @@ def entry_point_specs(default: Pipeline, config: RenderConfig) -> List[EntryPoin
     return specs
 
 
-# Rendu des manifestes d'un pipeline complet
-def render_pipeline_manifests(
-    default: Pipeline, config: RenderConfig, templates_dir: Path = TEMPLATES_DIR
-) -> Dict[str, str]:
-    """Render the WorkflowTemplate and the CronWorkflows of a complete pipeline.
+# Données d'une tâche
+def task_data(task: TaskSpec) -> Dict[str, Any]:
+    """Return the data of a task, as read by the chart templates.
+
+    Args:
+        task: Rendered task.
+
+    Returns:
+        The task fields; ``depends`` and ``mutex`` only when set.
+
+    Examples:
+        >>> task = TaskSpec("publish-serving", "publish_serving", "trade-04-serving",
+        ...                 "compute-medium", 4, 16, (), 1, "trade-serving")
+        >>> task_data(task)["mutex"], "depends" in task_data(task)
+        ('trade-serving', False)
+    """
+    data: Dict[str, Any] = {
+        "name": task.name,
+        "node": task.node,
+        "experiment": task.experiment,
+        "cpu": task.cpu,
+        "mem": task.mem,
+        "retries": task.retries,
+    }
+    if task.depends:
+        data["depends"] = task.depends
+    if task.mutex:
+        data["mutex"] = task.mutex
+    return data
+
+
+# Données du DAG d'un pipeline complet
+def render_dag_data(default: Pipeline, config: RenderConfig) -> Dict[str, Any]:
+    """Compute the DAG data of a complete pipeline, as read by the chart templates.
 
     Args:
         default: Complete pipeline (``__default__``): every scheduled node and
             the exit node.
         config: Rendering configuration.
-        templates_dir: Folder of the Jinja templates.
 
     Returns:
-        The manifest texts by file name (``workflowtemplate.yaml``,
-        ``cronworkflow-<entry point>.yaml``), each a valid YAML document.
+        The data: format version, Kedro environment, pipeline run by the pods,
+        MLflow system metrics settings, entry points (name, tag, default cron,
+        tasks), mutexes of the tasks and exit task.
 
     Raises:
-        ValueError: If the DAG cannot be built or a rendered manifest is not valid YAML.
+        ValueError: If the DAG cannot be built.
     """
-    environment = _jinja_environment(templates_dir)
     entry_points = entry_point_specs(default, config)
     exit_spec = exit_task(default, config)
-    # Mutex des tâches des DAG, une enveloppe sérialisée par nom
-    mutexes = sorted({task.mutex for spec in entry_points for task in spec.tasks if task.mutex})
-    context = {
-        "config": config,
-        "entry_points": entry_points,
-        "exit": exit_spec,
-        "mutexes": mutexes,
-        "pod_pipeline": POD_PIPELINE,
-        "kedro_template": KEDRO_TEMPLATE,
-        "locked_prefix": LOCKED_TEMPLATE_PREFIX,
-        "exit_template": EXIT_TEMPLATE,
-        "schedule_field": schedule_field(config.argo_version),
-        # Borne du template : la plus longue des durées maximales (chaque CronWorkflow
-        # impose la sienne)
-        "active_deadline_seconds": max(spec.settings.active_deadline_seconds for spec in entry_points),
+    return {
+        "formatVersion": DAG_FORMAT_VERSION,
+        "kedroEnv": config.env,
+        "podPipeline": POD_PIPELINE,
+        "systemMetrics": {
+            "enabled": config.system_metrics_enabled,
+            "samplingSeconds": config.system_metrics_sampling_seconds,
+        },
+        "entryPoints": [
+            {
+                "name": spec.settings.name,
+                "tag": spec.settings.tag,
+                "cron": spec.schedule,
+                "tasks": [task_data(task) for task in spec.tasks],
+            }
+            for spec in entry_points
+        ],
+        # Mutex des tâches des DAG, une enveloppe sérialisée par nom
+        "mutexes": sorted({task.mutex for spec in entry_points for task in spec.tasks if task.mutex}),
+        "exit": task_data(exit_spec) if exit_spec else None,
     }
-    manifests = {WORKFLOW_TEMPLATE_FILE: environment.get_template("workflowtemplate.yaml.j2").render(**context)}
-    cron = environment.get_template("cronworkflow.yaml.j2")
-    for spec in entry_points:
-        manifests[CRON_FILE_TEMPLATE.format(entry_point=spec.settings.name)] = cron.render(entry=spec, **context)
-    # Contrôle de validité : chaque manifeste est un document YAML
-    for name, text in manifests.items():
-        try:
-            yaml.safe_load(text)
-        except yaml.YAMLError as error:
-            raise ValueError(f"Rendered manifest '{name}' is not valid YAML: {error}") from error
-    return manifests
 
 
-# Rendu des manifestes d'un environnement
-def render_manifests(env: str = "cloud", image_tag: Optional[str] = None) -> Dict[str, str]:
-    """Render the production manifests of a Kedro environment.
-
-    The pipelines are those of ``env`` (the BACI fan-out follows its targets)
-    and ``KEDRO_ENV`` is fixed to ``env`` in the pods.
+# Texte d'un fichier de données
+def dump_dag_data(data: Mapping[str, Any]) -> str:
+    """Serialise DAG data as a commented, deterministic YAML text.
 
     Args:
-        env: Kedro environment (``cloud`` for production).
-        image_tag: Default image tag; ``deployment.tag`` of ``argo.yml`` when ``None``.
+        data: DAG data (:func:`render_dag_data`).
 
     Returns:
-        The manifest texts by file name.
+        The YAML text, preceded by a header naming its origin; one line per task.
+
+    Raises:
+        ValueError: If the text does not read back as the same data.
 
     Examples:
-        >>> sorted(render_manifests("cloud"))  # doctest: +SKIP
-        ['cronworkflow-daily.yaml', 'cronworkflow-weekly.yaml', 'workflowtemplate.yaml']
+        >>> text = dump_dag_data({"kedroEnv": "cloud", "entryPoints": []})
+        >>> text.splitlines()[0].startswith("# Fichier généré")
+        True
+    """
+    header = (
+        f"# Fichier généré par `kedro trade render-argo` (environnement {data['kedroEnv']}) : "
+        "ne pas modifier à la main.\n"
+        "# Source : pipelines Kedro (tags des nœuds) et config/base/argo.yml (bloc `workflow`).\n"
+        "# Lu par les gabarits du chart trade-pipeline (WorkflowTemplate, CronWorkflow).\n"
+    )
+    # Collections terminales en style compact (une tâche par ligne), sans repli de ligne
+    body = yaml.safe_dump(dict(data), sort_keys=False, default_flow_style=None, width=100_000, allow_unicode=True)
+    text = header + body
+    # Contrôle de relecture : le texte se relit en données identiques
+    if yaml.safe_load(text) != dict(data):
+        raise ValueError("DAG data does not read back identically")
+    return text
+
+
+# Rendu des fichiers d'un pipeline complet
+def render_chart_files(default: Pipeline, config: RenderConfig) -> Dict[str, str]:
+    """Render the DAG data file of a complete pipeline.
+
+    Args:
+        default: Complete pipeline (``__default__``).
+        config: Rendering configuration.
+
+    Returns:
+        The file text by file name (``dag-<env>.yaml``).
+    """
+    return {DAG_FILE_TEMPLATE.format(env=config.env): dump_dag_data(render_dag_data(default, config))}
+
+
+# Rendu des fichiers des environnements
+def render_files(environments: Optional[Sequence[str]] = None) -> Dict[str, str]:
+    """Render the DAG data files of the chart, one per Kedro environment.
+
+    The pipelines are those of each environment (the BACI fan-out follows its
+    targets).
+
+    Args:
+        environments: Kedro environments; ``workflow.chart_environments`` of
+            ``argo.yml`` when ``None``.
+
+    Returns:
+        The file texts by file name.
+
+    Examples:
+        >>> sorted(render_files())  # doctest: +SKIP
+        ['dag-cloud.yaml', 'dag-demo.yaml']
     """
     from kedro_pipeline.config import load_parameters
     from kedro_pipeline.pipeline_registry import register_pipelines
 
-    config = load_render_config(env, image_tag=image_tag)
-    default = register_pipelines(load_parameters(env))[POD_PIPELINE]
-    return render_pipeline_manifests(default, config)
+    files: Dict[str, str] = {}
+    for env in environments or chart_environments():
+        config = load_render_config(env)
+        default = register_pipelines(load_parameters(env))[POD_PIPELINE]
+        files.update(render_chart_files(default, config))
+    return files
 
 
-# Écriture des manifestes
-def write_manifests(manifests: Mapping[str, str], output_dir: Path) -> List[Path]:
-    """Write the manifests (LF line endings, whatever the platform).
+# Écriture des fichiers
+def write_files(files: Mapping[str, str], output_dir: Path) -> List[Path]:
+    """Write the files (LF line endings, whatever the platform).
 
     Args:
-        manifests: Manifest texts by file name.
+        files: File texts by file name.
         output_dir: Destination folder (created if needed).
 
     Returns:
@@ -594,25 +616,25 @@ def write_manifests(manifests: Mapping[str, str], output_dir: Path) -> List[Path
     """
     output_dir.mkdir(parents=True, exist_ok=True)
     paths = []
-    for name in sorted(manifests):
+    for name in sorted(files):
         path = output_dir / name
         # Fins de ligne LF : fichiers identiques sous Windows et en CI (Linux)
         with path.open("w", encoding="utf-8", newline="\n") as handle:
-            handle.write(manifests[name])
+            handle.write(files[name])
         paths.append(path)
     return paths
 
 
-# Écarts entre les manifestes rendus et les fichiers existants
-def diff_manifests(manifests: Mapping[str, str], output_dir: Path) -> Dict[str, str]:
-    """Return the unified diff of every manifest differing from its file.
+# Écarts entre les fichiers rendus et les fichiers existants
+def diff_files(files: Mapping[str, str], output_dir: Path) -> Dict[str, str]:
+    """Return the unified diff of every file differing from its versioned copy.
 
     Line endings are normalised before comparison. A missing file differs
-    from any manifest.
+    from any rendering.
 
     Args:
-        manifests: Rendered manifest texts by file name.
-        output_dir: Folder of the versioned manifests.
+        files: Rendered file texts by file name.
+        output_dir: Folder of the versioned files.
 
     Returns:
         The diff text by file name, for the differing files only.
@@ -620,15 +642,15 @@ def diff_manifests(manifests: Mapping[str, str], output_dir: Path) -> Dict[str, 
     Examples:
         >>> import tempfile
         >>> with tempfile.TemporaryDirectory() as folder:
-        ...     _ = write_manifests({"a.yaml": "x: 1\\n"}, Path(folder))
-        ...     sorted(diff_manifests({"a.yaml": "x: 1\\n", "b.yaml": "y: 2\\n"}, Path(folder)))
+        ...     _ = write_files({"a.yaml": "x: 1\\n"}, Path(folder))
+        ...     sorted(diff_files({"a.yaml": "x: 1\\n", "b.yaml": "y: 2\\n"}, Path(folder)))
         ['b.yaml']
     """
     differences = {}
-    for name in sorted(manifests):
+    for name in sorted(files):
         path = output_dir / name
         current = path.read_text(encoding="utf-8").replace("\r\n", "\n") if path.is_file() else ""
-        expected = manifests[name].replace("\r\n", "\n")
+        expected = files[name].replace("\r\n", "\n")
         if current != expected:
             differences[name] = "".join(
                 difflib.unified_diff(

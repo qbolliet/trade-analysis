@@ -1,6 +1,6 @@
-"""Rendu Argo d'un pipeline jouet : règles d'enrichissement et fichiers de référence.
+"""Rendu des données du DAG d'un pipeline jouet : règles d'enrichissement et fichier de référence.
 
-Les fichiers de référence (``golden/toy/``) se régénèrent par ``UPDATE_GOLDEN=1 uv run
+Le fichier de référence (``golden/toy/dag-toy.yaml``) se régénère par ``UPDATE_GOLDEN=1 uv run
 pytest tests/deploy/test_render_toy.py`` ; tout écart est à relire avant validation.
 """
 
@@ -19,11 +19,12 @@ from kedro_pipeline.deploy.render import (
     Dependency,
     build_dag,
     cron_schedule,
-    diff_manifests,
+    diff_files,
+    dump_dag_data,
     exit_task,
-    render_pipeline_manifests,
-    schedule_field,
-    write_manifests,
+    render_chart_files,
+    render_dag_data,
+    write_files,
 )
 from tests.deploy.toy import toy_config, toy_pipeline
 
@@ -31,18 +32,30 @@ GOLDEN_DIR = Path(__file__).parent / "golden" / "toy"
 
 
 @pytest.fixture(scope="module")
-def manifests():
-    return render_pipeline_manifests(toy_pipeline(), toy_config())
+def files():
+    return render_chart_files(toy_pipeline(), toy_config())
 
 
-def test_golden_files(manifests) -> None:
+@pytest.fixture(scope="module")
+def data():
+    return render_dag_data(toy_pipeline(), toy_config())
+
+
+def test_golden_files(files) -> None:
     if os.environ.get("UPDATE_GOLDEN"):
-        write_manifests(manifests, GOLDEN_DIR)
-    assert diff_manifests(manifests, GOLDEN_DIR) == {}
+        write_files(files, GOLDEN_DIR)
+    assert sorted(files) == ["dag-toy.yaml"]
+    assert diff_files(files, GOLDEN_DIR) == {}
 
 
-def test_rendering_is_deterministic(manifests) -> None:
-    assert render_pipeline_manifests(toy_pipeline(), toy_config()) == manifests
+def test_rendering_is_deterministic(files) -> None:
+    assert render_chart_files(toy_pipeline(), toy_config()) == files
+
+
+def test_the_file_reads_back_as_the_data(files, data) -> None:
+    assert yaml.safe_load(files["dag-toy.yaml"]) == data
+    assert data["formatVersion"] == 1 and data["kedroEnv"] == "toy" and data["podPipeline"] == "__default__"
+    assert data["systemMetrics"] == {"enabled": False, "samplingSeconds": 10}
 
 
 def test_daily_dag_keeps_the_fused_task_and_tolerates_its_failure() -> None:
@@ -64,33 +77,29 @@ def test_weekly_dag_drops_dependencies_outside_the_entry_point() -> None:
     assert publish.depends == "compute-toy.Succeeded"
 
 
-def test_the_exit_node_leaves_the_dags(manifests) -> None:
+def test_the_exit_node_leaves_the_dags(data) -> None:
     default = toy_pipeline()
     config = toy_config()
     assert all(task.node != "cleanup_toy" for task in build_dag(default, config))
     exit_spec = exit_task(default, config)
     assert exit_spec.node == "cleanup_toy" and exit_spec.mutex == "toy-maintenance"
-    template = yaml.safe_load(manifests["workflowtemplate.yaml"])
-    handler = {t["name"]: t for t in template["spec"]["templates"]}[template["spec"]["onExit"]]
-    assert handler["synchronization"] == {"mutex": {"name": "toy-maintenance"}}
-    assert handler["steps"][0][0]["arguments"]["parameters"][0] == {"name": "kedro-node", "value": "cleanup_toy"}
-
-
-def test_crons_use_their_entry_point_and_schedule(manifests) -> None:
-    daily = yaml.safe_load(manifests["cronworkflow-daily.yaml"])
-    weekly = yaml.safe_load(manifests["cronworkflow-weekly.yaml"])
-    assert daily["spec"]["schedules"] == ["15 1 * * *"]
-    # WEEKLY_DAY = 0 (lundi) → jour cron 1
-    assert weekly["spec"]["schedules"] == ["0 2 * * 1"]
-    assert weekly["spec"]["workflowSpec"] == {
-        "workflowTemplateRef": {"name": "toy-pipeline"}, "entrypoint": "weekly", "activeDeadlineSeconds": 7200,
+    assert data["exit"] == {
+        "name": "cleanup-toy", "node": "cleanup_toy", "experiment": "toy-00-maintenance",
+        "cpu": 1, "mem": 2, "retries": 1, "mutex": "toy-maintenance",
     }
+    assert data["mutexes"] == ["toy-serving"]
 
 
-def test_older_argo_gets_a_single_schedule() -> None:
-    manifests = render_pipeline_manifests(toy_pipeline(), toy_config(argo_version="3.5.8"))
-    spec = yaml.safe_load(manifests["cronworkflow-daily.yaml"])["spec"]
-    assert spec["schedule"] == "15 1 * * *" and "schedules" not in spec
+def test_entry_points_carry_their_default_cron(data) -> None:
+    entries = {entry["name"]: entry for entry in data["entryPoints"]}
+    assert list(entries) == ["daily", "weekly"]
+    assert entries["daily"]["cron"] == "15 1 * * *"
+    # WEEKLY_DAY = 0 (lundi) → jour cron 1
+    assert entries["weekly"]["cron"] == "0 2 * * 1"
+    publish = entries["weekly"]["tasks"][-1]
+    assert publish["depends"] == "compute-toy.Succeeded" and publish["mutex"] == "toy-serving"
+    # Champs facultatifs absents plutôt que vides
+    assert "depends" not in entries["daily"]["tasks"][0] and "mutex" not in entries["daily"]["tasks"][0]
 
 
 def test_a_node_without_experiment_is_refused() -> None:
@@ -106,10 +115,14 @@ def test_an_unknown_machine_type_is_refused() -> None:
 
 
 def test_an_entry_point_without_task_is_refused() -> None:
-    config = toy_config()
     empty = toy_pipeline().only_nodes_with_tags("onexit")
     with pytest.raises(ValueError, match="selects no node"):
-        render_pipeline_manifests(empty, config)
+        render_chart_files(empty, toy_config())
+
+
+def test_dump_refuses_data_that_does_not_read_back() -> None:
+    with pytest.raises(ValueError, match="read back"):
+        dump_dag_data({"kedroEnv": "toy", "value": float("nan")})
 
 
 @pytest.mark.parametrize(
@@ -127,24 +140,15 @@ def test_cron_schedule_refuses_invalid_values() -> None:
         cron_schedule(0, 2, 7)
 
 
-def test_schedule_field() -> None:
-    assert schedule_field("3.6.10") == "schedules"
-    assert schedule_field("v3.7.0") == "schedules"
-    assert schedule_field("3.5.8") == "schedule"
-
-
 def test_config_from_sections_reads_the_parameters() -> None:
     argo = {
-        "namespace": "ns",
-        "deployment": {"image": "img", "tag": "latest"},
         "machine_types": {"s": {"cpu": 1, "mem": 2, "num_gpu": 0}},
         "default_machine_type": "s",
-        "workflow": {"name": "p", "environment": {"EMPTY": None, "N": 1}},
+        "workflow": {"entry_points": {"daily": {"tag": "cadence.daily", "minute": 30, "hour": 1}}},
     }
     parameters = {"runtime": {"WEEKLY_DAY": 2}, "tracking": {"SYSTEM_METRICS": {"ENABLED": False, "SAMPLING_SECONDS": 5}}}
-    config = RenderConfig.from_sections(argo, parameters, "cloud", image_tag="sha-1")
-    assert (config.image_tag, config.weekly_day) == ("sha-1", 2)
+    config = RenderConfig.from_sections(argo, parameters, "cloud")
+    assert config.weekly_day == 2 and config.entry_points[0].minute == 30
     assert (config.system_metrics_enabled, config.system_metrics_sampling_seconds) == (False, 5)
-    assert config.environment == {"EMPTY": "", "N": "1"}
     with pytest.raises(ValueError, match="Default machine type"):
         RenderConfig.from_sections({**argo, "default_machine_type": "x"}, parameters, "cloud")

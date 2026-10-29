@@ -1,0 +1,24 @@
+apiVersion: v2
+name: trade-dashboard
+description: >-
+  Restitution Superset d'un catalogue DuckLake : configuration de Superset (lecture seule du
+  catalogue depuis DuckDB, gabarits Jinja), Superset facultatif (chart Superset d'Onyxia) et
+  Job d'import d'un tableau de bord versionné par l'API REST.
+type: application
+# Version du chart (semver), indépendante de celle de Superset
+version: 0.1.0
+# Version de Superset de l'image du chart Superset verrouillé (Chart.lock)
+appVersion: "4.1.1"
+keywords: [superset, ducklake, duckdb, dashboard]
+home: https://github.com/qbolliet/trade-analysis
+sources:
+  - https://github.com/qbolliet/trade-analysis
+maintainers:
+  - name: qbolliet
+dependencies:
+  # Superset d'Onyxia (enveloppe du chart apache/superset et du library-chart d'InseeFrLab),
+  # facultatif : désactivé pour configurer un Superset existant
+  - name: superset
+    repository: https://inseefrlab.github.io/helm-charts-datavisualization
+    version: ">=0.1.12 <0.2.0"
+    condition: superset.enabled

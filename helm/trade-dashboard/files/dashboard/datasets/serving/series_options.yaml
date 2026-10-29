@@ -1,0 +1,60 @@
+table_name: series_options
+main_dttm_col: null
+description: null
+default_endpoint: null
+offset: 0
+cache_timeout: null
+catalog: null
+schema: serving.dashboard
+sql: '-- Valeurs des filtres « Grandeur » et « Métrique » des courbes
+
+  SELECT measure, metric FROM (VALUES (''Valeur (€)'', NULL), (''Quantité (100 kg)'',
+  NULL), (NULL, ''Rang consensus''), (NULL, ''Incertitude du rang (écart interquartile)''),
+  (NULL, ''Score de consensus (0-1)''), (NULL, ''HHI''), (NULL, ''CDI2''), (NULL,
+  ''CDI3''), (NULL, ''WORLD_HHI''), (NULL, ''CENTRALITY_RISK''), (NULL, ''CLUSTERING_W''),
+  (NULL, ''SPOF'')) AS t(measure, metric)'
+params: null
+template_params: null
+filter_select_enabled: true
+fetch_values_predicate: null
+extra: null
+normalize_columns: false
+always_filter_main_dttm: false
+uuid: c07b2147-4ab0-4807-a7c2-922b67e1964f
+metrics:
+- metric_name: count
+  verbose_name: COUNT(*)
+  metric_type: count
+  expression: COUNT(*)
+  description: null
+  d3format: null
+  currency: null
+  extra: null
+  warning_text: null
+columns:
+- column_name: measure
+  verbose_name: null
+  is_dttm: false
+  is_active: true
+  type: STRING
+  advanced_data_type: null
+  groupby: true
+  filterable: true
+  expression: ''
+  description: null
+  python_date_format: null
+  extra: null
+- column_name: metric
+  verbose_name: null
+  is_dttm: false
+  is_active: true
+  type: null
+  advanced_data_type: null
+  groupby: true
+  filterable: true
+  expression: ''
+  description: null
+  python_date_format: null
+  extra: null
+version: 1.0.0
+database_uuid: 51182634-29ab-4832-8d42-aadd6ab1a32d

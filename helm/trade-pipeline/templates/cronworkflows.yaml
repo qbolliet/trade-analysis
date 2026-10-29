@@ -1,0 +1,45 @@
+{{- /*
+CronWorkflow d'un point d'entrée : instancie le WorkflowTemplate avec son point d'entrée
+et sa durée maximale. Un document par point d'entrée de files/dag-<kedroEnv>.yaml.
+*/ -}}
+{{- $dag := include "trade-pipeline.dag" . | fromYaml -}}
+{{- $field := include "trade-pipeline.scheduleField" . -}}
+{{- range $entry := $dag.entryPoints }}
+{{- $settings := merge (deepCopy (index $.Values.schedules.entryPoints $entry.name | default dict)) $.Values.schedules.defaults }}
+{{- $cron := $settings.cron | default $entry.cron }}
+{{- $suspend := $.Values.schedules.suspend }}
+{{- if hasKey $settings "suspend" }}{{ if not (kindIs "invalid" $settings.suspend) }}{{ $suspend = $settings.suspend }}{{ end }}{{ end }}
+---
+apiVersion: argoproj.io/v1alpha1
+kind: CronWorkflow
+metadata:
+  name: {{ $.Values.workflow.name }}-{{ $entry.name }}
+  namespace: {{ $.Release.Namespace }}
+  labels:
+    {{- include "trade-pipeline.labels" $ | nindent 4 }}
+  annotations:
+    trade-analysis/kedro-env: {{ $.Values.kedroEnv | quote }}
+spec:
+  {{- if eq $field "schedules" }}
+  schedules: [ {{ $cron | quote }} ]
+  {{- else }}
+  # Contrôleur Argo antérieur à 3.6 : une seule planification
+  schedule: {{ $cron | quote }}
+  {{- end }}
+  timezone: {{ $.Values.schedules.timezone }}
+  suspend: {{ $suspend }}
+  # Une exécution à la fois par point d'entrée ; l'exclusion entre points d'entrée est le
+  # mutex d'exécution du WorkflowTemplate
+  concurrencyPolicy: {{ $.Values.schedules.concurrencyPolicy }}
+  startingDeadlineSeconds: {{ $settings.startingDeadlineSeconds }}
+  successfulJobsHistoryLimit: {{ $settings.historyLimit }}
+  failedJobsHistoryLimit: {{ $settings.historyLimit }}
+  workflowMetadata:
+    labels:
+      trade-analysis/entry-point: {{ $entry.name }}
+  workflowSpec:
+    workflowTemplateRef: {name: {{ $.Values.workflow.name }}}
+    # Surcharge du point d'entrée et de la durée maximale du template
+    entrypoint: {{ $entry.name }}
+    activeDeadlineSeconds: {{ $settings.activeDeadlineSeconds }}
+{{- end }}

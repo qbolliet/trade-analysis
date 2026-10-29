@@ -259,3 +259,6 @@ data/
 
 # Répertoires temporaires locaux (ex. basetemp pytest)
 /tmp/
+
+# Dépendances téléchargées des charts Helm (reconstruites par `helm dependency build`)
+helm/*/charts/

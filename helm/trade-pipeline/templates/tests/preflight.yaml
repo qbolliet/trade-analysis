@@ -1,0 +1,60 @@
+{{- /*
+Contrôle de pré-vol (`helm test <release>`) : un pod de l'image du pipeline, avec le même
+environnement que les tâches, vérifie la présence des clés de secrets et l'accès à MLflow,
+PostgreSQL et S3, sans afficher aucune valeur. Références de secrets facultatives : une
+clé absente est signalée par le contrôle au lieu de bloquer le démarrage du pod.
+*/ -}}
+{{- if .Values.preflight.enabled }}
+{{- $required := concat (keys .Values.secretEnv | sortAlpha) (list "PGHOST" "PGPORT" "PGUSER" "PGPASSWORD" "MLFLOW_TRACKING_URI") }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ .Values.workflow.name }}-preflight
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "trade-pipeline.labels" . | nindent 4 }}
+  annotations:
+    helm.sh/hook: test
+    helm.sh/hook-weight: "-1"
+    helm.sh/hook-delete-policy: before-hook-creation,hook-succeeded
+data:
+  preflight.py: |
+    {{- .Files.Get "files/preflight.py" | nindent 4 }}
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: {{ .Values.workflow.name }}-preflight
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "trade-pipeline.labels" . | nindent 4 }}
+  annotations:
+    helm.sh/hook: test
+    helm.sh/hook-delete-policy: before-hook-creation,hook-succeeded
+spec:
+  restartPolicy: Never
+  serviceAccountName: {{ .Values.serviceAccount.name }}
+  containers:
+    - name: preflight
+      image: "{{ .Values.image.repository }}:{{ include "trade-pipeline.imageTag" . }}"
+      imagePullPolicy: {{ include "trade-pipeline.pullPolicy" . }}
+      command: [python, /preflight/preflight.py]
+      resources:
+        requests: {cpu: {{ .Values.preflight.resources.cpu | quote }}, memory: {{ .Values.preflight.resources.memory | quote }}}
+        limits: {cpu: {{ .Values.preflight.resources.cpu | quote }}, memory: {{ .Values.preflight.resources.memory | quote }}}
+      env:
+        - {name: PREFLIGHT_REQUIRED, value: {{ join " " $required | quote }}}
+        - {name: PREFLIGHT_S3_PATH, value: {{ .Values.preflight.s3Path | default "" | quote }}}
+        - {name: PREFLIGHT_TIMEOUT, value: {{ .Values.preflight.timeoutSeconds | toString | quote }}}
+        {{- include "trade-pipeline.plainEnv" . | indent 8 }}
+        {{- include "trade-pipeline.secretEnv" (dict "root" . "optional" true) | indent 8 }}
+      {{- with include "trade-pipeline.secretEnvFrom" (dict "root" . "optional" true) }}
+      envFrom:
+        {{- . | indent 8 }}
+      {{- end }}
+      volumeMounts:
+        - {name: preflight, mountPath: /preflight, readOnly: true}
+  volumes:
+    - name: preflight
+      configMap: {name: {{ .Values.workflow.name }}-preflight}
+{{- end }}

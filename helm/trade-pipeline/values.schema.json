@@ -1,0 +1,123 @@
+{
+  "$schema": "https://json-schema.org/draft-07/schema#",
+  "title": "Valeurs du chart trade-pipeline",
+  "type": "object",
+  "definitions": {
+    "dnsName": {"type": "string", "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$", "maxLength": 63},
+    "secretKey": {
+      "type": "object",
+      "required": ["secret", "key"],
+      "properties": {"secret": {"$ref": "#/definitions/dnsName"}, "key": {"type": "string", "minLength": 1}},
+      "additionalProperties": false
+    },
+    "entryPointSettings": {
+      "type": "object",
+      "properties": {
+        "cron": {"type": "string", "pattern": "^$|^(\\S+ ){4}\\S+$"},
+        "suspend": {"type": ["boolean", "null"]},
+        "activeDeadlineSeconds": {"type": "integer", "minimum": 1},
+        "startingDeadlineSeconds": {"type": "integer", "minimum": 0},
+        "historyLimit": {"type": "integer", "minimum": 0}
+      },
+      "additionalProperties": false
+    }
+  },
+  "required": ["platform", "kedroEnv", "image", "workflow", "schedules", "serviceAccount"],
+  "properties": {
+    "global": {"type": "object", "properties": {"platform": {"enum": ["", "onyxia", "generic"]}}},
+    "platform": {"enum": ["onyxia", "generic"]},
+    "nameOverride": {"type": "string"},
+    "kedroEnv": {"type": "string", "pattern": "^[A-Za-z0-9_-]+$"},
+    "image": {
+      "type": "object",
+      "required": ["repository"],
+      "properties": {
+        "repository": {"type": "string", "minLength": 1},
+        "tag": {"type": "string"},
+        "pullPolicy": {"enum": ["", "Always", "IfNotPresent", "Never"]}
+      },
+      "additionalProperties": false
+    },
+    "workflow": {
+      "type": "object",
+      "required": ["name", "command"],
+      "properties": {
+        "name": {"$ref": "#/definitions/dnsName"},
+        "labels": {"type": "object", "additionalProperties": {"type": "string"}},
+        "parallelism": {"type": "integer", "minimum": 1},
+        "ttlSecondsAfterSuccess": {"type": "integer", "minimum": 0},
+        "ttlSecondsAfterFailure": {"type": "integer", "minimum": 0},
+        "podGC": {"enum": ["OnPodSuccess", "OnPodCompletion", "OnWorkflowSuccess", "OnWorkflowCompletion"]},
+        "runMutex": {"type": "string"},
+        "command": {"type": "array", "minItems": 1, "items": {"type": "string"}},
+        "parameters": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["name"],
+            "properties": {"name": {"$ref": "#/definitions/dnsName"}, "value": {"type": "string"}},
+            "additionalProperties": false
+          }
+        },
+        "kedroParams": {"type": "string"}
+      },
+      "additionalProperties": false
+    },
+    "schedules": {
+      "type": "object",
+      "properties": {
+        "suspend": {"type": "boolean"},
+        "timezone": {"type": "string", "minLength": 1},
+        "concurrencyPolicy": {"enum": ["Allow", "Forbid", "Replace"]},
+        "defaults": {"$ref": "#/definitions/entryPointSettings"},
+        "entryPoints": {"type": "object", "additionalProperties": {"$ref": "#/definitions/entryPointSettings"}}
+      },
+      "additionalProperties": false
+    },
+    "argo": {
+      "type": "object",
+      "properties": {
+        "version": {"type": "string", "pattern": "^$|^v?[0-9]+(\\.[0-9]+){0,2}"},
+        "controllerNamespace": {"type": "string"}
+      },
+      "additionalProperties": false
+    },
+    "serviceAccount": {
+      "type": "object",
+      "required": ["name"],
+      "properties": {"create": {"type": "boolean"}, "name": {"$ref": "#/definitions/dnsName"}},
+      "additionalProperties": false
+    },
+    "env": {"type": "object", "additionalProperties": {"type": ["string", "number", "boolean"]}},
+    "secretEnv": {"type": "object", "additionalProperties": {"$ref": "#/definitions/secretKey"}},
+    "extraSecretEnvFrom": {"type": "array", "items": {"$ref": "#/definitions/dnsName"}},
+    "postgres": {
+      "type": "object",
+      "properties": {"existingSecret": {"type": "string"}, "port": {"type": ["string", "integer"]}},
+      "additionalProperties": false
+    },
+    "mlflow": {
+      "type": "object",
+      "properties": {"existingSecret": {"type": "string"}, "url": {"type": "string", "pattern": "^$|^https?://"}},
+      "additionalProperties": false
+    },
+    "secrets": {
+      "type": "object",
+      "properties": {
+        "create": {"type": "boolean"},
+        "data": {"type": "object", "additionalProperties": {"type": "object", "additionalProperties": {"type": "string"}}}
+      },
+      "additionalProperties": false
+    },
+    "preflight": {
+      "type": "object",
+      "properties": {
+        "enabled": {"type": "boolean"},
+        "s3Path": {"type": "string", "pattern": "^$|^s3://"},
+        "timeoutSeconds": {"type": "integer", "minimum": 1},
+        "resources": {"type": "object", "properties": {"cpu": {"type": "string"}, "memory": {"type": "string"}}}
+      },
+      "additionalProperties": false
+    }
+  }
+}

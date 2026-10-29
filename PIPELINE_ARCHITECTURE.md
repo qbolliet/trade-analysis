@@ -53,6 +53,7 @@
 | 2026-10-28 (K-03c v2) | **Tableau de bord « Vulnérabilités » v2** : parcours unique « une année, un flux, un pays OU un produit » (deux onglets, un tableau classé et deux courbes chacun) ; **incertitude du rang consensus par dispersion entre méthodes** calculée dans `serving` (`rank_min/max/q25/q75/spread_<niveau>`, `n_methods_<niveau>`, `UNCERTAINTY_METHODS`) ; `cell_scores` gagne `flow_label`, `*_display`, `trade_value_eur`, `trade_quantity_100kg` ; `flows` expose `value_eur` et `quantity_100kg` (rupture : `value` renommée) ; agrégats « total » ordonnés `PARTNERS.TOTAL` (Comext ne publie pas `WORLD` pour `EU27_2020`, seulement `EXT_EU27_2020`) ; métriques de qualité `serving.METRICS` ; top N des courbes par datasets virtuels Jinja (`ENABLE_TEMPLATE_PROCESSING`) ; archive importable `tools/superset_bundle.py` (option `--schema`) | PD-26, PS-29.2, PS-30, §5.8 |
 | 2026-10-28 (K-03c v2, niveaux) | **Classement par niveau de nomenclature dans l'onglet Par pays** : niveau dérivé `by_reporter_level` dans `cell_scores` (rangs de chaque méthode restreints au niveau du produit puis renumérotés, incertitude recalculée sur ces rangs), colonne `product_level_label` (`PRODUCT_LEVEL_LABELS` : SH2, SH4, SH6, NC8), filtre natif « Niveau de nomenclature » (SH6 par défaut, obligatoire) ; **import « assets »** (`tools/superset_bundle.py --assets`, `POST /api/v1/assets/import/`), seul à remplacer datasets et graphiques existants ; correction de l'export versionné, dont les courbes avaient gardé un SQL `UNPIVOT` rejeté par Superset (l'outil refuse désormais `PIVOT` / `UNPIVOT`, et un test exécute le SQL versionné) | PD-27, PS-29.2, PS-30.6, §5.8 |
 | 2026-10-29 (K-03c v2, synthèse par niveau) | **Synthèse et cohérence par finesse de nomenclature** : colonne `product_level` (nombre de chiffres du code : 2, 4, 6, 8) écrite par l'étape partenaires dans `indicators`, ajoutée à `synthesis.PARAMETERS.context_columns` (reprise par la cohérence) : un produit n'est plus classé qu'avec des produits de même niveau, aux trois niveaux de comparaison ; `product_level` propagé à `coherence_metrics` / `coherence_methods` de `serving`. Rupture de schéma sans cohabitation (K-17c) : effet aux recalculs complets de K-17d (bases demo vidées, production vierge) ; d'ici là, synthèse, cohérence et publication de `serving` échouent sur les tables demo actuelles, faute de colonne | PD-20, PD-27, PS-17, PS-29.2 |
+| 2026-10-29 (K-17g) | **Charts Helm de déploiement** : trois charts sous `helm/` — `trade-pipeline` (`WorkflowTemplate`, `CronWorkflow` par point d'entrée, compte de service facultatif, `helm test` de pré-vol), `trade-dashboard` (configuration Superset portée par le chart, Superset d'Onyxia en dépendance facultative, Job d'import « assets » du tableau de bord), `trade-analysis` (parapluie, commande unique, préréglages `values-onyxia.yaml` / `values-generic.yaml`, surcouche `values-demo.yaml`) ; **source unique du DAG** : `render-argo` produit `helm/trade-pipeline/files/dag-<env>.yaml` (données, plus de gabarits Jinja), Helm porte tout le déploiement (`KEDRO_ENV` devient une valeur) ; découverte Onyxia par `lookup` (version du contrôleur Argo, secrets `onyxia/discovery`) ; `kubernetes/generated/` supprimé ; CI `helm.yml` (lint, rendu, kubeconform, publication OCI sur étiquette `charts-v*`). Écart au prompt : décision numérotée PD-28 (PD-27 déjà prise) | PD-28, PD-14, PS-21.3, §5, §9, §12 |
 
 ## Sommaire
 
@@ -1129,6 +1130,10 @@ pour toute une exécution.
 - Les manifestes générés sont **versionnés**. Un job de CI vérifie qu'ils correspondent au
   code (`render-argo --check`). Le déploiement se fait par `kubectl apply -f
   kubernetes/generated/`.
+  *(Révisé le 2026-10-29, PD-28 : `render-argo` produit les fichiers de données du DAG du
+  chart Helm `trade-pipeline` (`helm/trade-pipeline/files/dag-<env>.yaml`) ; les gabarits
+  Helm portent le déploiement ; `kubernetes/generated/` est supprimé et le déploiement se
+  fait par `helm upgrade --install` du parapluie `helm/trade-analysis`.)*
 - Pour une exécution ponctuelle (rattrapage, forçage) :
   `argo submit --from workflowtemplate/trade-pipeline --entrypoint weekly -p force-steps=synthesis`.
 - Le pod appelle `kedro run --pipeline __default__ --nodes <nœud>` (commande générée par
@@ -1732,6 +1737,109 @@ base de données.
 dérivé `by_reporter_level`, mis en place le 2026-10-28) : sans recalcul, mais
 normalisations, pondérations et seuils restent estimés sur tous les niveaux, et les
 tables de résultats gardent des rangs mélangés. Gardée comme transition.
+
+### PD-28 — Déploiement par charts Helm : pipeline, tableau de bord, parapluie
+
+**Problème.**
+- **Deux rendus par environnement.** Le déploiement par `kubectl apply` de
+  `kubernetes/generated/` fige `KEDRO_ENV` au rendu : demo et cloud exigent deux rendus,
+  avec les mêmes noms de ressources.
+- **Configuration de Superset perdue.** Superset était configuré en modifiant les Secrets de
+  sa release Onyxia (`superset-899573-env`, `-config`), modification perdue à tout
+  redéploiement.
+- **Dépendance à Onyxia.** Les services Onyxia (Argo Workflows, MLflow, Superset) font
+  évoluer leurs images et leurs charts, et rien ne permettait de déployer hors Onyxia.
+
+**Décision.**
+- **Trois charts** sous `helm/`.
+
+  | Chart | Contenu |
+  |---|---|
+  | `trade-pipeline` (backend) | `WorkflowTemplate`, un `CronWorkflow` par point d'entrée, compte de service facultatif, références aux secrets, `helm test` de pré-vol (présence des clés, MLflow `/health`, PostgreSQL, S3, sans afficher de valeur) |
+  | `trade-dashboard` (restitution) | configuration de Superset, Superset en dépendance facultative, Job post-install / post-upgrade d'import du tableau de bord |
+  | `trade-analysis` (parapluie) | dépendances `file://` conditionnelles (`pipeline.enabled`, `dashboard.enabled`) ; c'est la commande unique |
+
+  Pourquoi séparer pipeline et tableau de bord :
+  - cycles de vie distincts (le pipeline change à chaque image, le tableau de bord
+    rarement) ;
+  - droits distincts ;
+  - un `helm upgrade` du pipeline ne redémarre pas Superset ;
+  - modèle Onyxia « un service = un chart ».
+
+  Les charts sont génériques : rien de propre au projet hors des valeurs par défaut et des
+  fichiers de données. Ils sont donc déplaçables dans un dépôt d'outillage commun à
+  plusieurs projets Kedro.
+- **Un seul jeu de charts.** La plateforme est choisie par `global.platform: onyxia|generic`,
+  avec deux préréglages. Demo et production ne diffèrent que par des valeurs : surcouche
+  `values-demo.yaml` (`kedroEnv: demo`, schéma `demo_dashboard`, planifications suspendues).
+- **Source unique du DAG.** Le DAG est calculé par argo-kedro et ne peut pas l'être par Helm.
+  - `kedro trade render-argo` écrit, pour chaque environnement de
+    `workflow.chart_environments`, le fichier de données `helm/trade-pipeline/files/dag-<env>.yaml`.
+    Il contient, par point d'entrée, les tâches (nœud, expérience, ressources, reprises,
+    `depends`, mutex) et le cron par défaut, ainsi que les mutex et le gestionnaire de
+    sortie.
+  - Les gabarits Helm portent tout ce qui relève du déploiement : image et étiquette,
+    `imagePullPolicy`, `KEDRO_ENV`, namespace, compte de service, planifications
+    (`suspend`, cron, fuseau), délais, parallélisme, TTL, variables, secrets, mutex
+    d'exécution.
+  - `render-argo --check` reste en CI. `kubernetes/generated/` est **supprimé**, pour qu'il
+    n'existe pas deux chemins de déploiement concurrents. La revue porte sur les fichiers de
+    données et les fichiers de valeurs, et la CI publie le rendu en artefact.
+- **Consommer les services Onyxia, pas leurs valeurs internes.** Ordre de résolution :
+  1. une valeur explicite gagne toujours ;
+  2. sinon, `lookup` :
+     - version du contrôleur Argo, par l'image du Deployment `workflow-controller`, qui
+       choisit entre `schedules` et `schedule` ;
+     - Secrets annotés `onyxia/discovery: postgres|mlflow` (convention du library-chart
+       d'InseeFrLab), projetés par `secretKeyRef` sans recopier de valeur ;
+  3. sinon, un défaut ou un échec explicite.
+
+  Les préréglages nomment les secrets existants (`trade-*`), ce qui rend `helm template`
+  possible. Hors Onyxia, Argo Workflows (argo-helm) et MLflow (community-charts) sont
+  installables en dépendances facultatives, désactivées par défaut.
+- **Superset : chart Superset d'Onyxia en dépendance facultative** (choix de l'utilisateur),
+  avec la plage `>=0.1.12 <0.2.0`, verrouillée sur 0.1.13 (Superset 4.1.1). La configuration
+  est portée une seule fois :
+  - un fragment Python monté depuis un ConfigMap et exécuté à la fin de
+    `superset_config.py` : écouteur `connect` restreint à `duckdb_engine`,
+    `ATTACH … (READ_ONLY)`, `ENABLE_TEMPLATE_PROCESSING` ;
+  - les secrets exposés par `envFromSecrets` ;
+  - les pilotes épinglés ;
+  - la découverte de connexions désactivée ;
+  - une base de métadonnées embarquée au nom distinct.
+
+  Pour un Superset existant, le fragment et l'import restent utilisables, et la
+  configuration est à reporter une fois.
+- **Import du tableau de bord.**
+  - L'archive est construite **dans le Job**, à partir d'une copie du dossier versionné et
+    de `tools/superset_bundle.py` (ConfigMaps, environ 80 Ko). Schéma, année et top N restent
+    ainsi des valeurs Helm, sans rien reconstruire au paquet.
+  - Le Job attend `/health`, puis fait un import « assets » idempotent avec écrasement. Il
+    ne journalise que des statuts.
+- **Secrets.** Les secrets existants sont les défauts des `existingSecret`. La création par
+  le chart est possible (`secrets.create`, `credentials.create`), désactivée par défaut, et
+  les secrets ainsi créés sont conservés à la désinstallation. Aucun secret ne figure dans
+  un fichier versionné.
+- **Publication.** `.github/workflows/helm.yml` : `helm lint`, `helm template` des
+  préréglages, kubeconform (schémas des CRD Argo du catalogue datreeio), `helm package` et
+  `helm push oci://ghcr.io/qbolliet/charts` sur l'étiquette `charts-v*`. La `version` des
+  charts suit semver, indépendamment de l'image ; `appVersion` est l'étiquette d'image par
+  défaut.
+
+**Conséquences.**
+- Rendu de production **équivalent** aux anciens manifestes. Seules différences : labels
+  Helm standard au lieu de `generated-by`, et `suspend` explicite.
+- La première installation reprend le `WorkflowTemplate` déjà appliqué par `kubectl`, par
+  annotations et label Helm.
+- DuckDB du Superset 4.1 (Python 3.10) limité à 1.5.x, alors que le pipeline écrit en 2.0 :
+  compatibilité de lecture à vérifier en recette (K-17d).
+
+**Alternatives écartées.**
+- **Un chart unique** : couple les cycles de vie et les droits.
+- **Un chart par plateforme** : duplication.
+- **Dépendre des valeurs internes des charts Argo et MLflow d'Onyxia** : fragile.
+- **Chart amont apache/superset** au lieu de l'enveloppe Onyxia : écarté par l'utilisateur.
+- **Archive construite au `helm package`** : figerait schéma et année.
 
 ---
 
@@ -3560,6 +3668,15 @@ spec:
 
 #### PS-21.3 Commandes
 
+> *Révisé le 2026-10-29 (PD-28)* : commandes actuelles, l'extrait d'origine suit.
+>
+> ```bash
+> uv run kedro trade render-argo            # helm/trade-pipeline/files/dag-{cloud,demo}.yaml
+> uv run kedro trade render-argo --check    # CI : échoue si les fichiers du chart diffèrent
+> helm upgrade --install trade helm/trade-analysis -f helm/trade-analysis/values-onyxia.yaml \
+>   --set pipeline.image.tag=sha-<court> --set dashboard.superset.ingress.hostname=<hôte>
+> ```
+
 ```bash
 uv run kedro trade render-argo --env cloud --image-tag "$(git rev-parse --short HEAD)"
 uv run kedro trade render-argo --check      # CI : échoue si kubernetes/generated/ diffère
@@ -4715,7 +4832,8 @@ point 8).
 2. L'ajouter à la configuration : `metric_columns`, `SOURCES.COLUMNS` pour la synthèse,
    entrée `methods`.
 3. Pousser sur `main` : l'image est publiée, puis mettre à jour le template
-   (`render-argo`, `kubectl apply`).
+   (`render-argo` si le DAG change, `helm upgrade trade helm/trade-analysis --reuse-values
+   --set pipeline.image.tag=sha-<court>`).
 4. Au prochain run quotidien, l'empreinte absente déclenche le calcul de la nouvelle
    métrique ou méthode **sur toutes les unités**. L'évolution de schéma ajoute la colonne
    (métrique). Pour la synthèse, seule la nouvelle méthode et le consensus sont calculés.
@@ -4799,9 +4917,14 @@ l'idempotence. Pour repartir de zéro : `argo submit --from workflowtemplate/tra
 
 ### 5.6 Changer d'image
 
-`render-argo --image-tag <sha>` puis `kubectl apply -f kubernetes/generated/`. Retour
-arrière : réappliquer le manifeste du commit précédent (`git checkout <sha> --
-kubernetes/generated/`).
+`helm upgrade trade helm/trade-analysis --reuse-values --set pipeline.image.tag=sha-<court>`
+(seul le `WorkflowTemplate` change ; Superset n'est pas redémarré). Retour arrière :
+`helm history trade` puis `helm rollback trade <révision>`. Après un changement du DAG
+(nœuds, tags, `argo.yml`) : `uv run kedro trade render-argo`, commit des fichiers
+`helm/trade-pipeline/files/`, puis `helm upgrade`. Suspension des planifications :
+`--set pipeline.schedules.suspend=true` (pas de `kubectl patch`, que Helm annulerait).
+Contrôle de pré-vol après toute mise à jour : `helm test trade --logs` (aucune valeur
+affichée). Détails : `helm/README.md`.
 
 ### 5.7 Faire tourner les secrets
 
@@ -4834,12 +4957,16 @@ nécessaire.
      et `pytest tests/test_superset_bundle.py` ;
   4. commit.
 
-  Réimport : archive de `tools/superset_bundle.py`, avec `--schema demo_dashboard` pour la
+  Réimport : automatique, par le Job `trade-dashboard-import` du chart à chaque `helm
+  upgrade`, après `python tools/sync_chart_files.py` (copie du dossier dans le chart) ;
+  schéma et année par les valeurs `dashboard.dashboardImport.schema` et `.defaultYear`.
+  À la main : archive de `tools/superset_bundle.py`, avec `--schema demo_dashboard` pour la
   démonstration et `--default-year`. Mise à jour d'un Superset où le tableau de bord
   existe : `--assets` puis `POST /api/v1/assets/import/` (remplace connexion, datasets,
   graphiques et tableau de bord). Premier import : `POST /api/v1/dashboard/import/` ou
   `superset import-dashboards` (PS-30.6). Les courbes exigent
-  `ENABLE_TEMPLATE_PROCESSING` dans `superset_config.py`. Après changement de tables de service
+  `ENABLE_TEMPLATE_PROCESSING` dans `superset_config.py`, porté par le chart
+  `trade-dashboard` (PD-28). Après changement de tables de service
   (`parameters_serving.yml`) : republier (`argo submit … --entrypoint daily`, le
   changement de colonnes force le mode `full`) puis, dans Superset, *Datasets → Sync
   columns from source*.
@@ -4991,7 +5118,16 @@ main, réglages GitHub. À faire **avant** K-03 (phase 0), sauf mention contrair
 11. **Superset** : le service existe dans le catalogue Onyxia avec `duckdb-engine` et
     l'accès S3 (PQ-13). Le lancer (persistance activée) et relever son URL ; la
     connexion DuckDB au catalogue `serving` est créée **dans K-03c** (PS-30.1), avec les
-    identifiants de `superset_reader` saisis par vous. À faire **avant K-03c**.
+    identifiants de `superset_reader` saisis par vous. À faire **avant K-03c**. *(Depuis
+    K-17g, PD-28 : Superset est installé par le chart `trade-dashboard`, qui porte sa
+    configuration ; le service Onyxia est à retirer après la recette.)*
+12. **Charts Helm** (K-17g, PD-28) : créer le secret `trade-superset-credentials`
+    (`SUPERSET_SECRET_KEY`, `ADMIN_USERNAME`, `ADMIN_PASSWORD`, `DB_PASS` ; commande dans
+    `helm/README.md`, « Prérequis ») ou installer avec `dashboard.credentials.create=true` ;
+    choisir le nom d'hôte de l'Ingress de Superset ; renseigner la dernière année classée de
+    production (`dashboard.dashboardImport.defaultYear`). Le rôle `superset_reader` du point
+    10 **n'existait pas** au 2026-10-29 : Superset lit avec `trade-postgres-credentials`
+    jusqu'à sa création (`global.dashboard.readerSecret`).
 
 ---
 
@@ -5078,6 +5214,8 @@ les autres depuis le poste local.
 | Mesure des limites de l'API Eurostat pour `products_step` (PR-03) | K-01 ou K-04b | local possible (réseau public), **mais** l'adresse IP et le limiteur diffèrent en production → mesurer aussi depuis un pod | débit réel |
 | Première passe BACI par millésime sur données réelles ; relevé de `memory/peak_mb` (par année), de `passes/<P>/seconds` et de `timing/seconds` | après K-07 | un millésime court d'abord : pod `baci-hs-script` avec `BACI_TARGETS=HS2022` (puis `HS2017`, …, `HS1992`), machine `baci-large` ; ou `argo submit --from workflowtemplate/trade-pipeline --entrypoint weekly -p force-steps=baci -p force-vintages=HS2022` ; vérifier ensuite qu'aucun Parquet ne reste sous `trade/work/baci/<V>/` | seul moyen d'avoir les vraies volumétries ; ajuster `PASSES.MAX_ROWS_PER_CHUNK` ou `baci-large` si `memory/peak_mb` approche la limite du pod |
 | Déploiement des manifestes générés, bascule, recette, runbooks | K-17 | K-17 🔌 | `kubectl apply`, `argo` |
+| Enquête sur les services Onyxia (charts, découverte), `helm install --dry-run=server` des charts | K-17g | K-17g 🔌 | `helm`, `lookup` sur le namespace |
+| Installation par Helm (reprise du `WorkflowTemplate` appliqué par `kubectl`, secret `trade-superset-credentials`), `helm test`, retrait du Superset Onyxia `superset-899573` | K-17d | K-17d 🔌, `helm/README.md` | release Helm, secrets, Ingress du namespace |
 | **Retrait des données de démonstration et fictives** : bases `demo_*`, schémas `demo_*`, préfixes S3 `trade/demo/`, registres du profil, expériences MLflow `demo-*`, objets Superset du demo, workflow de transition ; contrôle de non-contamination de la production | K-17b (après K-17, données réelles complètes — PQ-20) | K-17b 🔌, confirmation objet par objet | suppressions **irréversibles** sur PostgreSQL, S3, MLflow, Superset |
 | Suppression du code et des fichiers de démonstration (dépôt) | K-18 (après K-17b) | K-18 (local) | — |
 | Restauration d'une sauvegarde PostgreSQL (test) | K-17 | K-17 🔌 | instance réelle |

@@ -1,0 +1,39 @@
+apiVersion: v2
+name: trade-analysis
+description: >-
+  Déploiement en une commande de l'analyse du commerce international : pipeline Kedro
+  ordonnancé par Argo Workflows (trade-pipeline) et tableau de bord Superset
+  (trade-dashboard), sur Onyxia ou sur un cluster Kubernetes quelconque.
+type: application
+# Version du chart (semver), indépendante de celle de l'image
+version: 0.1.0
+# Étiquette d'image du pipeline par défaut
+appVersion: "qb-vulnerabilities"
+home: https://github.com/qbolliet/trade-analysis
+sources:
+  - https://github.com/qbolliet/trade-analysis
+maintainers:
+  - name: qbolliet
+dependencies:
+  # Pipeline (WorkflowTemplate, CronWorkflow, pré-vol)
+  - name: trade-pipeline
+    alias: pipeline
+    version: 0.1.0
+    repository: file://../trade-pipeline
+    condition: pipeline.enabled
+  # Restitution (configuration et import Superset, Superset facultatif)
+  - name: trade-dashboard
+    alias: dashboard
+    version: 0.1.0
+    repository: file://../trade-dashboard
+    condition: dashboard.enabled
+  # Services amont, hors Onyxia seulement (désactivés par défaut) : Argo Workflows et MLflow
+  - name: argo-workflows
+    alias: argoWorkflows
+    version: ">=0.45.0 <1.0.0"
+    repository: https://argoproj.github.io/argo-helm
+    condition: argoWorkflows.enabled
+  - name: mlflow
+    version: ">=1.0.0 <2.0.0"
+    repository: https://community-charts.github.io/helm-charts
+    condition: mlflow.enabled

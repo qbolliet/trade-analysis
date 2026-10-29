@@ -1,0 +1,44 @@
+# Préréglage Onyxia (SSP Cloud) : les services Argo Workflows, MLflow et PostgreSQL du
+# namespace sont consommés tels quels (lancés depuis le catalogue Onyxia) ; Superset est
+# installé par ce chart (chart Superset d'Onyxia), configuré par lui, donc sans correctif
+# perdu à un redéploiement.
+#
+#   helm upgrade --install trade helm/trade-analysis -f helm/trade-analysis/values-onyxia.yaml \
+#     --set dashboard.superset.ingress.hostname=<namespace>-trade.user.lab.sspcloud.fr
+#
+# Recette : ajouter -f helm/trade-analysis/values-demo.yaml (environnement demo).
+
+global:
+  # Découverte des services du namespace (version du contrôleur Argo, secrets annotés
+  # onyxia/discovery en repli des secrets nommés)
+  platform: onyxia
+
+pipeline:
+  # Production ; valeur `demo` pour la recette
+  kedroEnv: cloud
+  # Compte de service des workflows : celui de la release Argo d'Onyxia
+  serviceAccount:
+    create: false
+    name: workflow
+  # Version du contrôleur : découverte par lookup (image du Deployment workflow-controller,
+  # v3.6.10 le 2026-10-29) ; repli sur 3.6 sous helm template, sans accès au cluster
+  argo:
+    version: ""
+  # Secrets existants (création : helm/README.md, « Prérequis »)
+  postgres:
+    existingSecret: trade-postgres-credentials
+  mlflow:
+    existingSecret: trade-mlflow-credentials
+
+dashboard:
+  # Superset installé par ce chart, exposé par l'ingress du SSP Cloud
+  superset:
+    enabled: true
+    ingress:
+      enabled: true
+      ingressClassName: onyxia
+      # Nom d'hôte à fournir : --set dashboard.superset.ingress.hostname=…
+      hostname: ""
+  dashboardImport:
+    # Schéma de production ; demo_dashboard pour la recette
+    schema: ""

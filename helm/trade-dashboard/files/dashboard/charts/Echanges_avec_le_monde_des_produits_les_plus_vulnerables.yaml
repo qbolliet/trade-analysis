@@ -1,0 +1,36 @@
+slice_name: Échanges avec le monde des produits les plus vulnérables
+description: null
+certified_by: null
+certification_details: null
+viz_type: echarts_timeseries_line
+params:
+  viz_type: echarts_timeseries_line
+  datasource: 12__table
+  x_axis: period
+  time_grain_sqla: P1Y
+  x_axis_time_format: '%Y'
+  metrics:
+  - expressionType: SQL
+    sqlExpression: MAX(value)
+    label: Valeur
+  groupby:
+  - unit
+  row_limit: 10000
+  adhoc_filters: []
+  show_legend: true
+  legendType: scroll
+  legendOrientation: bottom
+  rich_tooltip: true
+  tooltipSortByMetric: true
+  markerEnabled: true
+  markerSize: 4
+  y_axis_format: SMART_NUMBER
+  truncateYAxis: false
+  zoomable: true
+  x_axis_title: ''
+  y_axis_title: ''
+query_context: null
+cache_timeout: null
+uuid: 0e9afb50-32b1-4f80-a09e-57dd402bfecf
+version: 1.0.0
+dataset_uuid: 0a51184a-be5f-48f8-b256-eaf7e970eb5f

@@ -1,8 +1,9 @@
 # Workflow de transition (Argo, profil `demo`)
 
 Manifestes **écrits à la main** qui enchaînent les scripts existants selon le DAG cible de
-`PIPELINE_ARCHITECTURE.md` §2.2 (PD-19, phase 0). Ils seront **remplacés** par le workflow
-généré depuis Kedro (K-15, `kubernetes/generated/`) : ne pas les enrichir.
+`PIPELINE_ARCHITECTURE.md` §2.2 (PD-19, phase 0). Ils sont **remplacés** par le workflow
+généré depuis Kedro et installé par Helm (`helm/trade-pipeline`) : ne pas les enrichir. Ils
+ne sont pas gérés par Helm ; leur `CronWorkflow` reste suspendu jusqu'à leur retrait.
 
 | Fichier | Ressource |
 |---|---|
@@ -147,8 +148,13 @@ consciemment : ce sont des suppressions.
 
 ## Remplacement
 
-En K-15, `kedro trade render-argo` génère `kubernetes/generated/` (`WorkflowTemplate`
-`trade-pipeline`, deux `CronWorkflow`). Ordre : suspendre le cron de transition, appliquer les
-manifestes générés, vérifier une exécution, puis supprimer `trade-pipeline-transition*` et ce
-dossier. Les deux workflows n'écrivent pas au même endroit tant que le profil `demo` isole ses
+Le workflow généré (`WorkflowTemplate trade-pipeline`, `CronWorkflow trade-pipeline-daily` et
+`trade-pipeline-weekly`) s'installe par le chart Helm `helm/trade-analysis` (voir
+`helm/README.md`). Ordre :
+1. garder le cron de transition suspendu ;
+2. installer la release ;
+3. vérifier une exécution de chaque point d'entrée ;
+4. supprimer `trade-pipeline-transition*` et ce dossier.
+
+Les deux workflows n'écrivent pas au même endroit tant que le profil `demo` isole ses
 sorties (préfixes `demo_`), mais ne pas les laisser tourner ensemble sur la même cible.

@@ -1,0 +1,22 @@
+Tableau de bord déployé (plateforme {{ include "trade-dashboard.platform" . }}).
+{{- if .Values.superset.enabled }}
+
+Superset : service {{ .Release.Name }}-superset:8088
+{{- if .Values.superset.ingress.enabled }} ; https://{{ .Values.superset.ingress.hostname }}{{ end }}
+Compte administrateur : clés ADMIN_USERNAME / ADMIN_PASSWORD du secret {{ .Values.global.dashboard.credentialsSecret }}
+  kubectl get secret {{ .Values.global.dashboard.credentialsSecret }} -o jsonpath='{.data.ADMIN_PASSWORD}' | base64 -d
+{{- else }}
+
+Superset existant ({{ .Values.dashboardImport.supersetUrl }}) : configuration à reporter à la main
+  - monter le ConfigMap {{ include "trade-dashboard.servingConfigMap" . }} sur /app/trade ;
+  - ajouter à superset_config.py :
+      exec(open("/app/trade/superset_serving.py", encoding="utf-8").read(), globals())
+  - exposer dans les pods les secrets {{ .Values.global.dashboard.readerSecret }} et {{ .Values.global.dashboard.s3Secret }}.
+{{- end }}
+{{- if .Values.dashboardImport.enabled }}
+
+Import du tableau de bord (schéma {{ .Values.dashboardImport.schema | default "de l'export" }}) : Job {{ .Release.Name }}-dashboard-import, rejoué à chaque mise à jour.
+  kubectl logs job/{{ .Release.Name }}-dashboard-import
+{{- end }}
+
+Contrôle : helm test {{ .Release.Name }} -n {{ .Release.Namespace }} --logs

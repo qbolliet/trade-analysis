@@ -15,7 +15,7 @@ from __future__ import annotations
 from argo_kedro.pipeline import FusedPipeline, Node, sum_pipelines
 from kedro.pipeline import Pipeline
 
-from kedro_pipeline.deploy.config import EntryPointSettings, MachineSpec, RenderConfig, SecretKey
+from kedro_pipeline.deploy.config import EntryPointSettings, MachineSpec, RenderConfig
 
 
 def _identity(*args):
@@ -64,27 +64,14 @@ def toy_config(**overrides) -> RenderConfig:
     """Configuration jouet du rendu."""
     values = dict(
         env="toy",
-        namespace="toy-namespace",
-        image="registry.example/toy",
-        image_tag="sha-0000000",
         machine_types={"small": MachineSpec(cpu=1, mem=2), "large": MachineSpec(cpu=4, mem=32)},
         default_machine_type="small",
-        name="toy-pipeline",
-        argo_version="3.6.10",
-        service_account="toy-sa",
-        labels={"app": "toy"},
-        parallelism=3,
-        image_pull_policy="IfNotPresent",
-        timezone="Europe/Paris",
         node_retries={"download_*": 0},
         strict_dependencies={"publish_*": ("compute_toy",)},
         entry_points=(
-            EntryPointSettings("daily", "cadence.daily", 15, 1, False, 3600, 600, 3),
-            EntryPointSettings("weekly", "cadence.weekly", 0, 2, True, 7200, 900, 2),
+            EntryPointSettings("daily", "cadence.daily", 15, 1, False),
+            EntryPointSettings("weekly", "cadence.weekly", 0, 2, True),
         ),
-        environment={"PLAIN": "value", "EMPTY": ""},
-        secret_environment={"TOKEN": SecretKey("toy-secret", "TOKEN")},
-        secret_environment_from=("toy-env",),
         system_metrics_enabled=False,
         system_metrics_sampling_seconds=10,
         weekly_day=0,

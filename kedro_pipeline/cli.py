@@ -14,7 +14,7 @@ workflow therefore call ``python -m kedro_pipeline --pipeline … --nodes …
 # Importation des modules
 # Modules de base
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 # CLI
 import click
@@ -136,63 +136,59 @@ def config_check(env: Optional[str]) -> None:
 trade.add_command(run)
 
 
-# Commande de rendu des manifestes Argo
+# Commande de rendu des données du DAG Argo
 @trade.command(name="render-argo")
 @click.option(
-    "--env", "-e", "env", default="cloud", show_default=True,
-    help="Kedro environment the manifests are rendered for (fixed as KEDRO_ENV in the pods).",
-)
-@click.option(
-    "--image-tag", "image_tag", default=None,
-    help="Default image tag of the workflow (deployment.tag of argo.yml when omitted).",
+    "--env", "-e", "envs", multiple=True,
+    help="Kedro environment to render (repeatable); workflow.chart_environments of argo.yml when omitted.",
 )
 @click.option(
     "--output-dir", "output_dir", default=None, type=click.Path(file_okay=False, path_type=Path),
-    help="Destination folder (kubernetes/generated at the repository root when omitted).",
+    help="Destination folder (helm/trade-pipeline/files at the repository root when omitted).",
 )
 @click.option(
     "--check", is_flag=True, default=False,
     help="Write nothing; fail with the diff if the files differ from the rendering.",
 )
-def render_argo(env: str, image_tag: Optional[str], output_dir: Optional[Path], check: bool) -> None:
-    """Render the Argo manifests of the scheduled pipelines (WorkflowTemplate + CronWorkflows).
+def render_argo(envs: Tuple[str, ...], output_dir: Optional[Path], check: bool) -> None:
+    """Render the Argo DAG data files of the ``trade-pipeline`` Helm chart.
 
     The DAG of each entry point (``daily``, ``weekly``) is computed from the
-    Kedro pipelines of ``env``; the deployment settings come from ``argo.yml``.
-    The output is deterministic, so that the versioned manifests can be
-    checked against the code (``--check``, run in CI).
+    Kedro pipelines of each environment and written as ``dag-<env>.yaml``; the
+    chart templates add the deployment settings. The output is deterministic,
+    so that the versioned files can be checked against the code (``--check``,
+    run in CI).
 
     Args:
-        env: Kedro environment.
-        image_tag: Default image tag.
+        envs: Kedro environments.
         output_dir: Destination folder.
         check: Compare instead of writing.
 
     Raises:
-        click.ClickException: With ``--check``, if a manifest differs or is missing.
+        click.ClickException: With ``--check``, if a file differs or is missing.
 
     Examples:
-        $ kedro trade render-argo --image-tag sha-1a2b3c4
+        $ kedro trade render-argo
         $ kedro trade render-argo --check
-        $ kedro trade render-argo --env demo --output-dir /tmp/argo-demo
+        $ kedro trade render-argo --env demo --output-dir /tmp/dag-demo
     """
     from kedro_pipeline.config import conf_source_path
-    from kedro_pipeline.deploy.render import DEFAULT_OUTPUT_DIR, diff_manifests, render_manifests, write_manifests
+    from kedro_pipeline.deploy.render import DEFAULT_OUTPUT_DIR, diff_files, render_files, write_files
 
     folder = output_dir if output_dir is not None else conf_source_path().parent / DEFAULT_OUTPUT_DIR
-    manifests = render_manifests(env, image_tag=image_tag)
+    files = render_files(envs or None)
     if check:
-        differences = diff_manifests(manifests, folder)
+        differences = diff_files(files, folder)
         if differences:
             for diff in differences.values():
                 click.echo(diff)
             raise click.ClickException(
-                f"{len(differences)} Argo manifest(s) out of date in {folder}: "
-                f"run `kedro trade render-argo --env {env}` and commit the result."
+                f"{len(differences)} DAG data file(s) out of date in {folder}: "
+                "run `kedro trade render-argo` and commit the result."
             )
-        click.echo(f"{len(manifests)} Argo manifests up to date in {folder}.")
+        click.echo(f"{len(files)} DAG data files up to date in {folder}.")
         return
-    for path in write_manifests(manifests, folder):
+    for path in write_files(files, folder):
         click.echo(f"Written {path}")
 
 

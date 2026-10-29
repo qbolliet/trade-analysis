@@ -1,0 +1,86 @@
+name: helm
+
+# Charts Helm (helm/) : lint, rendu des deux préréglages, validation des manifestes contre
+# les schémas Kubernetes et ceux des CRD Argo ; publication OCI sur ghcr.io à chaque
+# étiquette `charts-v*` (version des charts indépendante de celle de l'image).
+on:
+  push:
+    paths:
+      - "helm/**"
+      - ".github/workflows/helm.yml"
+    tags:
+      - "charts-v*"
+  pull_request:
+    paths:
+      - "helm/**"
+      - ".github/workflows/helm.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+env:
+  # Valeurs requises au rendu, sans effet sur la validation
+  ONYXIA_SET: --set dashboard.superset.ingress.hostname=trade.example.org
+  GENERIC_SET: --set dashboard.dashboardImport.supersetUrl=http://superset:8088
+  KUBECONFORM_VERSION: v0.7.0
+
+jobs:
+  charts:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: azure/setup-helm@v4
+        with:
+          # Version du poste d'exploitation (pod VSCode Onyxia)
+          version: v4.3.1
+
+      # Dépendances : charts amont (Superset d'Onyxia, Argo, MLflow) puis parapluie
+      - run: |
+          helm dependency build helm/trade-dashboard
+          helm dependency build helm/trade-analysis
+
+      - name: Lint
+        run: |
+          helm lint helm/trade-pipeline
+          helm lint helm/trade-pipeline --set kedroEnv=demo
+          helm lint helm/trade-dashboard --set dashboardImport.supersetUrl=http://superset:8088
+          helm lint helm/trade-analysis -f helm/trade-analysis/values-onyxia.yaml $ONYXIA_SET
+          helm lint helm/trade-analysis -f helm/trade-analysis/values-onyxia.yaml -f helm/trade-analysis/values-demo.yaml $ONYXIA_SET
+          helm lint helm/trade-analysis -f helm/trade-analysis/values-generic.yaml $GENERIC_SET
+
+      - name: Rendu des préréglages
+        run: |
+          mkdir -p rendered
+          helm template trade helm/trade-analysis -n trade -f helm/trade-analysis/values-onyxia.yaml $ONYXIA_SET > rendered/onyxia.yaml
+          helm template trade helm/trade-analysis -n trade -f helm/trade-analysis/values-onyxia.yaml -f helm/trade-analysis/values-demo.yaml $ONYXIA_SET > rendered/onyxia-demo.yaml
+          helm template trade helm/trade-analysis -n trade -f helm/trade-analysis/values-generic.yaml $GENERIC_SET > rendered/generic.yaml
+
+      # Schémas Kubernetes et schémas des CRD (catalogue datreeio, dont argoproj.io)
+      - name: Validation (kubeconform)
+        run: |
+          curl -sSfL "https://github.com/yannh/kubeconform/releases/download/${KUBECONFORM_VERSION}/kubeconform-linux-amd64.tar.gz" | tar xz kubeconform
+          ./kubeconform -strict -summary -output pretty \
+            -schema-location default \
+            -schema-location 'https://raw.githubusercontent.com/datreeio/CRDs-catalog/main/{{.Group}}/{{.ResourceKind}}_{{.ResourceAPIVersion}}.json' \
+            rendered/*.yaml
+
+      # Revue de diff : manifestes rendus en artefact (pas de copie versionnée)
+      - uses: actions/upload-artifact@v4
+        with:
+          name: rendered-manifests
+          path: rendered/
+
+      - name: Publication OCI
+        if: startsWith(github.ref, 'refs/tags/charts-v')
+        run: |
+          echo "${{ secrets.GITHUB_TOKEN }}" | helm registry login ghcr.io -u "${{ github.actor }}" --password-stdin
+          mkdir -p packages
+          for chart in trade-pipeline trade-dashboard trade-analysis; do
+            helm package "helm/$chart" -d packages
+          done
+          for package in packages/*.tgz; do
+            helm push "$package" oci://ghcr.io/qbolliet/charts
+          done

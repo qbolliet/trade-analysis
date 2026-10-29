@@ -1,0 +1,47 @@
+# Valeurs du chart parapluie trade-analysis : déploiement en une commande.
+#
+# Deux préréglages complètent ces valeurs : values-onyxia.yaml (SSP Cloud, services Argo
+# Workflows, MLflow et PostgreSQL d'Onyxia consommés tels quels) et values-generic.yaml
+# (cluster quelconque). Les valeurs d'un sous-chart se placent sous son alias : `pipeline`
+# (trade-pipeline, voir helm/trade-pipeline/values.yaml) et `dashboard` (trade-dashboard,
+# voir helm/trade-dashboard/values.yaml).
+
+# Valeurs partagées avec tous les sous-charts
+global:
+  # Plateforme cible : `onyxia` (découverte des services du namespace) ou `generic`.
+  # Défaut : generic. Exemple : onyxia
+  platform: generic
+  # Secrets lus par Superset et par l'import du tableau de bord (voir trade-dashboard)
+  dashboard:
+    # Défaut : trade-postgres-credentials. Exemple : trade-superset-reader
+    readerSecret: trade-postgres-credentials
+    # Défaut : trade-s3-credentials. Exemple : dashboard-s3-credentials
+    s3Secret: trade-s3-credentials
+    # Défaut : trade-superset-credentials. Exemple : superset-credentials
+    credentialsSecret: trade-superset-credentials
+
+# Pipeline (sous-chart trade-pipeline)
+pipeline:
+  # Déploiement du pipeline.
+  # Défaut : true. Exemple : false (tableau de bord seul)
+  enabled: true
+
+# Tableau de bord (sous-chart trade-dashboard)
+dashboard:
+  # Déploiement de la restitution.
+  # Défaut : true. Exemple : false (pipeline seul)
+  enabled: true
+
+# Argo Workflows amont (chart argo-helm), hors Onyxia seulement : le contrôleur doit
+# exister avant le WorkflowTemplate (CRD). Valeurs transmises au chart argo-workflows.
+argoWorkflows:
+  # Installation d'Argo Workflows par ce chart.
+  # Défaut : false (contrôleur existant). Exemple : true
+  enabled: false
+
+# MLflow amont (chart community-charts/mlflow), hors Onyxia seulement. Valeurs transmises
+# au chart mlflow ; renseigner ensuite pipeline.mlflow.url.
+mlflow:
+  # Installation de MLflow par ce chart.
+  # Défaut : false (serveur existant, ou pas de suivi). Exemple : true
+  enabled: false

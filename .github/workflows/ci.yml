@@ -22,7 +22,7 @@ jobs:
 
       - run: uv run pytest -m "not slow"
 
-      # Manifestes Argo versionnés à jour avec les pipelines, argo.yml et les gabarits
+      # Données du DAG du chart trade-pipeline à jour avec les pipelines et argo.yml
       - run: uv run kedro trade render-argo --check
         env:
           KEDRO_DISABLE_TELEMETRY: "true"

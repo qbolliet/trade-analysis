@@ -1,0 +1,17 @@
+apiVersion: v2
+name: trade-pipeline
+description: >-
+  Ordonnancement Argo Workflows d'un pipeline Kedro : WorkflowTemplate (un DAG par point
+  d'entrée, rendu par argo-kedro dans files/), CronWorkflow par point d'entrée, compte de
+  service facultatif et contrôle de pré-vol (helm test).
+type: application
+# Version du chart (semver), indépendante de celle de l'image
+version: 0.1.0
+# Étiquette d'image par défaut (valeur image.tag vide)
+appVersion: "qb-vulnerabilities"
+keywords: [kedro, argo-workflows, pipeline]
+home: https://github.com/qbolliet/trade-analysis
+sources:
+  - https://github.com/qbolliet/trade-analysis
+maintainers:
+  - name: qbolliet

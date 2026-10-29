@@ -1,0 +1,217 @@
+# Valeurs du chart trade-pipeline : ordonnancement Argo Workflows d'un pipeline Kedro.
+#
+# Le DAG (tâches, dépendances, ressources, reprises, mutex, gestionnaire de sortie) n'est
+# pas une valeur : il est calculé depuis les pipelines Kedro par `kedro trade render-argo`
+# et lu dans files/dag-<kedroEnv>.yaml. Tout le reste (déploiement) est ici.
+
+# Valeurs partagées avec le chart parapluie
+global:
+  # Plateforme cible, prioritaire sur `platform` quand elle est renseignée.
+  # Défaut : "" (la valeur `platform` s'applique). Exemple : onyxia
+  platform: ""
+
+# Plateforme cible : `onyxia` active la découverte des services du namespace (version du
+# contrôleur Argo, secrets annotés `onyxia/discovery`) ; `generic` n'utilise que les
+# valeurs explicites.
+# Défaut : generic. Exemple : onyxia
+platform: generic
+
+# Surcharge du nom de base des ressources (labels `app.kubernetes.io/name`).
+# Défaut : "" (nom du chart). Exemple : forecast-pipeline
+nameOverride: ""
+
+# Environnement Kedro des pods (`--env`, `KEDRO_ENV`) ; choisit aussi le fichier
+# files/dag-<kedroEnv>.yaml, dont le nombre de tâches suit les cibles de l'environnement.
+# Défaut : cloud (production). Exemple : demo (recette)
+kedroEnv: cloud
+
+# Image exécutée par les pods
+image:
+  # Dépôt de l'image.
+  # Défaut : ghcr.io/qbolliet/trade-analysis. Exemple : registry.example/forecast
+  repository: ghcr.io/qbolliet/trade-analysis
+  # Étiquette : valeur par défaut du paramètre de workflow `image-tag`. Vide = appVersion
+  # du chart. Une étiquette immuable `sha-<SHA court>` est recommandée en production.
+  # Défaut : "". Exemple : sha-1a2b3c4
+  tag: ""
+  # Politique de téléchargement. Vide = `IfNotPresent` pour une étiquette immuable
+  # (`sha-…` ou version `X.Y.Z`), `Always` pour une étiquette mobile (branche, latest).
+  # Défaut : "". Exemple : IfNotPresent
+  pullPolicy: ""
+
+# Ressource WorkflowTemplate et comportement des exécutions
+workflow:
+  # Nom du WorkflowTemplate ; les CronWorkflow s'appellent <name>-<point d'entrée>.
+  # Défaut : trade-pipeline. Exemple : forecast-pipeline
+  name: trade-pipeline
+  # Labels ajoutés à toutes les ressources Argo (sélection `kubectl get -l`).
+  # Défaut : {app: trade-analysis}. Exemple : {app: forecast, team: finances}
+  labels:
+    app: trade-analysis
+  # Tâches simultanées d'une exécution (un pod par tâche).
+  # Défaut : 8 (sept millésimes BACI + une). Exemple : 4
+  parallelism: 8
+  # Conservation d'un workflow terminé, en secondes (réussi / en échec).
+  # Défaut : 259200 (3 jours) / 604800 (7 jours). Exemple : 86400
+  ttlSecondsAfterSuccess: 259200
+  ttlSecondsAfterFailure: 604800
+  # Suppression des pods terminés : OnPodSuccess, OnPodCompletion, OnWorkflowSuccess…
+  # Défaut : OnPodSuccess (pods en échec gardés pour lecture des journaux). Exemple : OnWorkflowCompletion
+  podGC: OnPodSuccess
+  # Mutex tenu par toute une exécution : les points d'entrée ne se recouvrent jamais (le
+  # weekly attend la fin du daily). Vide = recouvrement permis.
+  # Défaut : trade-pipeline-run. Exemple : ""
+  runMutex: trade-pipeline-run
+  # Commande des pods ; le nœud, l'environnement et les paramètres sont ajoutés en arguments.
+  # Défaut : commande `run` du projet (`kedro run` d'argo-kedro ignore --params).
+  # Exemple : [kedro, run]
+  command: [python, -m, kedro_pipeline]
+  # Paramètres de workflow ajoutés à `image-tag`, avec leur valeur par défaut, modifiables
+  # à la soumission (`-p force-steps=synthesis`). Jamais de « , » dans une valeur : Kedro
+  # découpe --params sur les virgules ; plusieurs valeurs se séparent par « ; ».
+  # Défaut : forçages du projet, vides. Exemple : [{name: dry-run, value: "false"}]
+  parameters:
+    - {name: force-steps, value: ""}
+    - {name: force-metrics, value: ""}
+    - {name: force-methods, value: ""}
+    # Paires clé=valeur supplémentaires transmises à --params, séparées par « , »
+    - {name: extra-params, value: ""}
+  # Valeur de l'argument --params (expressions Argo `{{workflow.parameters.<nom>}}`
+  # recopiées telles quelles). Vide = aucun argument --params.
+  # Défaut : forçages du projet. Exemple : "runtime.DRY_RUN={{workflow.parameters.dry-run}}"
+  kedroParams: "runtime.FORCE_STEPS={{workflow.parameters.force-steps}},runtime.FORCE_METRICS={{workflow.parameters.force-metrics}},runtime.FORCE_METHODS={{workflow.parameters.force-methods}},{{workflow.parameters.extra-params}}"
+
+# Planifications : un CronWorkflow par point d'entrée de files/dag-<kedroEnv>.yaml
+schedules:
+  # Suspension de toutes les planifications (installation de recette, bascule).
+  # Défaut : false. Exemple : true
+  suspend: false
+  # Fuseau horaire des expressions cron.
+  # Défaut : Europe/Paris. Exemple : UTC
+  timezone: Europe/Paris
+  # Exécutions concurrentes d'un même point d'entrée : Forbid, Allow, Replace.
+  # Défaut : Forbid. Exemple : Replace
+  concurrencyPolicy: Forbid
+  # Réglages appliqués aux points d'entrée absents de `entryPoints`.
+  # Défaut : 24 h maximum, 1 h de rattrapage, 5 exécutions gardées.
+  defaults:
+    activeDeadlineSeconds: 86400
+    startingDeadlineSeconds: 3600
+    historyLimit: 5
+  # Réglages par point d'entrée (nom du point d'entrée du fichier DAG) :
+  # - cron : expression cron ; vide = celle du fichier DAG (calculée depuis argo.yml et
+  #   runtime.WEEKLY_DAY) ;
+  # - suspend : suspension de ce seul point d'entrée (vide = valeur globale) ;
+  # - activeDeadlineSeconds : durée maximale d'une exécution ;
+  # - startingDeadlineSeconds : retard au-delà duquel un départ manqué est abandonné ;
+  # - historyLimit : exécutions réussies et en échec gardées.
+  # Exemple : {daily: {cron: "30 0 * * *", suspend: true}}
+  entryPoints:
+    daily:
+      cron: ""
+      activeDeadlineSeconds: 82800       # 23 h
+      startingDeadlineSeconds: 3600
+      historyLimit: 7
+    weekly:
+      cron: ""
+      activeDeadlineSeconds: 518400      # 6 jours
+      startingDeadlineSeconds: 21600
+      historyLimit: 4
+
+# Contrôleur Argo Workflows
+argo:
+  # Version du contrôleur : `schedules` (liste, Argo ≥ 3.6) ou `schedule` (Argo < 3.6) dans
+  # les CronWorkflow. Vide = découverte par l'image du Deployment `workflow-controller` du
+  # namespace `controllerNamespace`, sinon 3.6.
+  # Défaut : "". Exemple : "3.5.8"
+  version: ""
+  # Namespace du contrôleur, lu pour la découverte de sa version. Vide = namespace de la release.
+  # Défaut : "". Exemple : argo
+  controllerNamespace: ""
+
+# Compte de service des pods des workflows
+serviceAccount:
+  # Création du compte et de son rôle (droits de l'exécuteur Argo sur `workflowtaskresults`).
+  # Sur Onyxia, le compte `workflow` appartient à la release Argo : ne pas le créer.
+  # Défaut : false. Exemple : true (cluster quelconque)
+  create: false
+  # Nom du compte (existant, ou créé si `create`).
+  # Défaut : workflow (compte du service Argo d'Onyxia). Exemple : argo-workflow
+  name: workflow
+
+# Variables d'environnement non secrètes des pods (ajoutées aux variables du chart :
+# KEDRO_ENV, IMAGE_TAG, MLFLOW_EXPERIMENT_NAME, WORKFLOW_ID, NUM_CPU, métriques système).
+# AWS_SESSION_TOKEN vide : clés Minio permanentes, et statflows lit encore cette variable
+# sans valeur par défaut.
+# Défaut : point de terminaison Minio du SSP Cloud. Exemple : {AWS_S3_ENDPOINT: s3.example.org}
+env:
+  AWS_S3_ENDPOINT: minio.lab.sspcloud.fr
+  AWS_DEFAULT_REGION: us-east-1
+  MLFLOW_S3_ENDPOINT_URL: "https://minio.lab.sspcloud.fr"
+  AWS_SESSION_TOKEN: ""
+  PYTHONUNBUFFERED: "1"
+
+# Variables tirées d'une clé de secret existant : variable → {secret, key}.
+# Défaut : clés S3 et Comtrade du projet. Exemple : {API_KEY: {secret: api, key: KEY}}
+secretEnv:
+  AWS_ACCESS_KEY_ID: {secret: trade-s3-credentials, key: S3_ACCESS_KEY}
+  AWS_SECRET_ACCESS_KEY: {secret: trade-s3-credentials, key: S3_SECRET_KEY}
+  COMTRADE_FREE_SUBSCRIPTION_KEY: {secret: comtrade-api-credentials, key: COMTRADE_FREE_SUBSCRIPTION_KEY}
+  COMTRADE_PREMIUM_INSTITUTIONNAL_SUBSCRIPTION_KEY: {secret: comtrade-api-credentials, key: COMTRADE_PREMIUM_INSTITUTIONNAL_SUBSCRIPTION_KEY}
+
+# Secrets existants exposés en entier (une variable par clé), en plus de ceux de
+# `postgres` et `mlflow`.
+# Défaut : []. Exemple : [forecast-api-credentials]
+extraSecretEnvFrom: []
+
+# PostgreSQL des catalogues DuckLake (variables PGHOST, PGPORT, PGUSER, PGPASSWORD,
+# PGDATABASE, PGADMINUSER)
+postgres:
+  # Secret existant exposé en entier. Vide = découverte (Onyxia) du secret annoté
+  # `onyxia/discovery: postgres`, dont les clés sont projetées sur les variables PG*.
+  # Défaut : trade-postgres-credentials. Exemple : ""
+  existingSecret: trade-postgres-credentials
+  # Port utilisé avec un secret découvert (le secret de découverte n'a pas de port fiable).
+  # Défaut : "5432". Exemple : "5433"
+  port: "5432"
+
+# Serveur de suivi MLflow (MLFLOW_TRACKING_URI et, si l'authentification est active,
+# MLFLOW_TRACKING_USERNAME / MLFLOW_TRACKING_PASSWORD)
+mlflow:
+  # Secret existant exposé en entier. Vide = découverte (Onyxia) du secret annoté
+  # `onyxia/discovery: mlflow` ; sans secret, les tâches s'exécutent sans suivi.
+  # Défaut : trade-mlflow-credentials. Exemple : ""
+  existingSecret: trade-mlflow-credentials
+  # URL explicite du serveur, prioritaire sur celle du secret (URL interne au cluster de
+  # préférence). Défaut : "". Exemple : http://mlflow-284750
+  url: ""
+
+# Création des secrets par le chart, à partir de valeurs passées à l'installation
+# (`--set-file` ou fichier de valeurs NON versionné), jamais d'un fichier du dépôt.
+# Les secrets existants restent la méthode recommandée.
+secrets:
+  # Création des secrets listés dans `data`.
+  # Défaut : false. Exemple : true
+  create: false
+  # Secrets à créer : nom → {clé: valeur}. Conservés à la désinstallation.
+  # Défaut : {}. Exemple : {trade-s3-credentials: {S3_ACCESS_KEY: "…", S3_SECRET_KEY: "…"}}
+  data: {}
+
+# Contrôle de pré-vol (`helm test <release>`) : présence des clés de secrets, MLflow,
+# PostgreSQL et S3 joignables ; n'affiche aucune valeur
+preflight:
+  # Création du pod de test.
+  # Défaut : true. Exemple : false
+  enabled: true
+  # Préfixe S3 listé pour vérifier les droits de lecture. Vide = contrôle S3 limité à la
+  # présence des clés.
+  # Défaut : s3://qbollietdgddi/trade. Exemple : s3://bucket/projet
+  s3Path: s3://qbollietdgddi/trade
+  # Délai de chaque contrôle réseau, en secondes.
+  # Défaut : 15. Exemple : 30
+  timeoutSeconds: 15
+  # Ressources du pod de test.
+  # Défaut : 1 CPU, 1 Gi. Exemple : {cpu: "500m", memory: 512Mi}
+  resources:
+    cpu: "1"
+    memory: 1Gi

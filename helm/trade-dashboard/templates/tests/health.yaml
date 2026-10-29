@@ -1,0 +1,32 @@
+{{- /*
+Contrôle `helm test` : Superset répond 200 sur /health (aucune donnée sensible).
+*/ -}}
+{{- if or .Values.superset.enabled .Values.dashboardImport.supersetUrl }}
+apiVersion: v1
+kind: Pod
+metadata:
+  name: {{ .Release.Name }}-dashboard-health
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "trade-dashboard.labels" . | nindent 4 }}
+  annotations:
+    helm.sh/hook: test
+    helm.sh/hook-delete-policy: before-hook-creation,hook-succeeded
+spec:
+  restartPolicy: Never
+  containers:
+    - name: health
+      image: "{{ .Values.dashboardImport.image.repository }}:{{ .Values.dashboardImport.image.tag }}"
+      command:
+        - python
+        - -c
+        - |
+          import sys, urllib.request
+          status = urllib.request.urlopen(sys.argv[1] + "/health", timeout=15).status
+          print(f"{'OK' if status == 200 else 'KO'}  Superset /health (HTTP {status})")
+          sys.exit(status != 200)
+        - {{ include "trade-dashboard.supersetUrl" . | quote }}
+      resources:
+        requests: {cpu: 100m, memory: 128Mi}
+        limits: {cpu: 500m, memory: 256Mi}
+{{- end }}

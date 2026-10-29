@@ -1,0 +1,22 @@
+# Fichier généré par `kedro trade render-argo` (environnement toy) : ne pas modifier à la main.
+# Source : pipelines Kedro (tags des nœuds) et config/base/argo.yml (bloc `workflow`).
+# Lu par les gabarits du chart trade-pipeline (WorkflowTemplate, CronWorkflow).
+formatVersion: 1
+kedroEnv: toy
+podPipeline: __default__
+systemMetrics: {enabled: false, samplingSeconds: 10}
+entryPoints:
+- name: daily
+  tag: cadence.daily
+  cron: 15 1 * * *
+  tasks:
+  - {name: download-toy, node: download_toy, experiment: toy-01-downloads, cpu: 1, mem: 2, retries: 0}
+  - {name: publish-toy, node: publish_toy, experiment: toy-03-serving, cpu: 1, mem: 2, retries: 1, depends: (download-toy.Succeeded || download-toy.Failed), mutex: toy-serving}
+- name: weekly
+  tag: cadence.weekly
+  cron: 0 2 * * 1
+  tasks:
+  - {name: compute-toy, node: compute_toy, experiment: toy-02-compute, cpu: 4, mem: 32, retries: 1}
+  - {name: publish-toy, node: publish_toy, experiment: toy-03-serving, cpu: 1, mem: 2, retries: 1, depends: compute-toy.Succeeded, mutex: toy-serving}
+mutexes: [toy-serving]
+exit: {name: cleanup-toy, node: cleanup_toy, experiment: toy-00-maintenance, cpu: 1, mem: 2, retries: 1, mutex: toy-maintenance}

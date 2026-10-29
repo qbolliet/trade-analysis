@@ -51,6 +51,10 @@ preprocessing des flux bilatéraux jusqu'aux métriques de dépendance et de ré
   d'environnement), `demo/` (surcharges du périmètre de démonstration), `cloud/`, `local/`
   (non versionné). Les scripts la lisent par `kedro_pipeline.config.load_parameters()`,
   environnement choisi par `KEDRO_ENV` (`local` par défaut).
+- **`helm/`** — charts Helm de déploiement : `trade-pipeline` (Argo Workflows ; DAG rendu
+  depuis Kedro dans `files/` par `kedro trade render-argo`), `trade-dashboard` (Superset),
+  `trade-analysis` (parapluie, commande unique ; préréglages Onyxia et générique). Voir
+  `helm/README.md`.
 - **`tests/`** — tests de caractérisation qui figent le comportement courant.
   Certains tests de bout en bout (catalogue DuckLake temporaire) sont marqués
   `slow` (cf. `pyproject.toml`) ; `pytest` seul les exécute, `pytest -m "not slow"`
@@ -123,6 +127,22 @@ docker build -f docker/Dockerfile --build-arg GIT_SHA=$(git rev-parse HEAD) -t t
 > défaut. Le rendre public dans GitHub (*Packages* → `trade-analysis` → *Package
 > settings* → *Change visibility* → *Public*) pour permettre le `docker pull` sans
 > authentification.
+
+## Déploiement
+
+Pipeline (Argo Workflows) et tableau de bord (Superset) s'installent en une commande, sur
+Onyxia ou sur un cluster Kubernetes quelconque, après création des secrets :
+
+```bash
+helm dependency build helm/trade-dashboard && helm dependency build helm/trade-analysis
+helm upgrade --install trade helm/trade-analysis -f helm/trade-analysis/values-onyxia.yaml \
+  --set pipeline.image.tag=sha-<court> --set dashboard.superset.ingress.hostname=<hôte>
+helm test trade --logs
+```
+
+Prérequis, valeurs, recette, mise à jour et désinstallation : `helm/README.md`.
+Les charts sont validés et publiés (`oci://ghcr.io/qbolliet/charts`) par
+`.github/workflows/helm.yml`.
 
 ## Documentation
 

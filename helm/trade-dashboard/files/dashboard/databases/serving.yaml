@@ -1,0 +1,20 @@
+database_name: serving
+sqlalchemy_uri: 'duckdb:///:memory:'
+cache_timeout: 86400
+expose_in_sqllab: true
+allow_run_async: false
+allow_ctas: false
+allow_cvas: false
+allow_dml: false
+allow_file_upload: false
+extra:
+  engine_params:
+    connect_args:
+      config:
+        threads: '4'
+        memory_limit: 4GB
+  metadata_params: {}
+  metadata_cache_timeout: {}
+  schemas_allowed_for_file_upload: []
+uuid: 51182634-29ab-4832-8d42-aadd6ab1a32d
+version: 1.0.0

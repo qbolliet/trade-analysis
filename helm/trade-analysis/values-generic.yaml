@@ -1,0 +1,44 @@
+# Préréglage d'un cluster Kubernetes quelconque : aucune découverte, valeurs explicites.
+# Prérequis : contrôleur Argo Workflows (existant, ou argoWorkflows.enabled), secrets
+# existants (helm/README.md), Superset existant (ou dashboard.superset.enabled).
+#
+#   helm upgrade --install trade helm/trade-analysis -f helm/trade-analysis/values-generic.yaml \
+#     --set pipeline.mlflow.url=http://mlflow:5000 \
+#     --set dashboard.dashboardImport.supersetUrl=http://superset:8088
+
+global:
+  platform: generic
+
+pipeline:
+  kedroEnv: cloud
+  # Compte de service des workflows créé par le chart, avec les droits de l'exécuteur
+  serviceAccount:
+    create: true
+    name: trade-workflow
+  # Version du contrôleur Argo (choix `schedules` / `schedule` des CronWorkflow)
+  argo:
+    version: "3.6"
+  postgres:
+    existingSecret: trade-postgres-credentials
+  # Secret MLflow facultatif hors Onyxia : URL explicite, sans authentification
+  mlflow:
+    existingSecret: ""
+    url: ""
+  # Pas de bucket par défaut hors SSP Cloud : contrôle S3 limité à la présence des clés
+  preflight:
+    s3Path: ""
+
+dashboard:
+  # Superset existant : configuration à reporter (NOTES du chart) ; URL à fournir
+  superset:
+    enabled: false
+  dashboardImport:
+    supersetUrl: ""
+
+# Services amont installables par ce chart (désactivés : services existants)
+argoWorkflows:
+  enabled: false
+  # Contrôleur limité au namespace de la release, comme sur Onyxia
+  singleNamespace: true
+mlflow:
+  enabled: false

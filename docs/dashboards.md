@@ -67,11 +67,12 @@ unités les mieux classées l'année choisie. Superset doit donc activer les gab
 FEATURE_FLAGS = {**globals().get("FEATURE_FLAGS", {}), "ENABLE_TEMPLATE_PROCESSING": True}
 ```
 
-!!! note "Correctif hors Helm"
-    Sur le service actuel, l'écouteur et ce drapeau ont été ajoutés directement aux
-    Secrets Kubernetes du service. Un redéploiement depuis l'interface Onyxia les perd :
-    il faut alors les rejouer (détails dans `superset/README.md`), en attendant leur
-    reprise par le chart Helm.
+!!! note "Configuration portée par le chart Helm"
+    L'écouteur et ce drapeau font partie du chart `trade-dashboard`
+    (`helm/trade-dashboard/files/superset_serving.py`), monté dans les pods Superset et
+    exécuté à la fin de `superset_config.py` : ils survivent à tout redéploiement. Le
+    tableau de bord est réimporté par le Job du chart après chaque installation ou mise à
+    jour (voir `helm/README.md`).
 
 ## Tables de service
 

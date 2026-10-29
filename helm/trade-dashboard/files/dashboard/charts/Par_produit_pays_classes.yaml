@@ -1,0 +1,100 @@
+slice_name: Par produit — pays classés
+description: null
+certified_by: null
+certification_details: null
+viz_type: table
+params:
+  viz_type: table
+  datasource: 1__table
+  query_mode: raw
+  all_columns:
+  - reporter
+  - reporter_label
+  - primary_rank_by_product
+  - rank_iqr_by_product
+  - rank_spread_by_product
+  - consensus_score_by_product
+  - HHI
+  - CDI2
+  - CDI3
+  - WORLD_HHI
+  - CENTRALITY_RISK
+  - CLUSTERING_W
+  - SPOF
+  - n_alerts
+  order_by_cols:
+  - '["primary_rank_by_product", true]'
+  server_pagination: true
+  server_page_length: 50
+  row_limit: 10000
+  include_search: false
+  show_cell_bars: false
+  allow_rearrange_columns: true
+  conditional_formatting:
+  - column: HHI
+    operator: '>'
+    targetValue: 0.5
+    colorScheme: '#EFA1AA'
+  - column: CDI2
+    operator: '>'
+    targetValue: 0.5
+    colorScheme: '#EFA1AA'
+  - column: CDI3
+    operator: '>'
+    targetValue: 1.0
+    colorScheme: '#EFA1AA'
+  - column: WORLD_HHI
+    operator: '>'
+    targetValue: 0.5
+    colorScheme: '#EFA1AA'
+  - column: CENTRALITY_RISK
+    operator: '>'
+    targetValue: 2.5
+    colorScheme: '#EFA1AA'
+  - column: CLUSTERING_W
+    operator: '>'
+    targetValue: 0.5
+    colorScheme: '#EFA1AA'
+  - column: SPOF
+    operator: '>'
+    targetValue: 0.9
+    colorScheme: '#EFA1AA'
+  - column: n_alerts
+    operator: '>='
+    targetValue: 3
+    colorScheme: '#EFA1AA'
+  - column: n_alerts
+    operator: between
+    targetValueLeft: 1
+    targetValueRight: 2
+    colorScheme: '#FDE380'
+  column_config:
+    HHI:
+      d3NumberFormat: .3f
+    CDI2:
+      d3NumberFormat: .3f
+    CDI3:
+      d3NumberFormat: .3f
+    WORLD_HHI:
+      d3NumberFormat: .3f
+    CENTRALITY_RISK:
+      d3NumberFormat: .3f
+    CLUSTERING_W:
+      d3NumberFormat: .3f
+    SPOF:
+      d3NumberFormat: .3f
+    consensus_score_by_product:
+      d3NumberFormat: .2f
+    rank_spread_by_product:
+      d3NumberFormat: .1f
+    primary_rank_by_product:
+      d3NumberFormat: .1~f
+  adhoc_filters: []
+  percent_metrics: []
+  metrics: []
+  groupby: []
+query_context: null
+cache_timeout: null
+uuid: a0a591a5-0fce-497b-b252-18ccb9f0400a
+version: 1.0.0
+dataset_uuid: 36728d1c-82e1-4659-9433-eb37ea4ce456

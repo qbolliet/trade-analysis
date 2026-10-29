@@ -1,0 +1,60 @@
+{{- /*
+Import du tableau de bord après chaque installation ou mise à jour (hook Helm, après
+l'initialisation de Superset) : attente de /health, puis import « assets » idempotent
+(connexion, datasets, graphiques et tableau de bord créés ou écrasés). Aucun secret
+journalisé.
+*/ -}}
+{{- if .Values.dashboardImport.enabled }}
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ .Release.Name }}-dashboard-import
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "trade-dashboard.labels" . | nindent 4 }}
+  annotations:
+    helm.sh/hook: post-install,post-upgrade
+    # Après le Job d'initialisation de Superset (poids 0)
+    helm.sh/hook-weight: "10"
+    helm.sh/hook-delete-policy: before-hook-creation,hook-succeeded
+spec:
+  backoffLimit: {{ .Values.dashboardImport.backoffLimit }}
+  # Attente de Superset et import : borne large, pour qu'un échec ne bloque pas Helm
+  activeDeadlineSeconds: {{ add .Values.dashboardImport.waitSeconds 600 }}
+  ttlSecondsAfterFinished: 86400
+  template:
+    metadata:
+      labels:
+        {{- include "trade-dashboard.labels" . | nindent 8 }}
+      annotations:
+        # Nouvel import quand l'export change
+        checksum/dashboard: {{ (.Files.Glob "files/dashboard/**").AsConfig | sha256sum }}
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: import
+          image: "{{ .Values.dashboardImport.image.repository }}:{{ .Values.dashboardImport.image.tag }}"
+          command: [python, /tools/import_dashboard.py]
+          resources:
+            requests: {cpu: {{ .Values.dashboardImport.resources.cpu | quote }}, memory: {{ .Values.dashboardImport.resources.memory | quote }}}
+            limits: {cpu: {{ .Values.dashboardImport.resources.cpu | quote }}, memory: {{ .Values.dashboardImport.resources.memory | quote }}}
+          env:
+            - {name: SUPERSET_URL, value: {{ include "trade-dashboard.supersetUrl" . | quote }}}
+            - {name: SUPERSET_ADMIN_USERNAME, valueFrom: {secretKeyRef: {name: {{ .Values.global.dashboard.credentialsSecret }}, key: ADMIN_USERNAME}}}
+            - {name: SUPERSET_ADMIN_PASSWORD, valueFrom: {secretKeyRef: {name: {{ .Values.global.dashboard.credentialsSecret }}, key: ADMIN_PASSWORD}}}
+            - {name: DASHBOARD_SOURCE, value: /dashboard}
+            - {name: BUNDLE_TOOL, value: /tools/superset_bundle.py}
+            - {name: DASHBOARD_SCHEMA, value: {{ .Values.dashboardImport.schema | default "" | quote }}}
+            - {name: DASHBOARD_DEFAULT_YEAR, value: {{ .Values.dashboardImport.defaultYear | default "" | toString | quote }}}
+            - {name: DASHBOARD_TOP_N, value: {{ .Values.dashboardImport.topN | default "" | toString | quote }}}
+            - {name: WAIT_SECONDS, value: {{ .Values.dashboardImport.waitSeconds | toString | quote }}}
+            - {name: PYTHONUNBUFFERED, value: "1"}
+          volumeMounts:
+            - {name: dashboard, mountPath: /dashboard, readOnly: true}
+            - {name: tools, mountPath: /tools, readOnly: true}
+      volumes:
+        - name: dashboard
+          configMap: {name: {{ .Release.Name }}-dashboard-export}
+        - name: tools
+          configMap: {name: {{ .Release.Name }}-dashboard-tools}
+{{- end }}

@@ -1,8 +1,8 @@
-"""Rendu Argo du pipeline réel (environnement ``cloud``) et manifestes versionnés.
+"""Données du DAG du pipeline réel (environnements ``cloud`` et ``demo``) et fichiers versionnés.
 
 Le dernier test est le contrôle de la CI (``kedro trade render-argo --check``) : il échoue
-tant que ``kubernetes/generated/`` n'a pas été régénéré après une modification des
-pipelines, de ``argo.yml`` ou des gabarits.
+tant que ``helm/trade-pipeline/files/`` n'a pas été régénéré après une modification des
+pipelines ou de ``argo.yml``.
 """
 
 from __future__ import annotations
@@ -13,11 +13,10 @@ from typing import Any, Dict
 import pytest
 import yaml
 
-from kedro_pipeline.deploy.render import diff_manifests, render_manifests
+from kedro_pipeline.deploy.render import diff_files, render_files
 
 ROOT = Path(__file__).resolve().parents[2]
-GENERATED = ROOT / "kubernetes" / "generated"
-SECRETS = {"trade-s3-credentials", "comtrade-api-credentials", "trade-postgres-credentials", "trade-mlflow-credentials"}
+CHART_FILES = ROOT / "helm" / "trade-pipeline" / "files"
 EXPERIMENTS = {
     "download-eurostat": "trade-01-downloads",
     "download-comtrade": "trade-01-downloads",
@@ -33,41 +32,38 @@ VINTAGES = ("hs1992", "hs1996", "hs2002", "hs2007", "hs2012", "hs2017", "hs2022"
 
 
 @pytest.fixture(scope="module")
-def manifests() -> Dict[str, str]:
-    return render_manifests("cloud")
+def files() -> Dict[str, str]:
+    return render_files()
 
 
 @pytest.fixture(scope="module")
-def template(manifests) -> Dict[str, Any]:
-    return yaml.safe_load(manifests["workflowtemplate.yaml"])
+def cloud(files) -> Dict[str, Any]:
+    return yaml.safe_load(files["dag-cloud.yaml"])
 
 
-def _templates(template: Dict[str, Any]) -> Dict[str, Any]:
-    return {t["name"]: t for t in template["spec"]["templates"]}
+def _tasks(data: Dict[str, Any], entry_point: str) -> Dict[str, Any]:
+    entry = next(entry for entry in data["entryPoints"] if entry["name"] == entry_point)
+    return {task["name"]: task for task in entry["tasks"]}
 
 
-def _tasks(template: Dict[str, Any], entry_point: str) -> Dict[str, Any]:
-    return {task["name"]: task for task in _templates(template)[entry_point]["dag"]["tasks"]}
+def test_one_file_per_chart_environment(files) -> None:
+    assert sorted(files) == ["dag-cloud.yaml", "dag-demo.yaml"]
+    assert yaml.safe_load(files["dag-demo.yaml"])["kedroEnv"] == "demo"
 
 
-def _parameters(task: Dict[str, Any]) -> Dict[str, str]:
-    return {p["name"]: p["value"] for p in task["arguments"]["parameters"]}
-
-
-def test_three_manifests(manifests) -> None:
-    assert sorted(manifests) == ["cronworkflow-daily.yaml", "cronworkflow-weekly.yaml", "workflowtemplate.yaml"]
-
-
-def test_task_count_per_entry_point(template) -> None:
-    assert len(_tasks(template, "daily")) == 4
-    assert len(_tasks(template, "weekly")) == 12
-    assert set(_tasks(template, "daily")) == {
+def test_task_count_per_entry_point(cloud, files) -> None:
+    assert len(_tasks(cloud, "daily")) == 4
+    assert len(_tasks(cloud, "weekly")) == 12
+    assert set(_tasks(cloud, "daily")) == {
         "download-eurostat", "download-comtrade", "compute-partner-vulnerabilities", "publish-serving",
     }
+    # demo : un seul millésime BACI cible
+    demo = yaml.safe_load(files["dag-demo.yaml"])
+    assert [name for name in _tasks(demo, "weekly") if name.startswith("process-baci-")] == ["process-baci-hs2017"]
 
 
-def test_key_dependencies(template) -> None:
-    daily, weekly = _tasks(template, "daily"), _tasks(template, "weekly")
+def test_key_dependencies(cloud) -> None:
+    daily, weekly = _tasks(cloud, "daily"), _tasks(cloud, "weekly")
     # Partenaires : tolérants à l'échec du téléchargement Comext ; concordances BACI lues
     # telles quelles (prepare_baci appartient au weekly)
     assert daily["compute-partner-vulnerabilities"]["depends"] == "(download-eurostat.Succeeded || download-eurostat.Failed)"
@@ -83,76 +79,38 @@ def test_key_dependencies(template) -> None:
     assert "(compute-partner-vulnerabilities.Succeeded" in daily["publish-serving"]["depends"]
 
 
-def test_experiment_resources_and_retries_per_task(template) -> None:
-    tasks = {**_tasks(template, "daily"), **_tasks(template, "weekly")}
+def test_experiment_resources_and_retries_per_task(cloud) -> None:
+    tasks = {**_tasks(cloud, "daily"), **_tasks(cloud, "weekly")}
     for name, experiment in EXPERIMENTS.items():
-        assert _parameters(tasks[name])["experiment"] == experiment, name
+        assert tasks[name]["experiment"] == experiment, name
     for name in ("download-eurostat", "download-comtrade"):
-        assert _parameters(tasks[name])["retries"] == "0"
-        assert (_parameters(tasks[name])["cpu"], _parameters(tasks[name])["mem"]) == ("1", "8")
-    assert _parameters(tasks["process-baci-hs2017"])["mem"] == "32"
-    assert _parameters(tasks["compute-synthetic-scores"])["cpu"] == "8"
-    assert _parameters(tasks["prepare-baci"])["retries"] == "1"
+        assert (tasks[name]["retries"], tasks[name]["cpu"], tasks[name]["mem"]) == (0, 1, 8)
+    assert tasks["process-baci-hs2017"]["mem"] == 32
+    assert tasks["compute-synthetic-scores"]["cpu"] == 8
+    assert tasks["prepare-baci"]["retries"] == 1
 
 
-def test_mutex_on_serving_and_maintenance(template) -> None:
-    templates = _templates(template)
+def test_mutex_on_serving_and_maintenance(cloud) -> None:
     for entry_point in ("daily", "weekly"):
-        assert _tasks(template, entry_point)["publish-serving"]["template"] == "locked-trade-serving"
-    assert templates["locked-trade-serving"]["synchronization"] == {"mutex": {"name": "trade-serving"}}
-    handler = templates[template["spec"]["onExit"]]
-    assert handler["synchronization"] == {"mutex": {"name": "trade-maintenance"}}
-    step = handler["steps"][0][0]
-    assert _parameters(step)["kedro-node"] == "maintain_ducklake"
-    assert _parameters(step)["experiment"] == "trade-00-maintenance"
+        assert _tasks(cloud, entry_point)["publish-serving"]["mutex"] == "trade-serving"
+    assert cloud["mutexes"] == ["trade-serving"]
+    assert cloud["exit"]["node"] == "maintain_ducklake" and cloud["exit"]["mutex"] == "trade-maintenance"
+    assert cloud["exit"]["experiment"] == "trade-00-maintenance"
     # La maintenance n'appartient à aucun DAG
-    assert all("maintain-ducklake" not in _tasks(template, e) for e in ("daily", "weekly"))
+    assert all("maintain-ducklake" not in _tasks(cloud, e) for e in ("daily", "weekly"))
 
 
-def test_pod_environment_and_secrets(template) -> None:
-    container = _templates(template)["kedro"]["container"]
-    env = {item["name"]: item for item in container["env"]}
-    secrets = {item["valueFrom"]["secretKeyRef"]["name"] for item in env.values() if "secretKeyRef" in item.get("valueFrom", {})}
-    secrets |= {item["secretRef"]["name"] for item in container["envFrom"]}
-    assert secrets == SECRETS
-    assert "trade-serving-credentials" not in yaml.safe_dump(template)
-    assert env["KEDRO_ENV"]["value"] == "cloud"
-    assert env["MLFLOW_EXPERIMENT_NAME"]["value"] == "{{inputs.parameters.experiment}}"
-    assert env["MLFLOW_ENABLE_SYSTEM_METRICS_LOGGING"]["value"] == "true"
-    assert env["MLFLOW_SYSTEM_METRICS_SAMPLING_INTERVAL"]["value"] == "30"
-    assert env["AWS_SESSION_TOKEN"]["value"] == ""
-    # Commande projet (kedro run ignorerait --params) et séparateur des forçages
-    assert container["command"] == ["python", "-m", "kedro_pipeline"]
-    assert "--env=cloud" in container["args"] and "--pipeline=__default__" in container["args"]
-    params = next(arg for arg in container["args"] if arg.startswith("--params="))
-    assert "runtime.FORCE_STEPS={{workflow.parameters.force-steps}}" in params
+def test_default_crons_and_system_metrics(cloud) -> None:
+    crons = {entry["name"]: entry["cron"] for entry in cloud["entryPoints"]}
+    assert crons == {"daily": "0 1 * * *", "weekly": "0 2 * * 6"}
+    assert cloud["systemMetrics"] == {"enabled": True, "samplingSeconds": 30}
+    assert cloud["podPipeline"] == "__default__"
 
 
-def test_workflow_parameters_and_spec(template) -> None:
-    spec = template["spec"]
-    parameters = {p["name"]: p["value"] for p in spec["arguments"]["parameters"]}
-    assert set(parameters) == {"image-tag", "force-steps", "force-metrics", "force-methods", "extra-params"}
-    assert parameters["force-steps"] == parameters["force-metrics"] == parameters["force-methods"] == ""
-    assert (spec["serviceAccountName"], spec["parallelism"]) == ("workflow", 8)
-    # Un seul run à la fois, toutes cadences confondues
-    assert spec["synchronization"] == {"mutex": {"name": "trade-pipeline-run"}}
+def test_rendering_is_deterministic(files) -> None:
+    assert render_files() == files
 
 
-def test_crons(manifests) -> None:
-    daily = yaml.safe_load(manifests["cronworkflow-daily.yaml"])["spec"]
-    weekly = yaml.safe_load(manifests["cronworkflow-weekly.yaml"])["spec"]
-    assert daily["schedules"] == ["0 1 * * *"] and weekly["schedules"] == ["0 2 * * 6"]
-    assert daily["workflowSpec"]["entrypoint"] == "daily" and daily["workflowSpec"]["activeDeadlineSeconds"] == 82800
-    assert weekly["workflowSpec"]["entrypoint"] == "weekly" and weekly["workflowSpec"]["activeDeadlineSeconds"] == 518400
-    assert daily["concurrencyPolicy"] == weekly["concurrencyPolicy"] == "Forbid"
-    # Les CronWorkflow n'exposent aucun forçage
-    assert "arguments" not in daily["workflowSpec"] and "arguments" not in weekly["workflowSpec"]
-
-
-def test_rendering_is_deterministic(manifests) -> None:
-    assert render_manifests("cloud") == manifests
-
-
-def test_versioned_manifests_are_up_to_date(manifests) -> None:
-    differences = diff_manifests(manifests, GENERATED)
+def test_versioned_files_are_up_to_date(files) -> None:
+    differences = diff_files(files, CHART_FILES)
     assert differences == {}, "Run `uv run kedro trade render-argo`:\n" + "\n".join(differences.values())
