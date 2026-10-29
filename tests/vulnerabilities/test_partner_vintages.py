@@ -178,7 +178,9 @@ def test_in_force_classification_marks_cn_codes() -> None:
 
 
 def test_annotation_columns() -> None:
-    frame = nw.from_native(pd.DataFrame({"TIME_PERIOD": ["2019", "2023"]}), eager_only=True)
+    frame = nw.from_native(
+        pd.DataFrame({"TIME_PERIOD": ["2019", "2023"], "product": [1012100, 854110]}), eager_only=True
+    )
     in_force = annotate_nomenclature(frame, target_vintage=None, nomenclatures=HS, is_provisional=True)
     historical = annotate_nomenclature(frame, target_vintage="HS2017", nomenclatures=HS,
                                        is_provisional=False)
@@ -188,6 +190,12 @@ def test_annotation_columns() -> None:
     assert historical.to_native()[["hs_vintage", "in_force"]].values.tolist() == [
         ["HS2017", False], ["HS2017", False]
     ]
+    # Niveau de nomenclature : zéro initial perdu du code NC8 stocké en entier restitué
+    assert in_force.to_native()["product_level"].tolist() == [8, 6]
+    text = nw.from_native(pd.DataFrame({"TIME_PERIOD": ["2019"] * 4,
+                                        "product": ["01", "0101", "010121", "01012100"]}), eager_only=True)
+    assert annotate_nomenclature(text, target_vintage=None, nomenclatures=HS, is_provisional=False
+                                 ).to_native()["product_level"].tolist() == [2, 4, 6, 8]
 
 
 def test_harmonize_partner_flows_matches_hs_harmonizer_on_baci_like_data() -> None:

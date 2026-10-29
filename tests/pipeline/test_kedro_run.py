@@ -114,6 +114,15 @@ def _row_count(name: str) -> int:
     return int(handle.query(f"SELECT count(*) AS n FROM {handle.qualified_name}")["n"].iloc[0])
 
 
+def _query(name: str, sql: str):
+    """Résultat d'une requête sur une table du catalogue de test (``{table}`` substitué)."""
+    from kedro.framework.session import KedroSession
+
+    with KedroSession.create(project_path=PROJECT, env="test") as session:
+        handle = session.load_context().catalog.load(name)
+    return handle.query(sql.format(table=handle.qualified_name))
+
+
 def _serving_tables() -> set:
     """Tables du schéma de restitution du catalogue fichier ``serving``."""
     from kedro.framework.session import KedroSession
@@ -161,6 +170,26 @@ def test_full_runs_are_incremental_forcible_and_split_by_cadence(test_env: Path,
     assert all(count > 0 for count in first_recomputed.values()), first_recomputed
     serving_tables = set(load_parameters("test")["serving"]["TABLES"])
     assert serving_tables <= _serving_tables()
+    # Classement par finesse de nomenclature : niveau du code écrit par les partenaires,
+    # clé de contexte de la synthèse et de la cohérence ; rangs par pays de 1 à n par niveau
+    # (le monde de test ne compte que des codes SH6 : la séparation de plusieurs niveaux
+    # repose sur le mécanisme générique des colonnes de contexte)
+    levels = _query("vulnerabilities.partners", "SELECT DISTINCT product_level FROM {table}")
+    assert set(levels["product_level"]) <= {2, 4, 6, 8} and len(levels) > 0
+    groups = _query("synthesis.scores", """
+        SELECT product_level, min(rank_by_reporter) AS first,
+               max(rank_by_reporter) AS last, count(rank_by_reporter) AS n,
+               bool_and(length(CAST(product AS VARCHAR)) + length(CAST(product AS VARCHAR)) % 2
+                        = product_level) AS same_level
+        FROM {table}
+        GROUP BY hs_vintage, freq, flow, indicators, "TIME_PERIOD", product_level, reporter, method
+        HAVING count(rank_by_reporter) > 0""")
+    assert len(groups) > 0 and groups["same_level"].all()
+    # Rangs propres au groupe (ex aequo au rang moyen) : bornés par 1 et par sa taille
+    assert (groups["first"] >= 1).all() and (groups["last"] <= groups["n"]).all()
+    assert (groups["first"] == 1).mean() > 0.5
+    diagnostics = _query("synthesis.diagnostics", "SELECT DISTINCT product_level FROM {table}")
+    assert set(diagnostics["product_level"]) == set(groups["product_level"])
 
     # ── 2. Seconde exécution : rien à télécharger, aucune étape aval à recalculer ──
     executed, metrics = _run(test_env)

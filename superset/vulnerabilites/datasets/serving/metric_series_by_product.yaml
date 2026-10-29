@@ -6,38 +6,48 @@ offset: 0
 cache_timeout: null
 catalog: null
 schema: serving.dashboard
-sql: "-- Séries temporelles des pays les plus vulnérables (metric) : les top_n\n--\
-  \ unités de meilleur rang consensus l'année choisie, plus celles du filtre d'ajout.\n\
-  -- Filtres lus par filter_values(remove_filter=True) et appliqués dans la requête.\n\
-  {% set years = filter_values('year', remove_filter=True) %}\n{% set flows = filter_values('flow_label',\
-  \ remove_filter=True) %}\n{% set focus = filter_values('product_display', remove_filter=True)\
-  \ %}\n{% set extra = filter_values('reporter_display', remove_filter=True) %}\n\
-  {% set in_force = filter_values('in_force', remove_filter=True) %}\n{% set chosen\
-  \ = filter_values('metric', remove_filter=True) %}\nWITH ctx AS (\n  SELECT * FROM\
-  \ serving.dashboard.cell_scores\n  WHERE flow_label IN {{ (flows or ['Import'])|where_in\
-  \ }}\n    AND product_display IN {{ (focus or [\"850760 — Lithium-ion accumulators\
-  \ (excl. spent)\"])|where_in }}\n    AND in_force = {{ 'false' if in_force and not\
-  \ in_force[0] else 'true' }}\n),\nrank_year AS (\n  {% if years %}SELECT {{ years[0]|int\
-  \ }} AS year\n  {% else %}SELECT max(year) AS year FROM ctx WHERE primary_rank_by_product\
-  \ IS NOT NULL{% endif %}\n),\ntop AS (\n  SELECT reporter FROM ctx\n  WHERE year\
-  \ = (SELECT year FROM rank_year) AND primary_rank_by_product IS NOT NULL\n  ORDER\
-  \ BY primary_rank_by_product, reporter\n  LIMIT {{ top_n|default(5)|int }}\n),\n\
-  units AS (\n  SELECT reporter FROM top\n  {% if extra %}UNION SELECT reporter FROM\
-  \ ctx WHERE reporter_display IN {{ extra|where_in }}{% endif %}\n),\nseries AS (\n\
-  \  SELECT c.year, make_date(c.year, 1, 1) AS period, c.flow_label, c.in_force,\n\
-  \         c.reporter_display, c.product_display,\n         CASE WHEN length(c.reporter_display)\
-  \ > 48 THEN left(c.reporter_display, 47) || '…'\n              ELSE c.reporter_display\
-  \ END AS unit,\n         c.primary_rank_by_product AS \"Rang consensus\", c.rank_spread_by_product\
-  \ AS \"Incertitude du rang (écart interquartile)\", 1 - (c.primary_rank_by_product\
-  \ - 1) / NULLIF(c.primary_n_by_product - 1, 0) AS \"Score de consensus (0-1)\",\
-  \ c.\"HHI\" AS \"HHI\", c.\"CDI2\" AS \"CDI2\", c.\"CDI3\" AS \"CDI3\", c.\"WORLD_HHI\"\
-  \ AS \"WORLD_HHI\", c.\"CENTRALITY_RISK\" AS \"CENTRALITY_RISK\", c.\"CLUSTERING_W\"\
-  \ AS \"CLUSTERING_W\", c.\"SPOF\" AS \"SPOF\"\n  FROM ctx AS c\n  WHERE c.reporter\
-  \ IN (SELECT reporter FROM units)\n)\nSELECT * FROM (UNPIVOT series ON \"Rang consensus\"\
-  , \"Incertitude du rang (écart interquartile)\", \"Score de consensus (0-1)\", \"\
-  HHI\", \"CDI2\", \"CDI3\", \"WORLD_HHI\", \"CENTRALITY_RISK\", \"CLUSTERING_W\"\
-  , \"SPOF\" INTO NAME metric VALUE value)\nWHERE metric IN {{ (chosen or [\"Rang\
-  \ consensus\"])|where_in }}\n"
+sql: |
+  -- Séries temporelles des pays les plus vulnérables : les top_n unités de
+  -- meilleur rang consensus l'année choisie, plus celles du filtre d'ajout. Filtres lus par
+  -- filter_values(remove_filter=True) et appliqués dans la requête ; grandeur tracée
+  -- choisie par un dictionnaire libellé -> colonne (valeur inconnue : grandeur par défaut).
+  {% set years = filter_values('year', remove_filter=True) %}
+  {% set flows = filter_values('flow_label', remove_filter=True) %}
+  {% set focus = filter_values('product_display', remove_filter=True) %}
+  {% set extra = filter_values('reporter_display', remove_filter=True) %}
+  {% set in_force = filter_values('in_force', remove_filter=True) %}
+  {% set chosen = filter_values('metric', remove_filter=True) %}
+  {% set level = 'by_product' %}
+  {% set columns = {"Rang consensus": "c.primary_rank_" ~ level, "Incertitude du rang (écart interquartile)": "c.rank_spread_" ~ level, "Score de consensus (0-1)": "1 - (c.primary_rank_" ~ level ~ " - 1) / NULLIF(c.primary_n_" ~ level ~ " - 1, 0)", "HHI": "c.\"HHI\"", "CDI2": "c.\"CDI2\"", "CDI3": "c.\"CDI3\"", "WORLD_HHI": "c.\"WORLD_HHI\"", "CENTRALITY_RISK": "c.\"CENTRALITY_RISK\"", "CLUSTERING_W": "c.\"CLUSTERING_W\"", "SPOF": "c.\"SPOF\""} %}
+  {% set choice = chosen[0] if chosen and chosen[0] in columns else "Rang consensus" %}
+  WITH ctx AS (
+    SELECT * FROM serving.dashboard.cell_scores
+    WHERE flow_label IN {{ (flows or ['Import'])|where_in }}
+      AND product_display IN {{ (focus or ["850760 — Lithium-ion accumulators (excl. spent)"])|where_in }}
+      AND in_force = {{ 'false' if in_force and not in_force[0] else 'true' }}
+  ),
+  rank_year AS (
+    {% if years %}SELECT {{ years[0]|int }} AS year
+    {% else %}SELECT max(year) AS year FROM ctx WHERE primary_rank_{{ level }} IS NOT NULL{% endif %}
+  ),
+  top AS (
+    SELECT reporter FROM ctx
+    WHERE year = (SELECT year FROM rank_year) AND primary_rank_{{ level }} IS NOT NULL
+    ORDER BY primary_rank_{{ level }}, reporter
+    LIMIT {{ top_n|default(5)|int }}
+  ),
+  units AS (
+    SELECT reporter FROM top
+    {% if extra %}UNION SELECT reporter FROM ctx WHERE reporter_display IN {{ extra|where_in }}{% endif %}
+  )
+  SELECT c.year, make_date(c.year, 1, 1) AS period, c.flow_label, c.in_force,
+         c.reporter_display, c.product_display,
+         CASE WHEN length(c.reporter_display) > 48 THEN left(c.reporter_display, 47) || '…'
+              ELSE c.reporter_display END AS unit,
+         {{ [choice]|where_in }} AS metric,
+         CAST({{ columns[choice] }} AS DOUBLE) AS value
+  FROM ctx AS c
+  WHERE c.reporter IN (SELECT reporter FROM units)
 params: null
 template_params:
   top_n: 5

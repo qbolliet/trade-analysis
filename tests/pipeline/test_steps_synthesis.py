@@ -215,3 +215,71 @@ def test_failed_context_is_listed_and_raised_after_the_others(catalog: Path, mon
     assert next(iter(result.failures.values())).startswith("RuntimeError: contexte en échec")
     with pytest.raises(RuntimeError, match=r"1 contexte\(s\) en échec sur 4"):
         result.raise_if_failed()
+
+
+def test_synthesis_and_coherence_rank_each_nomenclature_level_apart(tmp_path: Path) -> None:
+    """Niveau de nomenclature en colonne de contexte : SH6 et NC8 jamais classés ensemble."""
+    from statflows.storage.ducklake.tables import write_dataframe
+
+    (tmp_path / "data").mkdir()
+    conn = open_catalog(*catalog_paths(tmp_path))
+    rng = np.random.default_rng(1)
+    hs6 = [f"{100000 + i:06d}" for i in range(12)]
+    products = [(code, 8) for code in PRODUCTS] + [(code, 6) for code in hs6]
+    indicators = pd.DataFrame([
+        {"freq": "A", "flow": 1, "indicators": "VALUE_IN_EUROS", "TIME_PERIOD": period,
+         "reporter": reporter, "product": code, "product_level": level, "in_force": True,
+         "hs_vintage": "HS2022", "HHI": rng.uniform(), "CDI2": rng.uniform(), "CDI3": rng.uniform()}
+        for period in PERIODS for reporter in REPORTERS for code, level in products
+    ])
+    network = pd.DataFrame([
+        {"product": code, "year": int(period), "classification": "HS2022", "flow": 1,
+         "WORLD_HHI": rng.uniform(), "CENTRALITY_RISK": rng.uniform()}
+        for period in PERIODS for code in sorted({code[:6] for code, _ in products})
+    ])
+    try:
+        write_dataframe(conn, indicators, ["freq", "flow", "indicators", "TIME_PERIOD", "reporter", "product"],
+                        catalog_alias=ALIAS, schema="indicators")
+        write_dataframe(conn, network, ["product", "year", "classification", "flow"],
+                        catalog_alias=ALIAS, schema="network_indicators")
+    finally:
+        conn.close()
+
+    columns = [*CONTEXT_COLUMNS, "product_level"]
+    block = {
+        **SYNTHESIS, "FLOWS": ["import"], "RESULT_SCHEMA": "levels",
+        "PARAMETERS": {**SYNTHESIS["PARAMETERS"], "context_columns": columns},
+        "STATE": {"PATH_TEMPLATE": f"{tmp_path.as_posix()}/levels/state/{{TIME_PERIOD}}.json"},
+    }
+    result = run_synthesis_step(
+        _handle(tmp_path, "levels"), _handle(tmp_path, "levels_diag"),
+        context_registry(block, None, "synthesis", columns), _cursors(tmp_path, "levels"),
+        params={"SYNTHESIS": block, "COHERENCE": COHERENCE}, vulnerability_params={},
+        runtime=RUNTIME, n_jobs=1, run_id="wf-1",
+    )
+    # Un contexte par période et par niveau
+    assert result.failures == {} and result.n_units_succeeded == len(PERIODS) * 2
+
+    scores = _table(tmp_path, "levels")
+    assert set(scores["product_level"]) == {6, 8}
+    assert (scores["product"].astype(str).str.len() == scores["product_level"]).all()
+    for level_name, keys in (("by_reporter", ["reporter"]), ("global", [])):
+        rank = f"rank_{level_name}"
+        # Groupes classés (méthodes au-dessus de leur taille minimale) : rangs 1..n par niveau
+        ranked = scores.dropna(subset=[rank])
+        ranks = ranked.groupby(["TIME_PERIOD", "product_level", "method", *keys])[rank]
+        size = len(PRODUCTS) * (1 if keys else len(REPORTERS))
+        assert set(ranked.loc[ranked["method"] == "rank_mean", "product_level"]) == {6, 8}
+        assert (ranks.min() == 1).all() and (ranks.max() <= size).all()
+        assert (ranks.count() == size).all()
+
+    coherence_block = {**COHERENCE, "STATE": {"PATH_TEMPLATE": f"{tmp_path.as_posix()}/coh/{{TIME_PERIOD}}.json"}}
+    coherence = run_coherence_step(
+        _handle(tmp_path, "levels"), _handle(tmp_path, "levels_coherence"),
+        context_registry(coherence_block, None, "coherence", columns),
+        context_registry(block, None, "synthesis", columns),
+        params={"SYNTHESIS": block, "COHERENCE": coherence_block}, vulnerability_params={},
+        runtime=RUNTIME, n_jobs=1,
+    )
+    assert coherence.failures == {} and coherence.n_units_succeeded == len(PERIODS) * 2
+    assert set(_table(tmp_path, "levels_coherence")["product_level"]) == {6, 8}

@@ -525,6 +525,9 @@ def _serving_frames(rng: "np.random.Generator", nomenclatures: dict) -> dict:
     ]
     df_indicators["hs_vintage"] = [vintage_in_force(year, nomenclatures) for year in years]
     df_indicators["in_force"] = True
+    # Niveau de nomenclature : nombre de chiffres, zéro initial des entiers restitué
+    digits = df_indicators["product"].astype(str).str.len()
+    df_indicators["product_level"] = digits + digits % 2
     df_indicators["is_provisional"] = False
 
     # Réseau : deux millésimes pour chaque année, valeurs distinctes par millésime
@@ -545,11 +548,12 @@ def _serving_frames(rng: "np.random.Generator", nomenclatures: dict) -> dict:
                  "CLUSTERING_W_ALERT", "SPOF_ALERT"],
     )
 
-    # Synthèse : format long par méthode, rang 1 = score le plus élevé (S-2.4)
+    # Synthèse : format long par méthode, rang 1 = score le plus élevé (S-2.4) ; le niveau
+    # de nomenclature est une colonne de contexte (produits classés par finesse)
     grid = df_indicators[df_indicators["indicators"] == "VALUE_IN_EUROS"][
-        ["hs_vintage", "freq", "flow", "indicators", "TIME_PERIOD", "reporter", "product"]
+        ["hs_vintage", "freq", "flow", "indicators", "TIME_PERIOD", "product_level", "reporter", "product"]
     ]
-    context = ["hs_vintage", "freq", "flow", "indicators", "TIME_PERIOD"]
+    context = ["hs_vintage", "freq", "flow", "indicators", "TIME_PERIOD", "product_level"]
     frames = []
     for method in SERVING_METHODS:
         df = grid.copy()
@@ -569,9 +573,11 @@ def _serving_frames(rng: "np.random.Generator", nomenclatures: dict) -> dict:
     # Cohérence : familles metrics, methods et fit (cette dernière non exposée)
     diag_rows = []
     for year in SERVING_YEARS:
-        base = (vintage_in_force(year, nomenclatures), "A", 1, "VALUE_IN_EUROS", str(year))
+        base = (vintage_in_force(year, nomenclatures), "A", 1, "VALUE_IN_EUROS", str(year), 8)
+        sh6 = (*base[:-1], 6)
         diag_rows += [
             (*base, "global", "ALL", "ALL", "metrics", "spearman", "HHI", "CDI2", 0.4, 24),
+            (*sh6, "global", "ALL", "ALL", "metrics", "spearman", "HHI", "CDI2", 0.6, 6),
             (*base, "by_product", "ALL", "85411000", "metrics", "kendall_w", "", "", 0.7, 3),
             (*base, "by_reporter", "FR", "ALL", "methods", "kendall_tau_b", "auto_sum", "critic_sum", 0.9, 8),
             (*base, "global", "ALL", "ALL", "methods", "lomo_tau", "auto_sum", "HHI", 0.8, 24),
@@ -579,8 +585,8 @@ def _serving_frames(rng: "np.random.Generator", nomenclatures: dict) -> dict:
         ]
     df_diagnostics = pd.DataFrame(
         diag_rows,
-        columns=["hs_vintage", "freq", "flow", "indicators", "TIME_PERIOD", "level", "reporter", "product",
-                 "family", "statistic", "item_a", "item_b", "value", "n"],
+        columns=["hs_vintage", "freq", "flow", "indicators", "TIME_PERIOD", "product_level", "level",
+                 "reporter", "product", "family", "statistic", "item_a", "item_b", "value", "n"],
     )
     return {
         "comext": df_comext,
@@ -596,9 +602,10 @@ _SERVING_KEYS = {
     "comext": ["freq", "reporter", "partner", "product", "flow", "indicators", "TIME_PERIOD"],
     "indicators": ["classification", "freq", "reporter", "product", "flow", "indicators", "TIME_PERIOD"],
     "network": ["product", "year", "classification", "flow"],
-    "synthesis": ["hs_vintage", "freq", "flow", "indicators", "TIME_PERIOD", "reporter", "product", "method"],
-    "diagnostics": ["hs_vintage", "freq", "flow", "indicators", "TIME_PERIOD", "level", "reporter", "product",
-                    "family", "statistic", "item_a", "item_b"],
+    "synthesis": ["hs_vintage", "freq", "flow", "indicators", "TIME_PERIOD", "product_level", "reporter",
+                  "product", "method"],
+    "diagnostics": ["hs_vintage", "freq", "flow", "indicators", "TIME_PERIOD", "product_level", "level",
+                    "reporter", "product", "family", "statistic", "item_a", "item_b"],
 }
 
 

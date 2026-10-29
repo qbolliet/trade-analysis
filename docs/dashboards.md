@@ -9,7 +9,9 @@ dans MLflow : voir [Supervision](supervision.md).
 Un parcours unique : pour une **année** et un **flux** (import ou export), on interroge
 soit un **pays**, soit un **produit**, chacun dans son onglet.
 
-- **Par pays** : les produits du pays, classés du plus au moins vulnérable.
+- **Par pays** : les produits du pays, classés du plus au moins vulnérable au sein d'un
+  **niveau de nomenclature** au choix (SH2, SH4, SH6 ou NC8 selon les données ; SH6 par
+  défaut).
 - **Par produit** : les pays déclarants, classés de la même façon.
 
 Le tableau donne :
@@ -34,8 +36,14 @@ choisie, plus celles que l'on ajoute par le filtre « Ajouter des produits / pay
     classement des produits d'un pays, 3 pour celui des pays d'un produit (les méthodes
     pondérées ne sont pas estimées sur des groupes d'environ 22 pays).
 
-Les codes SH6 et NC8 sont classés ensemble. Un code SH6 et son unique code NC8 se suivent
-donc souvent, avec des métriques identiques.
+!!! note "Classement par niveau de nomenclature"
+    La synthèse classe les produits par finesse de nomenclature : le niveau du code
+    (`product_level` : SH2, SH4, SH6 ou NC8) fait partie du contexte de comparaison, si
+    bien qu'un produit n'est comparé qu'à des produits de même niveau. Les synthèses
+    calculées avant cette règle classaient tous les niveaux d'un pays ensemble : pour
+    elles, l'onglet *Par pays* restreint le classement commun au niveau choisi (ordre de
+    chaque méthode conservé, rangs renumérotés de 1 à n). Les codes SH2 et SH4 n'ont pas de
+    rang, faute de métriques réseau à ces niveaux.
 
 L'année doit toujours avoir une valeur, ce qui est le cas par défaut : elle permet
 l'élagage des partitions DuckLake.
@@ -74,7 +82,7 @@ l'affichage.
 
 | Table | Grain | Contenu |
 |---|---|---|
-| `cell_scores` | classification, déclarant, produit, flux, année | métriques et alertes ; scores et rangs de synthèse ; incertitude du rang (`rank_min/max/q25/q75/spread_<niveau>`, `n_methods_<niveau>`) ; échanges totaux avec le monde (`trade_value_eur`, `trade_quantity_100kg`) ; libellés « code — libellé » ; métriques normalisées. **Seule table lue par le tableau de bord** |
+| `cell_scores` | classification, déclarant, produit, flux, année | métriques et alertes ; scores et rangs de synthèse (dont les rangs par pays au sein du niveau de nomenclature, niveau `by_reporter_level`) ; niveau de nomenclature (`product_level_label`) ; incertitude du rang (`rank_min/max/q25/q75/spread_<niveau>`, `n_methods_<niveau>`) ; échanges totaux avec le monde (`trade_value_eur`, `trade_quantity_100kg`) ; libellés « code — libellé » ; métriques normalisées. **Seule table lue par le tableau de bord** |
 | `flows` | déclarant, produit, flux, année, partenaire | valeur (`value_eur`), quantité (`quantity_100kg`) et part des principaux partenaires, plus les agrégats |
 | `coherence_metrics`, `coherence_methods` | contexte, niveau, statistique, paire | cohérence entre métriques et entre méthodes (SQL Lab) |
 | `products`, `countries` | source, code | référentiels (SQL Lab) |
@@ -83,7 +91,8 @@ l'affichage.
 Les paramètres sont décrits dans la page [Configuration](configuration.md) :
 - méthodes de synthèse exposées (`METHODS`) ;
 - méthodes de l'incertitude (`UNCERTAINTY_METHODS`) ;
-- niveaux de comparaison (`LEVELS`) ;
+- niveaux de comparaison (`LEVELS`, dont le niveau dérivé `by_reporter_level`) ;
+- libellés des niveaux de nomenclature (`PRODUCT_LEVEL_LABELS`) ;
 - indicateur principal (`PRIMARY_METHOD`) ;
 - agrégats « total avec le monde » (`PARTNERS.TOTAL` : `WORLD`, puis `EXT_EU27_2020` pour
   l'Union) ;
@@ -104,7 +113,10 @@ est exposée vide, et non comme un flux nul.
 - **Réimport** : le tableau de bord est versionné sous `superset/vulnerabilites/` (schéma
   de production `dashboard`). Il est réimporté à partir de l'archive produite par
   `tools/superset_bundle.py` (option `--schema demo_dashboard` pour la démonstration,
-  `--default-year` pour l'année affichée par défaut).
+  `--default-year` pour l'année affichée par défaut). Pour mettre à jour un Superset où il
+  existe déjà, l'archive doit être de type « assets » (option `--assets`, import par
+  `POST /api/v1/assets/import/`) : l'import d'un tableau de bord ne remplace ni ses
+  datasets ni ses graphiques.
 - **Version de DuckDB** : si Superset ne lit plus le catalogue après une mise à jour de
   DuckDB côté pipeline, aligner la version de `duckdb` du service Superset.
 

@@ -15,6 +15,13 @@ to the same cell (minimum, maximum, quartiles, interquartile range and number
 of contributing methods). It measures the disagreement between synthesis
 methods, not a sampling uncertainty.
 
+The synthesis ranks the products of a reporter all together, whatever their
+nomenclature level (HS2, HS4, HS6 and CN8 codes in one ranking). The derived
+level ``by_reporter_level`` restricts that ranking to the products of one
+level: the order given by each method is kept and the ranks are renumbered
+within the level by the ``cell_scores`` query, so that the dashboard can rank
+the products of a reporter at the chosen nomenclature level.
+
 The nomenclature columns (``classification``, ``hs_vintage``, ``in_force`` of
 the partner table, ``hs_vintage`` of the synthesis and coherence tables) are
 read as written by the upstream steps.
@@ -42,8 +49,10 @@ logger = logging.getLogger(__name__)
 
 # Identifiant SQL sûr (méthodes, niveaux, métriques interpolés dans les requêtes)
 _IDENTIFIER = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
-# Niveaux de comparaison de la table synthesis (S-2.4)
-_LEVELS = ("by_product", "by_reporter", "global")
+# Niveaux de comparaison de la table synthesis (S-2.4), plus le niveau dérivé
+# by_reporter_level : rangs par pays renumérotés au sein d'un niveau de nomenclature,
+# colonnes produites par la requête cell_scores avant le pivot
+_LEVELS = ("by_product", "by_reporter", "by_reporter_level", "global")
 # Table de référence de chaque variable de référentiel
 _REFERENCE_OF = {
     "ref_eurostat_products": "products",
@@ -346,6 +355,39 @@ def flow_label_sql(labels: Mapping[Any, str], column: str = "g.flow") -> str:
     return f"CASE {column} {cases} ELSE {column} END"
 
 
+# Fonction de génération du libellé des niveaux de nomenclature
+def product_level_label_sql(labels: Mapping[Any, str], column: str = "g.product") -> str:
+    """Generate the ``CASE`` expression labelling the nomenclature level of a code.
+
+    The level of a product code is its number of digits (2, 4 and 6 for the
+    Harmonized System, 8 for the Combined Nomenclature).
+
+    Args:
+        labels: Number of digits -> label (``6`` -> ``"SH6"``…).
+        column: Product code column (text, leading zero restored), possibly
+            qualified by an alias.
+
+    Returns:
+        A SQL expression; unlisted lengths are labelled by their number of
+        digits.
+
+    Raises:
+        ValueError: If a part of ``column`` is not a plain identifier, or a key
+            of ``labels`` is not an integer.
+
+    Examples:
+        >>> product_level_label_sql({6: "SH6", 8: "NC8"})
+        "CASE length(g.product) WHEN 6 THEN 'SH6' WHEN 8 THEN 'NC8' ELSE CAST(length(g.product) AS VARCHAR) END"
+    """
+    column = ".".join(_identifier(part, "column") for part in column.split("."))
+    length = f"length({column})"
+    cases = " ".join(
+        f"WHEN {int(digits)} THEN '{_literal(label)}'" for digits, label in labels.items()
+    )
+    fallback = f"CAST({length} AS VARCHAR)"
+    return f"CASE {length} {cases} ELSE {fallback} END" if cases else fallback
+
+
 # Fonction de génération des colonnes normalisées min-max
 def norm_columns_sql(metrics: Sequence[str], partition: Sequence[str]) -> str:
     """Generate the ``<metric>_norm`` min-max columns, per normalisation context.
@@ -510,6 +552,9 @@ def build_context(
                 params.get("UNCERTAINTY_METHODS"), params["LEVELS"]
             ),
             "flow_label": flow_label_sql(params.get("FLOW_LABELS") or {}),
+            "product_level_label": product_level_label_sql(
+                params.get("PRODUCT_LEVEL_LABELS") or {}
+            ),
             "norm_columns": norm_columns_sql(
                 params["NORM_METRICS"], params["NORM_PARTITION"]
             ),

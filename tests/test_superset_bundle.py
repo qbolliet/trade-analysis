@@ -7,8 +7,13 @@ import io
 import zipfile
 from pathlib import Path
 
+import duckdb
+import jinja2
+import pandas as pd
 import pytest
 import yaml
+
+from kedro_pipeline.steps.serving import publish_serving
 
 from conftest import REPO_ROOT
 
@@ -127,6 +132,11 @@ def test_bundle_sets_default_year_and_top_n(export: Path) -> None:
         ("datasets/serving/series.yaml", {"database_uuid": "missing"}, "unknown database"),
         ("databases/serving.yaml", {"password": "x"}, "secret key"),
         ("metadata.yaml", {"type": "Chart"}, "type must be"),
+        (
+            "datasets/serving/series.yaml",
+            {"sql": "SELECT * FROM (UNPIVOT t ON a, b INTO NAME k VALUE v)"},
+            "UNPIVOT is rejected",
+        ),
     ],
 )
 def test_bundle_rejects_inconsistent_export(export: Path, relative: str, change: dict, message: str) -> None:
@@ -142,6 +152,14 @@ def test_bundle_rejects_layout_chart_without_uuid(export: Path) -> None:
     _write(export, "dashboards/main.yaml", dashboard)
     with pytest.raises(superset_bundle.BundleError, match="layout chart"):
         superset_bundle.build_bundle(export)
+
+
+def test_bundle_assets_import_type(export: Path) -> None:
+    """Archive « assets » : seul le type change, l'export source reste un tableau de bord."""
+    files = _read_bundle(superset_bundle.build_bundle(export, assets_import=True))
+    assert files["vulnerabilites/metadata.yaml"]["type"] == "assets"
+    assert yaml.safe_load((export / "metadata.yaml").read_text(encoding="utf-8"))["type"] == "Dashboard"
+    assert len(files) == len(_read_bundle(superset_bundle.build_bundle(export)))
 
 
 def test_cli_writes_archive(export: Path, tmp_path: Path) -> None:
@@ -161,3 +179,97 @@ def test_committed_export_bundles() -> None:
         content["schema"] == "serving.dashboard"
         for name, content in committed.items() if name.startswith("datasets/")
     )
+
+
+# ── Exécution du SQL des datasets virtuels versionnés sur la table de service fictive ──
+
+SOURCE = REPO_ROOT / "superset" / "vulnerabilites"
+
+
+def _where_in(values) -> str:
+    """Équivalent du filtre Jinja ``where_in`` de Superset (littéraux SQL échappés)."""
+    def literal(value):
+        if isinstance(value, (bool, int, float)):
+            return str(value).lower() if isinstance(value, bool) else str(value)
+        return "'" + str(value).replace("'", "''") + "'"
+    return "(" + ", ".join(literal(value) for value in values) + ")"
+
+
+def _run_virtual(conn, name: str, filters: dict, top_n: int = 5) -> pd.DataFrame:
+    """Rend le gabarit Jinja d'un dataset versionné comme Superset, puis l'exécute."""
+    dataset = yaml.safe_load((SOURCE / "datasets" / "serving" / f"{name}.yaml").read_text(encoding="utf-8"))
+    environment = jinja2.Environment()
+    environment.filters["where_in"] = _where_in
+    sql = environment.from_string(dataset["sql"]).render(
+        filter_values=lambda column, default=None, remove_filter=False: list(filters.get(column, [])),
+        top_n=top_n,
+    )
+    return conn.execute(sql).df()
+
+
+@pytest.fixture
+def served(serving_world):
+    """Connexion DuckDB exposant la table cell_scores fictive sous serving.dashboard."""
+    result = publish_serving(
+        serving_world.tables, serving_world.catalog,
+        params=serving_world.params, runtime=serving_world.runtime,
+    )
+    assert result["failures"] == {}, result["failures"]
+    with serving_world.catalog.connect() as source:
+        cells = source.execute(
+            f"SELECT * FROM {serving_world.catalog.qualified_name('cell_scores')}"
+        ).df()
+    conn = duckdb.connect()
+    conn.execute("ATTACH ':memory:' AS serving")
+    conn.execute("CREATE SCHEMA serving.dashboard")
+    conn.register("cells_frame", cells)
+    conn.execute("CREATE TABLE serving.dashboard.cell_scores AS SELECT * FROM cells_frame")
+    yield conn, cells
+    conn.close()
+
+
+def test_committed_country_series_rank_within_level(served) -> None:
+    """Courbes de l'onglet Par pays : top N au sein du niveau choisi, grandeur choisie."""
+    conn, cells = served
+    fr = cells.loc[cells["reporter"] == "FR", "reporter_display"].iloc[0]
+    base = {"year": [2019], "flow_label": ["Import"], "reporter_display": [fr], "in_force": [True]}
+    expected = cells[(cells["reporter"] == "FR") & (cells["year"] == 2019) & (cells["flow"] == "1")]
+
+    trade = _run_virtual(conn, "trade_series_by_reporter", {
+        **base, "product_level_label": ["NC8"], "measure": ["Quantité (100 kg)"],
+    })
+    nc8 = set(expected.loc[expected["product_level_label"] == "NC8", "product_display"])
+    assert set(trade["product_display"]) == nc8 and set(trade["product_level_label"]) == {"NC8"}
+    assert set(trade["measure"]) == {"Quantité (100 kg)"}
+    merged = trade[trade["year"] == 2019].merge(expected, on="product_display")
+    pd.testing.assert_series_equal(merged["value"], merged["trade_quantity_100kg"], check_names=False)
+
+    # Rang tracé : rang au sein du niveau ; top N borné
+    metric = _run_virtual(conn, "metric_series_by_reporter", {
+        **base, "product_level_label": ["NC8"], "metric": ["Rang consensus"],
+    }, top_n=2)
+    assert metric["product_display"].nunique() == 2
+    merged = metric[metric["year"] == 2019].merge(expected, on="product_display")
+    pd.testing.assert_series_equal(
+        merged["value"], merged["primary_rank_by_reporter_level"], check_names=False
+    )
+    assert set(merged["primary_rank_by_reporter_level"]) == {1.0, 2.0}
+
+    # Unité ajoutée d'un autre niveau : tracée en plus du top N
+    sh6 = expected.loc[expected["product_level_label"] == "SH6", "product_display"].iloc[0]
+    extra = _run_virtual(conn, "trade_series_by_reporter", {
+        **base, "product_level_label": ["NC8"], "product_display": [sh6],
+    }, top_n=1)
+    assert extra["product_display"].nunique() == 2 and sh6 in set(extra["product_display"])
+
+
+def test_committed_product_series_run(served) -> None:
+    """Courbes de l'onglet Par produit : pays de meilleur rang par produit."""
+    conn, cells = served
+    product = cells.loc[cells["product_level"] == 8, "product_display"].iloc[0]
+    filters = {"year": [2019], "flow_label": ["Import"], "product_display": [product], "in_force": [True]}
+    trade = _run_virtual(conn, "trade_series_by_product", filters, top_n=2)
+    metric = _run_virtual(conn, "metric_series_by_product", {**filters, "metric": ["HHI"]}, top_n=2)
+    assert trade["reporter_display"].nunique() == 2 and set(trade["measure"]) == {"Valeur (€)"}
+    assert metric["reporter_display"].nunique() == 2 and set(metric["metric"]) == {"HHI"}
+    assert trade["value"].notna().all()

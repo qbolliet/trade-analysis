@@ -16,6 +16,7 @@ from kedro_pipeline.steps.serving import (
     build_context,
     flow_label_sql,
     individual_partner_sql,
+    product_level_label_sql,
     publish_serving,
     rank_uncertainty_sql,
     render_sql,
@@ -93,7 +94,7 @@ def test_cell_scores_columns_and_one_row_per_cell(published) -> None:
     expected = {
         "classification", "hs_vintage", "in_force", "year", "flow", "flow_label", "reporter",
         "reporter_label", "reporter_display", "product", "product_label", "product_display",
-        "product_level", "trade_value_eur", "trade_quantity_100kg",
+        "product_level", "product_level_label", "trade_value_eur", "trade_quantity_100kg",
         "HHI", "CDI2", "CDI3", "HHI_ALERT", "WORLD_HHI", "CENTRALITY_RISK",
         "CLUSTERING_W", "SPOF", "SPOF_ALERT",
     }
@@ -150,7 +151,8 @@ def test_cell_scores_ranks_consistent(published) -> None:
     world, _, _ = published
     df = _read(world, "cell_scores")
     params = world.params
-    context = ["flow", "year"]
+    # Groupes de la synthèse : pays × niveau de nomenclature (produits classés par finesse)
+    context = ["flow", "year", "product_level"]
     for method in params["METHODS"]:
         # Rang 1 = score maximal au sein du groupe (pays) : plus vulnérable
         column_score = f"{method}_score_by_reporter"
@@ -222,6 +224,9 @@ def test_coherence_tables(published) -> None:
     assert "weight" not in set(methods["statistic"])
     assert set(methods["statistic"]) == {"kendall_tau_b", "lomo_tau"}
     assert set(metrics["hs_vintage"]) == {"HS2017", "HS2022"}
+    # Un diagnostic par niveau de nomenclature, distingués par product_level
+    spearman = metrics[(metrics["statistic"] == "spearman") & (metrics["year"] == 2019)]
+    assert sorted(spearman["product_level"]) == [6, 8]
 
 
 def test_reference_copies(published) -> None:
@@ -388,6 +393,11 @@ def test_cell_scores_rank_uncertainty_matches_synthesis(published) -> None:
         year=synthesis["TIME_PERIOD"].astype(str).str[:4].astype(int),
         flow=synthesis["flow"].astype(str),
     )
+    # Niveau dérivé : rangs de chaque méthode renumérotés au sein du niveau de nomenclature
+    within = ["hs_vintage", "freq", "flow", "indicators", "TIME_PERIOD", "reporter", "method"]
+    synthesis["rank_by_reporter_level"] = synthesis.groupby(
+        within + [synthesis["product"].str.len()]
+    )["rank_by_reporter"].rank(method="average")
     keys = ["year", "reporter", "product", "flow"]
     for level in world.params["LEVELS"]:
         expected = synthesis.groupby(keys)[f"rank_{level}"].agg(
@@ -464,6 +474,40 @@ def test_total_partner_sql() -> None:
     assert priority == "CASE partner WHEN 'WORLD' THEN 0 WHEN 'EXT_EU27_2020' THEN 1 END"
     with pytest.raises(ValueError):
         total_partner_sql([])
+
+
+def test_cell_scores_ranks_within_nomenclature_level(published) -> None:
+    """Rangs par pays renumérotés au sein du niveau de nomenclature (SH6 et NC8 fictifs)."""
+    world, _, _ = published
+    df = _read(world, "cell_scores")
+    labels = df.groupby("product_level")["product_level_label"].unique()
+    assert {level: list(values) for level, values in labels.items()} == {6: ["SH6"], 8: ["NC8"]}
+    ranked = df[df["primary_rank_by_reporter"].notna()]
+    group = ["hs_vintage", "flow", "year", "reporter", "product_level"]
+    # Restriction du classement commun : même ordre, rangs 1..n dans le niveau
+    expected = ranked.groupby(group)["primary_rank_by_reporter"].rank(method="average")
+    pd.testing.assert_series_equal(
+        ranked["primary_rank_by_reporter_level"], expected, check_names=False
+    )
+    sizes = ranked.groupby(group)["product"].transform("size")
+    assert (ranked["primary_n_by_reporter_level"] == sizes).all()
+    # Un seul code SH6 par pays dans le monde fictif : rang 1 de son niveau
+    assert (ranked.loc[ranked["product_level"] == 6, "primary_rank_by_reporter_level"] == 1).all()
+    pd.testing.assert_series_equal(
+        ranked["primary_score_by_reporter_level"], ranked["primary_score_by_reporter"],
+        check_names=False,
+    )
+
+
+def test_product_level_label_sql() -> None:
+    assert product_level_label_sql({}) == "CAST(length(g.product) AS VARCHAR)"
+    assert product_level_label_sql({8: "NC8"}, "product") == (
+        "CASE length(product) WHEN 8 THEN 'NC8' ELSE CAST(length(product) AS VARCHAR) END"
+    )
+    with pytest.raises(ValueError):
+        product_level_label_sql({8: "NC8"}, "g.product; DROP")
+    with pytest.raises(ValueError):
+        product_level_label_sql({"huit": "NC8"})
 
 
 def test_flow_label_sql() -> None:

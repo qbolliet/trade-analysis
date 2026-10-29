@@ -6,33 +6,53 @@ offset: 0
 cache_timeout: null
 catalog: null
 schema: serving.dashboard
-sql: "-- Séries temporelles des produits les plus vulnérables (trade) : les top_n\n\
-  -- unités de meilleur rang consensus l'année choisie, plus celles du filtre d'ajout.\n\
-  -- Filtres lus par filter_values(remove_filter=True) et appliqués dans la requête.\n\
-  {% set years = filter_values('year', remove_filter=True) %}\n{% set flows = filter_values('flow_label',\
-  \ remove_filter=True) %}\n{% set focus = filter_values('reporter_display', remove_filter=True)\
-  \ %}\n{% set extra = filter_values('product_display', remove_filter=True) %}\n{%\
-  \ set in_force = filter_values('in_force', remove_filter=True) %}\n{% set chosen\
-  \ = filter_values('measure', remove_filter=True) %}\nWITH ctx AS (\n  SELECT * FROM\
-  \ serving.dashboard.cell_scores\n  WHERE flow_label IN {{ (flows or ['Import'])|where_in\
-  \ }}\n    AND reporter_display IN {{ (focus or [\"FR — France (incl. Saint Barthélemy\
-  \ 'BL' -> 2012; incl. French Guiana 'GF', Guadeloupe 'GP', Martinique 'MQ', Réunion\
-  \ 'RE' from 1997; incl. Mayotte 'YT' from 2014)\"])|where_in }}\n    AND in_force\
-  \ = {{ 'false' if in_force and not in_force[0] else 'true' }}\n),\nrank_year AS\
-  \ (\n  {% if years %}SELECT {{ years[0]|int }} AS year\n  {% else %}SELECT max(year)\
-  \ AS year FROM ctx WHERE primary_rank_by_reporter IS NOT NULL{% endif %}\n),\ntop\
-  \ AS (\n  SELECT product FROM ctx\n  WHERE year = (SELECT year FROM rank_year) AND\
-  \ primary_rank_by_reporter IS NOT NULL\n  ORDER BY primary_rank_by_reporter, product\n\
-  \  LIMIT {{ top_n|default(5)|int }}\n),\nunits AS (\n  SELECT product FROM top\n\
-  \  {% if extra %}UNION SELECT product FROM ctx WHERE product_display IN {{ extra|where_in\
-  \ }}{% endif %}\n),\nseries AS (\n  SELECT c.year, make_date(c.year, 1, 1) AS period,\
-  \ c.flow_label, c.in_force,\n         c.reporter_display, c.product_display,\n \
-  \        CASE WHEN length(c.product_display) > 48 THEN left(c.product_display, 47)\
-  \ || '…'\n              ELSE c.product_display END AS unit,\n         c.trade_value_eur\
-  \ AS \"Valeur (€)\", c.trade_quantity_100kg AS \"Quantité (100 kg)\"\n  FROM ctx\
-  \ AS c\n  WHERE c.product IN (SELECT product FROM units)\n)\nSELECT * FROM (UNPIVOT\
-  \ series ON \"Valeur (€)\", \"Quantité (100 kg)\" INTO NAME measure VALUE value)\n\
-  WHERE measure IN {{ (chosen or [\"Valeur (€)\"])|where_in }}\n"
+sql: |
+  -- Séries temporelles des produits les plus vulnérables : les top_n unités de
+  -- meilleur rang consensus l'année choisie, plus celles du filtre d'ajout. Filtres lus par
+  -- filter_values(remove_filter=True) et appliqués dans la requête ; grandeur tracée
+  -- choisie par un dictionnaire libellé -> colonne (valeur inconnue : grandeur par défaut).
+  -- Niveau de nomenclature choisi : top_n et rangs au sein de ce niveau (rangs
+  -- by_reporter_level) ; sans niveau choisi, classement commun à tous les niveaux.
+  {% set years = filter_values('year', remove_filter=True) %}
+  {% set flows = filter_values('flow_label', remove_filter=True) %}
+  {% set focus = filter_values('reporter_display', remove_filter=True) %}
+  {% set extra = filter_values('product_display', remove_filter=True) %}
+  {% set in_force = filter_values('in_force', remove_filter=True) %}
+  {% set chosen = filter_values('measure', remove_filter=True) %}
+  {% set levels = filter_values('product_level_label', remove_filter=True) %}
+  {% set level = 'by_reporter_level' if levels else 'by_reporter' %}
+  {% set columns = {"Valeur (€)": "c.trade_value_eur", "Quantité (100 kg)": "c.trade_quantity_100kg"} %}
+  {% set choice = chosen[0] if chosen and chosen[0] in columns else "Valeur (€)" %}
+  WITH ctx AS (
+    SELECT * FROM serving.dashboard.cell_scores
+    WHERE flow_label IN {{ (flows or ['Import'])|where_in }}
+      AND reporter_display IN {{ (focus or ["FR — France (incl. Saint Barthélemy 'BL' -> 2012; incl. French Guiana 'GF', Guadeloupe 'GP', Martinique 'MQ', Réunion 'RE' from 1997; incl. Mayotte 'YT' from 2014)"])|where_in }}
+      AND in_force = {{ 'false' if in_force and not in_force[0] else 'true' }}
+  ),
+  rank_year AS (
+    {% if years %}SELECT {{ years[0]|int }} AS year
+    {% else %}SELECT max(year) AS year FROM ctx WHERE primary_rank_{{ level }} IS NOT NULL{% endif %}
+  ),
+  top AS (
+    SELECT product FROM ctx
+    WHERE year = (SELECT year FROM rank_year) AND primary_rank_{{ level }} IS NOT NULL
+      {% if levels %}AND product_level_label IN {{ levels|where_in }}{% endif %}
+    ORDER BY primary_rank_{{ level }}, product
+    LIMIT {{ top_n|default(5)|int }}
+  ),
+  units AS (
+    SELECT product FROM top
+    {% if extra %}UNION SELECT product FROM ctx WHERE product_display IN {{ extra|where_in }}{% endif %}
+  )
+  SELECT c.year, make_date(c.year, 1, 1) AS period, c.flow_label, c.in_force,
+         c.reporter_display, c.product_display,
+         c.product_level_label,
+         CASE WHEN length(c.product_display) > 48 THEN left(c.product_display, 47) || '…'
+              ELSE c.product_display END AS unit,
+         {{ [choice]|where_in }} AS measure,
+         CAST({{ columns[choice] }} AS DOUBLE) AS value
+  FROM ctx AS c
+  WHERE c.product IN (SELECT product FROM units)
 params: null
 template_params:
   top_n: 5
@@ -154,6 +174,18 @@ columns:
   is_dttm: false
   is_active: true
   type: INT
+  advanced_data_type: null
+  groupby: true
+  filterable: true
+  expression: ''
+  description: null
+  python_date_format: null
+  extra: null
+- column_name: product_level_label
+  verbose_name: null
+  is_dttm: false
+  is_active: true
+  type: STRING
   advanced_data_type: null
   groupby: true
   filterable: true

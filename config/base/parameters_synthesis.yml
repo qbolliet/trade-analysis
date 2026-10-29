@@ -42,7 +42,7 @@ synthesis:
       # Emplacement des données de la table de faits « synthesis » (sous BUCKET)
       DATA_PATH: "trade/datasets/vulnerabilities/"
     # Registre de fraîcheur par contexte (hs_vintage, freq, flow, indicators,
-    # TIME_PERIOD), un fichier JSON par période. Chaque entrée porte une empreinte
+    # TIME_PERIOD, product_level), un fichier JSON par période. Chaque entrée porte une empreinte
     # par méthode, une pour le consensus et une pour la sélection des entrées
     # (SOURCES, FILTERS, FLOWS, VINTAGES) : ajouter ou modifier une méthode ne
     # recalcule qu'elle (et le consensus), sur tous les contextes
@@ -153,9 +153,13 @@ synthesis:
     PARAMETERS:
       # Clés définissant un univers de comparaison ; deux contextes ne sont jamais comparés.
       # hs_vintage sépare les lignes en vigueur des lignes historiques d'une même
-      # période (et deux millésimes historiques entre eux) ; les codes NC8 et SH d'une
-      # même année en vigueur restent comparés ensemble (même hs_vintage)
-      context_columns: ["hs_vintage", "freq", "flow", "indicators", "TIME_PERIOD"]
+      # période (et deux millésimes historiques entre eux) ; product_level (nombre de
+      # chiffres du code, écrit par l'étape partenaires) sépare les niveaux de
+      # nomenclature : un produit n'est classé qu'avec des produits de même finesse
+      # (SH2, SH4, SH6 ou NC8), aux trois niveaux de comparaison. Les codes SH2 et SH4
+      # n'ont pas de métriques réseau (calculées à partir du SH6) : une méthode qui en
+      # lit ne les classe pas (lignes incomplètes). Repris par la cohérence
+      context_columns: ["hs_vintage", "freq", "flow", "indicators", "TIME_PERIOD", "product_level"]
       # Colonne du pays déclarant (cellule)
       reporter_col: "reporter"
       # Colonne du produit (cellule)

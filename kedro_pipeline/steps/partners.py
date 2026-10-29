@@ -172,6 +172,10 @@ IN_FORCE_COL = "in_force"
 
 PROVISIONAL_COL = "is_provisional"
 
+# Niveau de nomenclature du code produit (nombre de chiffres : 2, 4, 6, 8), clé de
+# contexte de la synthèse et de la cohérence, qui ne comparent jamais deux niveaux
+PRODUCT_LEVEL_COL = "product_level"
+
 # Longueur des codes SH6, seuls codes que les tables de passage convertissent
 _HS6_LENGTH = 6
 
@@ -518,14 +522,23 @@ def annotate_nomenclature(
     nomenclatures: Mapping[str, int],
     is_provisional: bool,
     period_col: str = "TIME_PERIOD",
+    product_col: str = "product",
 ) -> nw.DataFrame:
-    """Add ``hs_vintage``, ``in_force`` and ``is_provisional`` to the scores.
+    """Add ``hs_vintage``, ``in_force``, ``product_level`` and ``is_provisional`` to the scores.
 
     ``hs_vintage`` is the HS vintage a row is attached to — the one the
     synthesis joins the network metrics of: the vintage in force at the
     period for the rows in force (eight-digit codes included, whose first six
     digits are HS codes of that vintage), the target vintage for the
     historical rows.
+
+    ``product_level`` is the nomenclature level of the product code, its
+    number of digits: 2, 4 and 6 for the Harmonized System, 8 for the
+    Combined Nomenclature. Codes stored as integers lose their leading zero
+    (chapters 01 to 09); since every code has an even number of digits, an
+    odd length is rounded up. The synthesis and the coherence use it as a
+    context key, so that products are only ranked against products of the
+    same level.
 
     Args:
         result: Scores of one pass.
@@ -535,17 +548,21 @@ def annotate_nomenclature(
         is_provisional: Whether the profile computes a restricted product
             perimeter.
         period_col: Period column.
+        product_col: Product code column (text or integer).
 
     Returns:
-        The scores with the three descriptive columns.
+        The scores with the four descriptive columns.
 
     Examples:
-        >>> frame = nw.from_native(pd.DataFrame({"TIME_PERIOD": ["2019", "2023"]}), eager_only=True)
+        >>> frame = nw.from_native(
+        ...     pd.DataFrame({"TIME_PERIOD": ["2019", "2023"], "product": [1012100, 854110]}),
+        ...     eager_only=True,
+        ... )
         >>> out = annotate_nomenclature(frame, target_vintage=None,
         ...                             nomenclatures={"HS2017": 2017, "HS2022": 2022},
         ...                             is_provisional=False)
-        >>> out.to_native()[["hs_vintage", "in_force"]].values.tolist()
-        [['HS2017', True], ['HS2022', True]]
+        >>> out.to_native()[["hs_vintage", "in_force", "product_level"]].values.tolist()
+        [['HS2017', True, 8], ['HS2022', True, 6]]
     """
     if target_vintage is not None:
         hs_vintage: Any = nw.lit(target_vintage)
@@ -553,9 +570,12 @@ def annotate_nomenclature(
         years = result.get_column(period_col).cast(nw.String).str.slice(0, 4)
         mapping = {year: vintage_in_force(int(year), nomenclatures) for year in years.unique().to_list()}
         hs_vintage = years.replace_strict(mapping, return_dtype=nw.String)
+    # Longueur paire : zéro initial perdu des codes stockés en entier restitué
+    digits = nw.col(product_col).cast(nw.String).str.len_chars()
     return result.with_columns(
         hs_vintage.alias(HS_VINTAGE_COL),
         nw.lit(target_vintage is None).alias(IN_FORCE_COL),
+        (digits + digits % 2).cast(nw.Int64).alias(PRODUCT_LEVEL_COL),
         nw.lit(bool(is_provisional)).alias(PROVISIONAL_COL),
     )
 
@@ -939,6 +959,7 @@ def compute_partner_units(
             nomenclatures=nomenclatures,
             is_provisional=is_provisional,
             period_col=config.period_col,
+            product_col=config.product_col,
         ),
         params={
             "source_schema": source_schema,

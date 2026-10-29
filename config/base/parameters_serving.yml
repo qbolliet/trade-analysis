@@ -18,7 +18,7 @@
 #   - fragments générés depuis les paramètres ci-dessous : $cell_filter, $comext_filter,
 #     $synthesis_pivot (METHODS × LEVELS, et méthode principale), $rank_uncertainty
 #     (dispersion des rangs entre UNCERTAINTY_METHODS, par niveau de LEVELS), $flow_label
-#     (FLOW_LABELS), $norm_columns, $individual_partner, $top_partners, $world_code,
+#     (FLOW_LABELS), $product_level_label (PRODUCT_LEVEL_LABELS), $norm_columns, $individual_partner, $top_partners, $world_code,
 #     $extra_eu_code, $total_partners (liste SQL de PARTNERS.TOTAL), $total_priority
 #     (rang de préférence de la colonne partner dans PARTNERS.TOTAL) ;
 #   - macros SQL de session, générées depuis runtime.NOMENCLATURES.HS :
@@ -54,8 +54,16 @@ serving:
   # <méthode>_rank_<niveau>) : noms de la colonne `method` de la table synthesis
   # (les règles de consensus y sont préfixées « consensus_ »)
   METHODS: ["consensus_borda", "auto_sum", "critic_sum"]
-  # Niveaux de comparaison exposés (colonnes score_/rank_<niveau> de synthesis)
-  LEVELS: ["by_reporter", "by_product"]
+  # Niveaux de comparaison exposés (colonnes score_/rank_<niveau> de synthesis).
+  # by_reporter_level est dérivé par la requête cell_scores : rangs par pays restreints aux
+  # produits d'un même niveau de nomenclature (SH2, SH4, SH6, NC8), ordre de chaque méthode
+  # conservé et rangs renumérotés (ex aequo : rang moyen) ; score identique à by_reporter.
+  # La synthèse sépare les niveaux par sa colonne de contexte product_level : sur une
+  # synthèse calculée ainsi, by_reporter_level est identique à by_reporter. Sur une
+  # synthèse antérieure, qui classait tous les niveaux d'un pays ensemble, c'est une
+  # restriction du classement commun (normalisations et pondérations estimées sur tous
+  # les niveaux).
+  LEVELS: ["by_reporter", "by_product", "by_reporter_level"]
   # Indicateur synthétique principal (tri par défaut du tableau de bord) : dupliqué dans
   # primary_score_<niveau>, primary_rank_<niveau>, primary_n_<niveau>
   PRIMARY_METHOD: "consensus_borda"
@@ -91,6 +99,15 @@ serving:
   FLOW_LABELS:
     "1": "Import"
     "2": "Export"
+
+  # Libellés des niveaux de nomenclature, par nombre de chiffres du code (colonne
+  # product_level_label de cell_scores, filtre « Niveau de nomenclature » du tableau de bord) ;
+  # un niveau non listé est libellé par son nombre de chiffres
+  PRODUCT_LEVEL_LABELS:
+    2: "SH2"
+    4: "SH4"
+    6: "SH6"
+    8: "NC8"
 
   # Grille de cell_scores : prédicat sur la table indicators (alias p), mêmes modalités
   # que les contextes de la synthèse (synthesis.SYNTHESIS.FILTERS), les deux flux gardés
@@ -150,6 +167,7 @@ serving:
       flow: "VARCHAR"
       indicators: "VARCHAR"
       TIME_PERIOD: "VARCHAR"
+      product_level: "BIGINT"
       reporter: "VARCHAR"
       product: "VARCHAR"
       method: "VARCHAR"
@@ -168,6 +186,7 @@ serving:
       flow: "VARCHAR"
       indicators: "VARCHAR"
       TIME_PERIOD: "VARCHAR"
+      product_level: "BIGINT"
       level: "VARCHAR"
       reporter: "VARCHAR"
       product: "VARCHAR"
@@ -207,8 +226,10 @@ serving:
     # consensus (dispersion entre méthodes), échanges totaux avec le monde (valeur et
     # quantité, partenaire WORLD de Comext ; NULL sur les lignes historiques, dont les codes
     # convertis n'ont pas de flux Comext propre ; premier agrégat de PARTNERS.TOTAL, soit
-    # EXT_EU27_2020 pour l'Union), libellés « code — libellé » des filtres du
-    # tableau de bord, métriques normalisées.
+    # EXT_EU27_2020 pour l'Union), libellés « code — libellé » et niveau de nomenclature
+    # (SH6, NC8…) des filtres du tableau de bord, métriques normalisées. Les rangs
+    # by_reporter_level classent les produits d'un pays au sein de leur niveau de
+    # nomenclature.
     # Lignes en vigueur (in_force) et historiques (flux convertis vers un millésime SH
     # antérieur) ; la jointure réseau se fait sur le millésime de rattachement de chaque
     # ligne (hs_vintage), les scores sur hs_vintage aussi. Elle porte enfin sur le flux :
@@ -255,6 +276,30 @@ serving:
             CAST(n."SPOF_ALERT" AS BOOLEAN) AS "SPOF_ALERT"
           FROM $network AS n
         ),
+        synthesis_levels AS (
+          -- Rangs par pays restreints au niveau de nomenclature du produit (longueur du
+          -- code) : ordre de chaque méthode conservé, rangs renumérotés, ex aequo au rang
+          -- moyen comme dans la synthèse ; NULL sans rang par pays
+          SELECT
+            s.*,
+            s."score_by_reporter" AS "score_by_reporter_level",
+            CASE WHEN s."rank_by_reporter" IS NOT NULL THEN
+              rank() OVER (PARTITION BY s."hs_vintage", s."freq", s."flow", s."indicators",
+                                        s."TIME_PERIOD", s."reporter", s."method",
+                                        length(product_code(s."product"))
+                           ORDER BY s."rank_by_reporter")
+              + (count(*) OVER (PARTITION BY s."hs_vintage", s."freq", s."flow",
+                                             s."indicators", s."TIME_PERIOD", s."reporter",
+                                             s."method", length(product_code(s."product")),
+                                             s."rank_by_reporter") - 1) / 2
+            END AS "rank_by_reporter_level",
+            count(s."rank_by_reporter") OVER (
+              PARTITION BY s."hs_vintage", s."freq", s."flow", s."indicators",
+                           s."TIME_PERIOD", s."reporter", s."method",
+                           length(product_code(s."product"))
+            ) AS "n_by_reporter_level"
+          FROM $synthesis AS s
+        ),
         scores AS (
           SELECT
             CAST(s."hs_vintage" AS VARCHAR) AS hs_vintage,
@@ -266,7 +311,7 @@ serving:
             product_code(s."product") AS product,
             $synthesis_pivot,
             $rank_uncertainty
-          FROM $synthesis AS s
+          FROM synthesis_levels AS s
           GROUP BY ALL
         ),
         trade_raw AS (
@@ -317,6 +362,7 @@ serving:
             CASE WHEN rl.label IS NULL THEN g.reporter
                  ELSE g.reporter || ' — ' || rl.label END AS reporter_display,
             g.product, pl.label AS product_label, length(g.product) AS product_level,
+            $product_level_label AS product_level_label,
             CASE WHEN pl.label IS NULL THEN g.product
                  ELSE g.product || ' — ' || pl.label END AS product_display,
             tr.value_eur AS trade_value_eur, tr.quantity_100kg AS trade_quantity_100kg,
@@ -349,7 +395,8 @@ serving:
         FROM cells
 
     # Cohérence entre métriques (famille « metrics » de synthesis_diagnostics) : une ligne
-    # par contexte × niveau × groupe × statistique × paire de métriques. reporter / product
+    # par contexte (niveau de nomenclature product_level compris) × niveau × groupe ×
+    # statistique × paire de métriques. reporter / product
     # NULL quand le groupe est « ALL » ; metric_a / metric_b NULL quand sans objet.
     coherence_metrics:
       SQL: |
@@ -368,6 +415,7 @@ serving:
           CAST(d."freq" AS VARCHAR) AS freq,
           CAST(d."flow" AS VARCHAR) AS flow,
           CAST(d."indicators" AS VARCHAR) AS indicators,
+          CAST(d."product_level" AS INTEGER) AS product_level,
           CAST(d."level" AS VARCHAR) AS level,
           NULLIF(CAST(d."reporter" AS VARCHAR), 'ALL') AS reporter,
           CASE WHEN CAST(d."product" AS VARCHAR) = 'ALL' THEN NULL
@@ -399,6 +447,7 @@ serving:
           CAST(d."freq" AS VARCHAR) AS freq,
           CAST(d."flow" AS VARCHAR) AS flow,
           CAST(d."indicators" AS VARCHAR) AS indicators,
+          CAST(d."product_level" AS INTEGER) AS product_level,
           CAST(d."level" AS VARCHAR) AS level,
           NULLIF(CAST(d."reporter" AS VARCHAR), 'ALL') AS reporter,
           CASE WHEN CAST(d."product" AS VARCHAR) = 'ALL' THEN NULL

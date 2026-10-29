@@ -10,10 +10,10 @@ params:
   all_columns:
   - product
   - product_label
-  - primary_rank_by_reporter
-  - rank_iqr_by_reporter
-  - rank_spread_by_reporter
-  - consensus_score_by_reporter
+  - primary_rank_by_reporter_level
+  - rank_iqr_by_reporter_level
+  - rank_spread_by_reporter_level
+  - consensus_score_by_reporter_level
   - HHI
   - CDI2
   - CDI3
@@ -23,7 +23,7 @@ params:
   - SPOF
   - n_alerts
   order_by_cols:
-  - '["primary_rank_by_reporter", true]'
+  - '["primary_rank_by_reporter_level", true]'
   server_pagination: true
   server_page_length: 50
   row_limit: 10000
@@ -83,11 +83,11 @@ params:
       d3NumberFormat: .3f
     SPOF:
       d3NumberFormat: .3f
-    consensus_score_by_reporter:
+    consensus_score_by_reporter_level:
       d3NumberFormat: .2f
-    rank_spread_by_reporter:
+    rank_spread_by_reporter_level:
       d3NumberFormat: .1f
-    primary_rank_by_reporter:
+    primary_rank_by_reporter_level:
       d3NumberFormat: .1~f
   adhoc_filters: []
   percent_metrics: []

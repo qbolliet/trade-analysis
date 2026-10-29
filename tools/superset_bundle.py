@@ -7,6 +7,14 @@ racine unique, le format attendu par ``POST /api/v1/dashboard/import/`` et par
 ``superset import-dashboards -p <archive>``, en appliquant au passage les
 réglages propres à l'environnement cible :
 
+- ``--assets`` : archive de type « assets », pour ``POST /api/v1/assets/import/``.
+  L'import d'un tableau de bord ne remplace que le tableau de bord : les
+  datasets et graphiques déjà présents (même uuid) sont conservés tels quels,
+  si bien qu'une modification de leur SQL ou de leurs colonnes n'est pas
+  appliquée. L'import « assets » remplace tout (connexion, datasets,
+  graphiques, tableau de bord) : c'est la forme à utiliser pour mettre à jour
+  un Superset où le tableau de bord existe déjà ;
+
 - ``--schema`` : schéma du catalogue ``serving`` visé par les datasets. Les
   exports versionnés visent le schéma de production ``dashboard`` ; la recette
   utilise ``demo_dashboard``. La substitution porte sur la clé ``schema`` des
@@ -23,8 +31,10 @@ réglages propres à l'environnement cible :
 
 L'archive est validée avant écriture : fichiers YAML lisibles, références
 croisées résolues (base de chaque dataset, dataset de chaque graphique et de
-chaque filtre natif, graphiques de la mise en page) et absence de mot de passe
-dans les connexions.
+chaque filtre natif, graphiques de la mise en page), absence de mot de passe
+dans les connexions, et absence dans le SQL des datasets virtuels des
+constructions DuckDB ``PIVOT`` / ``UNPIVOT``, que l'analyseur SQL de Superset
+rejette (le graphique échoue alors à l'affichage, pas à l'import).
 
 Examples:
     Archive de recette (schéma de démonstration, dernière année classée 2021)::
@@ -37,6 +47,14 @@ Examples:
         $ curl -X POST "$SUPERSET/api/v1/dashboard/import/" \\
             -H "Authorization: Bearer $TOKEN" -H "X-CSRFToken: $CSRF" \\
             -F formData=@/tmp/vulnerabilites.zip -F overwrite=true
+
+    Mise à jour d'un Superset où le tableau de bord existe déjà::
+
+        $ python tools/superset_bundle.py superset/vulnerabilites \\
+            -o /tmp/vulnerabilites.zip --assets --default-year 2023
+        $ curl -X POST "$SUPERSET/api/v1/assets/import/" \\
+            -H "Authorization: Bearer $TOKEN" -H "X-CSRFToken: $CSRF" \\
+            -F bundle=@/tmp/vulnerabilites.zip
 
     Import dans le conteneur Superset::
 
@@ -69,9 +87,14 @@ YEAR_COLUMN = "year"
 TOP_N_PARAMETER = "top_n"
 # Clés interdites dans une connexion exportée
 SECRET_KEYS = ("password", "masked_encrypted_extra", "encrypted_extra")
+# Type d'export versionné, et type d'une archive pour l'import « assets »
+DASHBOARD_TYPE = "Dashboard"
+ASSETS_TYPE = "assets"
 
 # Identifiant de schéma admis (substitué dans du SQL)
 _SCHEMA_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+# Constructions DuckDB rejetées par l'analyseur SQL de Superset (sqlglot)
+_UNSUPPORTED_SQL = re.compile(r"\b(UNPIVOT|PIVOT)\b", re.IGNORECASE)
 
 
 # Exception levée lorsqu'un export est incohérent
@@ -250,11 +273,12 @@ def validate_assets(assets: Mapping[str, Dict[str, Any]]) -> None:
 
     Raises:
         BundleError: Listing every problem found: metadata type, unresolved
-            database, dataset or chart reference, or a secret in a database.
+            database, dataset or chart reference, a secret in a database, or
+            SQL that the Superset parser rejects.
     """
     problems: List[str] = []
-    if assets.get("metadata.yaml", {}).get("type") != "Dashboard":
-        problems.append("metadata.yaml: type must be 'Dashboard'")
+    if assets.get("metadata.yaml", {}).get("type") != DASHBOARD_TYPE:
+        problems.append(f"metadata.yaml: type must be '{DASHBOARD_TYPE}'")
 
     databases = {db.get("uuid") for db in _of_kind(assets, "databases")}
     datasets = {ds.get("uuid") for ds in _of_kind(assets, "datasets")}
@@ -264,8 +288,14 @@ def validate_assets(assets: Mapping[str, Dict[str, Any]]) -> None:
         if path.startswith("databases/"):
             for key in _find_keys(content, SECRET_KEYS):
                 problems.append(f"{path}: secret key '{key}' must not be exported")
-        elif path.startswith("datasets/") and content.get("database_uuid") not in databases:
-            problems.append(f"{path}: unknown database {content.get('database_uuid')}")
+        elif path.startswith("datasets/"):
+            if content.get("database_uuid") not in databases:
+                problems.append(f"{path}: unknown database {content.get('database_uuid')}")
+            unsupported = _UNSUPPORTED_SQL.search(content.get("sql") or "")
+            if unsupported:
+                problems.append(
+                    f"{path}: {unsupported.group(1).upper()} is rejected by the Superset SQL parser"
+                )
         elif path.startswith("charts/") and content.get("dataset_uuid") not in datasets:
             problems.append(f"{path}: unknown dataset {content.get('dataset_uuid')}")
         elif path.startswith("dashboards/"):
@@ -296,6 +326,7 @@ def build_bundle(
     default_year: Optional[int] = None,
     top_n: Optional[int] = None,
     root: Optional[str] = None,
+    assets_import: bool = False,
 ) -> bytes:
     """Build the importable zip archive of an export folder.
 
@@ -307,6 +338,9 @@ def build_bundle(
         top_n: Default number of units drawn by the curves.
         root: Name of the single top-level folder of the archive; the name of
             ``source`` by default.
+        assets_import: Declare the archive as an ``assets`` bundle, for
+            ``POST /api/v1/assets/import/``, which overwrites the existing
+            datasets and charts too (a dashboard import keeps them).
 
     Returns:
         The zip archive, as bytes.
@@ -318,6 +352,8 @@ def build_bundle(
         load_assets(source), schema=schema, default_year=default_year, top_n=top_n
     )
     validate_assets(assets)
+    if assets_import:
+        assets["metadata.yaml"] = {**assets["metadata.yaml"], "type": ASSETS_TYPE}
     prefix = root or source.resolve().name
     buffer = io.BytesIO()
     with zipfile.ZipFile(buffer, "w", compression=zipfile.ZIP_DEFLATED) as archive:
@@ -350,6 +386,12 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
     )
     parser.add_argument("--default-year", type=int, help="Default value of the year filters")
     parser.add_argument("--top-n", type=int, help="Default number of units drawn by the curves")
+    parser.add_argument(
+        "--assets",
+        action="store_true",
+        help="Build an 'assets' bundle (POST /api/v1/assets/import/), which also overwrites "
+        "existing datasets and charts",
+    )
     return parser.parse_args(argv)
 
 
@@ -366,7 +408,11 @@ def main(argv: Optional[List[str]] = None) -> int:
     args = parse_args(argv)
     try:
         payload = build_bundle(
-            args.source, schema=args.schema, default_year=args.default_year, top_n=args.top_n
+            args.source,
+            schema=args.schema,
+            default_year=args.default_year,
+            top_n=args.top_n,
+            assets_import=args.assets,
         )
     except BundleError as exc:
         print(exc, file=sys.stderr)

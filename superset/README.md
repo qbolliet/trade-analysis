@@ -14,11 +14,12 @@ change pas de colonnes selon un filtre.
 
 | Onglet | Choix | Tableau (trié par rang, 1 = le plus vulnérable) | Courbes sous le tableau |
 |---|---|---|---|
-| **Par pays** | un pays déclarant | produits classés : code, libellé, rang consensus, incertitude du rang, écart interquartile, score de consensus, HHI, CDI2, CDI3, WORLD_HHI, CENTRALITY_RISK, CLUSTERING_W, SPOF, nombre d'alertes | échanges avec le monde (valeur en € ou quantité en 100 kg) ; évolution d'une métrique (rang consensus par défaut) |
+| **Par pays** | un pays déclarant et un niveau de nomenclature (SH6 par défaut) | produits de ce niveau classés : code, libellé, rang consensus, incertitude du rang, écart interquartile, score de consensus, HHI, CDI2, CDI3, WORLD_HHI, CENTRALITY_RISK, CLUSTERING_W, SPOF, nombre d'alertes | échanges avec le monde (valeur en € ou quantité en 100 kg) ; évolution d'une métrique (rang consensus par défaut) |
 | **Par produit** | un produit | pays déclarants classés, mêmes colonnes | idem, une courbe par pays |
 
 Points communs aux deux onglets :
-- **Courbes** : par défaut, les 5 unités les mieux classées l'année choisie. Le filtre
+- **Courbes** : par défaut, les 5 unités les mieux classées l'année choisie (dans l'onglet
+  *Par pays*, au sein du niveau de nomenclature choisi). Le filtre
   « Ajouter des produits / pays » en ajoute d'autres, sans toucher au tableau.
 - **Bloc Markdown d'aide** en tête de chaque onglet : lecture du rang, de l'incertitude, et
   sources.
@@ -29,12 +30,19 @@ Points communs aux deux onglets :
 ### Lecture du rang et de l'incertitude
 
 - **Rang consensus** : `primary_rank_<niveau>` (méthode `consensus_borda`).
-  - L'onglet *Par pays* utilise le niveau `by_reporter` : produits classés au sein d'un
-    pays.
+  - L'onglet *Par pays* utilise le niveau `by_reporter_level` : produits d'un pays
+    classés au sein du niveau de nomenclature choisi (filtre « Niveau de nomenclature »,
+    colonne `product_level_label` : SH2, SH4, SH6, NC8).
   - L'onglet *Par produit* utilise le niveau `by_product` : pays classés au sein d'un
     produit.
-  - Les codes SH6 et NC8 sont classés ensemble par la synthèse. Les doublons quasi exacts
-    (850760 et 85076000) se suivent donc.
+  - `by_reporter_level` est dérivé dans `serving` : rangs `by_reporter` renumérotés au
+    sein du niveau, ordre de chaque méthode conservé. La synthèse classe désormais par
+    niveau (`product_level` en colonne de contexte) : `by_reporter_level` y est identique
+    à `by_reporter`. Sur une synthèse antérieure, qui classait tous les niveaux d'un pays
+    ensemble (850760 et 85076000 s'y suivaient), c'est une restriction du classement
+    commun. Le tableau de bord fonctionne ainsi avant comme après le recalcul.
+  - Les codes SH2 et SH4 n'ont pas de rang : les métriques réseau n'existent qu'à partir
+    du SH6, et une ligne incomplète n'est pas classée.
 - **Incertitude du rang** : « [q25–q75] (n) ». C'est l'intervalle interquartile des rangs
   que les `n` méthodes de synthèse de `serving.UNCERTAINTY_METHODS` donnent à la même ligne.
   La colonne `rank_spread_<niveau>` en donne la largeur.
@@ -56,7 +64,7 @@ Voir le mécanisme plus bas.
 
 | Dataset | Type | Rôle |
 |---|---|---|
-| `cell_scores` | physique | tableaux ; colonnes calculées `rank_iqr_<niveau>` (incertitude lisible), `consensus_score_<niveau>`, `n_alerts`, `period` |
+| `cell_scores` | physique | tableaux ; colonnes calculées `rank_iqr_<niveau>` (incertitude lisible), `consensus_score_<niveau>` (niveaux `by_reporter`, `by_reporter_level`, `by_product`), `n_alerts`, `period` |
 | `trade_series_by_reporter` | virtuel, Jinja | échanges, onglet *Par pays* |
 | `metric_series_by_reporter` | virtuel, Jinja | métriques, onglet *Par pays* |
 | `trade_series_by_product` | virtuel, Jinja | échanges, onglet *Par produit* |
@@ -64,7 +72,7 @@ Voir le mécanisme plus bas.
 | `series_options` | virtuel, `VALUES` | valeurs des filtres « Grandeur » et « Métrique » |
 
 **Graphiques et tableau de bord** : 6 graphiques (un tableau et deux courbes par onglet), un
-tableau de bord (slug `vulnerabilites`), 14 filtres natifs. Les filtres sont portés par
+tableau de bord (slug `vulnerabilites`), 15 filtres natifs. Les filtres sont portés par
 onglet (`scope.rootPath`), et chacun a une valeur par défaut **explicite** :
 
 | Filtre | Défaut | Notes |
@@ -72,6 +80,7 @@ onglet (`scope.rootPath`), et chacun a une valeur par défaut **explicite** :
 | Année | 2021 | dernière année classée en demo ; option `--default-year` |
 | Flux | Import | |
 | Pays ou Produit | « FR — France (…) » ou « 850760 — Lithium-ion accumulators (excl. spent) » | sélection unique, recherche par code et libellé |
+| Niveau de nomenclature | SH6 | onglet *Par pays* seulement ; valeur obligatoire (sans elle, plusieurs rangs 1 cohabiteraient) ; valeurs lues dans les données ; parent du filtre « Ajouter des produits » |
 | Nomenclature en vigueur | vrai | |
 | Ajouter des produits / pays | vide | multiple ; tableau hors de sa portée |
 | Grandeur | Valeur (€) | portée limitée à la courbe des échanges |
@@ -91,7 +100,10 @@ datasets virtuels dont le SQL est un gabarit Jinja :
    l'applique lui-même, dans le CTE `ctx`.
 2. **Sélection des unités** : le CTE `top` retient les `top_n` unités de meilleur rang
    consensus pour l'année choisie. À défaut d'année, il prend la dernière année ayant des
-   rangs. Le CTE `units` y ajoute les unités du filtre « Ajouter ».
+   rangs. Dans l'onglet *Par pays*, il se limite au niveau de nomenclature choisi et lit
+   les rangs `by_reporter_level` (sans niveau choisi : rangs `by_reporter`, tous niveaux
+   confondus). Le CTE `units` y ajoute les unités du filtre « Ajouter », quel que soit leur
+   niveau.
 3. **Séries** : la requête renvoie les séries de ces unités sur **toutes les années**,
    `period = make_date(year, 1, 1)` en abscisse.
 4. **Grandeur tracée** : elle est choisie par un dictionnaire Jinja libellé → colonne. Une
@@ -132,35 +144,54 @@ de passe : `databases/serving.yaml` n'a qu'une URI `duckdb:///:memory:` et des
 
 ## Réimport
 
+**Mise à jour d'un Superset où le tableau de bord existe déjà** : archive « assets »
+(`--assets`) et `POST /api/v1/assets/import/`, qui remplace la connexion, les datasets,
+les graphiques et le tableau de bord. L'import d'un tableau de bord (`dashboard/import`,
+`import-dashboards`), même avec `overwrite=true`, ne remplace **que le tableau de bord** :
+les datasets et graphiques existants (même UUID) restent tels quels.
+
 ```bash
-# Archive (racine unique, format de l'API et de la CLI) ; recette sur le schéma demo
+# Archive (racine unique) ; recette sur le schéma demo
 python tools/superset_bundle.py superset/vulnerabilites -o /tmp/vulnerabilites.zip \
-    --schema demo_dashboard --default-year 2021 [--top-n 5]
+    --assets --schema demo_dashboard --default-year 2021 [--top-n 5]
 
 # Import par l'API (jeton : POST /api/v1/security/login ; CSRF : GET /api/v1/security/csrf_token/)
-curl -X POST "$SUPERSET/api/v1/dashboard/import/" \
+curl -X POST "$SUPERSET/api/v1/assets/import/" \
     -H "Authorization: Bearer $TOKEN" -H "X-CSRFToken: $CSRF" -H "Referer: $SUPERSET" \
-    -F formData=@/tmp/vulnerabilites.zip -F overwrite=true
-
-# ou dans le conteneur Superset
-superset import-dashboards -p /tmp/vulnerabilites.zip -u admin
+    -F bundle=@/tmp/vulnerabilites.zip
 ```
+
+**Premier import** (Superset vierge), sans `--assets` : `POST /api/v1/dashboard/import/`
+(`-F formData=@… -F overwrite=true`) ou, dans le conteneur,
+`superset import-dashboards -p /tmp/vulnerabilites.zip -u admin`.
 
 Avant d'écrire l'archive, l'outil vérifie :
 - que les YAML sont lisibles ;
 - que les références croisées sont résolues : base de chaque dataset, dataset de chaque
   graphique et de chaque filtre, UUID de chaque graphique de la mise en page ;
-- qu'aucune clé `password` n'est présente.
+- qu'aucune clé `password` n'est présente ;
+- que le SQL des datasets virtuels n'emploie ni `PIVOT` ni `UNPIVOT` (voir les pièges).
+
+Le test `tests/test_superset_bundle.py` rend en outre le gabarit Jinja des datasets
+virtuels versionnés (avec un équivalent de `filter_values` et `|where_in`) et l'exécute sur
+la table `cell_scores` du monde fictif : une colonne absente ou un niveau mal appliqué y
+échoue.
 
 En production (K-17g), `--schema` est omis (les exports visent `dashboard`), et
 `--default-year` reçoit la dernière année classée.
 
-**Modifier le tableau de bord** : le modifier dans l'interface, l'exporter (*Dashboards →
-Export*), puis remplacer `charts/`, `datasets/` et `dashboards/` par le contenu du zip :
+**Modifier le tableau de bord** : soit éditer directement les YAML de ce dossier (SQL des
+datasets virtuels, colonnes, paramètres des graphiques, filtres natifs), soit modifier le
+tableau de bord dans l'interface, l'exporter (*Dashboards → Export*), puis remplacer
+`charts/`, `datasets/` et `dashboards/` par le contenu du zip :
 1. ramener les datasets au schéma de production (`serving.demo_dashboard` devient
    `serving.dashboard` dans la clé `schema` et dans le SQL) ;
 2. garder `databases/serving.yaml` ;
-3. vérifier par `python tools/superset_bundle.py … -o /tmp/x.zip`.
+3. vérifier par `python tools/superset_bundle.py … -o /tmp/x.zip` et
+   `pytest tests/test_superset_bundle.py`.
+
+Une modification faite **par l'API** sur un dataset ou un graphique n'est dans le dépôt
+qu'après un nouvel export : à faire aussitôt, sinon l'export versionné diverge du service.
 
 ## Pièges rencontrés
 
@@ -186,7 +217,9 @@ Export*), puis remplacer `charts/`, `datasets/` et `dashboards/` par le contenu 
   (« syntax error at or near ")" »). Utiliser `{% … %}`.
 - **Syntaxe propre à DuckDB refusée** : avant d'exécuter, Superset analyse le SQL avec
   sqlglot, qui ne connaît pas `UNPIVOT … ON … INTO NAME … VALUE …` (« Error parsing near
-  'ON' »). D'où le choix de colonne par dictionnaire Jinja.
+  'ON' »). D'où le choix de colonne par dictionnaire Jinja. L'erreur n'apparaît qu'à
+  l'affichage du graphique, pas à l'import : `tools/superset_bundle.py` refuse donc
+  `PIVOT` et `UNPIVOT`.
 - **Création d'un dataset virtuel à gabarit** : Superset exécute le SQL rendu sans filtre
   pour en déduire les colonnes. Chaque variable doit donc avoir une valeur par défaut :
   `top_n|default(5)`, flux, pays ou produit, grandeur. Après création, il faut appeler
@@ -195,6 +228,16 @@ Export*), puis remplacer `charts/`, `datasets/` et `dashboards/` par le contenu 
   qu'un même filtre natif s'applique au tableau (`cell_scores`) et aux courbes (datasets
   virtuels) par le nom de colonne. Les portées sont tout de même restreintes explicitement
   (`scope.excluded`).
+
+**Import**
+- **L'import d'un tableau de bord ne met pas à jour ses datasets ni ses graphiques** : en
+  4.1, `ImportDashboardsCommand` importe datasets et graphiques avec `overwrite=False`,
+  quel que soit le paramètre `overwrite` (qui ne vaut que pour le tableau de bord). Seul
+  `POST /api/v1/assets/import/` (archive `--assets`) remplace tout. Constat de K-03c v2 :
+  le SQL des courbes, corrigé par l'API sur le service (choix de colonne sans `UNPIVOT`),
+  n'avait pas été réexporté. L'export versionné gardait la version `UNPIVOT`, et l'import
+  « réussi » de cet export n'avait rien changé aux datasets du service. Un Superset vierge
+  aurait reçu des courbes en erreur. Corrigé avec l'ajout du filtre de niveau.
 
 **Filtres natifs et données**
 - **Valeur par défaut explicite obligatoire** : le calcul « première valeur »

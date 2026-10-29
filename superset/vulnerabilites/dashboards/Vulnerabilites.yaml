@@ -78,14 +78,16 @@ position:
         de synthèse). **Incertitude** : intervalle interquartile [q25–q75] des rangs
         donnés à la même ligne par les méthodes de synthèse (nombre de méthodes entre
         parenthèses) ; elle mesure le désaccord entre méthodes, pas une incertitude
-        d''échantillonnage. Codes SH6 et NC8 classés ensemble. Cellules rouges : métrique
+        d''échantillonnage. **Niveau de nomenclature** : produits classés au sein
+        du niveau choisi (SH6, NC8…), rangs et incertitude compris ; les codes SH2
+        et SH4 n''ont pas de rang (pas de métriques réseau). Cellules rouges : métrique
         au-delà de son seuil d''alerte.
 
 
-        **Courbes** : les 5 produits les mieux classés l''année choisie, plus ceux
-        du filtre « Ajouter » ; grandeur (valeur ou quantité) et métrique au choix
-        dans les filtres. Sources : Eurostat Comext (DS-045409), CEPII BACI (réseau),
-        synthèse multicritère du pipeline.'
+        **Courbes** : les 5 produits les mieux classés du niveau choisi l''année choisie,
+        plus ceux du filtre « Ajouter » ; grandeur (valeur ou quantité) et métrique
+        au choix dans les filtres. Sources : Eurostat Comext (DS-045409), CEPII BACI
+        (réseau), synthèse multicritère du pipeline.'
   CHART-PAYS-table:
     type: CHART
     id: CHART-PAYS-table
@@ -204,8 +206,7 @@ position:
         de synthèse). **Incertitude** : intervalle interquartile [q25–q75] des rangs
         donnés à la même ligne par les méthodes de synthèse (nombre de méthodes entre
         parenthèses) ; elle mesure le désaccord entre méthodes, pas une incertitude
-        d''échantillonnage. Codes SH6 et NC8 classés ensemble. Cellules rouges : métrique
-        au-delà de son seuil d''alerte.
+        d''échantillonnage. Cellules rouges : métrique au-delà de son seuil d''alerte.
 
 
         **Courbes** : les 5 pays les mieux classés l''année choisie, plus ceux du
@@ -402,6 +403,44 @@ metadata:
     tabsInScope:
     - TAB-PAYS
     description: Recherche par code ou libellé.
+  - id: NATIVE_FILTER-PAYS-LEVEL
+    name: Niveau de nomenclature
+    filterType: filter_select
+    type: NATIVE_FILTER
+    targets:
+    - column:
+        name: product_level_label
+      datasetUuid: 36728d1c-82e1-4659-9433-eb37ea4ce456
+    controlValues:
+      enableEmptyFilter: true
+      defaultToFirstItem: false
+      multiSelect: false
+      searchAllOptions: true
+      inverseSelection: false
+      sortAscending: true
+    defaultDataMask:
+      filterState:
+        value:
+        - SH6
+      ownState: {}
+      extraFormData:
+        filters:
+        - col: product_level_label
+          op: IN
+          val:
+          - SH6
+    cascadeParentIds: []
+    scope:
+      rootPath:
+      - TAB-PAYS
+      excluded: []
+    chartsInScope:
+    - 20
+    - 21
+    - 22
+    tabsInScope:
+    - TAB-PAYS
+    description: Produits classés au sein de ce niveau (SH2, SH4, SH6, NC8).
   - id: NATIVE_FILTER-PAYS-INFORCE
     name: Nomenclature en vigueur
     filterType: filter_select
@@ -462,6 +501,7 @@ metadata:
     cascadeParentIds:
     - NATIVE_FILTER-PAYS-FOCUS
     - NATIVE_FILTER-PAYS-FLOW
+    - NATIVE_FILTER-PAYS-LEVEL
     scope:
       rootPath:
       - TAB-PAYS
