@@ -1,0 +1,49 @@
+slice_name: Principaux partenaires du pays pour le produit détaillé
+description: Fournisseurs (import) ou clients (export) du pays pour le produit détaillé, du plus important
+  au moins important, puis « Autres pays » pour le reste des échanges.
+certified_by: null
+certification_details: null
+viz_type: echarts_timeseries_bar
+params:
+  viz_type: echarts_timeseries_bar
+  datasource: 18__table
+  x_axis: bar_label
+  xAxisForceCategorical: true
+  x_axis_sort: bar_label
+  x_axis_sort_asc: false
+  metrics:
+  - expressionType: SQL
+    sqlExpression: SUM(value_eu)
+    label: Pays de l'UE
+  - expressionType: SQL
+    sqlExpression: SUM(value_extra)
+    label: Pays hors UE
+  - expressionType: SQL
+    sqlExpression: SUM(value_other)
+    label: Autres pays
+  groupby: []
+  adhoc_filters: []
+  row_limit: 100
+  orientation: horizontal
+  stack: Stack
+  only_total: true
+  show_value: false
+  show_legend: true
+  legendType: plain
+  legendOrientation: top
+  rich_tooltip: false
+  y_axis_format: SMART_NUMBER
+  truncateYAxis: false
+  x_axis_title: ''
+  y_axis_title: ''
+  color_scheme: supersetColors
+  label_colors:
+    Pays de l'UE: '#1F77B4'
+    Pays hors UE: '#FF7F0E'
+    Autres pays: '#B2B2B2'
+  annotation_layers: []
+query_context: null
+cache_timeout: null
+uuid: 9a4c1e70-5d3b-4f28-8e61-c07b5f2d9a13
+version: 1.0.0
+dataset_uuid: 5b0e2a51-7c1d-4b8e-9f43-2d6a0c1e8b71

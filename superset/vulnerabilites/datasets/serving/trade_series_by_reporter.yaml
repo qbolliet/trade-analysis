@@ -8,7 +8,8 @@ catalog: null
 schema: serving.dashboard
 sql: |
   -- Séries temporelles des produits les plus vulnérables : les top_n unités de
-  -- meilleur rang consensus l'année choisie, plus celles du filtre d'ajout. Filtres lus par
+  -- meilleur rang consensus l'année choisie, ou exactement les unités du filtre « Produits des courbes »
+  -- s'il est renseigné (le menu montre ainsi toujours ce qui est tracé). Filtres lus par
   -- filter_values(remove_filter=True) et appliqués dans la requête ; grandeur tracée
   -- choisie par un dictionnaire libellé -> colonne (valeur inconnue : grandeur par défaut).
   -- Niveau de nomenclature choisi : top_n et rangs au sein de ce niveau (rangs
@@ -41,8 +42,8 @@ sql: |
     LIMIT {{ top_n|default(5)|int }}
   ),
   units AS (
-    SELECT product FROM top
-    {% if extra %}UNION SELECT product FROM ctx WHERE product_display IN {{ extra|where_in }}{% endif %}
+    {% if extra %}SELECT DISTINCT product FROM ctx WHERE product_display IN {{ extra|where_in }}
+    {% else %}SELECT product FROM top{% endif %}
   )
   SELECT c.year, make_date(c.year, 1, 1) AS period, c.flow_label, c.in_force,
          c.reporter_display, c.product_display,
@@ -102,6 +103,18 @@ columns:
   is_dttm: false
   is_active: true
   type: BOOL
+  advanced_data_type: null
+  groupby: true
+  filterable: true
+  expression: ''
+  description: null
+  python_date_format: null
+  extra: null
+- column_name: product_level_label
+  verbose_name: null
+  is_dttm: false
+  is_active: true
+  type: STRING
   advanced_data_type: null
   groupby: true
   filterable: true
@@ -174,18 +187,6 @@ columns:
   is_dttm: false
   is_active: true
   type: INT
-  advanced_data_type: null
-  groupby: true
-  filterable: true
-  expression: ''
-  description: null
-  python_date_format: null
-  extra: null
-- column_name: product_level_label
-  verbose_name: null
-  is_dttm: false
-  is_active: true
-  type: STRING
   advanced_data_type: null
   groupby: true
   filterable: true

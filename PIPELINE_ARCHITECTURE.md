@@ -54,6 +54,7 @@
 | 2026-10-28 (K-03c v2, niveaux) | **Classement par niveau de nomenclature dans l'onglet Par pays** : niveau dérivé `by_reporter_level` dans `cell_scores` (rangs de chaque méthode restreints au niveau du produit puis renumérotés, incertitude recalculée sur ces rangs), colonne `product_level_label` (`PRODUCT_LEVEL_LABELS` : SH2, SH4, SH6, NC8), filtre natif « Niveau de nomenclature » (SH6 par défaut, obligatoire) ; **import « assets »** (`tools/superset_bundle.py --assets`, `POST /api/v1/assets/import/`), seul à remplacer datasets et graphiques existants ; correction de l'export versionné, dont les courbes avaient gardé un SQL `UNPIVOT` rejeté par Superset (l'outil refuse désormais `PIVOT` / `UNPIVOT`, et un test exécute le SQL versionné) | PD-27, PS-29.2, PS-30.6, §5.8 |
 | 2026-10-29 (K-03c v2, synthèse par niveau) | **Synthèse et cohérence par finesse de nomenclature** : colonne `product_level` (nombre de chiffres du code : 2, 4, 6, 8) écrite par l'étape partenaires dans `indicators`, ajoutée à `synthesis.PARAMETERS.context_columns` (reprise par la cohérence) : un produit n'est plus classé qu'avec des produits de même niveau, aux trois niveaux de comparaison ; `product_level` propagé à `coherence_metrics` / `coherence_methods` de `serving`. Rupture de schéma sans cohabitation (K-17c) : effet aux recalculs complets de K-17d (bases demo vidées, production vierge) ; d'ici là, synthèse, cohérence et publication de `serving` échouent sur les tables demo actuelles, faute de colonne | PD-20, PD-27, PS-17, PS-29.2 |
 | 2026-10-29 (K-17g) | **Charts Helm de déploiement** : trois charts sous `helm/` — `trade-pipeline` (`WorkflowTemplate`, `CronWorkflow` par point d'entrée, compte de service facultatif, `helm test` de pré-vol), `trade-dashboard` (configuration Superset portée par le chart, Superset d'Onyxia en dépendance facultative, Job d'import « assets » du tableau de bord), `trade-analysis` (parapluie, commande unique, préréglages `values-onyxia.yaml` / `values-generic.yaml`, surcouche `values-demo.yaml`) ; **source unique du DAG** : `render-argo` produit `helm/trade-pipeline/files/dag-<env>.yaml` (données, plus de gabarits Jinja), Helm porte tout le déploiement (`KEDRO_ENV` devient une valeur) ; découverte Onyxia par `lookup` (version du contrôleur Argo, secrets `onyxia/discovery`) ; `kubernetes/generated/` supprimé ; CI `helm.yml` (lint, rendu, kubeconform, publication OCI sur étiquette `charts-v*`). Écart au prompt : décision numérotée PD-28 (PD-27 déjà prise) | PD-28, PD-14, PS-21.3, §5, §9, §12 |
+| 2026-11-02 (K-17h) | **Tableau de bord « Vulnérabilités » v2.1** : onglet *Par pays*, produit détaillé (filtre « Produit à détailler », sinon rang 1) et **diagramme en barres des principaux partenaires** (10 premiers, puis « Autres pays » = total − barres ; couleur UE / hors UE) ; onglet *Par produit*, **Sankey** `sankey_v2` des flux entre États membres et partenaires (12 premiers partenaires hors UE, « Autres pays hors UE », nœud intra-UE `WORLD` − `EXT_EU`) ; deux datasets virtuels Jinja sur `flows` et `cell_scores` ; **libellés explicites des indicateurs** (un libellé par indicateur, sigle en fin de libellé, définition en description de colonne) ; blocs d'aide didactiques. Appartenance à l'UE dérivée des déclarants de `flows`, sans modification de `serving` (pas de décision numérotée) | PS-30.7 |
 
 ## Sommaire
 
@@ -4483,7 +4484,7 @@ par onglet (`scope.rootPath`), chacun avec une valeur par défaut **explicite**.
 | Pays ou Produit | `reporter_display` ou `product_display` (« code — libellé ») | FR ; 850760 | tout l'onglet |
 | Niveau de nomenclature (Par pays seulement) | `product_level_label` | SH6 (valeur obligatoire) | tout l'onglet ; parent du filtre « Ajouter des produits » |
 | Nomenclature en vigueur | `in_force` | vrai | tout l'onglet |
-| Ajouter des produits / pays | `product_display` ou `reporter_display` | vide (multiple) | courbes seulement |
+| Ajouter des produits / pays (v2.1 : Produits / Pays des courbes, PS-30.7) | `product_display` ou `reporter_display` | vide (multiple) | courbes seulement |
 | Grandeur | `measure` (dataset `series_options`) | Valeur (€) | courbe des échanges |
 | Métrique | `metric` (dataset `series_options`) | Rang consensus | courbe des métriques |
 
@@ -4540,6 +4541,64 @@ Tout est sous l'objectif de 5 s (PS-29.4).
 **Éléments retirés de la v1** : 18 graphiques, les datasets `flows`, `coherence_metrics`,
 `coherence_methods`, `products`, `countries` et `cell_scores_metrics_long`. Les tables
 correspondantes restent publiées pour SQL Lab.
+
+#### PS-30.7 Structure v2.1 : dépendances par partenaire, libellés, aide (K-17h, 2026-11-02)
+
+**Ajouts.** Entre le tableau et les courbes :
+- onglet *Par pays* : un diagramme en barres horizontales (`echarts_timeseries_bar`) des
+  partenaires du pays pour le produit détaillé (première ligne du tableau, ou filtre
+  « Produit à détailler ») — fournisseurs à l'import, clients à l'export. Les
+  `n_partners` (10) premiers partenaires de `flows` en valeur, triés par ordre décroissant,
+  puis une barre « Autres pays » toujours en dernier, égale aux échanges totaux de la cellule
+  (`cell_scores`) moins la somme des barres : la somme des barres reste égale au total. Couleur :
+  pays de l'UE ou hors UE. Libellé « rang. pays — part en valeur » ;
+- onglet *Par produit* : un Sankey (`sankey_v2`, type ECharts non déprécié de Superset 4.1)
+  des flux du produit entre les États membres déclarants (`EU27_2020` exclu) et leurs
+  partenaires : les `k_partners` (12) premiers partenaires hors UE cumulés sur les déclarants,
+  « Autres pays hors UE » (`EXT_EU` − flux vers ces partenaires) et « Union européenne
+  (échanges entre États membres) » (`WORLD` − `EXT_EU`). Le Sankey refuse les cycles et
+  confond les nœuds homonymes : regrouper l'intra-UE évite qu'un pays figure des deux côtés et
+  fait ressortir la dépendance hors UE. Partenaires → pays de l'UE à l'import, l'inverse à
+  l'export.
+
+**Produit détaillé.** Par priorité : code produit reçu par filtrage croisé (lu par le
+gabarit, option du tableau de bord non activée faute d'essai dans un navigateur), filtre
+natif « Produit à détailler » (colonne calculée `detail_product` de `cell_scores`), sinon
+produit de rang 1 `by_reporter_level` du pays, de l'année, du flux et du niveau choisis.
+
+**Menus préremplis.** Les filtres « Ajouter des produits / pays » deviennent « Produits des
+courbes » / « Pays des courbes » : renseignés, les courbes tracent exactement leurs unités
+(et non plus le top N plus ces unités) ; vides, le top N. Ces menus et « Produit à détailler »
+reçoivent des valeurs par défaut fixes, celles du premier affichage (France, 2021, import,
+SH6 ; produit 850760), calculées sur la demo : Superset 4.1 n'a pas de valeur par défaut
+calculée qui suive les autres filtres (`defaultToFirstItem` ne vaut qu'au premier affichage,
+pour une seule valeur). À recalculer avec les données de production (`superset/README.md`).
+
+**Appartenance à l'UE.** Aucun attribut dans `countries`. Un partenaire est un pays de l'UE
+s'il est déclarant individuel de `flows` la même année (Comext ne publie que les États
+membres). Contrat de `serving` inchangé.
+
+**Libellés.** Un seul libellé par indicateur : `verbose_name` et `description` des colonnes
+de `cell_scores`, menu « Indicateur » (`series_options`), clés des gabarits des courbes. Sigle
+en fin de libellé : Concentration des partenaires (HHI), Part des échanges hors UE (CDI2),
+Hors UE / flux de sens inverse (CDI3), Concentration mondiale (WORLD_HHI), Poids des pays
+pivots (CENTRALITY_RISK), Cloisonnement du réseau (CLUSTERING_W), Point de défaillance unique
+(SPOF) ; Rang (1 = le plus vulnérable), Fourchette du rang (« q25 – q75 »), Largeur de la
+fourchette, Score de vulnérabilité (0 à 1), Seuils d'alerte dépassés (sur 7). Les blocs d'aide
+expliquent ce que montre la page, comment la lire et s'en servir ; les précisions de méthode
+sont dans `docs/dashboards.md`.
+
+**Mesures (demo, 2021, 2026-11-02).**
+- « Autres pays », part des échanges en valeur : barres (N = 10) 8,4 % à l'import et 24 % à
+  l'export en pondéré (médianes par cellule 0,2 % et 1 %) ; au-delà des 12 partenaires de
+  `flows`, 5,9 % et 20 %. Sankey (K = 12) : médiane par produit 4 % à l'import, 19 % à
+  l'export.
+- Contrôles sur le service (pays et produits tirés au hasard, import et export, valeur et
+  quantité) : somme des barres = échanges totaux, tri décroissant, produit par défaut de
+  rang 1, somme des flux de chaque pays du Sankey = ses échanges totaux, partenaire sans
+  quantité déclarée absent en quantité.
+- Latences à froid (`force=true`) : 1,3 à 1,9 s pour les nouveaux graphiques, sous
+  l'objectif de 5 s (PS-29.4).
 
 ### PS-31 — Rapport de run MLflow (supervision)
 

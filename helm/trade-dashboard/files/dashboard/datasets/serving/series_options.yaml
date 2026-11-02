@@ -6,13 +6,10 @@ offset: 0
 cache_timeout: null
 catalog: null
 schema: serving.dashboard
-sql: '-- Valeurs des filtres « Grandeur » et « Métrique » des courbes
-
-  SELECT measure, metric FROM (VALUES (''Valeur (€)'', NULL), (''Quantité (100 kg)'',
-  NULL), (NULL, ''Rang consensus''), (NULL, ''Incertitude du rang (écart interquartile)''),
-  (NULL, ''Score de consensus (0-1)''), (NULL, ''HHI''), (NULL, ''CDI2''), (NULL,
-  ''CDI3''), (NULL, ''WORLD_HHI''), (NULL, ''CENTRALITY_RISK''), (NULL, ''CLUSTERING_W''),
-  (NULL, ''SPOF'')) AS t(measure, metric)'
+sql: |
+  -- Valeurs des filtres « Grandeur » et « Indicateur » des courbes ; les libellés des
+  -- indicateurs sont ceux des colonnes du tableau et les clés des gabarits des courbes
+  SELECT measure, metric FROM (VALUES ('Valeur (€)', NULL), ('Quantité (100 kg)', NULL), (NULL, 'Rang (1 = le plus vulnérable)'), (NULL, 'Largeur de la fourchette'), (NULL, 'Score de vulnérabilité (0 à 1)'), (NULL, 'Concentration des partenaires (HHI)'), (NULL, 'Part des échanges hors UE (CDI2)'), (NULL, 'Hors UE / flux de sens inverse (CDI3)'), (NULL, 'Concentration mondiale (WORLD_HHI)'), (NULL, 'Poids des pays pivots (CENTRALITY_RISK)'), (NULL, 'Cloisonnement du réseau (CLUSTERING_W)'), (NULL, 'Point de défaillance unique (SPOF)')) AS t(measure, metric)
 params: null
 template_params: null
 filter_select_enabled: true

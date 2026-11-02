@@ -8,7 +8,8 @@ catalog: null
 schema: serving.dashboard
 sql: |
   -- Séries temporelles des pays les plus vulnérables : les top_n unités de
-  -- meilleur rang consensus l'année choisie, plus celles du filtre d'ajout. Filtres lus par
+  -- meilleur rang consensus l'année choisie, ou exactement les unités du filtre « Pays des courbes »
+  -- s'il est renseigné (le menu montre ainsi toujours ce qui est tracé). Filtres lus par
   -- filter_values(remove_filter=True) et appliqués dans la requête ; grandeur tracée
   -- choisie par un dictionnaire libellé -> colonne (valeur inconnue : grandeur par défaut).
   {% set years = filter_values('year', remove_filter=True) %}
@@ -37,8 +38,8 @@ sql: |
     LIMIT {{ top_n|default(5)|int }}
   ),
   units AS (
-    SELECT reporter FROM top
-    {% if extra %}UNION SELECT reporter FROM ctx WHERE reporter_display IN {{ extra|where_in }}{% endif %}
+    {% if extra %}SELECT DISTINCT reporter FROM ctx WHERE reporter_display IN {{ extra|where_in }}
+    {% else %}SELECT reporter FROM top{% endif %}
   )
   SELECT c.year, make_date(c.year, 1, 1) AS period, c.flow_label, c.in_force,
          c.reporter_display, c.product_display,

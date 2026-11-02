@@ -1,4 +1,4 @@
-slice_name: Évolution d'une métrique des pays les plus vulnérables
+slice_name: Évolution d'un indicateur des pays les plus vulnérables
 description: null
 certified_by: null
 certification_details: null
@@ -12,7 +12,7 @@ params:
   metrics:
   - expressionType: SQL
     sqlExpression: MAX(value)
-    label: Métrique
+    label: Valeur de l'indicateur
   groupby:
   - unit
   row_limit: 10000
@@ -29,6 +29,7 @@ params:
   zoomable: true
   x_axis_title: ''
   y_axis_title: ''
+  annotation_layers: []
 query_context: null
 cache_timeout: null
 uuid: e2cf75f7-f581-41b3-bce7-bd0d0093e301

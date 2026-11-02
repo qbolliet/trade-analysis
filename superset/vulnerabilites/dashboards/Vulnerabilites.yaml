@@ -40,6 +40,7 @@ position:
     children:
     - ROW-PAYS-HELP
     - ROW-PAYS-TABLE
+    - ROW-PAYS-PARTNERS
     - ROW-PAYS-CURVES
     meta:
       text: Par pays
@@ -69,25 +70,18 @@ position:
     children: []
     meta:
       width: 12
-      height: 22
-      code: 'Classement des **produits** du pays choisi, pour l''année et le flux
-        choisis.
+      height: 30
+      code: |-
+        **Ce que montre la page.** Pour le pays, l'année et le flux choisis (import ou export) :
+        - le **tableau** classe les produits du plus vulnérable (rang 1) au moins vulnérable, au sein du niveau de nomenclature choisi (SH6 par défaut ; SH2 et SH4 n'ont pas de rang) ;
+        - le **diagramme des partenaires** montre de qui le pays dépend pour un produit : ses fournisseurs à l'import, ses clients à l'export, du plus important au moins important, puis « Autres pays » pour le reste. Couleur : pays de l'UE ou hors UE ;
+        - les **courbes** suivent dans le temps les échanges et un indicateur des produits choisis (au départ, les 5 premiers du tableau).
 
+        **Comment lire.** Pour chaque indicateur, plus la valeur est élevée, plus le produit est vulnérable ; une cellule rouge signale un seuil d'alerte dépassé. La **fourchette du rang** montre si les différentes façons de combiner les indicateurs s'accordent : étroite, le classement est robuste ; large, il dépend de la pondération retenue.
 
-        **Rang consensus** : 1 = le plus vulnérable (consensus de Borda des méthodes
-        de synthèse). **Incertitude** : intervalle interquartile [q25–q75] des rangs
-        donnés à la même ligne par les méthodes de synthèse (nombre de méthodes entre
-        parenthèses) ; elle mesure le désaccord entre méthodes, pas une incertitude
-        d''échantillonnage. **Niveau de nomenclature** : produits classés au sein
-        du niveau choisi (SH6, NC8…), rangs et incertitude compris ; les codes SH2
-        et SH4 n''ont pas de rang (pas de métriques réseau). Cellules rouges : métrique
-        au-delà de son seuil d''alerte.
+        **Comment s'en servir.** Choisissez un pays ; repérez les produits en tête et en rouge ; regardez de qui le pays dépend pour l'un d'eux (par défaut le premier du tableau, sinon le filtre « Produit à détailler ») ; suivez son évolution dans les courbes (filtre « Produits des courbes » ; vide, les 5 premiers produits).
 
-
-        **Courbes** : les 5 produits les mieux classés du niveau choisi l''année choisie,
-        plus ceux du filtre « Ajouter » ; grandeur (valeur ou quantité) et métrique
-        au choix dans les filtres. Sources : Eurostat Comext (DS-045409), CEPII BACI
-        (réseau), synthèse multicritère du pipeline.'
+        Définitions des indicateurs et méthode : documentation du projet, page « Tableaux de bord ». Sources : Eurostat Comext (DS-045409), CEPII BACI (réseau mondial).
   CHART-PAYS-table:
     type: CHART
     id: CHART-PAYS-table
@@ -168,6 +162,7 @@ position:
     children:
     - ROW-PRODUIT-HELP
     - ROW-PRODUIT-TABLE
+    - ROW-PRODUIT-SANKEY
     - ROW-PRODUIT-CURVES
     meta:
       text: Par produit
@@ -197,22 +192,18 @@ position:
     children: []
     meta:
       width: 12
-      height: 22
-      code: 'Classement des **pays déclarants** pour le produit choisi, pour l''année
-        et le flux choisis.
+      height: 30
+      code: |-
+        **Ce que montre la page.** Pour le produit, l'année et le flux choisis (import ou export) :
+        - le **tableau** classe les pays de l'UE du plus vulnérable (rang 1) au moins vulnérable ;
+        - le **diagramme de flux** montre d'où viennent les importations de chaque pays de l'UE (à l'export : où vont ses exportations). Les principaux pays hors UE sont détaillés ; les échanges entre pays de l'UE sont regroupés en un seul bloc, pour faire ressortir la dépendance hors UE. L'épaisseur d'un flux est proportionnelle aux échanges ;
+        - les **courbes** suivent dans le temps les échanges et un indicateur des pays choisis (au départ, les 5 premiers du tableau).
 
+        **Comment lire.** Pour chaque indicateur, plus la valeur est élevée, plus le pays est vulnérable ; une cellule rouge signale un seuil d'alerte dépassé. La **fourchette du rang** montre si les différentes façons de combiner les indicateurs s'accordent : étroite, le classement est robuste ; large, il dépend de la pondération retenue.
 
-        **Rang consensus** : 1 = le plus vulnérable (consensus de Borda des méthodes
-        de synthèse). **Incertitude** : intervalle interquartile [q25–q75] des rangs
-        donnés à la même ligne par les méthodes de synthèse (nombre de méthodes entre
-        parenthèses) ; elle mesure le désaccord entre méthodes, pas une incertitude
-        d''échantillonnage. Cellules rouges : métrique au-delà de son seuil d''alerte.
+        **Comment s'en servir.** Choisissez un produit ; repérez les pays en tête et en rouge ; identifiez dans le diagramme les fournisseurs hors UE dont ils dépendent ; comparez l'évolution des pays dans les courbes (filtre « Pays des courbes » ; vide, les 5 premiers pays).
 
-
-        **Courbes** : les 5 pays les mieux classés l''année choisie, plus ceux du
-        filtre « Ajouter » ; grandeur (valeur ou quantité) et métrique au choix dans
-        les filtres. Sources : Eurostat Comext (DS-045409), CEPII BACI (réseau), synthèse
-        multicritère du pipeline.'
+        Définitions des indicateurs et méthode : documentation du projet, page « Tableaux de bord ». Sources : Eurostat Comext (DS-045409), CEPII BACI (réseau mondial).
   CHART-PRODUIT-table:
     type: CHART
     id: CHART-PRODUIT-table
@@ -283,6 +274,60 @@ position:
     - CHART-PRODUIT-metric
     meta:
       background: BACKGROUND_TRANSPARENT
+  ROW-PAYS-PARTNERS:
+    type: ROW
+    id: ROW-PAYS-PARTNERS
+    parents:
+    - ROOT_ID
+    - GRID_ID
+    - TABS-MAIN
+    - TAB-PAYS
+    children:
+    - CHART-PAYS-partners
+    meta:
+      background: BACKGROUND_TRANSPARENT
+  CHART-PAYS-partners:
+    type: CHART
+    id: CHART-PAYS-partners
+    parents:
+    - ROOT_ID
+    - GRID_ID
+    - TABS-MAIN
+    - TAB-PAYS
+    - ROW-PAYS-PARTNERS
+    children: []
+    meta:
+      chartId: 26
+      uuid: 9a4c1e70-5d3b-4f28-8e61-c07b5f2d9a13
+      width: 12
+      height: 60
+  ROW-PRODUIT-SANKEY:
+    type: ROW
+    id: ROW-PRODUIT-SANKEY
+    parents:
+    - ROOT_ID
+    - GRID_ID
+    - TABS-MAIN
+    - TAB-PRODUIT
+    children:
+    - CHART-PRODUIT-sankey
+    meta:
+      background: BACKGROUND_TRANSPARENT
+  CHART-PRODUIT-sankey:
+    type: CHART
+    id: CHART-PRODUIT-sankey
+    parents:
+    - ROOT_ID
+    - GRID_ID
+    - TABS-MAIN
+    - TAB-PRODUIT
+    - ROW-PRODUIT-SANKEY
+    children: []
+    meta:
+      chartId: 28
+      uuid: 6e2b8f19-0a7d-4c35-b4e8-1d93a6f05c72
+      width: 12
+      height: 100
 metadata:
   native_filter_configuration:
   - id: NATIVE_FILTER-PAYS-YEAR
@@ -320,6 +365,7 @@ metadata:
     - 20
     - 21
     - 22
+    - 26
     tabsInScope:
     - TAB-PAYS
     description: 'Année du classement (toujours renseignée : élagage des partitions).'
@@ -358,6 +404,7 @@ metadata:
     - 20
     - 21
     - 22
+    - 26
     tabsInScope:
     - TAB-PAYS
     description: ''
@@ -379,18 +426,16 @@ metadata:
     defaultDataMask:
       filterState:
         value:
-        - FR — France (incl. Saint Barthélemy 'BL' -> 2012; incl. French Guiana 'GF',
-          Guadeloupe 'GP', Martinique 'MQ', Réunion 'RE' from 1997; incl. Mayotte
-          'YT' from 2014)
+        - FR — France (incl. Saint Barthélemy 'BL' -> 2012; incl. French Guiana 'GF', Guadeloupe 'GP',
+          Martinique 'MQ', Réunion 'RE' from 1997; incl. Mayotte 'YT' from 2014)
       ownState: {}
       extraFormData:
         filters:
         - col: reporter_display
           op: IN
           val:
-          - FR — France (incl. Saint Barthélemy 'BL' -> 2012; incl. French Guiana
-            'GF', Guadeloupe 'GP', Martinique 'MQ', Réunion 'RE' from 1997; incl.
-            Mayotte 'YT' from 2014)
+          - FR — France (incl. Saint Barthélemy 'BL' -> 2012; incl. French Guiana 'GF', Guadeloupe 'GP',
+            Martinique 'MQ', Réunion 'RE' from 1997; incl. Mayotte 'YT' from 2014)
     cascadeParentIds: []
     scope:
       rootPath:
@@ -400,6 +445,7 @@ metadata:
     - 20
     - 21
     - 22
+    - 26
     tabsInScope:
     - TAB-PAYS
     description: Recherche par code ou libellé.
@@ -438,6 +484,7 @@ metadata:
     - 20
     - 21
     - 22
+    - 26
     tabsInScope:
     - TAB-PAYS
     description: Produits classés au sein de ce niveau (SH2, SH4, SH6, NC8).
@@ -476,11 +523,53 @@ metadata:
     - 20
     - 21
     - 22
+    - 26
     tabsInScope:
     - TAB-PAYS
     description: ''
+  - id: NATIVE_FILTER-PAYS-DETAIL
+    name: Produit à détailler
+    filterType: filter_select
+    type: NATIVE_FILTER
+    targets:
+    - column:
+        name: detail_product
+      datasetUuid: 36728d1c-82e1-4659-9433-eb37ea4ce456
+    controlValues:
+      enableEmptyFilter: false
+      defaultToFirstItem: false
+      multiSelect: false
+      searchAllOptions: true
+      inverseSelection: false
+      sortAscending: true
+    defaultDataMask:
+      filterState:
+        value: &id001
+        - 850760 — Lithium-ion accumulators (excl. spent)
+      ownState: {}
+      extraFormData:
+        filters:
+        - col: detail_product
+          op: IN
+          val: *id001
+    cascadeParentIds:
+    - NATIVE_FILTER-PAYS-FOCUS
+    - NATIVE_FILTER-PAYS-FLOW
+    - NATIVE_FILTER-PAYS-LEVEL
+    scope:
+      rootPath:
+      - TAB-PAYS
+      excluded:
+      - 20
+      - 21
+      - 22
+    chartsInScope:
+    - 26
+    tabsInScope:
+    - TAB-PAYS
+    description: 'Produit du diagramme des partenaires ; vide : le premier produit du tableau.'
   - id: NATIVE_FILTER-PAYS-EXTRA
-    name: Ajouter des produits
+    name: Produits des courbes
     filterType: filter_select
     type: NATIVE_FILTER
     targets:
@@ -495,9 +584,21 @@ metadata:
       inverseSelection: false
       sortAscending: true
     defaultDataMask:
-      filterState: {}
-      extraFormData: {}
+      filterState:
+        value: &id002
+        - 850760 — Lithium-ion accumulators (excl. spent)
+        - 850780 — Electric accumulators (excl. spent and lead-acid, nickel-cadmium, nickel-iron, nickel-metal
+          hydride and lithium-ion accumulators)
+        - 854140 — Photosensitive semiconductor devices, incl. photovoltaic cells whether or not assembled
+          in modules or made up into panels; light emitting diodes (excl. photovoltaic generators)
+        - 811219 — Articles of beryllium, n.e.s.
+        - 854110 — Diodes (excl. photosensitive or light emitting diodes "LED")
       ownState: {}
+      extraFormData:
+        filters:
+        - col: product_display
+          op: IN
+          val: *id002
     cascadeParentIds:
     - NATIVE_FILTER-PAYS-FOCUS
     - NATIVE_FILTER-PAYS-FLOW
@@ -507,14 +608,15 @@ metadata:
       - TAB-PAYS
       excluded:
       - 20
+      - 26
     chartsInScope:
     - 21
     - 22
     tabsInScope:
     - TAB-PAYS
-    description: Unités ajoutées aux courbes, en plus des plus vulnérables.
+    description: 'Produits tracés dans les courbes ; vide : les 5 premiers du tableau.'
   - id: NATIVE_FILTER-PAYS-MEASURE
-    name: Grandeur (courbe des échanges)
+    name: Grandeur (échanges)
     filterType: filter_select
     type: NATIVE_FILTER
     targets:
@@ -548,11 +650,12 @@ metadata:
       - 22
     chartsInScope:
     - 21
+    - 26
     tabsInScope:
     - TAB-PAYS
-    description: ''
+    description: 'Valeur en euros ou quantité en 100 kg : courbe des échanges et diagramme des partenaires.'
   - id: NATIVE_FILTER-PAYS-METRIC
-    name: Métrique (courbe des métriques)
+    name: Indicateur (courbe des indicateurs)
     filterType: filter_select
     type: NATIVE_FILTER
     targets:
@@ -569,14 +672,14 @@ metadata:
     defaultDataMask:
       filterState:
         value:
-        - Rang consensus
+        - Rang (1 = le plus vulnérable)
       ownState: {}
       extraFormData:
         filters:
         - col: metric
           op: IN
           val:
-          - Rang consensus
+          - Rang (1 = le plus vulnérable)
     cascadeParentIds: []
     scope:
       rootPath:
@@ -584,6 +687,7 @@ metadata:
       excluded:
       - 20
       - 21
+      - 26
     chartsInScope:
     - 22
     tabsInScope:
@@ -624,6 +728,7 @@ metadata:
     - 23
     - 24
     - 25
+    - 28
     tabsInScope:
     - TAB-PRODUIT
     description: 'Année du classement (toujours renseignée : élagage des partitions).'
@@ -662,6 +767,7 @@ metadata:
     - 23
     - 24
     - 25
+    - 28
     tabsInScope:
     - TAB-PRODUIT
     description: ''
@@ -700,6 +806,7 @@ metadata:
     - 23
     - 24
     - 25
+    - 28
     tabsInScope:
     - TAB-PRODUIT
     description: Recherche par code ou libellé.
@@ -738,11 +845,12 @@ metadata:
     - 23
     - 24
     - 25
+    - 28
     tabsInScope:
     - TAB-PRODUIT
     description: ''
   - id: NATIVE_FILTER-PRODUIT-EXTRA
-    name: Ajouter des pays
+    name: Pays des courbes
     filterType: filter_select
     type: NATIVE_FILTER
     targets:
@@ -757,9 +865,19 @@ metadata:
       inverseSelection: false
       sortAscending: true
     defaultDataMask:
-      filterState: {}
-      extraFormData: {}
+      filterState:
+        value: &id003
+        - NL — Netherlands
+        - EE — Estonia
+        - ES — Spain (incl. Canary Islands 'XB' from 1997)
+        - SK — Slovakia
+        - PT — Portugal
       ownState: {}
+      extraFormData:
+        filters:
+        - col: reporter_display
+          op: IN
+          val: *id003
     cascadeParentIds:
     - NATIVE_FILTER-PRODUIT-FOCUS
     - NATIVE_FILTER-PRODUIT-FLOW
@@ -768,14 +886,15 @@ metadata:
       - TAB-PRODUIT
       excluded:
       - 23
+      - 28
     chartsInScope:
     - 24
     - 25
     tabsInScope:
     - TAB-PRODUIT
-    description: Unités ajoutées aux courbes, en plus des plus vulnérables.
+    description: 'Pays tracés dans les courbes ; vide : les 5 premiers du tableau.'
   - id: NATIVE_FILTER-PRODUIT-MEASURE
-    name: Grandeur (courbe des échanges)
+    name: Grandeur (échanges)
     filterType: filter_select
     type: NATIVE_FILTER
     targets:
@@ -809,11 +928,12 @@ metadata:
       - 25
     chartsInScope:
     - 24
+    - 28
     tabsInScope:
     - TAB-PRODUIT
-    description: ''
+    description: 'Valeur en euros ou quantité en 100 kg : courbe des échanges et diagramme des partenaires.'
   - id: NATIVE_FILTER-PRODUIT-METRIC
-    name: Métrique (courbe des métriques)
+    name: Indicateur (courbe des indicateurs)
     filterType: filter_select
     type: NATIVE_FILTER
     targets:
@@ -830,14 +950,14 @@ metadata:
     defaultDataMask:
       filterState:
         value:
-        - Rang consensus
+        - Rang (1 = le plus vulnérable)
       ownState: {}
       extraFormData:
         filters:
         - col: metric
           op: IN
           val:
-          - Rang consensus
+          - Rang (1 = le plus vulnérable)
     cascadeParentIds: []
     scope:
       rootPath:
@@ -845,6 +965,7 @@ metadata:
       excluded:
       - 23
       - 24
+      - 28
     chartsInScope:
     - 25
     tabsInScope:

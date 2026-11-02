@@ -8,7 +8,8 @@ catalog: null
 schema: serving.dashboard
 sql: |
   -- Séries temporelles des produits les plus vulnérables : les top_n unités de
-  -- meilleur rang consensus l'année choisie, plus celles du filtre d'ajout. Filtres lus par
+  -- meilleur rang consensus l'année choisie, ou exactement les unités du filtre « Produits des courbes »
+  -- s'il est renseigné (le menu montre ainsi toujours ce qui est tracé). Filtres lus par
   -- filter_values(remove_filter=True) et appliqués dans la requête ; grandeur tracée
   -- choisie par un dictionnaire libellé -> colonne (valeur inconnue : grandeur par défaut).
   -- Niveau de nomenclature choisi : top_n et rangs au sein de ce niveau (rangs
@@ -21,8 +22,8 @@ sql: |
   {% set chosen = filter_values('metric', remove_filter=True) %}
   {% set levels = filter_values('product_level_label', remove_filter=True) %}
   {% set level = 'by_reporter_level' if levels else 'by_reporter' %}
-  {% set columns = {"Rang consensus": "c.primary_rank_" ~ level, "Incertitude du rang (écart interquartile)": "c.rank_spread_" ~ level, "Score de consensus (0-1)": "1 - (c.primary_rank_" ~ level ~ " - 1) / NULLIF(c.primary_n_" ~ level ~ " - 1, 0)", "HHI": "c.\"HHI\"", "CDI2": "c.\"CDI2\"", "CDI3": "c.\"CDI3\"", "WORLD_HHI": "c.\"WORLD_HHI\"", "CENTRALITY_RISK": "c.\"CENTRALITY_RISK\"", "CLUSTERING_W": "c.\"CLUSTERING_W\"", "SPOF": "c.\"SPOF\""} %}
-  {% set choice = chosen[0] if chosen and chosen[0] in columns else "Rang consensus" %}
+  {% set columns = {"Rang (1 = le plus vulnérable)": "c.primary_rank_" ~ level, "Largeur de la fourchette": "c.rank_spread_" ~ level, "Score de vulnérabilité (0 à 1)": "1 - (c.primary_rank_" ~ level ~ " - 1) / NULLIF(c.primary_n_" ~ level ~ " - 1, 0)", "Concentration des partenaires (HHI)": "c.\"HHI\"", "Part des échanges hors UE (CDI2)": "c.\"CDI2\"", "Hors UE / flux de sens inverse (CDI3)": "c.\"CDI3\"", "Concentration mondiale (WORLD_HHI)": "c.\"WORLD_HHI\"", "Poids des pays pivots (CENTRALITY_RISK)": "c.\"CENTRALITY_RISK\"", "Cloisonnement du réseau (CLUSTERING_W)": "c.\"CLUSTERING_W\"", "Point de défaillance unique (SPOF)": "c.\"SPOF\""} %}
+  {% set choice = chosen[0] if chosen and chosen[0] in columns else "Rang (1 = le plus vulnérable)" %}
   WITH ctx AS (
     SELECT * FROM serving.dashboard.cell_scores
     WHERE flow_label IN {{ (flows or ['Import'])|where_in }}
@@ -41,8 +42,8 @@ sql: |
     LIMIT {{ top_n|default(5)|int }}
   ),
   units AS (
-    SELECT product FROM top
-    {% if extra %}UNION SELECT product FROM ctx WHERE product_display IN {{ extra|where_in }}{% endif %}
+    {% if extra %}SELECT DISTINCT product FROM ctx WHERE product_display IN {{ extra|where_in }}
+    {% else %}SELECT product FROM top{% endif %}
   )
   SELECT c.year, make_date(c.year, 1, 1) AS period, c.flow_label, c.in_force,
          c.reporter_display, c.product_display,
@@ -102,6 +103,18 @@ columns:
   is_dttm: false
   is_active: true
   type: BOOL
+  advanced_data_type: null
+  groupby: true
+  filterable: true
+  expression: ''
+  description: null
+  python_date_format: null
+  extra: null
+- column_name: product_level_label
+  verbose_name: null
+  is_dttm: false
+  is_active: true
+  type: STRING
   advanced_data_type: null
   groupby: true
   filterable: true
@@ -174,18 +187,6 @@ columns:
   is_dttm: false
   is_active: true
   type: INT
-  advanced_data_type: null
-  groupby: true
-  filterable: true
-  expression: ''
-  description: null
-  python_date_format: null
-  extra: null
-- column_name: product_level_label
-  verbose_name: null
-  is_dttm: false
-  is_active: true
-  type: STRING
   advanced_data_type: null
   groupby: true
   filterable: true

@@ -1,0 +1,24 @@
+slice_name: Flux du produit entre pays de l'UE et partenaires
+description: Import, des partenaires vers les pays de l'UE ; export, des pays de l'UE vers leurs clients.
+  Échanges entre États membres regroupés en un seul nœud.
+certified_by: null
+certification_details: null
+viz_type: sankey_v2
+params:
+  viz_type: sankey_v2
+  datasource: 17__table
+  source: source
+  target: target
+  metric:
+    expressionType: SQL
+    sqlExpression: SUM(value)
+    label: Échanges
+  adhoc_filters: []
+  row_limit: 1000
+  sort_by_metric: true
+  annotation_layers: []
+query_context: null
+cache_timeout: null
+uuid: 6e2b8f19-0a7d-4c35-b4e8-1d93a6f05c72
+version: 1.0.0
+dataset_uuid: 8d3f6c27-1a94-4e5b-b0c2-7f19e4a6d350

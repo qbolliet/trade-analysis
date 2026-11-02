@@ -1,11 +1,12 @@
-# Tableau de bord Superset « Vulnérabilités » (v2)
+# Tableau de bord Superset « Vulnérabilités » (v2.1)
 
 Tableau de bord versionné « as code » : ce dossier est le contenu décompressé d'un export
 Superset (`metadata.yaml`, `databases/`, `datasets/`, `charts/`, `dashboards/`). Il est
 réimporté par une archive construite avec `tools/superset_bundle.py`. C'est aussi cette
 archive que construit le Job d'import du chart Helm `trade-dashboard` (`helm/`), à partir
 d'une copie de ce dossier (`python tools/sync_chart_files.py`). Ce document décrit le
-parcours, le mécanisme de connexion, le mécanisme du « top N » et les pièges rencontrés.
+parcours, le mécanisme de connexion, le mécanisme du « top N », celui du produit détaillé et
+des diagrammes des partenaires, et les pièges rencontrés.
 
 ## Parcours
 
@@ -13,20 +14,50 @@ Pour une **année** et un **flux** (import ou export), l'utilisateur interroge s
 **pays**, soit un **produit**. Il y a un onglet par type de requête, car un tableau ne
 change pas de colonnes selon un filtre.
 
-| Onglet | Choix | Tableau (trié par rang, 1 = le plus vulnérable) | Courbes sous le tableau |
-|---|---|---|---|
-| **Par pays** | un pays déclarant et un niveau de nomenclature (SH6 par défaut) | produits de ce niveau classés : code, libellé, rang consensus, incertitude du rang, écart interquartile, score de consensus, HHI, CDI2, CDI3, WORLD_HHI, CENTRALITY_RISK, CLUSTERING_W, SPOF, nombre d'alertes | échanges avec le monde (valeur en € ou quantité en 100 kg) ; évolution d'une métrique (rang consensus par défaut) |
-| **Par produit** | un produit | pays déclarants classés, mêmes colonnes | idem, une courbe par pays |
+| Onglet | Choix | Tableau (trié par rang, 1 = le plus vulnérable) | Sous le tableau | Courbes |
+|---|---|---|---|---|
+| **Par pays** | un pays déclarant et un niveau de nomenclature (SH6 par défaut) | produits de ce niveau classés : code, libellé, rang, fourchette du rang et sa largeur, score de vulnérabilité, sept indicateurs, nombre d'alertes | **principaux partenaires** du pays pour le produit détaillé (barres horizontales) | échanges avec le monde (valeur en € ou quantité en 100 kg) ; évolution d'un indicateur (rang par défaut) |
+| **Par produit** | un produit | pays déclarants classés, mêmes colonnes | **flux du produit** entre pays de l'UE et partenaires (Sankey) | idem, une courbe par pays |
 
 Points communs aux deux onglets :
-- **Courbes** : par défaut, les 5 unités les mieux classées l'année choisie (dans l'onglet
-  *Par pays*, au sein du niveau de nomenclature choisi). Le filtre
-  « Ajouter des produits / pays » en ajoute d'autres, sans toucher au tableau.
-- **Bloc Markdown d'aide** en tête de chaque onglet : lecture du rang, de l'incertitude, et
-  sources.
+- **Courbes** : les unités du filtre « Produits des courbes » / « Pays des courbes » ; s'il
+  est vide, les 5 unités les mieux classées l'année choisie (dans l'onglet *Par pays*, au
+  sein du niveau de nomenclature choisi). Le filtre ne touche pas au tableau.
+- **Bloc Markdown d'aide** en tête de chaque onglet, pour des lecteurs non spécialistes : ce
+  que montre la page, comment la lire, comment s'en servir, sources. Les précisions de
+  méthode (méthodes de synthèse, quartiles, nombre de méthodes) sont dans
+  `docs/dashboards.md`, que le bloc cite sans lien : le site de documentation n'était pas
+  publié lors de la construction.
 - **Mise en forme conditionnelle** : une métrique est rouge au-delà de son seuil d'alerte
   (seuils de `parameters_vulnerabilities.yml`, règle « valeur > seuil »). « Nb alertes »
   est jaune de 1 à 2 alertes, rouge à partir de 3.
+
+### Libellés des indicateurs
+
+Un seul libellé par indicateur dans tout le tableau de bord : `verbose_name` des colonnes de
+`cell_scores` (en-têtes des tableaux), valeurs du menu « Indicateur » (`series_options`),
+clés du dictionnaire Jinja des courbes (`metric_series_*`), libellés des métriques `MAX(…)`
+du dataset. Les noms de colonnes de `serving` sont inchangés. Le sigle reste en fin de
+libellé ; la définition est dans la `description` de la colonne. Le test
+`test_indicator_labels_consistent` vérifie la correspondance et l'absence de sigle seul.
+
+| Colonne | Libellé | Sens |
+|---|---|---|
+| `primary_rank_<niveau>` | Rang (1 = le plus vulnérable) | rang consensus |
+| `rank_iqr_<niveau>` | Fourchette du rang | « q25 – q75 » des rangs des méthodes |
+| `rank_spread_<niveau>` | Largeur de la fourchette | q75 − q25 |
+| `consensus_score_<niveau>` | Score de vulnérabilité (0 à 1) | 1 = le plus vulnérable |
+| `HHI` | Concentration des partenaires (HHI) | fournisseurs (import), clients (export) |
+| `CDI2` | Part des échanges hors UE (CDI2) | |
+| `CDI3` | Hors UE / flux de sens inverse (CDI3) | |
+| `WORLD_HHI` | Concentration mondiale (WORLD_HHI) | offre (import), demande (export) |
+| `CENTRALITY_RISK` | Poids des pays pivots (CENTRALITY_RISK) | |
+| `CLUSTERING_W` | Cloisonnement du réseau (CLUSTERING_W) | identique dans les deux sens |
+| `SPOF` | Point de défaillance unique (SPOF) | |
+| `n_alerts` | Seuils d'alerte dépassés (sur 7) | |
+
+Un libellé modifié doit l'être aux quatre endroits à la fois : la valeur du menu est la
+valeur de filtre que lit le gabarit des courbes (valeur inconnue : retour au rang).
 
 ### Lecture du rang et de l'incertitude
 
@@ -44,9 +75,10 @@ Points communs aux deux onglets :
     commun. Le tableau de bord fonctionne ainsi avant comme après le recalcul.
   - Les codes SH2 et SH4 n'ont pas de rang : les métriques réseau n'existent qu'à partir
     du SH6, et une ligne incomplète n'est pas classée.
-- **Incertitude du rang** : « [q25–q75] (n) ». C'est l'intervalle interquartile des rangs
-  que les `n` méthodes de synthèse de `serving.UNCERTAINTY_METHODS` donnent à la même ligne.
-  La colonne `rank_spread_<niveau>` en donne la largeur.
+- **Fourchette du rang** : « q25 – q75 ». C'est l'intervalle interquartile des rangs que les
+  `n_methods_<niveau>` méthodes de synthèse de `serving.UNCERTAINTY_METHODS` donnent à la
+  même ligne (`n` n'est plus affiché, voir `docs/dashboards.md`). La colonne
+  `rank_spread_<niveau>` en donne la largeur.
   - Elle mesure le **désaccord entre méthodes**. Ce n'est pas une incertitude
     d'échantillonnage.
   - Elle est vide sous deux méthodes.
@@ -65,15 +97,18 @@ Voir le mécanisme plus bas.
 
 | Dataset | Type | Rôle |
 |---|---|---|
-| `cell_scores` | physique | tableaux ; colonnes calculées `rank_iqr_<niveau>` (incertitude lisible), `consensus_score_<niveau>` (niveaux `by_reporter`, `by_reporter_level`, `by_product`), `n_alerts`, `period` |
+| `cell_scores` | physique | tableaux ; colonnes calculées `rank_iqr_<niveau>` (fourchette lisible), `consensus_score_<niveau>` (niveaux `by_reporter`, `by_reporter_level`, `by_product`), `n_alerts`, `period`, `detail_product` (cible du filtre « Produit à détailler ») |
 | `trade_series_by_reporter` | virtuel, Jinja | échanges, onglet *Par pays* |
 | `metric_series_by_reporter` | virtuel, Jinja | métriques, onglet *Par pays* |
 | `trade_series_by_product` | virtuel, Jinja | échanges, onglet *Par produit* |
 | `metric_series_by_product` | virtuel, Jinja | métriques, onglet *Par produit* |
-| `series_options` | virtuel, `VALUES` | valeurs des filtres « Grandeur » et « Métrique » |
+| `partners_by_reporter` | virtuel, Jinja | principaux partenaires du produit détaillé, onglet *Par pays* (`flows` et `cell_scores`) |
+| `partner_flows_by_product` | virtuel, Jinja | liens du Sankey, onglet *Par produit* (`flows` et `cell_scores`) |
+| `series_options` | virtuel, `VALUES` | valeurs des filtres « Grandeur » et « Indicateur » |
 
-**Graphiques et tableau de bord** : 6 graphiques (un tableau et deux courbes par onglet), un
-tableau de bord (slug `vulnerabilites`), 15 filtres natifs. Les filtres sont portés par
+**Graphiques et tableau de bord** : 8 graphiques (par onglet un tableau et deux courbes ;
+*Par pays* : un diagramme en barres `echarts_timeseries_bar` horizontal ; *Par produit* : un Sankey `sankey_v2`, le type ECharts
+non déprécié de Superset 4.1), un tableau de bord (slug `vulnerabilites`), 16 filtres natifs. Les filtres sont portés par
 onglet (`scope.rootPath`), et chacun a une valeur par défaut **explicite** :
 
 | Filtre | Défaut | Notes |
@@ -81,11 +116,12 @@ onglet (`scope.rootPath`), et chacun a une valeur par défaut **explicite** :
 | Année | 2021 | dernière année classée en demo ; option `--default-year` |
 | Flux | Import | |
 | Pays ou Produit | « FR — France (…) » ou « 850760 — Lithium-ion accumulators (excl. spent) » | sélection unique, recherche par code et libellé |
-| Niveau de nomenclature | SH6 | onglet *Par pays* seulement ; valeur obligatoire (sans elle, plusieurs rangs 1 cohabiteraient) ; valeurs lues dans les données ; parent du filtre « Ajouter des produits » |
+| Niveau de nomenclature | SH6 | onglet *Par pays* seulement ; valeur obligatoire (sans elle, plusieurs rangs 1 cohabiteraient) ; valeurs lues dans les données ; parent des filtres « Produit à détailler » et « Produits des courbes » |
 | Nomenclature en vigueur | vrai | |
-| Ajouter des produits / pays | vide | multiple ; tableau hors de sa portée |
-| Grandeur | Valeur (€) | portée limitée à la courbe des échanges |
-| Métrique | Rang consensus | portée limitée à la courbe des métriques |
+| Produit à détailler | « 850760 — Lithium-ion accumulators (excl. spent) » (vide : produit de rang 1) | onglet *Par pays* ; sélection unique sur `detail_product` ; parents Pays, Flux, Niveau ; portée : barres |
+| Produits des courbes / Pays des courbes | les 5 premiers produits de la France (SH6, import 2021) / les 5 premiers pays du produit 850760 (vide : les 5 premiers) | multiple ; portée limitée aux courbes ; valeurs fixes, voir les pièges |
+| Grandeur (échanges) | Valeur (€) | courbe des échanges, barres, Sankey |
+| Indicateur (courbe des indicateurs) | Rang (1 = le plus vulnérable) | portée limitée à la courbe des indicateurs |
 
 Les datasets visent le schéma de **production** `serving.dashboard`. La recette
 (`demo_dashboard`) passe par l'option `--schema` de l'outil d'archive.
@@ -103,8 +139,9 @@ datasets virtuels dont le SQL est un gabarit Jinja :
    consensus pour l'année choisie. À défaut d'année, il prend la dernière année ayant des
    rangs. Dans l'onglet *Par pays*, il se limite au niveau de nomenclature choisi et lit
    les rangs `by_reporter_level` (sans niveau choisi : rangs `by_reporter`, tous niveaux
-   confondus). Le CTE `units` y ajoute les unités du filtre « Ajouter », quel que soit leur
-   niveau.
+   confondus). Si le filtre « Produits des courbes » / « Pays des courbes » est renseigné,
+   le CTE `units` retient exactement ses unités, quel que soit leur niveau, à la place du
+   top N : le menu montre ainsi toujours ce qui est tracé.
 3. **Séries** : la requête renvoie les séries de ces unités sur **toutes les années**,
    `period = make_date(year, 1, 1)` en abscisse.
 4. **Grandeur tracée** : elle est choisie par un dictionnaire Jinja libellé → colonne. Une
@@ -122,6 +159,49 @@ FEATURE_FLAGS = {**globals().get("FEATURE_FLAGS", {}), "ENABLE_TEMPLATE_PROCESSI
 
 Cette ligne est portée par le chart Helm `trade-dashboard`
 (`helm/trade-dashboard/files/superset_serving.py`, réglage `catalog.templateProcessing`).
+
+## Produit détaillé et diagrammes des partenaires
+
+**Produit détaillé** (`partners_by_reporter`). Le gabarit choisit, par ordre de priorité :
+1. un code produit reçu par filtrage croisé (`filter_values('product')`, clic sur la colonne
+   code d'un tableau ; voir les pièges) ;
+2. le filtre « Produit à détailler » (`filter_values('detail_product')`) ;
+3. sinon le produit de rang 1 (`by_reporter_level`) du pays, de l'année, du flux et du
+   niveau choisis, parmi les lignes en vigueur (`flows` n'a que les codes en vigueur).
+
+Un titre Superset est statique : le produit affiché se lit dans le filtre « Produit à
+détailler » ou, filtre vide, en première ligne du tableau. Un tableau d'une ligne
+« produit détaillé » au-dessus des barres a été essayé puis retiré : il occupait une ligne de
+la page sans apporter d'information que le tableau ne donne déjà.
+
+Le filtre porte sur une colonne calculée `detail_product` (= `product_display`) et non sur
+`product_display`, déjà prise par « Produits des courbes » : deux filtres sur la même colonne
+se confondraient dans `filter_values`.
+
+**Barres.** Les `n_partners` premiers partenaires (10, `template_params`, borné de fait par
+`TOP_PARTNERS` = 12 de `flows`), puis « Autres pays » = échanges totaux de la cellule
+(`trade_value_eur` ou `trade_quantity_100kg` de `cell_scores`) − somme des barres, omise si
+nulle. Trois métriques empilées (`value_eu`, `value_extra`, `value_other`, une seule renseignée
+par ligne) colorent les barres sans dimension, car le tri de l'axe n'est proposé qu'en
+l'absence de dimension. Le tri porte sur le libellé « rang. pays — part » (rang complété
+d'une espace sous 10, « Autres pays » après les chiffres) : il est déterministe, quel que
+soit le montant de « Autres pays ». **Pays de l'UE** : déclarant individuel de `flows` la
+même année (Comext ne publie que les États membres ; les agrégats déclarants contiennent un
+`_`), sans attribut ajouté à `serving`.
+
+**Sankey** (`partner_flows_by_product`). Côté UE, les États membres déclarants
+(`EU27_2020` exclu). Côté partenaires, les `k_partners` (12) premiers partenaires hors UE
+cumulés sur les déclarants, « Autres pays hors UE » (`EXT_EU` − flux vers ces partenaires,
+borné à 0) et « Union européenne (échanges entre États membres) » (`WORLD` − `EXT_EU`, la
+décomposition de CDI2). Le Sankey ECharts refuse les cycles et confond deux nœuds de même
+nom : regrouper l'intra-UE en un nœud évite qu'un pays figure des deux côtés. Les nœuds
+sont nommés par le libellé court (texte avant « ( »). Sens : partenaire → pays de l'UE à
+l'import, l'inverse à l'export.
+
+Contrôles (demo, 2021, import et export, valeur et quantité) : somme des barres = échanges
+totaux de `cell_scores`, tri décroissant, produit par défaut de rang 1, somme des flux de
+chaque pays du Sankey = ses échanges totaux. Les tests rendent les deux gabarits sur le
+monde fictif et sur un petit jeu calculé à la main.
 
 ## Mécanisme de connexion
 
@@ -261,6 +341,45 @@ qu'après un nouvel export : à faire aussitôt, sinon l'export versionné diver
   la mise en forme « > 1 » la colore. Cela concerne 44 lignes sur 250 000 en demo.
   « Nb alertes », calculé sur les colonnes `_ALERT`, est exact.
 
+**Diagrammes des partenaires**
+- **Tri d'un diagramme en barres** : en 4.1, « X-Axis Sort By » n'est proposé que sans
+  dimension (`groupby` vide), et seulement sur le libellé de l'axe ou une métrique tracée.
+  D'où les trois métriques empilées pour la couleur et le rang en préfixe du libellé.
+- **Liens du Sankey** : un pays de part et d'autre du diagramme crée un cycle (« Sankey is a
+  DAG ») ; deux nœuds homonymes sont fusionnés. Les nœuds partenaires ne comptent donc
+  aucun État membre.
+- **Synthétique ≠ réel** : dans le monde fictif des tests, `EXT_EU` vaut 0,6 × `WORLD` alors
+  que tous les partenaires sont hors UE ; la somme des flux d'un pays du Sankey n'y égale pas
+  son total. L'égalité est testée sur le jeu calculé à la main et contrôlée sur la demo.
+
+- **Filtrage croisé non activé** : le gabarit des barres lit un code produit reçu par clic
+  (`filter_values('product')`), mais `cross_filters_enabled` reste à `false`. Activé, il
+  ferait émettre un filtre à chaque graphique (clic sur une courbe : filtre sur `unit`) avec
+  une portée globale par défaut, qui filtrerait aussi le tableau de l'onglet *Par produit*
+  (colonne `product`) ; sa portée par graphique (`chart_configuration`) n'a pas pu être
+  essayée dans un navigateur. À activer après un essai à l'écran.
+
+**Menus préremplis (valeurs fixes)**
+- **Pas de valeur par défaut calculée** : en 4.1, l'option « première valeur par défaut »
+  (`defaultToFirstItem`) ne s'applique qu'au premier affichage (valeur encore indéfinie), ne
+  retient qu'une valeur et n'est pas recalculée quand un filtre parent change. Les menus
+  « Produit à détailler », « Produits des courbes » et « Pays des courbes » reçoivent donc des
+  valeurs **fixes**, celles du premier affichage (France, 2021, import, SH6 ; produit
+  850760), calculées sur la demo (rang 1 et 5 premiers rangs). Après un changement de pays,
+  de produit, d'année ou de flux, elles restent sélectionnées : les graphiques suivent le
+  menu, qu'il faut vider pour revenir au rang 1 et aux 5 premiers.
+- **À recalculer** quand les données ou l'année par défaut changent (production, K-17d), et
+  avec `--top-n` (les listes comptent 5 unités), par exemple :
+  ```sql
+  SELECT product_display FROM serving.dashboard.cell_scores
+  WHERE year = 2021 AND flow_label = 'Import' AND reporter = 'FR'
+    AND product_level_label = 'SH6' AND in_force AND primary_rank_by_reporter_level IS NOT NULL
+  ORDER BY primary_rank_by_reporter_level, product LIMIT 5;
+  -- pays : même requête sur product_display = '<produit>', rang primary_rank_by_product, colonne reporter_display
+  ```
+  Le test `test_committed_menu_defaults_are_drawn_units` vérifie la cohérence interne (5
+  unités ; produit détaillé = premier produit = produit par défaut de l'onglet *Par produit*).
+
 **Exploitation**
 - **Cache** : `cache_timeout` de la connexion à 86 400 s (24 h). Après une republication de
   `serving`, un graphique déjà en cache garde l'ancien état jusqu'à *… → Force refresh* ou
@@ -269,7 +388,9 @@ qu'après un nouvel export : à faire aussitôt, sinon l'export versionné diver
 - **Élagage** : les tableaux filtrent toujours `year`, ce qui limite la lecture à une
   partition. Les courbes lisent toutes les années, mais d'un seul pays ou produit : elles
   s'appuient sur les statistiques min/max du tri d'insertion. Latences à froid mesurées en
-  demo (K-03c v2) : 0,8 à 1,1 s pour les tableaux, 2,0 à 2,6 s pour les courbes.
+  demo (K-03c v2) : 0,8 à 1,1 s pour les tableaux, 2,0 à 2,6 s pour les courbes ;
+  (K-17h) 1,3 à 1,9 s pour les barres et le Sankey, qui ne lisent
+  qu'une partition de `flows` et de `cell_scores`.
 - **Configuration portée par Helm** : l'ancien service Onyxia `superset-899573` avait été
   configuré en modifiant directement ses Secrets (`superset-899573-env`,
   `superset-899573-config`), modification perdue à tout redéploiement depuis Onyxia. Le

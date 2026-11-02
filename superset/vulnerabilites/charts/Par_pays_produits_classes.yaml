@@ -93,6 +93,7 @@ params:
   percent_metrics: []
   metrics: []
   groupby: []
+  annotation_layers: []
 query_context: null
 cache_timeout: null
 uuid: 03e1d121-2a7b-4488-86b0-9eb770dbc108

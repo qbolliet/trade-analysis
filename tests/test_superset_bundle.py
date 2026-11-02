@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import importlib.util
 import io
+import re
 import zipfile
 from pathlib import Path
 
@@ -184,6 +185,9 @@ def test_committed_export_bundles() -> None:
 # ── Exécution du SQL des datasets virtuels versionnés sur la table de service fictive ──
 
 SOURCE = REPO_ROOT / "superset" / "vulnerabilites"
+# Libellés du menu « Indicateur » lus par les gabarits des courbes
+RANK_LABEL = "Rang (1 = le plus vulnérable)"
+HHI_LABEL = "Concentration des partenaires (HHI)"
 
 
 def _where_in(values) -> str:
@@ -195,14 +199,16 @@ def _where_in(values) -> str:
     return "(" + ", ".join(literal(value) for value in values) + ")"
 
 
-def _run_virtual(conn, name: str, filters: dict, top_n: int = 5) -> pd.DataFrame:
+def _run_virtual(conn, name: str, filters: dict, top_n: int = 5, **params) -> pd.DataFrame:
     """Rend le gabarit Jinja d'un dataset versionné comme Superset, puis l'exécute."""
     dataset = yaml.safe_load((SOURCE / "datasets" / "serving" / f"{name}.yaml").read_text(encoding="utf-8"))
     environment = jinja2.Environment()
     environment.filters["where_in"] = _where_in
+    # Paramètres de gabarit du dataset, surchargés par ceux du test
+    template_params = {**(dataset.get("template_params") or {}), "top_n": top_n, **params}
     sql = environment.from_string(dataset["sql"]).render(
         filter_values=lambda column, default=None, remove_filter=False: list(filters.get(column, [])),
-        top_n=top_n,
+        **template_params,
     )
     return conn.execute(sql).df()
 
@@ -224,6 +230,11 @@ def served(serving_world):
     conn.execute("CREATE SCHEMA serving.dashboard")
     conn.register("cells_frame", cells)
     conn.execute("CREATE TABLE serving.dashboard.cell_scores AS SELECT * FROM cells_frame")
+    # Table flows fictive, lue par les diagrammes des partenaires
+    with serving_world.catalog.connect() as source:
+        flows = source.execute(f"SELECT * FROM {serving_world.catalog.qualified_name('flows')}").df()
+    conn.register("flows_frame", flows)
+    conn.execute("CREATE TABLE serving.dashboard.flows AS SELECT * FROM flows_frame")
     yield conn, cells
     conn.close()
 
@@ -246,7 +257,7 @@ def test_committed_country_series_rank_within_level(served) -> None:
 
     # Rang tracé : rang au sein du niveau ; top N borné
     metric = _run_virtual(conn, "metric_series_by_reporter", {
-        **base, "product_level_label": ["NC8"], "metric": ["Rang consensus"],
+        **base, "product_level_label": ["NC8"], "metric": [RANK_LABEL],
     }, top_n=2)
     assert metric["product_display"].nunique() == 2
     merged = metric[metric["year"] == 2019].merge(expected, on="product_display")
@@ -255,12 +266,13 @@ def test_committed_country_series_rank_within_level(served) -> None:
     )
     assert set(merged["primary_rank_by_reporter_level"]) == {1.0, 2.0}
 
-    # Unité ajoutée d'un autre niveau : tracée en plus du top N
+    # Menu « Produits des courbes » renseigné : exactement ses produits, quel que soit leur
+    # niveau, à la place du top N (le menu montre ce qui est tracé)
     sh6 = expected.loc[expected["product_level_label"] == "SH6", "product_display"].iloc[0]
-    extra = _run_virtual(conn, "trade_series_by_reporter", {
+    chosen = _run_virtual(conn, "trade_series_by_reporter", {
         **base, "product_level_label": ["NC8"], "product_display": [sh6],
     }, top_n=1)
-    assert extra["product_display"].nunique() == 2 and sh6 in set(extra["product_display"])
+    assert set(chosen["product_display"]) == {sh6}
 
 
 def test_committed_product_series_run(served) -> None:
@@ -269,7 +281,215 @@ def test_committed_product_series_run(served) -> None:
     product = cells.loc[cells["product_level"] == 8, "product_display"].iloc[0]
     filters = {"year": [2019], "flow_label": ["Import"], "product_display": [product], "in_force": [True]}
     trade = _run_virtual(conn, "trade_series_by_product", filters, top_n=2)
-    metric = _run_virtual(conn, "metric_series_by_product", {**filters, "metric": ["HHI"]}, top_n=2)
+    metric = _run_virtual(conn, "metric_series_by_product", {**filters, "metric": [HHI_LABEL]}, top_n=2)
     assert trade["reporter_display"].nunique() == 2 and set(trade["measure"]) == {"Valeur (€)"}
-    assert metric["reporter_display"].nunique() == 2 and set(metric["metric"]) == {"HHI"}
+    assert metric["reporter_display"].nunique() == 2 and set(metric["metric"]) == {HHI_LABEL}
     assert trade["value"].notna().all()
+    # Menu « Pays des courbes » renseigné : exactement ses pays
+    de = cells.loc[cells["reporter"] == "DE", "reporter_display"].iloc[0]
+    chosen = _run_virtual(conn, "metric_series_by_product", {**filters, "reporter_display": [de]}, top_n=2)
+    assert set(chosen["reporter_display"]) == {de}
+
+
+def test_committed_menu_defaults_are_drawn_units() -> None:
+    """Valeurs par défaut des menus : produit détaillé = premier des produits des courbes."""
+    dashboard = yaml.safe_load((SOURCE / "dashboards" / "Vulnerabilites.yaml").read_text(encoding="utf-8"))
+    filters = {f["id"]: f for f in dashboard["metadata"]["native_filter_configuration"]}
+    value = lambda name: filters[name]["defaultDataMask"]["filterState"]["value"]
+    products, reporters = value("NATIVE_FILTER-PAYS-EXTRA"), value("NATIVE_FILTER-PRODUIT-EXTRA")
+    assert len(products) == len(reporters) == 5
+    assert value("NATIVE_FILTER-PAYS-DETAIL") == products[:1] == value("NATIVE_FILTER-PRODUIT-FOCUS")
+    for name in ("NATIVE_FILTER-PAYS-EXTRA", "NATIVE_FILTER-PRODUIT-EXTRA", "NATIVE_FILTER-PAYS-DETAIL"):
+        mask = filters[name]["defaultDataMask"]
+        assert mask["extraFormData"]["filters"][0]["val"] == mask["filterState"]["value"]
+
+
+# ── Diagrammes des partenaires : barres (onglet Par pays) et Sankey (onglet Par produit) ──
+
+def test_committed_partner_bars_on_synthetic_world(served) -> None:
+    """Barres : somme égale au total de cell_scores, tri décroissant, rang 1 par défaut."""
+    conn, cells = served
+    fr = cells.loc[cells["reporter"] == "FR", "reporter_display"].iloc[0]
+    base = {"year": [2019], "reporter_display": [fr], "in_force": [True], "product_level_label": ["NC8"]}
+    for flow, code in (("Import", "1"), ("Export", "2")):
+        bars = _run_virtual(conn, "partners_by_reporter", {**base, "flow_label": [flow]})
+        expected = cells[(cells["reporter"] == "FR") & (cells["year"] == 2019) & (cells["flow"] == code)
+                         & cells["in_force"] & (cells["product_level_label"] == "NC8")]
+        first = expected.sort_values(["primary_rank_by_reporter_level", "product"]).iloc[0]
+        # Produit par défaut : rang 1 du niveau choisi
+        assert set(bars["product_display"]) == {first["product_display"]}
+        # Somme des barres (« Autres pays » compris) = échanges totaux de la cellule
+        assert bars["value"].sum() == pytest.approx(first["trade_value_eur"])
+        partners = bars[bars["zone"] != "Autres pays"]
+        assert len(partners) == 10 and partners["value"].is_monotonic_decreasing
+        assert bars["zone"].iloc[-1] == "Autres pays" and set(bars["flow_label"]) == {flow}
+        # Une seule colonne de couleur renseignée par ligne
+        assert (bars[["value_eu", "value_extra", "value_other"]].notna().sum(axis=1) == 1).all()
+
+    # Produit choisi par le filtre « Produit à détailler »
+    other = cells[(cells["reporter"] == "FR") & (cells["year"] == 2019) & (cells["flow"] == "1")
+                  & (cells["product_level_label"] == "SH6")]["product_display"].iloc[0]
+    chosen = _run_virtual(conn, "partners_by_reporter", {**base, "flow_label": ["Import"], "detail_product": [other]})
+    assert set(chosen["product_display"]) == {other}
+
+
+def test_committed_sankey_on_synthetic_world(served) -> None:
+    """Sankey : agrégats déclarants exclus, sens des liens selon le flux."""
+    conn, cells = served
+    product = cells.loc[cells["product_level"] == 8, "product_display"].iloc[0]
+    filters = {"year": [2019], "product_display": [product], "in_force": [True]}
+    imports = _run_virtual(conn, "partner_flows_by_product", {**filters, "flow_label": ["Import"]})
+    exports = _run_virtual(conn, "partner_flows_by_product", {**filters, "flow_label": ["Export"]})
+    labels = cells.set_index("reporter")["reporter_label"].to_dict()
+    # Pays de l'UE à droite à l'import, à gauche à l'export ; Union entière exclue
+    assert set(imports["target"]) == {labels["FR"].split(" (")[0], labels["DE"].split(" (")[0]}
+    assert set(exports["source"]) == set(imports["target"])
+    assert not any("European Union" in node for node in set(imports["target"]) | set(imports["source"]))
+    assert (imports["value"] > 0).all()
+
+
+@pytest.fixture
+def hand_world():
+    """Petit monde écrit à la main : deux États membres, l'Union, trois partenaires hors UE.
+
+    Import 2021 du produit 850760 : France, total 100 (quantité 10), hors UE 70, Chine 50
+    (quantité 5), Allemagne 30 (quantité non déclarée), États-Unis 15 (quantité 1,5) ;
+    Allemagne, total 200, hors UE 50, France 150, Chine 30, Japon 20 ; Union, hors UE 120.
+    Export : France, total 60, entièrement vers les États-Unis. Produit 850780 : rang 2.
+    """
+    fr, de, eu = "FR — France (incl. Mayotte)", "DE — Germany (incl. GDR)", "EU27_2020 — European Union"
+    p1, p2 = "850760 — Lithium-ion accumulators", "850780 — Other accumulators"
+    cells = pd.DataFrame([
+        # reporter, display, label, product, display, flow, flow_label, rang pays, rang produit, valeur, quantité, CDI2
+        ("FR", fr, "France (incl. Mayotte)", "850760", p1, "1", "Import", 1.0, 1.0, 100.0, 10.0, 0.7),
+        ("FR", fr, "France (incl. Mayotte)", "850780", p2, "1", "Import", 2.0, 1.0, 40.0, None, 1.0),
+        ("FR", fr, "France (incl. Mayotte)", "850760", p1, "2", "Export", 1.0, 1.0, 60.0, 6.0, 1.0),
+        ("DE", de, "Germany (incl. GDR)", "850760", p1, "1", "Import", 1.0, 2.0, 200.0, 20.0, 0.25),
+        ("EU27_2020", eu, "European Union", "850760", p1, "1", "Import", None, None, 120.0, 12.0, 1.0),
+    ], columns=["reporter", "reporter_display", "reporter_label", "product", "product_display", "flow",
+                "flow_label", "primary_rank_by_reporter_level", "primary_rank_by_product",
+                "trade_value_eur", "trade_quantity_100kg", "CDI2"])
+    cells = cells.assign(year=2021, in_force=True, product_level_label="SH6")
+    flows = pd.DataFrame([
+        # reporter, label, product, flow, partner, label, agrégat, valeur, quantité, part, rang
+        ("FR", "France (incl. Mayotte)", "850760", "1", "WORLD", "All countries", True, 100.0, 10.0, 1.0, None),
+        ("FR", "France (incl. Mayotte)", "850760", "1", "EXT_EU", "Extra-EU", True, 70.0, 7.0, 0.7, None),
+        ("FR", "France (incl. Mayotte)", "850760", "1", "CN", "China", False, 50.0, 5.0, 0.5, 1),
+        ("FR", "France (incl. Mayotte)", "850760", "1", "DE", "Germany (incl. GDR)", False, 30.0, None, 0.3, 2),
+        ("FR", "France (incl. Mayotte)", "850760", "1", "US", "United States", False, 15.0, 1.5, 0.15, 3),
+        ("FR", "France (incl. Mayotte)", "850780", "1", "WORLD", "All countries", True, 40.0, None, 1.0, None),
+        ("FR", "France (incl. Mayotte)", "850780", "1", "CN", "China", False, 40.0, None, 1.0, 1),
+        ("FR", "France (incl. Mayotte)", "850760", "2", "WORLD", "All countries", True, 60.0, 6.0, 1.0, None),
+        ("FR", "France (incl. Mayotte)", "850760", "2", "EXT_EU", "Extra-EU", True, 60.0, 6.0, 1.0, None),
+        ("FR", "France (incl. Mayotte)", "850760", "2", "US", "United States", False, 60.0, 6.0, 1.0, 1),
+        ("DE", "Germany (incl. GDR)", "850760", "1", "WORLD", "All countries", True, 200.0, 20.0, 1.0, None),
+        ("DE", "Germany (incl. GDR)", "850760", "1", "EXT_EU", "Extra-EU", True, 50.0, 5.0, 0.25, None),
+        ("DE", "Germany (incl. GDR)", "850760", "1", "FR", "France (incl. Mayotte)", False, 150.0, 15.0, 0.75, 1),
+        ("DE", "Germany (incl. GDR)", "850760", "1", "CN", "China", False, 30.0, 3.0, 0.15, 2),
+        ("DE", "Germany (incl. GDR)", "850760", "1", "JP", "Japan", False, 20.0, 2.0, 0.1, 3),
+        ("EU27_2020", "European Union", "850760", "1", "EXT_EU27_2020", "Extra-EU27", True, 120.0, 12.0, 1.0, None),
+        ("EU27_2020", "European Union", "850760", "1", "CN", "China", False, 80.0, 8.0, 0.67, 1),
+    ], columns=["reporter", "reporter_label", "product", "flow", "partner", "partner_label", "is_aggregate",
+                "value_eur", "quantity_100kg", "share", "rank"]).assign(year=2021)
+    flows["rank"] = flows["rank"].astype("Int64")
+    conn = duckdb.connect()
+    conn.execute("ATTACH ':memory:' AS serving")
+    conn.execute("CREATE SCHEMA serving.dashboard")
+    for name, frame in (("cell_scores", cells), ("flows", flows)):
+        conn.register(f"{name}_frame", frame)
+        conn.execute(f"CREATE TABLE serving.dashboard.{name} AS SELECT * FROM {name}_frame")
+    yield conn, {"fr": fr, "p1": p1, "p2": p2}
+    conn.close()
+
+
+def test_partner_bars_hand_computed(hand_world) -> None:
+    """Barres : valeurs, « Autres pays », zones UE / hors UE et quantité calculées à la main."""
+    conn, names = hand_world
+    base = {"year": [2021], "flow_label": ["Import"], "reporter_display": [names["fr"]], "in_force": [True],
+            "product_level_label": ["SH6"]}
+    bars = _run_virtual(conn, "partners_by_reporter", base, n_partners=2)
+    # Défaut : produit de rang 1 ; Chine 50 (hors UE), Allemagne 30 (UE), Autres 100 − 80 = 20
+    assert set(bars["product_display"]) == {names["p1"]}
+    assert bars["partner_name"].tolist() == ["China", "Germany", "Autres pays"]
+    assert bars["value"].tolist() == [50.0, 30.0, 20.0]
+    assert bars["zone"].tolist() == ["Pays hors UE", "Pays de l'UE", "Autres pays"]
+    assert bars["bar_label"].tolist() == [" 1. China — 50,0 %", " 2. Germany — 30,0 %", "Autres pays — 20,0 %"]
+    # Tri du graphique par libellé décroissant : « Autres pays », puis rang 2, puis rang 1
+    assert sorted(bars["bar_label"], reverse=True) == bars["bar_label"].tolist()[::-1]
+
+    # Trois partenaires : Autres 100 − 95 = 5
+    bars = _run_virtual(conn, "partners_by_reporter", base, n_partners=3)
+    assert bars["value"].tolist() == [50.0, 30.0, 15.0, 5.0]
+
+    # Quantité : Allemagne absente (non déclarée), Autres 10 − 6,5 = 3,5
+    quantity = _run_virtual(conn, "partners_by_reporter", {**base, "measure": ["Quantité (100 kg)"]}, n_partners=3)
+    assert quantity["partner_name"].tolist() == ["China", "United States", "Autres pays"]
+    assert quantity["value"].tolist() == pytest.approx([5.0, 1.5, 3.5])
+    assert set(quantity["measure"]) == {"Quantité (100 kg)"}
+
+    # Produit à détailler, puis clic sur un code produit (prioritaire) ; quantité totale
+    # inconnue : aucune ligne « Autres pays »
+    chosen = _run_virtual(conn, "partners_by_reporter", {**base, "detail_product": [names["p1"]]}, n_partners=3)
+    assert set(chosen["product_display"]) == {names["p1"]}
+    clicked = _run_virtual(conn, "partners_by_reporter",
+                           {**base, "detail_product": [names["p1"]], "product": ["850780"]})
+    assert clicked["partner_name"].tolist() == ["China"] and clicked["value"].tolist() == [40.0]
+    unknown = _run_virtual(conn, "partners_by_reporter",
+                           {**base, "product": ["850780"], "measure": ["Quantité (100 kg)"]})
+    assert unknown.empty
+
+
+def test_sankey_hand_computed(hand_world) -> None:
+    """Sankey : nœuds hors UE, « Autres pays hors UE » et nœud intra-UE calculés à la main."""
+    conn, names = hand_world
+    base = {"year": [2021], "product_display": [names["p1"]], "in_force": [True]}
+    links = _run_virtual(conn, "partner_flows_by_product", {**base, "flow_label": ["Import"]}, k_partners=1)
+    got = {(row.source, row.target): row.value for row in links.itertuples()}
+    # Partenaires hors UE cumulés : Chine 80, Japon 20, États-Unis 15 → K = 1 retient la Chine ;
+    # la France, déclarante, n'est pas un partenaire hors UE de l'Allemagne
+    intra = "Union européenne (échanges entre États membres)"
+    assert got == {
+        ("China", "France"): 50.0, ("Autres pays hors UE", "France"): 20.0, (intra, "France"): 30.0,
+        ("China", "Germany"): 30.0, ("Autres pays hors UE", "Germany"): 20.0, (intra, "Germany"): 150.0,
+    }
+    # Somme entrante de chaque pays = son total ; l'Union entière n'apparaît pas
+    assert links.groupby("target")["value"].sum().to_dict() == {"France": 100.0, "Germany": 200.0}
+
+    # Export : pays de l'UE à gauche ; liens nuls omis
+    exports = _run_virtual(conn, "partner_flows_by_product", {**base, "flow_label": ["Export"]})
+    assert exports[["source", "target", "value"]].values.tolist() == [["France", "United States", 60.0]]
+
+
+# ── Libellés des indicateurs : un seul libellé par indicateur, jamais un sigle seul ──
+
+SIGLES = {"HHI", "CDI2", "CDI3", "WORLD_HHI", "CENTRALITY_RISK", "CLUSTERING_W", "SPOF"}
+
+
+def _template_keys(name: str) -> list:
+    """Clés du dictionnaire Jinja « libellé → colonne » d'un dataset de courbes."""
+    sql = yaml.safe_load((SOURCE / "datasets" / "serving" / f"{name}.yaml").read_text(encoding="utf-8"))["sql"]
+    line = next(line for line in sql.splitlines() if "{% set columns = {" in line)
+    return re.findall(r'"([^"]+)": "', line)
+
+
+def test_indicator_labels_consistent() -> None:
+    """Menu « Indicateur » = clés des gabarits = libellés des colonnes du tableau."""
+    options = yaml.safe_load((SOURCE / "datasets" / "serving" / "series_options.yaml").read_text(encoding="utf-8"))
+    menu = re.findall(r"\(NULL, '((?:[^']|'')+)'\)", options["sql"])
+    assert menu and menu == _template_keys("metric_series_by_reporter") == _template_keys("metric_series_by_product")
+
+    cell_scores = yaml.safe_load((SOURCE / "datasets" / "serving" / "cell_scores.yaml").read_text(encoding="utf-8"))
+    verbose = {column["column_name"]: column["verbose_name"] for column in cell_scores["columns"]}
+    for sigle in SIGLES:
+        # Libellé explicite, sigle en fin de libellé pour les lecteurs experts
+        assert verbose[sigle].endswith(f"({sigle})") and verbose[sigle] in menu
+    assert verbose["primary_rank_by_reporter_level"] == verbose["primary_rank_by_product"] == menu[0]
+
+    # Aucun sigle seul : en-têtes des tableaux, menu, métriques des graphiques
+    for chart in (SOURCE / "charts").glob("*.yaml"):
+        params = yaml.safe_load(chart.read_text(encoding="utf-8"))["params"]
+        shown = [verbose.get(column, column) for column in params.get("all_columns") or []]
+        metrics = params.get("metrics") or [params.get("metric")]
+        shown += [metric["label"] for metric in metrics if isinstance(metric, dict)]
+        assert not SIGLES & set(shown), chart.name
+    assert not SIGLES & set(menu)

@@ -1,7 +1,6 @@
 table_name: cell_scores
 main_dttm_col: period
-description: 'Une ligne par cellule (pays, produit, flux, année) : métriques, rangs,
-  incertitude, échanges.'
+description: 'Une ligne par cellule (pays, produit, flux, année) : métriques, rangs, incertitude, échanges.'
 default_endpoint: null
 offset: 0
 cache_timeout: null
@@ -17,17 +16,8 @@ normalize_columns: false
 always_filter_main_dttm: false
 uuid: 36728d1c-82e1-4659-9433-eb37ea4ce456
 metrics:
-- metric_name: max_cdi2
-  verbose_name: Max CDI2
-  metric_type: null
-  expression: MAX("CDI2")
-  description: null
-  d3format: null
-  currency: null
-  extra: null
-  warning_text: null
 - metric_name: max_cdi3
-  verbose_name: Max CDI3
+  verbose_name: Max — Hors UE / flux de sens inverse (CDI3)
   metric_type: null
   expression: MAX("CDI3")
   description: null
@@ -35,8 +25,17 @@ metrics:
   currency: null
   extra: null
   warning_text: null
+- metric_name: max_cdi2
+  verbose_name: Max — Part des échanges hors UE (CDI2)
+  metric_type: null
+  expression: MAX("CDI2")
+  description: null
+  d3format: null
+  currency: null
+  extra: null
+  warning_text: null
 - metric_name: max_centrality_risk
-  verbose_name: Max CENTRALITY_RISK
+  verbose_name: Max — Poids des pays pivots (CENTRALITY_RISK)
   metric_type: null
   expression: MAX("CENTRALITY_RISK")
   description: null
@@ -44,26 +43,8 @@ metrics:
   currency: null
   extra: null
   warning_text: null
-- metric_name: max_clustering_w
-  verbose_name: Max CLUSTERING_W
-  metric_type: null
-  expression: MAX("CLUSTERING_W")
-  description: null
-  d3format: null
-  currency: null
-  extra: null
-  warning_text: null
-- metric_name: max_export_hhi
-  verbose_name: Max EXPORT_HHI
-  metric_type: null
-  expression: MAX("EXPORT_HHI")
-  description: null
-  d3format: null
-  currency: null
-  extra: null
-  warning_text: null
 - metric_name: max_spof
-  verbose_name: Max SPOF
+  verbose_name: Max — Point de défaillance unique (SPOF)
   metric_type: null
   expression: MAX("SPOF")
   description: null
@@ -71,8 +52,17 @@ metrics:
   currency: null
   extra: null
   warning_text: null
+- metric_name: max_clustering_w
+  verbose_name: Max — Cloisonnement du réseau (CLUSTERING_W)
+  metric_type: null
+  expression: MAX("CLUSTERING_W")
+  description: null
+  d3format: null
+  currency: null
+  extra: null
+  warning_text: null
 - metric_name: max_hhi
-  verbose_name: Max HHI
+  verbose_name: Max — Concentration des partenaires (HHI)
   metric_type: null
   expression: MAX("HHI")
   description: null
@@ -126,77 +116,8 @@ metrics:
   extra: null
   warning_text: null
 columns:
-- column_name: n_alerts
-  verbose_name: Nb alertes
-  is_dttm: false
-  is_active: true
-  type: INTEGER
-  advanced_data_type: null
-  groupby: true
-  filterable: true
-  expression: coalesce(CAST("HHI_ALERT" AS INTEGER), 0) + coalesce(CAST("CDI2_ALERT"
-    AS INTEGER), 0) + coalesce(CAST("CDI3_ALERT" AS INTEGER), 0) + coalesce(CAST("WORLD_HHI_ALERT"
-    AS INTEGER), 0) + coalesce(CAST("CENTRALITY_RISK_ALERT" AS INTEGER), 0) + coalesce(CAST("CLUSTERING_W_ALERT"
-    AS INTEGER), 0) + coalesce(CAST("SPOF_ALERT" AS INTEGER), 0)
-  description: null
-  python_date_format: null
-  extra: null
-- column_name: rank_iqr_by_product
-  verbose_name: Incertitude du rang [q25–q75] (méthodes)
-  is_dttm: false
-  is_active: true
-  type: STRING
-  advanced_data_type: null
-  groupby: true
-  filterable: true
-  expression: CASE WHEN n_methods_by_product >= 2 THEN '[' || format('{:g}', round(rank_q25_by_product,
-    1)) || '–' || format('{:g}', round(rank_q75_by_product, 1)) || '] (' || n_methods_by_product
-    || ')' END
-  description: null
-  python_date_format: null
-  extra: null
-- column_name: rank_iqr_by_reporter
-  verbose_name: Incertitude du rang [q25–q75] (méthodes)
-  is_dttm: false
-  is_active: true
-  type: STRING
-  advanced_data_type: null
-  groupby: true
-  filterable: true
-  expression: CASE WHEN n_methods_by_reporter >= 2 THEN '[' || format('{:g}', round(rank_q25_by_reporter,
-    1)) || '–' || format('{:g}', round(rank_q75_by_reporter, 1)) || '] (' || n_methods_by_reporter
-    || ')' END
-  description: null
-  python_date_format: null
-  extra: null
-- column_name: consensus_score_by_product
-  verbose_name: Score de consensus (0-1, 1 = plus vulnérable)
-  is_dttm: false
-  is_active: true
-  type: FLOAT
-  advanced_data_type: null
-  groupby: true
-  filterable: true
-  expression: 1 - (primary_rank_by_product - 1) / NULLIF(primary_n_by_product - 1,
-    0)
-  description: null
-  python_date_format: null
-  extra: null
-- column_name: consensus_score_by_reporter
-  verbose_name: Score de consensus (0-1, 1 = plus vulnérable)
-  is_dttm: false
-  is_active: true
-  type: FLOAT
-  advanced_data_type: null
-  groupby: true
-  filterable: true
-  expression: 1 - (primary_rank_by_reporter - 1) / NULLIF(primary_n_by_reporter -
-    1, 0)
-  description: null
-  python_date_format: null
-  extra: null
-- column_name: rank_spread_by_product
-  verbose_name: Écart interquartile du rang
+- column_name: CDI3
+  verbose_name: Hors UE / flux de sens inverse (CDI3)
   is_dttm: false
   is_active: true
   type: FLOAT
@@ -204,14 +125,286 @@ columns:
   groupby: true
   filterable: true
   expression: ''
-  description: null
+  description: 'À l''import : importations hors UE rapportées aux exportations totales du pays (au-delà
+    de 1, les achats hors UE dépassent ce que le pays exporte : faible capacité à les remplacer par sa
+    production). À l''export : exportations hors UE rapportées aux importations totales. Alerte au-delà
+    de 1. Plus la valeur est élevée, plus la ligne est vulnérable.'
   python_date_format: null
   extra: null
-- column_name: rank_spread_by_reporter
-  verbose_name: Écart interquartile du rang
+- column_name: rank_iqr_by_reporter_level
+  verbose_name: Fourchette du rang
+  is_dttm: false
+  is_active: true
+  type: STRING
+  advanced_data_type: null
+  groupby: true
+  filterable: true
+  expression: CASE WHEN n_methods_by_reporter_level >= 2 THEN format('{:g}', round(rank_q25_by_reporter_level,
+    1)) || ' – ' || format('{:g}', round(rank_q75_by_reporter_level, 1)) END
+  description: 'Rangs donnés à la ligne par les différentes façons de combiner les indicateurs (moitié
+    centrale de ces rangs). Étroite : le classement est robuste ; large : il dépend de la façon de pondérer.
+    Vide si moins de deux façons ont classé la ligne.'
+  python_date_format: null
+  extra: null
+- column_name: rank_iqr_by_product
+  verbose_name: Fourchette du rang
+  is_dttm: false
+  is_active: true
+  type: STRING
+  advanced_data_type: null
+  groupby: true
+  filterable: true
+  expression: CASE WHEN n_methods_by_product >= 2 THEN format('{:g}', round(rank_q25_by_product, 1)) ||
+    ' – ' || format('{:g}', round(rank_q75_by_product, 1)) END
+  description: 'Rangs donnés à la ligne par les différentes façons de combiner les indicateurs (moitié
+    centrale de ces rangs). Étroite : le classement est robuste ; large : il dépend de la façon de pondérer.
+    Vide si moins de deux façons ont classé la ligne.'
+  python_date_format: null
+  extra: null
+- column_name: rank_iqr_by_reporter
+  verbose_name: Fourchette du rang
+  is_dttm: false
+  is_active: true
+  type: STRING
+  advanced_data_type: null
+  groupby: true
+  filterable: true
+  expression: CASE WHEN n_methods_by_reporter >= 2 THEN format('{:g}', round(rank_q25_by_reporter, 1))
+    || ' – ' || format('{:g}', round(rank_q75_by_reporter, 1)) END
+  description: 'Rangs donnés à la ligne par les différentes façons de combiner les indicateurs (moitié
+    centrale de ces rangs). Étroite : le classement est robuste ; large : il dépend de la façon de pondérer.
+    Vide si moins de deux façons ont classé la ligne.'
+  python_date_format: null
+  extra: null
+- column_name: SPOF
+  verbose_name: Point de défaillance unique (SPOF)
   is_dttm: false
   is_active: true
   type: FLOAT
+  advanced_data_type: null
+  groupby: true
+  filterable: true
+  expression: ''
+  description: 'Combinaison, entre 0 et 1, des rangs du produit en concentration mondiale et en poids
+    des pays pivots : un produit élevé sur les deux dépend d''une offre (import) ou d''une demande (export)
+    difficile à diversifier. Alerte au-delà de 0,9. Plus la valeur est élevée, plus la ligne est vulnérable.'
+  python_date_format: null
+  extra: null
+- column_name: CLUSTERING_W
+  verbose_name: Cloisonnement du réseau (CLUSTERING_W)
+  is_dttm: false
+  is_active: true
+  type: FLOAT
+  advanced_data_type: null
+  groupby: true
+  filterable: true
+  expression: ''
+  description: 'Tendance des partenaires commerciaux à commercer aussi entre eux pour ce produit (coefficient
+    de regroupement pondéré) : un marché organisé en blocs laisse peu de marge pour diversifier après
+    un choc. Identique à l''import et à l''export. Alerte au-delà de 0,5. Plus la valeur est élevée, plus
+    la ligne est vulnérable.'
+  python_date_format: null
+  extra: null
+- column_name: CENTRALITY_RISK
+  verbose_name: Poids des pays pivots (CENTRALITY_RISK)
+  is_dttm: false
+  is_active: true
+  type: FLOAT
+  advanced_data_type: null
+  groupby: true
+  filterable: true
+  expression: ''
+  description: 'Présence, dans le réseau mondial du produit, de quelques fournisseurs (à l''import) ou
+    acheteurs (à l''export) très centraux : dispersion de leur centralité pondérée. Au-delà de 2,5 (seuil
+    d''alerte), le premier pays pèse environ deux tiers du commerce mondial. Plus la valeur est élevée,
+    plus la ligne est vulnérable.'
+  python_date_format: null
+  extra: null
+- column_name: n_alerts
+  verbose_name: Seuils d'alerte dépassés (sur 7)
+  is_dttm: false
+  is_active: true
+  type: INTEGER
+  advanced_data_type: null
+  groupby: true
+  filterable: true
+  expression: coalesce(CAST("HHI_ALERT" AS INTEGER), 0) + coalesce(CAST("CDI2_ALERT" AS INTEGER), 0) +
+    coalesce(CAST("CDI3_ALERT" AS INTEGER), 0) + coalesce(CAST("WORLD_HHI_ALERT" AS INTEGER), 0) + coalesce(CAST("CENTRALITY_RISK_ALERT"
+    AS INTEGER), 0) + coalesce(CAST("CLUSTERING_W_ALERT" AS INTEGER), 0) + coalesce(CAST("SPOF_ALERT"
+    AS INTEGER), 0)
+  description: Nombre d'indicateurs au-delà de leur seuil d'alerte (0 à 7).
+  python_date_format: null
+  extra: null
+- column_name: HHI
+  verbose_name: Concentration des partenaires (HHI)
+  is_dttm: false
+  is_active: true
+  type: FLOAT
+  advanced_data_type: null
+  groupby: true
+  filterable: true
+  expression: ''
+  description: 'Somme des carrés des parts des partenaires du pays dans ses échanges du produit : ses
+    fournisseurs à l''import, ses clients à l''export. Vaut 1 avec un seul partenaire ; alerte au-delà
+    de 0,5. Plus la valeur est élevée, plus la ligne est vulnérable.'
+  python_date_format: null
+  extra: null
+- column_name: CDI2
+  verbose_name: Part des échanges hors UE (CDI2)
+  is_dttm: false
+  is_active: true
+  type: FLOAT
+  advanced_data_type: null
+  groupby: true
+  filterable: true
+  expression: ''
+  description: Échanges du pays avec les pays hors de l'Union, rapportés à ses échanges totaux du produit
+    (importations à l'import, exportations à l'export). Alerte au-delà de 0,5. Plus la valeur est élevée,
+    plus la ligne est vulnérable.
+  python_date_format: null
+  extra: null
+- column_name: WORLD_HHI
+  verbose_name: Concentration mondiale (WORLD_HHI)
+  is_dttm: false
+  is_active: true
+  type: FLOAT
+  advanced_data_type: null
+  groupby: true
+  filterable: true
+  expression: ''
+  description: 'Concentration, entre pays, du commerce mondial du produit : des exportations mondiales
+    (offre) à l''import, des importations mondiales (demande) à l''export. Alerte au-delà de 0,5. Plus
+    la valeur est élevée, plus la ligne est vulnérable.'
+  python_date_format: null
+  extra: null
+- column_name: consensus_score_by_reporter_level
+  verbose_name: Score de vulnérabilité (0 à 1)
+  is_dttm: false
+  is_active: true
+  type: FLOAT
+  advanced_data_type: null
+  groupby: true
+  filterable: true
+  expression: 1 - (primary_rank_by_reporter_level - 1) / NULLIF(primary_n_by_reporter_level - 1, 0)
+  description: 'Rang ramené entre 0 et 1 : 1 = la ligne la plus vulnérable, 0 = la moins vulnérable.'
+  python_date_format: null
+  extra: null
+- column_name: consensus_score_by_product
+  verbose_name: Score de vulnérabilité (0 à 1)
+  is_dttm: false
+  is_active: true
+  type: FLOAT
+  advanced_data_type: null
+  groupby: true
+  filterable: true
+  expression: 1 - (primary_rank_by_product - 1) / NULLIF(primary_n_by_product - 1, 0)
+  description: 'Rang ramené entre 0 et 1 : 1 = la ligne la plus vulnérable, 0 = la moins vulnérable.'
+  python_date_format: null
+  extra: null
+- column_name: consensus_score_by_reporter
+  verbose_name: Score de vulnérabilité (0 à 1)
+  is_dttm: false
+  is_active: true
+  type: FLOAT
+  advanced_data_type: null
+  groupby: true
+  filterable: true
+  expression: 1 - (primary_rank_by_reporter - 1) / NULLIF(primary_n_by_reporter - 1, 0)
+  description: 'Rang ramené entre 0 et 1 : 1 = la ligne la plus vulnérable, 0 = la moins vulnérable.'
+  python_date_format: null
+  extra: null
+- column_name: rank_spread_by_reporter_level
+  verbose_name: Largeur de la fourchette
+  is_dttm: false
+  is_active: true
+  type: FLOAT
+  advanced_data_type: null
+  groupby: true
+  filterable: true
+  expression: ''
+  description: 'Écart, en rangs, entre les bornes de la fourchette du rang : plus il est faible, plus
+    le classement est robuste.'
+  python_date_format: null
+  extra: null
+- column_name: rank_spread_by_product
+  verbose_name: Largeur de la fourchette
+  is_dttm: false
+  is_active: true
+  type: FLOAT
+  advanced_data_type: null
+  groupby: true
+  filterable: true
+  expression: ''
+  description: 'Écart, en rangs, entre les bornes de la fourchette du rang : plus il est faible, plus
+    le classement est robuste.'
+  python_date_format: null
+  extra: null
+- column_name: rank_spread_by_reporter
+  verbose_name: Largeur de la fourchette
+  is_dttm: false
+  is_active: true
+  type: FLOAT
+  advanced_data_type: null
+  groupby: true
+  filterable: true
+  expression: ''
+  description: 'Écart, en rangs, entre les bornes de la fourchette du rang : plus il est faible, plus
+    le classement est robuste.'
+  python_date_format: null
+  extra: null
+- column_name: primary_rank_by_reporter_level
+  verbose_name: Rang (1 = le plus vulnérable)
+  is_dttm: false
+  is_active: true
+  type: FLOAT
+  advanced_data_type: null
+  groupby: true
+  filterable: true
+  expression: ''
+  description: 'Place de la ligne quand on combine les sept indicateurs : 1 = la plus vulnérable du tableau.'
+  python_date_format: null
+  extra: null
+- column_name: primary_rank_by_product
+  verbose_name: Rang (1 = le plus vulnérable)
+  is_dttm: false
+  is_active: true
+  type: FLOAT
+  advanced_data_type: null
+  groupby: true
+  filterable: true
+  expression: ''
+  description: 'Place de la ligne quand on combine les sept indicateurs : 1 = la plus vulnérable du tableau.'
+  python_date_format: null
+  extra: null
+- column_name: primary_rank_by_reporter
+  verbose_name: Rang (1 = le plus vulnérable)
+  is_dttm: false
+  is_active: true
+  type: FLOAT
+  advanced_data_type: null
+  groupby: true
+  filterable: true
+  expression: ''
+  description: 'Place de la ligne quand on combine les sept indicateurs : 1 = la plus vulnérable du tableau.'
+  python_date_format: null
+  extra: null
+- column_name: detail_product
+  verbose_name: Produit à détailler
+  is_dttm: false
+  is_active: true
+  type: VARCHAR
+  advanced_data_type: null
+  groupby: true
+  filterable: true
+  expression: product_display
+  description: Produit dont le diagramme des partenaires détaille les échanges (même valeur que Produit).
+  python_date_format: null
+  extra: null
+- column_name: product_level
+  verbose_name: Nombre de chiffres du code
+  is_dttm: false
+  is_active: true
+  type: BIGINT
   advanced_data_type: null
   groupby: true
   filterable: true
@@ -245,6 +438,18 @@ columns:
   extra: null
 - column_name: product_label
   verbose_name: Libellé du produit
+  is_dttm: false
+  is_active: true
+  type: VARCHAR
+  advanced_data_type: null
+  groupby: true
+  filterable: true
+  expression: ''
+  description: null
+  python_date_format: null
+  extra: null
+- column_name: product_level_label
+  verbose_name: Niveau de nomenclature
   is_dttm: false
   is_active: true
   type: VARCHAR
@@ -296,30 +501,6 @@ columns:
   is_dttm: false
   is_active: true
   type: VARCHAR
-  advanced_data_type: null
-  groupby: true
-  filterable: true
-  expression: ''
-  description: null
-  python_date_format: null
-  extra: null
-- column_name: primary_rank_by_product
-  verbose_name: Rang consensus
-  is_dttm: false
-  is_active: true
-  type: FLOAT
-  advanced_data_type: null
-  groupby: true
-  filterable: true
-  expression: ''
-  description: null
-  python_date_format: null
-  extra: null
-- column_name: primary_rank_by_reporter
-  verbose_name: Rang consensus
-  is_dttm: false
-  is_active: true
-  type: FLOAT
   advanced_data_type: null
   groupby: true
   filterable: true
@@ -387,6 +568,18 @@ columns:
   description: null
   python_date_format: null
   extra: null
+- column_name: rank_q25_by_reporter_level
+  verbose_name: null
+  is_dttm: false
+  is_active: true
+  type: FLOAT
+  advanced_data_type: null
+  groupby: true
+  filterable: true
+  expression: ''
+  description: null
+  python_date_format: null
+  extra: null
 - column_name: rank_q25_by_product
   verbose_name: null
   is_dttm: false
@@ -435,18 +628,6 @@ columns:
   description: null
   python_date_format: null
   extra: null
-- column_name: CDI2
-  verbose_name: null
-  is_dttm: false
-  is_active: true
-  type: FLOAT
-  advanced_data_type: null
-  groupby: true
-  filterable: true
-  expression: ''
-  description: null
-  python_date_format: null
-  extra: null
 - column_name: CDI3_ALERT
   verbose_name: null
   is_dttm: false
@@ -471,7 +652,7 @@ columns:
   description: null
   python_date_format: null
   extra: null
-- column_name: CDI3
+- column_name: rank_q75_by_reporter_level
   verbose_name: null
   is_dttm: false
   is_active: true
@@ -579,18 +760,6 @@ columns:
   description: null
   python_date_format: null
   extra: null
-- column_name: CENTRALITY_RISK
-  verbose_name: null
-  is_dttm: false
-  is_active: true
-  type: FLOAT
-  advanced_data_type: null
-  groupby: true
-  filterable: true
-  expression: ''
-  description: null
-  python_date_format: null
-  extra: null
 - column_name: hs_vintage
   verbose_name: null
   is_dttm: false
@@ -675,31 +844,7 @@ columns:
   description: null
   python_date_format: null
   extra: null
-- column_name: CLUSTERING_W
-  verbose_name: null
-  is_dttm: false
-  is_active: true
-  type: FLOAT
-  advanced_data_type: null
-  groupby: true
-  filterable: true
-  expression: ''
-  description: null
-  python_date_format: null
-  extra: null
 - column_name: WORLD_HHI_norm
-  verbose_name: null
-  is_dttm: false
-  is_active: true
-  type: FLOAT
-  advanced_data_type: null
-  groupby: true
-  filterable: true
-  expression: ''
-  description: null
-  python_date_format: null
-  extra: null
-- column_name: WORLD_HHI
   verbose_name: null
   is_dttm: false
   is_active: true
@@ -723,18 +868,6 @@ columns:
   description: null
   python_date_format: null
   extra: null
-- column_name: SPOF
-  verbose_name: null
-  is_dttm: false
-  is_active: true
-  type: FLOAT
-  advanced_data_type: null
-  groupby: true
-  filterable: true
-  expression: ''
-  description: null
-  python_date_format: null
-  extra: null
 - column_name: HHI_norm
   verbose_name: null
   is_dttm: false
@@ -747,7 +880,67 @@ columns:
   description: null
   python_date_format: null
   extra: null
-- column_name: HHI
+- column_name: consensus_borda_rank_by_reporter_level
+  verbose_name: null
+  is_dttm: false
+  is_active: true
+  type: FLOAT
+  advanced_data_type: null
+  groupby: true
+  filterable: true
+  expression: ''
+  description: null
+  python_date_format: null
+  extra: null
+- column_name: auto_sum_rank_by_reporter_level
+  verbose_name: null
+  is_dttm: false
+  is_active: true
+  type: FLOAT
+  advanced_data_type: null
+  groupby: true
+  filterable: true
+  expression: ''
+  description: null
+  python_date_format: null
+  extra: null
+- column_name: consensus_borda_score_by_reporter_level
+  verbose_name: null
+  is_dttm: false
+  is_active: true
+  type: FLOAT
+  advanced_data_type: null
+  groupby: true
+  filterable: true
+  expression: ''
+  description: null
+  python_date_format: null
+  extra: null
+- column_name: critic_sum_rank_by_reporter_level
+  verbose_name: null
+  is_dttm: false
+  is_active: true
+  type: FLOAT
+  advanced_data_type: null
+  groupby: true
+  filterable: true
+  expression: ''
+  description: null
+  python_date_format: null
+  extra: null
+- column_name: auto_sum_score_by_reporter_level
+  verbose_name: null
+  is_dttm: false
+  is_active: true
+  type: FLOAT
+  advanced_data_type: null
+  groupby: true
+  filterable: true
+  expression: ''
+  description: null
+  python_date_format: null
+  extra: null
+- column_name: critic_sum_score_by_reporter_level
   verbose_name: null
   is_dttm: false
   is_active: true
@@ -784,6 +977,18 @@ columns:
   python_date_format: null
   extra: null
 - column_name: auto_sum_rank_by_product
+  verbose_name: null
+  is_dttm: false
+  is_active: true
+  type: FLOAT
+  advanced_data_type: null
+  groupby: true
+  filterable: true
+  expression: ''
+  description: null
+  python_date_format: null
+  extra: null
+- column_name: rank_max_by_reporter_level
   verbose_name: null
   is_dttm: false
   is_active: true
@@ -867,7 +1072,31 @@ columns:
   description: null
   python_date_format: null
   extra: null
+- column_name: primary_score_by_reporter_level
+  verbose_name: null
+  is_dttm: false
+  is_active: true
+  type: FLOAT
+  advanced_data_type: null
+  groupby: true
+  filterable: true
+  expression: ''
+  description: null
+  python_date_format: null
+  extra: null
 - column_name: auto_sum_score_by_reporter
+  verbose_name: null
+  is_dttm: false
+  is_active: true
+  type: FLOAT
+  advanced_data_type: null
+  groupby: true
+  filterable: true
+  expression: ''
+  description: null
+  python_date_format: null
+  extra: null
+- column_name: rank_min_by_reporter_level
   verbose_name: null
   is_dttm: false
   is_active: true
@@ -975,6 +1204,30 @@ columns:
   description: null
   python_date_format: null
   extra: null
+- column_name: primary_n_by_reporter_level
+  verbose_name: null
+  is_dttm: false
+  is_active: true
+  type: BIGINT
+  advanced_data_type: null
+  groupby: true
+  filterable: true
+  expression: ''
+  description: null
+  python_date_format: null
+  extra: null
+- column_name: n_methods_by_reporter_level
+  verbose_name: null
+  is_dttm: false
+  is_active: true
+  type: BIGINT
+  advanced_data_type: null
+  groupby: true
+  filterable: true
+  expression: ''
+  description: null
+  python_date_format: null
+  extra: null
 - column_name: primary_n_by_product
   verbose_name: null
   is_dttm: false
@@ -1020,237 +1273,6 @@ columns:
   groupby: true
   filterable: true
   expression: ''
-  description: null
-  python_date_format: null
-  extra: null
-- column_name: product_level
-  verbose_name: Nombre de chiffres du code
-  is_dttm: false
-  is_active: true
-  type: BIGINT
-  advanced_data_type: null
-  groupby: true
-  filterable: true
-  expression: ''
-  description: null
-  python_date_format: null
-  extra: null
-- column_name: product_level_label
-  verbose_name: Niveau de nomenclature
-  is_dttm: false
-  is_active: true
-  type: VARCHAR
-  advanced_data_type: null
-  groupby: true
-  filterable: true
-  expression: ''
-  description: null
-  python_date_format: null
-  extra: null
-- column_name: consensus_borda_score_by_reporter_level
-  verbose_name: null
-  is_dttm: false
-  is_active: true
-  type: FLOAT
-  advanced_data_type: null
-  groupby: true
-  filterable: true
-  expression: ''
-  description: null
-  python_date_format: null
-  extra: null
-- column_name: consensus_borda_rank_by_reporter_level
-  verbose_name: null
-  is_dttm: false
-  is_active: true
-  type: FLOAT
-  advanced_data_type: null
-  groupby: true
-  filterable: true
-  expression: ''
-  description: null
-  python_date_format: null
-  extra: null
-- column_name: auto_sum_score_by_reporter_level
-  verbose_name: null
-  is_dttm: false
-  is_active: true
-  type: FLOAT
-  advanced_data_type: null
-  groupby: true
-  filterable: true
-  expression: ''
-  description: null
-  python_date_format: null
-  extra: null
-- column_name: auto_sum_rank_by_reporter_level
-  verbose_name: null
-  is_dttm: false
-  is_active: true
-  type: FLOAT
-  advanced_data_type: null
-  groupby: true
-  filterable: true
-  expression: ''
-  description: null
-  python_date_format: null
-  extra: null
-- column_name: critic_sum_score_by_reporter_level
-  verbose_name: null
-  is_dttm: false
-  is_active: true
-  type: FLOAT
-  advanced_data_type: null
-  groupby: true
-  filterable: true
-  expression: ''
-  description: null
-  python_date_format: null
-  extra: null
-- column_name: critic_sum_rank_by_reporter_level
-  verbose_name: null
-  is_dttm: false
-  is_active: true
-  type: FLOAT
-  advanced_data_type: null
-  groupby: true
-  filterable: true
-  expression: ''
-  description: null
-  python_date_format: null
-  extra: null
-- column_name: primary_score_by_reporter_level
-  verbose_name: null
-  is_dttm: false
-  is_active: true
-  type: FLOAT
-  advanced_data_type: null
-  groupby: true
-  filterable: true
-  expression: ''
-  description: null
-  python_date_format: null
-  extra: null
-- column_name: primary_rank_by_reporter_level
-  verbose_name: Rang consensus (niveau)
-  is_dttm: false
-  is_active: true
-  type: FLOAT
-  advanced_data_type: null
-  groupby: true
-  filterable: true
-  expression: ''
-  description: null
-  python_date_format: null
-  extra: null
-- column_name: primary_n_by_reporter_level
-  verbose_name: null
-  is_dttm: false
-  is_active: true
-  type: BIGINT
-  advanced_data_type: null
-  groupby: true
-  filterable: true
-  expression: ''
-  description: null
-  python_date_format: null
-  extra: null
-- column_name: n_methods_by_reporter_level
-  verbose_name: null
-  is_dttm: false
-  is_active: true
-  type: BIGINT
-  advanced_data_type: null
-  groupby: true
-  filterable: true
-  expression: ''
-  description: null
-  python_date_format: null
-  extra: null
-- column_name: rank_min_by_reporter_level
-  verbose_name: null
-  is_dttm: false
-  is_active: true
-  type: FLOAT
-  advanced_data_type: null
-  groupby: true
-  filterable: true
-  expression: ''
-  description: null
-  python_date_format: null
-  extra: null
-- column_name: rank_max_by_reporter_level
-  verbose_name: null
-  is_dttm: false
-  is_active: true
-  type: FLOAT
-  advanced_data_type: null
-  groupby: true
-  filterable: true
-  expression: ''
-  description: null
-  python_date_format: null
-  extra: null
-- column_name: rank_q25_by_reporter_level
-  verbose_name: null
-  is_dttm: false
-  is_active: true
-  type: FLOAT
-  advanced_data_type: null
-  groupby: true
-  filterable: true
-  expression: ''
-  description: null
-  python_date_format: null
-  extra: null
-- column_name: rank_q75_by_reporter_level
-  verbose_name: null
-  is_dttm: false
-  is_active: true
-  type: FLOAT
-  advanced_data_type: null
-  groupby: true
-  filterable: true
-  expression: ''
-  description: null
-  python_date_format: null
-  extra: null
-- column_name: rank_spread_by_reporter_level
-  verbose_name: Écart interquartile du rang
-  is_dttm: false
-  is_active: true
-  type: FLOAT
-  advanced_data_type: null
-  groupby: true
-  filterable: true
-  expression: ''
-  description: null
-  python_date_format: null
-  extra: null
-- column_name: rank_iqr_by_reporter_level
-  verbose_name: Incertitude du rang [q25–q75] (méthodes)
-  is_dttm: false
-  is_active: true
-  type: STRING
-  advanced_data_type: null
-  groupby: true
-  filterable: true
-  expression: CASE WHEN n_methods_by_reporter_level >= 2 THEN '[' || format('{:g}',
-    round(rank_q25_by_reporter_level, 1)) || '–' || format('{:g}', round(rank_q75_by_reporter_level,
-    1)) || '] (' || n_methods_by_reporter_level || ')' END
-  description: null
-  python_date_format: null
-  extra: null
-- column_name: consensus_score_by_reporter_level
-  verbose_name: Score de consensus (0-1, 1 = plus vulnérable)
-  is_dttm: false
-  is_active: true
-  type: FLOAT
-  advanced_data_type: null
-  groupby: true
-  filterable: true
-  expression: 1 - (primary_rank_by_reporter_level - 1) / NULLIF(primary_n_by_reporter_level
-    - 1, 0)
   description: null
   python_date_format: null
   extra: null

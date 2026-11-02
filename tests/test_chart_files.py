@@ -54,7 +54,9 @@ def test_the_flattened_export_rebuilds_into_an_assets_archive(tmp_path: Path) ->
     (flat / "..data").mkdir()
     export = tmp_path / "dashboard"
     counts = importer.rebuild_export(flat, export)
-    assert counts[""] == 1 and counts["charts"] == 6 and counts["databases"] == 1
+    # Autant de graphiques que dans l'export versionné
+    n_charts = len(list((FILES / "dashboard" / "charts").glob("*.yaml")))
+    assert counts[""] == 1 and counts["charts"] == n_charts >= 8 and counts["databases"] == 1
     archive = bundle_tool.build_bundle(export, schema="demo_dashboard", default_year=2021, assets_import=True)
     with zipfile.ZipFile(io.BytesIO(archive)) as handle:
         names = handle.namelist()

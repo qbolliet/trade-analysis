@@ -19,6 +19,10 @@
 > package en `tradekit` (**K-17e**), tableau de bord Superset v2 par pays / par produit
 > (**K-17f 🔌**) et charts Helm de déploiement (**K-17g 🔌**), pour ne lancer qu'une recette ;
 > K-17d adapté (tag fourni au lancement, installation par Helm), K-17b ajusté.
+> **Révision 5 du 2026-11-02** : évolutions du tableau de bord demandées par ses utilisateurs
+> avant la recette (**K-17h 🔌**) — dépendances par partenaire (barres dans l'onglet par pays,
+> Sankey dans l'onglet par produit), libellés explicites des indicateurs, textes d'aide
+> didactiques ; K-17d en dépend.
 > Identifiants : `K-xx` (prompts), `PD-xx` / `PS-xx` / `PR-xx` / `PQ-xx` / `C-xx` (ARCH).
 
 ## Mode d'emploi
@@ -79,7 +83,8 @@
 | K-17e | Renommage du package `macroforecast` en `tradekit` | 4 | Sonnet | **Oui** | K-17c | trade-analysis |
 | K-17f 🔌 | Tableau de bord Superset v2 (par pays / par produit, incertitude du rang, valeur ou quantité) et couche de service | 4 | **Opus** | **Oui** | K-17e, catalogue demo existant | trade-analysis |
 | K-17g 🔌 | Charts Helm (pipeline, tableau de bord, parapluie ; Onyxia ou cluster quelconque) | 4 | **Opus** | **Oui** | K-17e, K-17f | trade-analysis |
-| K-17d 🔌 | Validation du déploiement sur bases vierges (recette demo complète, idempotence, MLflow, données, tableau de bord v2, installation Helm, bascule, runbooks) | 4 | Sonnet | **Oui** | K-17c, K-17e, K-17f, K-17g | trade-analysis |
+| K-17h 🔌 | Tableau de bord v2.1 : dépendances par partenaire (barres par pays, Sankey par produit), libellés explicites des indicateurs, textes d'aide didactiques | 4 | **Opus** | **Oui** | K-17f, K-17g | trade-analysis |
+| K-17d 🔌 | Validation du déploiement sur bases vierges (recette demo complète, idempotence, MLflow, données, tableau de bord v2, installation Helm, bascule, runbooks) | 4 | Sonnet | **Oui** | K-17c, K-17e, K-17f, K-17g, K-17h | trade-analysis |
 | K-17b 🔌 | Retrait des données de démonstration et fictives sur le cluster (inventaire, non-contamination, suppression confirmée) | 4 | Sonnet | **Oui** | K-17d, **données réelles complètes** (PQ-20) | trade-analysis |
 | K-18 | Nettoyage final : suppression des scripts, du code fictif et des fichiers de démonstration, documentation | 4 | Sonnet | Non | K-17b | trade-analysis |
 
@@ -96,7 +101,7 @@ flowchart LR
   K12 --> K13 --> K15
   K12 --> K14 --> K15
   K12 --> K16 --> K17
-  K15 --> K17 --> K17c --> K17e --> K17f --> K17g --> K17d --> K17b --> K18
+  K15 --> K17 --> K17c --> K17e --> K17f --> K17g --> K17h --> K17d --> K17b --> K18
 ```
 
 Justification des choix de modèle : **Opus** pour les prompts qui demandent des arbitrages
@@ -2970,9 +2975,215 @@ CRITÈRES D'ACCEPTATION
 
 ---
 
+## K-17h 🔌 — Tableau de bord « Vulnérabilités » v2.1 : dépendances par partenaire, libellés explicites des indicateurs, textes d'aide didactiques
+
+- **Modèle** : **Opus** · **Mode plan** : **Oui** (nouveaux graphiques et éventuel ajout à la couche de service, choix des libellés, plusieurs fichiers d'export à garder cohérents) · **Phase** : 4 · **Dépend de** : K-17f, K-17g (export versionné, `tools/superset_bundle.py`, copie du chart `trade-dashboard`)
+- **Dépôt** : `trade-analysis` — **session lancée depuis un service VSCode Onyxia** (accès PostgreSQL, S3 et à l'URL Superset du namespace)
+
+````text
+CONVENTIONS DE RÉDACTION DU CODE (à appliquer à tout le code écrit ou modifié)
+- Commentaires internes en FRANÇAIS, à formulation nominale (ex. `# Vérification des
+  arguments`, pas `# Vérifier les arguments`) ; expliquer le « pourquoi » plutôt que le
+  « quoi » quand le code est clair.
+- Docstrings en ANGLAIS, selon la convention Google Style : description concise, puis
+  `Args:` (noms, types et descriptions), `Returns:` (type et description), `Raises:`
+  (exceptions possibles) et `Examples:` (cas d'usage concrets, doctest quand possible).
+- Ne cite dans le code, les commentaires et les docstrings aucun identifiant ni paragraphe
+  d'un document d'architecture ou de spécification : décris explicitement toute
+  l'information utile (règle, motivation, valeurs attendues) à l'endroit où elle sert.
+
+Dépôt `trade-analysis`, branche `qb-vulnerabilities`. Lis `CLAUDE.md` (s'il existe),
+`superset/README.md` (EN ENTIER : parcours, mécanisme du top N, import « assets »,
+pièges déjà rencontrés), tout le dossier `superset/vulnerabilites/` (tableau de bord,
+graphiques, datasets — dont les datasets virtuels Jinja des courbes et `series_options`),
+`tools/superset_bundle.py`, `tools/sync_chart_files.py`, `config/base/parameters_serving.yml`
+(tables `cell_scores` et `flows`, `PARTNERS`, `TOP_PARTNERS`),
+`config/base/parameters_vulnerabilities.yml` (seuils d'alerte), les docstrings de
+`tradestat/trade/vulnerabilities/metrics.py` et `network_metrics.py` (définition et
+orientation de chaque métrique, à l'import et à l'export), `docs/dashboards.md`, et dans
+`PIPELINE_ARCHITECTURE.md` : PS-29, PS-30 (en entier), PD-26, PD-27. Le prompt K-17f de
+`PIPELINE_PROMPTS.md` décrit la construction du tableau de bord actuel : ce prompt en est
+le prolongement et en reprend la méthode (API Superset, puis export versionné).
+
+RÈGLES : ne JAMAIS afficher ni recopier la valeur d'un secret (identifiants chargés dans
+l'environnement sans affichage, connexions par la fabrique de `kedro_pipeline/io/`) ;
+toute écriture dans un catalogue (republication de `serving`) ou dans Superset (import,
+suppression) est annoncée et CONFIRMÉE par moi ; vérifie avant toute republication
+qu'aucun workflow `trade-pipeline` n'est en cours (`kubectl get wf`), la publication de
+`serving` étant partagée entre les deux cadences.
+
+CONTEXTE : le tableau de bord v2 (onglets « Par pays » et « Par produit » : tableau classé,
+courbes des échanges et des métriques des unités les plus vulnérables) est en place. Il
+reçoit trois évolutions, demandées par ses utilisateurs, avant la recette sur bases
+vierges (K-17d), pour ne lancer qu'une recette :
+(a) montrer DE QUI (ou VERS QUI, à l'export) un pays dépend pour un produit ;
+(b) rendre les colonnes d'indicateurs compréhensibles sans connaître leurs sigles ;
+(c) rendre le texte d'introduction de chaque onglet plus didactique (ce que montre la page,
+comment la lire et s'en servir) et moins méthodologique.
+Les lecteurs visés ne sont pas des spécialistes de l'analyse multicritère.
+
+DÉCISIONS DÉJÀ PRISES (à appliquer)
+1. Onglet « Par pays » — DIAGRAMME EN BARRES DES PARTENAIRES pour le pays choisi et UN
+   produit :
+   - barres HORIZONTALES (libellés de pays lisibles), une barre par pays partenaire,
+     longueur = échanges avec ce partenaire, triées par ordre DÉCROISSANT de haut en bas ;
+   - grandeur : celle du filtre « Grandeur » existant (valeur en € par défaut, quantité
+     en 100 kg) ; la part du partenaire dans les échanges totaux du pays (`share`, fondée
+     sur la valeur) en infobulle ou en étiquette ;
+   - les N premiers partenaires (N paramétrable, 10 par défaut, au plus `TOP_PARTNERS`
+     puisque `flows` ne conserve que ceux-là) PLUS une barre « Autres pays » = échanges
+     totaux (premier agrégat de `PARTNERS.TOTAL`) − somme des N partenaires, toujours
+     placée EN DERNIER quel que soit son montant (elle n'entre pas dans le tri), omise si
+     nulle. Mieux qu'une troncature : la somme des barres reste égale au total, et le
+     lecteur voit le poids de la « longue traîne » ;
+   - couleur distinguant partenaires intra-UE et extra-UE (le second groupe est celui qui
+     porte la dépendance mesurée par CDI2) : vérifie qu'un attribut UE est disponible
+     (référentiel `countries` ou liste paramétrée) ; sinon, propose-moi la solution la
+     plus simple ;
+   - à l'export, le même graphique montre les CLIENTS du pays : le titre et le texte
+     d'aide doivent rester justes pour les deux flux (« partenaires », ou titre neutre et
+     explication dans le Markdown) ;
+   - CHOIX DU PRODUIT : nouveau filtre natif « Produit à détailler » (sélection unique,
+     « code — libellé », vide par défaut) ; vide → produit le plus vulnérable (rang 1) du
+     pays, de l'année, du flux et du niveau de nomenclature choisis, par le même mécanisme
+     Jinja que le top N des courbes. Le produit effectivement affiché doit être lisible
+     sur le graphique (un titre Superset est statique : par exemple libellé du produit
+     dans l'infobulle et dans le texte d'aide, ou petit graphique « Big Number » / tableau
+     d'une ligne au-dessus des barres) — propose la solution dans le plan. Étudie aussi le
+     filtrage croisé (clic sur une ligne du tableau) ; adopte-le s'il fonctionne avec le
+     dataset virtuel sans dégrader le reste de l'onglet, en complément du filtre.
+2. Onglet « Par produit » — DIAGRAMME DE SANKEY des flux du produit choisi entre pays
+   déclarants de l'Union et pays partenaires :
+   - à l'import : partenaires (exportateurs) à gauche → pays de l'UE (importateurs) à
+     droite ; à l'export : pays de l'UE à gauche → partenaires (clients) à droite.
+     Épaisseur = grandeur du filtre « Grandeur » ;
+   - côté UE : les pays membres individuels uniquement (les agrégats déclarants comme
+     `EU27_2020` sont EXCLUS : ils doubleraient les flux) ;
+   - côté partenaires : les K premiers partenaires du produit, cumulés sur l'ensemble des
+     déclarants (K paramétrable, 12 par défaut), puis un nœud « Autres pays » qui reçoit,
+     pour chaque déclarant, total − somme des K partenaires retenus (il absorbe donc aussi
+     les partenaires coupés par la limite `TOP_PARTNERS` de `flows`) ;
+   - commerce intra-UE : un pays membre peut figurer des deux côtés (la France fournit
+     l'Allemagne). Le Sankey de Superset refuse les cycles et confond deux nœuds de même
+     nom : les nœuds partenaires doivent être nommés distinctement (suffixe, par exemple
+     « France (partenaire) ») ou les partenaires intra-UE regroupés en un nœud
+     « Partenaires de l'UE » ; propose le choix dans le plan, la lisibilité de la
+     dépendance EXTRA-UE étant la priorité ;
+   - type de graphique : vérifie la version de Superset du service et les types
+     disponibles (Sankey ECharts récent vs ancien type déprécié) ; prends le type non
+     déprécié.
+3. LIBELLÉS EXPLICITES des colonnes d'indicateurs des deux tableaux, et des mêmes
+   indicateurs partout où ils apparaissent (menu « Métrique » de `series_options`, légendes
+   et axes des courbes, infobulles) : un seul libellé par indicateur dans tout le tableau
+   de bord. Pistes, à vérifier contre les docstrings des métriques (définition exacte et
+   orientation à l'import ET à l'export) avant de me les soumettre :
+   - HHI → « Concentration des partenaires » (à l'import : des sources
+     d'approvisionnement ; à l'export : des débouchés) ;
+   - CDI2 → part des échanges réalisés hors de l'Union (dépendance extra-UE) ;
+   - CDI3 → échanges extra-UE rapportés aux flux de sens inverse (capacité à compenser
+     par sa propre production / ses propres flux) ;
+   - WORLD_HHI → concentration de l'offre (ou de la demande) mondiale ;
+   - CENTRALITY_RISK → dépendance à des pays pivots du réseau mondial ;
+   - CLUSTERING_W → cohésion du réseau d'échanges ;
+   - SPOF → exposition à un point de défaillance unique ;
+   - rang, incertitude, score et « Nb alertes » : relis aussi leurs libellés actuels
+     (« Écart interquartile du rang » est trop technique, par exemple).
+   Contraintes : libellés courts (en-têtes de tableau, viser 40 caractères), valables pour
+   les deux flux (un tableau ne change pas de libellés selon un filtre), sens de lecture
+   explicite quand c'est utile (« plus haut = plus vulnérable ») ; le sigle reste
+   accessible pour les lecteurs experts et la documentation (entre parenthèses en fin de
+   libellé, ou dans la description de colonne affichée en infobulle si le type de
+   graphique la montre — vérifie-le dans la version installée). Les libellés se posent
+   dans Superset (`verbose_name` des colonnes du dataset et/ou `column_config` des
+   graphiques), PAS dans les noms de colonnes de `serving` (contrat de lecture SQL
+   inchangé). Présente dans le plan un tableau « sigle → libellé → définition en une
+   phrase » à valider.
+4. TEXTES D'AIDE (blocs Markdown en tête des deux onglets) : réécriture didactique,
+   ajustements plutôt que refonte — le contenu actuel convient sur le fond. Pour chaque
+   onglet : ce que montre la page (tableau, courbes, nouveau graphique), comment la lire
+   (rang 1 = le plus vulnérable, cellules rouges = seuil d'alerte dépassé, fourchette de
+   rangs = degré d'accord entre les façons de combiner les indicateurs : étroite = classement
+   robuste), comment s'en servir (par exemple : choisir un pays, repérer les produits en
+   tête et rouges, regarder de qui le pays dépend pour l'un d'eux, suivre l'évolution
+   dans les courbes). Retire le vocabulaire de spécialiste : « consensus de Borda »,
+   « méthodes de synthèse », « q25–q75 », « intervalle interquartile », « incertitude
+   d'échantillonnage » (les précisions méthodologiques vont dans `docs/dashboards.md`,
+   vers lequel le bloc renvoie par un lien si l'URL du site de documentation est connue).
+   Garde les sources (une ligne). Longueur comparable à l'actuelle ; titres en gras ou
+   courte liste à puces pour la lecture en diagonale. Soumets-moi les deux textes dans le
+   plan.
+
+ÉTAPES
+1. Exploration (lecture seule) : version de Superset et types de graphiques disponibles
+   (Sankey, barres ECharts horizontales) ; structure de `serving.demo_dashboard.flows`
+   (agrégats présents, part des échanges hors des `TOP_PARTNERS` premiers partenaires,
+   par cellule et cumulée par produit : c'est l'ampleur de ce que « Autres pays » absorbe
+   par troncature) ; disponibilité d'un attribut « membre de l'UE » ; liste des déclarants
+   (agrégats à exclure). État du catalogue demo : la publication de `serving` peut-elle
+   être rejouée sur les tables demo actuelles (voir la note d'ARCH sur `product_level`) ?
+   Si non, la validation se fera sur les tables `serving` déjà publiées, et toute
+   modification de la couche de service sera testée unitairement seulement : dis-le dans
+   le plan.
+2. Données des nouveaux graphiques : privilégie des datasets VIRTUELS sur `flows` (et
+   `cell_scores` pour le produit de rang 1), avec gabarit Jinja comme les courbes
+   (`filter_values`, filtre `year` toujours appliqué pour l'élagage des partitions ;
+   pas de `PIVOT` / `UNPIVOT`, refusés par Superset et par l'outil). Ne modifie la couche
+   de service que si c'est nécessaire (latence, ou information absente de `flows` comme
+   l'attribut UE) ; dans ce cas, mêmes exigences que K-17f : `parameters_serving.yml`,
+   `OPTIONAL_SOURCES`, contrôles de `parameters_tracking.yml`, `tests/test_serving_queries.py`
+   avec valeurs calculées à la main (barre « Autres pays », nœud « Autres pays » du
+   Sankey, exclusion des agrégats déclarants), et republication après confirmation.
+3. Graphiques et filtres (API Superset, puis export) : diagramme en barres dans l'onglet
+   « Par pays » et Sankey dans l'onglet « Par produit », placés entre le tableau et les
+   courbes (ou sous les courbes : propose la mise en page) ; filtre « Produit à détailler »
+   porté par l'onglet « Par pays » (`scope.rootPath`) ; filtres existants (année, flux,
+   pays / produit, niveau, grandeur) appliqués aux nouveaux graphiques ; libellés de
+   l'étape 3 des décisions ; blocs Markdown réécrits. Le dataset `series_options` et le
+   SQL des courbes métriques doivent suivre les nouveaux libellés de métriques (la valeur
+   affichée dans le menu est la valeur de filtre lue par Jinja : garde la correspondance
+   cohérente et testée).
+4. Validation sur le Superset actuel (import « assets » de l'archive
+   `tools/superset_bundle.py --schema demo_dashboard --assets`, après confirmation) :
+   pour un pays et un produit tirés au hasard, à l'import et à l'export, vérifie que la
+   somme des barres (« Autres pays » compris) égale les échanges totaux de `cell_scores`,
+   que le tri est décroissant, que le produit par défaut est bien le rang 1, que la
+   somme des flux entrant dans chaque pays UE du Sankey égale ses échanges totaux, que la
+   bascule valeur / quantité fonctionne (quantité manquante : barre absente, pas nulle),
+   et mesure la latence à froid des nouveaux graphiques (objectif PS-29.4). Vérifie la
+   lecture des libellés sur un écran étroit (en-têtes tronqués ?).
+5. Exports et chart : mets à jour `superset/vulnerabilites/` depuis l'export, puis
+   `python tools/sync_chart_files.py` (copie du chart `trade-dashboard`) ; tests verts
+   (`uv run pytest`, dont le test qui exécute le SQL versionné des datasets virtuels et
+   `tests/test_chart_files.py`) ; ajoute aux tests du SQL versionné les nouveaux datasets
+   virtuels (cas : filtre « Produit à détailler » vide et renseigné, flux import et
+   export).
+6. Documentation : `superset/README.md` (parcours : nouveaux graphiques et filtre,
+   mécanisme du produit par défaut, nommage des nœuds du Sankey, table des libellés des
+   indicateurs ; nouveaux pièges rencontrés), `docs/dashboards.md` (définitions complètes
+   des indicateurs sous leurs nouveaux libellés, lecture du diagramme en barres et du
+   Sankey, détails méthodologiques retirés des blocs d'aide) ; ARCH : PS-30 (structure
+   v2.1) et ligne d'historique ; décision numérotée (prochain numéro libre) seulement si
+   la couche de service change de contrat.
+
+CRITÈRES D'ACCEPTATION
+- Tableau de bord importé depuis l'archive produite par `tools/superset_bundle.py
+  --schema demo_dashboard --assets`, fonctionnel sur les deux onglets, à l'import et à
+  l'export ; contrôles de cohérence de l'étape 4 satisfaits.
+- Aucun sigle d'indicateur seul dans un en-tête, un menu ou une légende ; un seul libellé
+  par indicateur dans tout le tableau de bord.
+- Blocs d'aide sans le vocabulaire listé en décision 4.
+- Copie du chart synchronisée, tests verts.
+- Rapport : choix retenus (N, K, nommage des nœuds, attribut UE, produit par défaut,
+  filtrage croisé), table des libellés, textes d'aide finaux, latences mesurées, part des
+  échanges absorbée par « Autres pays », modifications éventuelles de `serving`. Pas de
+  commit sans demande.
+````
+
+---
+
 ## K-17d 🔌 — Validation du déploiement sur bases vierges avant la production
 
-- **Modèle** : Sonnet · **Mode plan** : Oui (opérations cluster, suppressions de données de recette, bascule de production) · **Phase** : 4 · **Dépend de** : K-17c, K-17e, K-17f, K-17g (package `tradekit`, tableau de bord v2, charts Helm ; image publiée, tag `sha-<court>` fourni)
+- **Modèle** : Sonnet · **Mode plan** : Oui (opérations cluster, suppressions de données de recette, bascule de production) · **Phase** : 4 · **Dépend de** : K-17c, K-17e, K-17f, K-17g, K-17h (package `tradekit`, tableau de bord v2.1, charts Helm ; image publiée, tag `sha-<court>` fourni)
 - **Dépôt** : `trade-analysis` — **session lancée depuis un terminal avec accès `kubectl`** (nouvelle session, sans l'historique de K-17)
 
 ````text

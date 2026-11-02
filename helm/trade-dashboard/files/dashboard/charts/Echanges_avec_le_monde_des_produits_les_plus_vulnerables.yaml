@@ -29,6 +29,7 @@ params:
   zoomable: true
   x_axis_title: ''
   y_axis_title: ''
+  annotation_layers: []
 query_context: null
 cache_timeout: null
 uuid: 0e9afb50-32b1-4f80-a09e-57dd402bfecf
