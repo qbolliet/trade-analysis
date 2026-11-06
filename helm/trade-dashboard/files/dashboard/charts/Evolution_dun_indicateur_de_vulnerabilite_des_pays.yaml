@@ -1,18 +1,18 @@
-slice_name: Échanges avec le monde des pays les plus vulnérables
+slice_name: Évolution d'un indicateur de vulnérabilité des pays
 description: null
 certified_by: null
 certification_details: null
 viz_type: echarts_timeseries_line
 params:
   viz_type: echarts_timeseries_line
-  datasource: 14__table
+  datasource: 15__table
   x_axis: period
   time_grain_sqla: P1Y
   x_axis_time_format: '%Y'
   metrics:
   - expressionType: SQL
     sqlExpression: MAX(value)
-    label: Valeur
+    label: Valeur de l'indicateur
   groupby:
   - unit
   row_limit: 10000
@@ -24,7 +24,7 @@ params:
   tooltipSortByMetric: true
   markerEnabled: true
   markerSize: 4
-  y_axis_format: SMART_NUMBER
+  y_axis_format: ~g
   truncateYAxis: false
   zoomable: true
   x_axis_title: ''
@@ -32,6 +32,6 @@ params:
   annotation_layers: []
 query_context: null
 cache_timeout: null
-uuid: 27e09fe7-5a5c-4c15-b6f3-34d433eabbd4
+uuid: e2cf75f7-f581-41b3-bce7-bd0d0093e301
 version: 1.0.0
-dataset_uuid: 9af62c7b-68c7-4e26-9635-b392acdfaf8e
+dataset_uuid: 08407e80-7fa3-4de9-ad8a-62a857a390b5

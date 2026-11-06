@@ -1,8 +1,9 @@
 {{- /*
 Import du tableau de bord après chaque installation ou mise à jour (hook Helm, après
 l'initialisation de Superset) : attente de /health, puis import « assets » idempotent
-(connexion, datasets, graphiques et tableau de bord créés ou écrasés). Aucun secret
-journalisé.
+(connexion, datasets, graphiques et tableau de bord créés ou écrasés), puis calcul des
+menus préremplis sur les données et second import s'ils diffèrent de l'export. Aucun
+secret journalisé.
 */ -}}
 {{- if .Values.dashboardImport.enabled }}
 apiVersion: batch/v1
@@ -47,6 +48,7 @@ spec:
             - {name: DASHBOARD_SCHEMA, value: {{ .Values.dashboardImport.schema | default "" | quote }}}
             - {name: DASHBOARD_DEFAULT_YEAR, value: {{ .Values.dashboardImport.defaultYear | default "" | toString | quote }}}
             - {name: DASHBOARD_TOP_N, value: {{ .Values.dashboardImport.topN | default "" | toString | quote }}}
+            - {name: DASHBOARD_MENU_DEFAULTS, value: {{ .Values.dashboardImport.menuDefaults | default "data" | quote }}}
             - {name: WAIT_SECONDS, value: {{ .Values.dashboardImport.waitSeconds | toString | quote }}}
             - {name: PYTHONUNBUFFERED, value: "1"}
           volumeMounts:

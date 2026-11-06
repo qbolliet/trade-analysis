@@ -7,6 +7,15 @@ environment) and post it to ``/api/v1/assets/import/``. That import is
 idempotent and overwrites the database connection, the datasets, the charts and
 the dashboard, so it both creates and updates them.
 
+Then the default values of the prefilled menus (« Produit à détailler »,
+« Produits des courbes », « Pays des courbes ») are computed on the data of the
+environment: the versioned export carries the values of the demonstration data,
+which would not designate what the charts draw elsewhere. One ranking query per
+menu runs through the data API of Superset on the imported ``cell_scores``
+dataset (the Superset connection already reads the catalog: no credential is
+needed here). When the values differ from the export, the archive is rebuilt
+with them and imported a second time.
+
 Nothing sensitive is logged: neither the password, nor the access or CSRF
 tokens, nor the response bodies (which may echo connection parameters); only
 HTTP statuses, file counts and the archive size.
@@ -17,6 +26,8 @@ Environment:
     DASHBOARD_SOURCE: Folder of the flattened export (ConfigMap mount).
     DASHBOARD_SCHEMA: Target schema of the catalog (empty: schema of the export).
     DASHBOARD_DEFAULT_YEAR, DASHBOARD_TOP_N: Optional default filter values.
+    DASHBOARD_MENU_DEFAULTS: ``data`` (default) to compute the menu defaults on
+        the data, ``export`` to keep the values of the export.
     BUNDLE_TOOL: Path of ``superset_bundle.py``.
     WAIT_SECONDS: Maximum wait for Superset to be healthy.
 
@@ -24,6 +35,8 @@ Examples:
     $ SUPERSET_URL=http://trade-superset:8088 python import_dashboard.py
     Superset disponible
     Import : HTTP 200 (31415 octets envoyés)
+    Menus : NATIVE_FILTER-PAYS-DETAIL 1, NATIVE_FILTER-PAYS-EXTRA 5, NATIVE_FILTER-PRODUIT-EXTRA 5
+    Menus identiques à l'export : pas de second import
 """
 # Importation des modules
 from __future__ import annotations
@@ -34,13 +47,16 @@ import sys
 import tempfile
 import time
 from pathlib import Path
-from typing import Dict
+from typing import Any, Dict, List, Optional
 
 # Requêtes HTTP (présent dans l'image Superset)
 import requests
 
 # Séparateur des chemins aplatis dans les clés du ConfigMap (« / » y est interdit)
 PATH_SEPARATOR = "__"
+# Mode de calcul des menus préremplis : sur les données, ou valeurs de l'export
+MENU_DEFAULTS_FROM_DATA = "data"
+MENU_DEFAULTS_FROM_EXPORT = "export"
 
 
 # Reconstruction de l'arborescence de l'export
@@ -144,6 +160,100 @@ def load_bundle_tool(path: Path):
     return module
 
 
+# Envoi d'une archive à l'import « assets »
+def post_bundle(session: requests.Session, url: str, archive: bytes) -> None:
+    """Post an ``assets`` archive to ``/api/v1/assets/import/``.
+
+    Args:
+        session: Logged-in HTTP session.
+        url: Base URL of Superset.
+        archive: Zip archive built by ``superset_bundle.py``.
+
+    Raises:
+        RuntimeError: If the import is refused (HTTP status only).
+    """
+    response = session.post(
+        f"{url}/api/v1/assets/import/",
+        files={"bundle": ("dashboard.zip", archive, "application/zip")},
+        timeout=300,
+    )
+    print(f"Import : HTTP {response.status_code} ({len(archive)} octets envoyés)", flush=True)
+    if response.status_code != 200:
+        raise RuntimeError(f"Import refusé : HTTP {response.status_code}")
+
+
+# Identifiant d'un dataset du tableau de bord importé
+def dataset_id(session: requests.Session, url: str, slug: str, table_name: str) -> int:
+    """Return the identifier of a dataset of the imported dashboard.
+
+    Args:
+        session: Logged-in HTTP session.
+        url: Base URL of Superset.
+        slug: Dashboard slug.
+        table_name: Dataset table name.
+
+    Returns:
+        The dataset identifier.
+
+    Raises:
+        RuntimeError: If the request fails or the dataset is not found.
+    """
+    response = session.get(f"{url}/api/v1/dashboard/{slug}/datasets", timeout=60)
+    if response.status_code != 200:
+        raise RuntimeError(f"Datasets du tableau de bord : HTTP {response.status_code}")
+    for dataset in response.json().get("result") or []:
+        if dataset.get("table_name") == table_name:
+            return int(dataset["id"])
+    raise RuntimeError(f"Dataset {table_name} absent du tableau de bord {slug}")
+
+
+# Calcul des valeurs par défaut des menus préremplis
+def compute_menu_defaults(
+    session: requests.Session, url: str, tool: Any, assets: Dict[str, Dict[str, Any]]
+) -> Dict[str, List[Any]]:
+    """Compute the default values of the prefilled menus on the data of Superset.
+
+    Args:
+        session: Logged-in HTTP session.
+        url: Base URL of Superset.
+        tool: The ``superset_bundle`` module.
+        assets: Configured export (schema, default year, top N).
+
+    Returns:
+        Filter identifier -> values, best rank first.
+
+    Raises:
+        RuntimeError: If the dashboard has no slug or a data request fails
+            (HTTP status only: the body may echo the query).
+    """
+    slugs = [content.get("slug") for path, content in assets.items() if path.startswith("dashboards/")]
+    if not slugs or not slugs[0]:
+        raise RuntimeError("Tableau de bord sans slug : menus non calculables")
+    datasource = dataset_id(session, url, slugs[0], tool.MENU_TABLE)
+    defaults: Dict[str, List[Any]] = {}
+    for query in tool.menu_queries(assets):
+        response = session.post(
+            f"{url}/api/v1/chart/data", json=tool.chart_data_payload(query, datasource), timeout=300
+        )
+        if response.status_code != 200:
+            raise RuntimeError(f"Menu {query.filter_id} : HTTP {response.status_code}")
+        result = (response.json().get("result") or [{}])[0]
+        values = tool.menu_values(result.get("data") or [], query)
+        if not values:
+            # Pays ou produit par défaut introuvable, ou année sans rang : menu vide,
+            # cohérent avec un graphique vide
+            print(f"Attention : menu {query.filter_id} sans valeur (défauts à vérifier)", flush=True)
+        defaults[query.filter_id] = values
+    print("Menus : " + ", ".join(f"{name} {len(values)}" for name, values in defaults.items()), flush=True)
+    return defaults
+
+
+# Lecture d'un entier optionnel de l'environnement
+def _optional_int(value: Optional[str]) -> Optional[int]:
+    """Return ``int(value)``, or ``None`` for an unset or empty variable."""
+    return int(value) if value else None
+
+
 # Exécution de l'import
 def main() -> int:
     """Run the import.
@@ -156,6 +266,14 @@ def main() -> int:
     """
     env = os.environ
     url = env["SUPERSET_URL"].rstrip("/")
+    mode = env.get("DASHBOARD_MENU_DEFAULTS") or MENU_DEFAULTS_FROM_DATA
+    if mode not in (MENU_DEFAULTS_FROM_DATA, MENU_DEFAULTS_FROM_EXPORT):
+        raise RuntimeError(f"DASHBOARD_MENU_DEFAULTS invalide : {mode}")
+    settings = {
+        "schema": env.get("DASHBOARD_SCHEMA") or None,
+        "default_year": _optional_int(env.get("DASHBOARD_DEFAULT_YEAR")),
+        "top_n": _optional_int(env.get("DASHBOARD_TOP_N")),
+    }
     session = requests.Session()
     wait_until_healthy(session, url, int(env.get("WAIT_SECONDS", "900")))
     with tempfile.TemporaryDirectory() as folder:
@@ -163,22 +281,22 @@ def main() -> int:
         counts = rebuild_export(Path(env.get("DASHBOARD_SOURCE", "/dashboard")), export)
         print("Export : " + ", ".join(f"{name or 'racine'} {count}" for name, count in sorted(counts.items())), flush=True)
         tool = load_bundle_tool(Path(env.get("BUNDLE_TOOL", "/tools/superset_bundle.py")))
-        archive = tool.build_bundle(
-            export,
-            schema=env.get("DASHBOARD_SCHEMA") or None,
-            default_year=int(env["DASHBOARD_DEFAULT_YEAR"]) if env.get("DASHBOARD_DEFAULT_YEAR") else None,
-            top_n=int(env["DASHBOARD_TOP_N"]) if env.get("DASHBOARD_TOP_N") else None,
-            assets_import=True,
+        login(session, url, env["SUPERSET_ADMIN_USERNAME"], env["SUPERSET_ADMIN_PASSWORD"])
+        # Premier import : crée ou met à jour les datasets interrogés ensuite
+        post_bundle(session, url, tool.build_bundle(export, assets_import=True, **settings))
+        if mode == MENU_DEFAULTS_FROM_EXPORT:
+            return 0
+        # Menus préremplis recalculés sur les données de l'environnement
+        assets = tool.configure_assets(tool.load_assets(export), **settings)
+        defaults = compute_menu_defaults(session, url, tool, assets)
+        if defaults == tool.current_menu_defaults(assets):
+            print("Menus identiques à l'export : pas de second import", flush=True)
+            return 0
+        post_bundle(
+            session,
+            url,
+            tool.build_bundle(export, assets_import=True, menu_defaults=defaults, **settings),
         )
-    login(session, url, env["SUPERSET_ADMIN_USERNAME"], env["SUPERSET_ADMIN_PASSWORD"])
-    response = session.post(
-        f"{url}/api/v1/assets/import/",
-        files={"bundle": ("dashboard.zip", archive, "application/zip")},
-        timeout=300,
-    )
-    print(f"Import : HTTP {response.status_code} ({len(archive)} octets envoyés)", flush=True)
-    if response.status_code != 200:
-        raise RuntimeError(f"Import refusé : HTTP {response.status_code}")
     return 0
 
 

@@ -7,9 +7,9 @@ cache_timeout: null
 catalog: null
 schema: serving.dashboard
 sql: |
-  -- Séries temporelles des produits les plus vulnérables : les top_n unités de
-  -- meilleur rang consensus l'année choisie, ou exactement les unités du filtre « Produits des courbes »
-  -- s'il est renseigné (le menu montre ainsi toujours ce qui est tracé). Filtres lus par
+  -- Séries temporelles des produits choisis : exactement les unités du filtre « Produits des courbes »
+  -- s'il est renseigné (le menu montre ainsi toujours ce qui est tracé), sinon les top_n unités
+  -- de meilleur rang consensus l'année choisie, règle par défaut. Filtres lus par
   -- filter_values(remove_filter=True) et appliqués dans la requête ; grandeur tracée
   -- choisie par un dictionnaire libellé -> colonne (valeur inconnue : grandeur par défaut).
   -- Niveau de nomenclature choisi : top_n et rangs au sein de ce niveau (rangs
@@ -54,6 +54,10 @@ sql: |
          CAST({{ columns[choice] }} AS DOUBLE) AS value
   FROM ctx AS c
   WHERE c.product IN (SELECT product FROM units)
+    -- Années où l'indicateur est défini seulement : l'axe couvre sa période (rang et
+    -- indicateurs de réseau sur les années du réseau mondial, indicateurs partenaires
+    -- sur toutes les années), sans valeur fabriquée
+    AND ({{ columns[choice] }}) IS NOT NULL
 params: null
 template_params:
   top_n: 5

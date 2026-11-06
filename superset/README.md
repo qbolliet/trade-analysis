@@ -1,4 +1,4 @@
-# Tableau de bord Superset « Vulnérabilités » (v2.1)
+# Tableau de bord Superset « Vulnérabilités » (v2.2)
 
 Tableau de bord versionné « as code » : ce dossier est le contenu décompressé d'un export
 Superset (`metadata.yaml`, `databases/`, `datasets/`, `charts/`, `dashboards/`). Il est
@@ -22,7 +22,17 @@ change pas de colonnes selon un filtre.
 Points communs aux deux onglets :
 - **Courbes** : les unités du filtre « Produits des courbes » / « Pays des courbes » ; s'il
   est vide, les 5 unités les mieux classées l'année choisie (dans l'onglet *Par pays*, au
-  sein du niveau de nomenclature choisi). Le filtre ne touche pas au tableau.
+  sein du niveau de nomenclature choisi). Le filtre ne touche pas au tableau. Les titres ne
+  disent pas « les plus vulnérables », car le menu est modifiable : *Par pays*, « Échanges
+  avec le monde » et « Évolution d'un indicateur de vulnérabilité des produits » ; *Par
+  produit*, « Échanges avec le monde des pays » et « Évolution d'un indicateur de
+  vulnérabilité des pays ». La règle par défaut (« au départ, les 5 premiers du tableau »)
+  se lit dans le bloc d'aide et dans la description du filtre.
+- **Période des courbes** : la courbe des échanges couvre toutes les années ; celle des
+  indicateurs, les années où l'indicateur choisi est défini, quelle que soit l'année du
+  filtre (en demo : 2017–2021 pour le rang et les indicateurs de réseau, années du réseau
+  BACI ; toutes les années pour les indicateurs partenaires). Une année manquante au milieu
+  d'une série reste un trou ; un point isolé reste visible grâce aux marqueurs.
 - **Bloc Markdown d'aide** en tête de chaque onglet, pour des lecteurs non spécialistes : ce
   que montre la page, comment la lire, comment s'en servir, sources. Les précisions de
   méthode (méthodes de synthèse, quartiles, nombre de méthodes) sont dans
@@ -118,8 +128,8 @@ onglet (`scope.rootPath`), et chacun a une valeur par défaut **explicite** :
 | Pays ou Produit | « FR — France (…) » ou « 850760 — Lithium-ion accumulators (excl. spent) » | sélection unique, recherche par code et libellé |
 | Niveau de nomenclature | SH6 | onglet *Par pays* seulement ; valeur obligatoire (sans elle, plusieurs rangs 1 cohabiteraient) ; valeurs lues dans les données ; parent des filtres « Produit à détailler » et « Produits des courbes » |
 | Nomenclature en vigueur | vrai | |
-| Produit à détailler | « 850760 — Lithium-ion accumulators (excl. spent) » (vide : produit de rang 1) | onglet *Par pays* ; sélection unique sur `detail_product` ; parents Pays, Flux, Niveau ; portée : barres |
-| Produits des courbes / Pays des courbes | les 5 premiers produits de la France (SH6, import 2021) / les 5 premiers pays du produit 850760 (vide : les 5 premiers) | multiple ; portée limitée aux courbes ; valeurs fixes, voir les pièges |
+| Produit à détailler | le produit de rang 1 du pays, de l'année, du flux et du niveau par défaut, soit « 850760 — Lithium-ion accumulators (excl. spent) » en demo (vide : produit de rang 1) | onglet *Par pays* ; sélection unique sur `detail_product` ; parents Pays, Flux, Niveau ; portée : barres ; valeur fixe recalculée par le Job d'import |
+| Produits des courbes / Pays des courbes | les 5 premiers produits du pays par défaut (France, SH6, import 2021 en demo) / les 5 premiers pays du produit par défaut (850760) (vide : les 5 premiers) | multiple ; portée limitée aux courbes ; valeurs fixes recalculées par le Job d'import, voir les pièges |
 | Grandeur (échanges) | Valeur (€) | courbe des échanges, barres, Sankey |
 | Indicateur (courbe des indicateurs) | Rang (1 = le plus vulnérable) | portée limitée à la courbe des indicateurs |
 
@@ -143,7 +153,10 @@ datasets virtuels dont le SQL est un gabarit Jinja :
    le CTE `units` retient exactement ses unités, quel que soit leur niveau, à la place du
    top N : le menu montre ainsi toujours ce qui est tracé.
 3. **Séries** : la requête renvoie les séries de ces unités sur **toutes les années**,
-   `period = make_date(year, 1, 1)` en abscisse.
+   `period = make_date(year, 1, 1)` en abscisse, quelle que soit l'année du filtre, qui ne
+   sert qu'à choisir les unités par défaut. Les datasets `metric_series_*` ne renvoient que
+   les lignes où l'indicateur choisi est défini : l'axe couvre sa période, sans valeur
+   fabriquée.
 4. **Grandeur tracée** : elle est choisie par un dictionnaire Jinja libellé → colonne. Une
    valeur inconnue retombe sur la grandeur par défaut, si bien qu'aucun texte libre n'est
    interpolé dans le SQL. Les libellés de filtres sont cités par `|where_in`, qui double les
@@ -262,7 +275,11 @@ la table `cell_scores` du monde fictif : une colonne absente ou un niveau mal ap
 échoue.
 
 En production (Job d'import du chart, `dashboardImport.schema` vide), `--schema` est omis (les exports visent `dashboard`), et
-`--default-year` reçoit la dernière année classée.
+`--default-year` reçoit la dernière année classée. Le Job recalcule ensuite les menus
+préremplis sur les données (voir les pièges, « Menus préremplis ») et réimporte l'archive
+s'ils diffèrent de l'export ; `dashboardImport.menuDefaults: export` garde les valeurs de
+l'export. Hors du Job, `--menu-defaults menus.json` (identifiant du filtre → valeurs) écrit
+des valeurs calculées ailleurs.
 
 **Modifier le tableau de bord** : soit éditer directement les YAML de ce dossier (SQL des
 datasets virtuels, colonnes, paramètres des graphiques, filtres natifs), soit modifier le
@@ -364,21 +381,42 @@ qu'après un nouvel export : à faire aussitôt, sinon l'export versionné diver
   (`defaultToFirstItem`) ne s'applique qu'au premier affichage (valeur encore indéfinie), ne
   retient qu'une valeur et n'est pas recalculée quand un filtre parent change. Les menus
   « Produit à détailler », « Produits des courbes » et « Pays des courbes » reçoivent donc des
-  valeurs **fixes**, celles du premier affichage (France, 2021, import, SH6 ; produit
-  850760), calculées sur la demo (rang 1 et 5 premiers rangs). Après un changement de pays,
-  de produit, d'année ou de flux, elles restent sélectionnées : les graphiques suivent le
-  menu, qu'il faut vider pour revenir au rang 1 et aux 5 premiers.
-- **À recalculer** quand les données ou l'année par défaut changent (production, K-17d), et
-  avec `--top-n` (les listes comptent 5 unités), par exemple :
-  ```sql
-  SELECT product_display FROM serving.dashboard.cell_scores
-  WHERE year = 2021 AND flow_label = 'Import' AND reporter = 'FR'
-    AND product_level_label = 'SH6' AND in_force AND primary_rank_by_reporter_level IS NOT NULL
-  ORDER BY primary_rank_by_reporter_level, product LIMIT 5;
-  -- pays : même requête sur product_display = '<produit>', rang primary_rank_by_product, colonne reporter_display
-  ```
-  Le test `test_committed_menu_defaults_are_drawn_units` vérifie la cohérence interne (5
-  unités ; produit détaillé = premier produit = produit par défaut de l'onglet *Par produit*).
+  valeurs **fixes** : celles que tracent les graphiques au premier affichage (rang 1 et
+  5 premiers rangs pour les filtres par défaut). Après un changement de pays, de produit,
+  d'année ou de flux, elles restent sélectionnées : les graphiques suivent le menu, qu'il
+  faut vider pour revenir au rang 1 et aux 5 premiers.
+- **Recalcul par le Job d'import** : les valeurs versionnées sont celles de la demo (France,
+  2021, import, SH6 ; produit 850760). Après l'import, le Job lance une requête par menu
+  (`menu_queries` de `tools/superset_bundle.py`, même règle que les gabarits : meilleur rang,
+  ex æquo départagés par le code) par l'API de données de Superset sur `cell_scores`. Il
+  n'a besoin d'aucun identifiant du catalogue et réimporte l'archive si les valeurs
+  diffèrent. Elles sont justes après chaque `helm install` / `upgrade` ; après une
+  republication de `serving` ou un changement d'année par défaut, relancer le Job (`helm
+  upgrade`). Un menu sans résultat (pays ou produit par défaut introuvable, année sans
+  rang) reste vide, avec un avertissement dans le journal du Job.
+- **Contrôle à la main** : `menu_query_sql(query, "serving.dashboard.cell_scores")` donne le
+  SQL de chaque menu. Les tests `test_committed_menu_defaults_are_drawn_units` (cohérence
+  interne de l'export) et `test_menu_queries_return_the_drawn_units` (menus calculés =
+  unités tracées, monde fictif) le vérifient.
+- **État des filtres mémorisé dans l'URL** (constat K-17i) : Superset ajoute à l'URL un
+  paramètre `native_filters_key`, clé d'un état des filtres stocké sur le serveur. Un lien,
+  un favori ou un onglet qui contient ce paramètre restaure cet état **en entier**, à la
+  place des valeurs par défaut, y compris après un réimport : menus vidés, niveau ou
+  libellé d'une session antérieure. Les symptômes « menu vide alors que le graphique trace
+  quelque chose » et « courbe d'un seul point » (produits NC8 dont le rang n'existe qu'une
+  année) venaient d'une clé créée pendant la construction K-17h. Pour voir les valeurs par
+  défaut, ouvrir l'URL sans paramètre (`/superset/dashboard/vulnerabilites/`, fenêtre
+  privée en cas de doute).
+- **Libellé périmé dans un état mémorisé** : une valeur de menu qui n'existe plus (ancien
+  libellé « Rang consensus ») ne provoque pas d'erreur. Le gabarit retombe sur le rang,
+  mais le menu affiche l'ancien libellé.
+- **Diagnostic de ce qu'envoie le navigateur** : le journal des événements
+  (`GET /api/v1/log/`, action `ChartDataRestApi.data`) contient, pour chaque graphique
+  affiché, les filtres réellement envoyés (`queries[0].filters`) et `url_params`. Les
+  requêtes d'un état mémorisé y sont repérables, comme celles d'une fenêtre privée.
+- **Années manquantes non reliées** : la courbe ECharts de Superset 4.1.1 ne relie les
+  valeurs vides (`connectNulls`) que pour les séries de comparaison temporelle ; aucun
+  réglage ne l'expose. Une année manquante dans une série reste donc un trou.
 
 **Exploitation**
 - **Cache** : `cache_timeout` de la connexion à 86 400 s (24 h). Après une republication de
@@ -390,7 +428,8 @@ qu'après un nouvel export : à faire aussitôt, sinon l'export versionné diver
   s'appuient sur les statistiques min/max du tri d'insertion. Latences à froid mesurées en
   demo (K-03c v2) : 0,8 à 1,1 s pour les tableaux, 2,0 à 2,6 s pour les courbes ;
   (K-17h) 1,3 à 1,9 s pour les barres et le Sankey, qui ne lisent
-  qu'une partition de `flows` et de `cell_scores`.
+  qu'une partition de `flows` et de `cell_scores`. (K-17i) 2,0 à 2,7 s pour les courbes, 0,7 à 0,8 s par requête de
+  menu du Job d'import.
 - **Configuration portée par Helm** : l'ancien service Onyxia `superset-899573` avait été
   configuré en modifiant directement ses Secrets (`superset-899573-env`,
   `superset-899573-config`), modification perdue à tout redéploiement depuis Onyxia. Le

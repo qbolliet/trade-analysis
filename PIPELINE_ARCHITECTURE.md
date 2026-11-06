@@ -55,6 +55,7 @@
 | 2026-10-29 (K-03c v2, synthèse par niveau) | **Synthèse et cohérence par finesse de nomenclature** : colonne `product_level` (nombre de chiffres du code : 2, 4, 6, 8) écrite par l'étape partenaires dans `indicators`, ajoutée à `synthesis.PARAMETERS.context_columns` (reprise par la cohérence) : un produit n'est plus classé qu'avec des produits de même niveau, aux trois niveaux de comparaison ; `product_level` propagé à `coherence_metrics` / `coherence_methods` de `serving`. Rupture de schéma sans cohabitation (K-17c) : effet aux recalculs complets de K-17d (bases demo vidées, production vierge) ; d'ici là, synthèse, cohérence et publication de `serving` échouent sur les tables demo actuelles, faute de colonne | PD-20, PD-27, PS-17, PS-29.2 |
 | 2026-10-29 (K-17g) | **Charts Helm de déploiement** : trois charts sous `helm/` — `trade-pipeline` (`WorkflowTemplate`, `CronWorkflow` par point d'entrée, compte de service facultatif, `helm test` de pré-vol), `trade-dashboard` (configuration Superset portée par le chart, Superset d'Onyxia en dépendance facultative, Job d'import « assets » du tableau de bord), `trade-analysis` (parapluie, commande unique, préréglages `values-onyxia.yaml` / `values-generic.yaml`, surcouche `values-demo.yaml`) ; **source unique du DAG** : `render-argo` produit `helm/trade-pipeline/files/dag-<env>.yaml` (données, plus de gabarits Jinja), Helm porte tout le déploiement (`KEDRO_ENV` devient une valeur) ; découverte Onyxia par `lookup` (version du contrôleur Argo, secrets `onyxia/discovery`) ; `kubernetes/generated/` supprimé ; CI `helm.yml` (lint, rendu, kubeconform, publication OCI sur étiquette `charts-v*`). Écart au prompt : décision numérotée PD-28 (PD-27 déjà prise) | PD-28, PD-14, PS-21.3, §5, §9, §12 |
 | 2026-11-02 (K-17h) | **Tableau de bord « Vulnérabilités » v2.1** : onglet *Par pays*, produit détaillé (filtre « Produit à détailler », sinon rang 1) et **diagramme en barres des principaux partenaires** (10 premiers, puis « Autres pays » = total − barres ; couleur UE / hors UE) ; onglet *Par produit*, **Sankey** `sankey_v2` des flux entre États membres et partenaires (12 premiers partenaires hors UE, « Autres pays hors UE », nœud intra-UE `WORLD` − `EXT_EU`) ; deux datasets virtuels Jinja sur `flows` et `cell_scores` ; **libellés explicites des indicateurs** (un libellé par indicateur, sigle en fin de libellé, définition en description de colonne) ; blocs d'aide didactiques. Appartenance à l'UE dérivée des déclarants de `flows`, sans modification de `serving` (pas de décision numérotée) | PS-30.7 |
+| 2026-11-04 (K-17i) | **Tableau de bord « Vulnérabilités » v2.2** : cause des menus vides et de la courbe d'un seul point établie (état de filtres mémorisé par `native_filters_key`, restauré à la place des valeurs par défaut) ; **menus préremplis recalculés par le Job d'import** sur les données de l'environnement (API de données de Superset, second import si différents de l'export ; `dashboardImport.menuDefaults`, option `--menu-defaults` de l'outil d'archive) ; titres des courbes sans « les plus vulnérables » ; courbe des indicateurs limitée aux années où l'indicateur est défini (aucune interpolation). Contrat de `serving` inchangé | PS-30.6, PS-30.8 |
 
 ## Sommaire
 
@@ -4468,8 +4469,9 @@ Le tableau lit `cell_scores` et affiche, dans l'ordre :
 
 Le niveau est `by_reporter_level` (produits d'un pays, au sein du niveau de nomenclature
 choisi, PD-27) dans l'onglet Par pays, et `by_product` (pays d'un produit) dans l'onglet
-Par produit. Les deux courbes portent sur les unités les
-plus vulnérables :
+Par produit. Les deux courbes portent sur les unités du menu « Produits des courbes » /
+« Pays des courbes », par défaut les unités les mieux classées (v2.2, PS-30.8 : titres sans
+« les plus vulnérables ») :
 - les **échanges avec le monde** (`trade_value_eur` ou `trade_quantity_100kg`) ;
 - une **métrique** au choix (rang consensus par défaut, incertitude, score de consensus ou
   l'une des sept métriques).
@@ -4599,6 +4601,60 @@ sont dans `docs/dashboards.md`.
   quantité déclarée absent en quantité.
 - Latences à froid (`force=true`) : 1,3 à 1,9 s pour les nouveaux graphiques, sous
   l'objectif de 5 s (PS-29.4).
+
+#### PS-30.8 Structure v2.2 : menus préremplis par ce qui est tracé, titres, série complète (K-17i, 2026-11-04)
+
+**Diagnostic.** Les trois symptômes signalés n'étaient dus ni au service, identique à
+l'export, ni aux données :
+- menus « Produit à détailler » et « Pays des courbes » vides alors que les graphiques
+  tracent ;
+- courbe des indicateurs réduite à un point.
+
+Ils venaient d'un état de filtres mémorisé par Superset sous le paramètre d'URL
+`native_filters_key`, créé pendant la construction K-17h et restauré en entier à chaque
+ouverture, à la place des valeurs par défaut : niveau NC8, menus vidés, ancien libellé
+d'indicateur. Les produits NC8 de cet état n'ont un rang qu'une année. Preuves : journal
+des événements de Superset (filtres réellement envoyés par le navigateur), état stocké sous
+la clé, contre-épreuve en fenêtre privée.
+
+**Menus préremplis.** Valeurs fixes (pas de valeur par défaut calculée en 4.1), désormais
+**recalculées par le Job d'import** du chart `trade-dashboard` :
+- après l'import « assets », une requête de rang par menu passe par l'API de données de
+  Superset sur `cell_scores` (connexion déjà autorisée, aucun identifiant ajouté) :
+  rang 1 du pays par défaut pour « Produit à détailler », `top_n` premiers produits ou
+  pays pour les menus des courbes ;
+- second import si les valeurs diffèrent de l'export (réglage
+  `dashboardImport.menuDefaults`, `data` par défaut).
+
+Justes à chaque installation ou mise à jour du chart ; une republication de `serving`
+demande de relancer le Job. Limite acceptée : après un changement de pays, de produit,
+d'année ou de flux, les graphiques suivent le menu, qu'il faut vider pour revenir à la
+règle par défaut.
+
+**Titres.** « Échanges avec le monde », « Évolution d'un indicateur de vulnérabilité des
+produits » (*Par pays*) ; « Échanges avec le monde des pays », « Évolution d'un indicateur
+de vulnérabilité des pays » (*Par produit*). Le menu étant modifiable, les titres
+n'affirment plus « les plus vulnérables » ; la règle par défaut est dans les blocs d'aide.
+
+**Série complète.** L'année du filtre ne choisit que les unités par défaut. Les courbes des
+indicateurs ne renvoient que les années où l'indicateur est défini : rang et indicateurs
+de réseau sur les années du réseau BACI, indicateurs partenaires sur toutes les années.
+Pas d'interpolation. Les années manquantes ne sont pas reliées : Superset 4.1.1 ne le
+propose que pour les comparaisons temporelles.
+
+**Mesures (demo, 2026-11-04).**
+- À l'ouverture, chaque menu contient exactement les unités tracées (barres, deux courbes
+  par onglet).
+- Pays ou produit changé, menu vidé : rang 1 et 5 premiers du nouveau choix ; une unité
+  ajoutée apparaît.
+- Courbe des indicateurs : 2017–2021 pour le rang et la concentration mondiale, jusqu'à
+  1988–2025 pour la concentration des partenaires, à l'import et à l'export, en 2019 comme
+  en 2021.
+- Latences à froid (`force=true`) : 1,3 s (barres), 2,0 à 2,1 s (courbes des échanges), 2,0
+  à 2,7 s (courbes des indicateurs) ; 0,7 à 0,8 s par requête de menu du Job. Objectif de
+  5 s (PS-29.4) tenu.
+
+Contrat de `serving` inchangé (pas de décision numérotée).
 
 ### PS-31 — Rapport de run MLflow (supervision)
 

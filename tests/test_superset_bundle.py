@@ -292,16 +292,170 @@ def test_committed_product_series_run(served) -> None:
 
 
 def test_committed_menu_defaults_are_drawn_units() -> None:
-    """Valeurs par défaut des menus : produit détaillé = premier des produits des courbes."""
+    """Valeurs par défaut versionnées : produit détaillé = premier des produits des courbes,
+    top N pays du produit par défaut de l'onglet Par produit, menus cohérents."""
     dashboard = yaml.safe_load((SOURCE / "dashboards" / "Vulnerabilites.yaml").read_text(encoding="utf-8"))
     filters = {f["id"]: f for f in dashboard["metadata"]["native_filter_configuration"]}
     value = lambda name: filters[name]["defaultDataMask"]["filterState"]["value"]
     products, reporters = value("NATIVE_FILTER-PAYS-EXTRA"), value("NATIVE_FILTER-PRODUIT-EXTRA")
-    assert len(products) == len(reporters) == 5
+    assets = superset_bundle.load_assets(SOURCE)
+    top_n = superset_bundle._top_n(assets)
+    assert len(products) == len(reporters) == top_n == 5
+    assert len(set(products)) == len(set(reporters)) == 5
     assert value("NATIVE_FILTER-PAYS-DETAIL") == products[:1] == value("NATIVE_FILTER-PRODUIT-FOCUS")
     for name in ("NATIVE_FILTER-PAYS-EXTRA", "NATIVE_FILTER-PRODUIT-EXTRA", "NATIVE_FILTER-PAYS-DETAIL"):
         mask = filters[name]["defaultDataMask"]
         assert mask["extraFormData"]["filters"][0]["val"] == mask["filterState"]["value"]
+    # Référence des menus : valeurs par défaut des autres filtres de l'onglet
+    queries = {query.filter_id: query for query in superset_bundle.menu_queries(assets)}
+    assert queries["NATIVE_FILTER-PRODUIT-EXTRA"].filters["product_display"] == value("NATIVE_FILTER-PRODUIT-FOCUS")
+    assert queries["NATIVE_FILTER-PRODUIT-EXTRA"].limit == len(reporters)
+    assert queries["NATIVE_FILTER-PAYS-DETAIL"].limit == 1
+    for name in ("NATIVE_FILTER-PAYS-DETAIL", "NATIVE_FILTER-PAYS-EXTRA"):
+        assert queries[name].filters["reporter_display"] == value("NATIVE_FILTER-PAYS-FOCUS")
+        assert queries[name].filters["product_level_label"] == value("NATIVE_FILTER-PAYS-LEVEL")
+    assert superset_bundle.current_menu_defaults(assets) == {
+        "NATIVE_FILTER-PAYS-DETAIL": products[:1],
+        "NATIVE_FILTER-PAYS-EXTRA": products,
+        "NATIVE_FILTER-PRODUIT-EXTRA": reporters,
+    }
+
+
+def _synthetic_menu_assets(cells: pd.DataFrame, year: int):
+    """Export versionné dont les filtres de référence désignent le monde fictif."""
+    fr = cells.loc[cells["reporter"] == "FR", "reporter_display"].iloc[0]
+    ranked = cells[(cells["year"] == year) & (cells["flow"] == "1") & cells["primary_rank_by_product"].notna()]
+    product = ranked["product_display"].value_counts().index[0]
+    assets = superset_bundle.configure_assets(
+        superset_bundle.load_assets(SOURCE),
+        default_year=year,
+        top_n=3,
+        menu_defaults={
+            "NATIVE_FILTER-PAYS-FOCUS": [fr],
+            "NATIVE_FILTER-PAYS-LEVEL": ["NC8"],
+            "NATIVE_FILTER-PRODUIT-FOCUS": [product],
+        },
+    )
+    base = {"year": [year], "flow_label": ["Import"], "in_force": [True]}
+    return assets, {**base, "reporter_display": [fr], "product_level_label": ["NC8"]}, {**base, "product_display": [product]}
+
+
+def test_menu_queries_return_the_drawn_units(served) -> None:
+    """Menus calculés = unités que tracent, menu vide, les graphiques qu'ils pilotent."""
+    conn, cells = served
+    assets, country, product = _synthetic_menu_assets(cells, 2019)
+    computed = {
+        query.filter_id: superset_bundle.menu_values(
+            conn.execute(superset_bundle.menu_query_sql(query, "serving.dashboard.cell_scores")).df().to_dict("records"),
+            query,
+        )
+        for query in superset_bundle.menu_queries(assets)
+    }
+    drawn_products = _run_virtual(conn, "trade_series_by_reporter", country, top_n=3)["product_display"]
+    drawn_reporters = _run_virtual(conn, "trade_series_by_product", product, top_n=3)["reporter_display"]
+    bars = _run_virtual(conn, "partners_by_reporter", country)
+    assert len(computed["NATIVE_FILTER-PAYS-EXTRA"]) == len(computed["NATIVE_FILTER-PRODUIT-EXTRA"]) == 3
+    assert set(computed["NATIVE_FILTER-PAYS-EXTRA"]) == set(drawn_products)
+    assert set(computed["NATIVE_FILTER-PRODUIT-EXTRA"]) == set(drawn_reporters)
+    assert computed["NATIVE_FILTER-PAYS-DETAIL"] == list(bars["product_display"].unique())
+    # Produit détaillé = meilleur rang = premier des produits des courbes
+    assert computed["NATIVE_FILTER-PAYS-DETAIL"] == computed["NATIVE_FILTER-PAYS-EXTRA"][:1]
+    # Requête de données Superset : mêmes filtres, même tri, même limite
+    for query in superset_bundle.menu_queries(assets):
+        body = superset_bundle.chart_data_payload(query, 7)["queries"][0]
+        assert {f["col"]: f["val"] for f in body["filters"]} == query.filters
+        assert body["row_limit"] == query.limit and body["orderby"][1] == [query.tiebreak, True]
+        assert body["extras"]["where"] == f"{query.rank} IS NOT NULL"
+
+
+def test_menu_defaults_written_in_both_masks(export: Path, tmp_path: Path) -> None:
+    """Valeurs des menus : état affiché et filtre appliqué ; vide ; erreurs ; option CLI."""
+    assets = superset_bundle.load_assets(SOURCE)
+    configured = superset_bundle.configure_assets(
+        assets, menu_defaults={"NATIVE_FILTER-PAYS-EXTRA": ["a", "b"], "NATIVE_FILTER-PAYS-DETAIL": []}
+    )
+    filters = superset_bundle._native_filters(configured)
+    extra = filters["NATIVE_FILTER-PAYS-EXTRA"]["defaultDataMask"]
+    assert extra["filterState"] == {"value": ["a", "b"]}
+    assert extra["extraFormData"] == {"filters": [{"col": "product_display", "op": "IN", "val": ["a", "b"]}]}
+    detail = filters["NATIVE_FILTER-PAYS-DETAIL"]["defaultDataMask"]
+    assert detail["filterState"] == {"value": None} and detail["extraFormData"] == {}
+    # Export d'origine intact
+    assert superset_bundle._native_filters(assets)["NATIVE_FILTER-PAYS-EXTRA"]["defaultDataMask"] != extra
+    with pytest.raises(superset_bundle.BundleError, match="single-select"):
+        superset_bundle.configure_assets(assets, menu_defaults={"NATIVE_FILTER-PAYS-DETAIL": ["a", "b"]})
+    with pytest.raises(superset_bundle.BundleError, match="unknown native filter"):
+        superset_bundle.configure_assets(assets, menu_defaults={"NATIVE_FILTER-X": ["a"]})
+    # Option --menu-defaults de la ligne de commande
+    menus = tmp_path / "menus.json"
+    menus.write_text('{"NATIVE_FILTER-PRODUIT-EXTRA": ["NL — Netherlands"]}', encoding="utf-8")
+    output = tmp_path / "out.zip"
+    assert superset_bundle.main([str(SOURCE), "-o", str(output), "--menu-defaults", str(menus)]) == 0
+    dashboards = [n for n in _read_bundle(output.read_bytes()) if "/dashboards/" in n]
+    with zipfile.ZipFile(output) as handle:
+        content = yaml.safe_load(handle.read(dashboards[0]))
+    produit = {f["id"]: f for f in content["metadata"]["native_filter_configuration"]}["NATIVE_FILTER-PRODUIT-EXTRA"]
+    assert produit["defaultDataMask"]["filterState"]["value"] == ["NL — Netherlands"]
+    menus.write_text("[1]", encoding="utf-8")
+    assert superset_bundle.main([str(SOURCE), "-o", str(output), "--menu-defaults", str(menus)]) == 1
+
+
+@pytest.mark.parametrize(
+    "name, focus_column",
+    [("metric_series_by_reporter", "reporter_display"), ("metric_series_by_product", "product_display")],
+)
+@pytest.mark.parametrize(
+    "label, column",
+    [(RANK_LABEL, None), (HHI_LABEL, "HHI"), ("Concentration mondiale (WORLD_HHI)", "WORLD_HHI")],
+)
+def test_metric_series_cover_every_year_whatever_the_year_filter(served, name, focus_column, label, column) -> None:
+    """Courbe des indicateurs : toutes les années où l'indicateur est défini, filtre « Année »
+    renseigné ; aucune valeur vide ni fabriquée."""
+    conn, cells = served
+    year = 2019
+    if focus_column == "reporter_display":
+        focus = cells.loc[cells["reporter"] == "FR", "reporter_display"].iloc[0]
+        unit_key, rank = "product", "primary_rank_by_reporter_level"
+        extra = {"product_level_label": ["NC8"]}
+    else:
+        ranked = cells[(cells["year"] == year) & (cells["flow"] == "1") & cells["primary_rank_by_product"].notna()]
+        focus = ranked["product_display"].value_counts().index[0]
+        unit_key, rank = "reporter", "primary_rank_by_product"
+        extra = {}
+    filters = {"year": [year], "flow_label": ["Import"], focus_column: [focus], "in_force": [True], "metric": [label], **extra}
+    series = _run_virtual(conn, name, filters, top_n=3)
+    assert series["year"].nunique() > 1 and series["value"].notna().all()
+    # Années renvoyées = années où l'indicateur est défini, unité par unité
+    display = "product_display" if unit_key == "product" else "reporter_display"
+    source = cells[
+        (cells[focus_column] == focus) & (cells["flow"] == "1") & cells["in_force"]
+        & cells[display].isin(series[display].unique())
+    ]
+    defined = source[source[column or rank].notna()]
+    expected = defined.groupby(display)["year"].apply(lambda years: sorted(set(years))).to_dict()
+    returned = series.groupby(display)["year"].apply(lambda years: sorted(set(years))).to_dict()
+    assert returned == expected
+
+
+def test_curve_titles_do_not_claim_most_vulnerable() -> None:
+    """Titres exacts des quatre courbes ; aucun texte n'affirme « les plus vulnérables »."""
+    titles = {
+        chart["uuid"]: chart["slice_name"]
+        for chart in (yaml.safe_load(path.read_text(encoding="utf-8")) for path in (SOURCE / "charts").glob("*.yaml"))
+    }
+    assert titles["0e9afb50-32b1-4f80-a09e-57dd402bfecf"] == "Échanges avec le monde"
+    assert titles["08f11d93-001e-4377-9488-8352b4c40b08"] == "Évolution d'un indicateur de vulnérabilité des produits"
+    assert titles["27e09fe7-5a5c-4c15-b6f3-34d433eabbd4"] == "Échanges avec le monde des pays"
+    assert titles["e2cf75f7-f581-41b3-bce7-bd0d0093e301"] == "Évolution d'un indicateur de vulnérabilité des pays"
+    dashboard = yaml.safe_load((SOURCE / "dashboards" / "Vulnerabilites.yaml").read_text(encoding="utf-8"))
+    texts = list(titles.values())
+    texts += [c["meta"]["code"] for c in dashboard["position"].values() if isinstance(c, dict) and c.get("type") == "MARKDOWN"]
+    texts += [f.get("description") or "" for f in dashboard["metadata"]["native_filter_configuration"]]
+    texts += [
+        yaml.safe_load(path.read_text(encoding="utf-8"))["sql"]
+        for path in (SOURCE / "datasets" / "serving").glob("*_series_*.yaml")
+    ]
+    assert not [text for text in texts if "plus vulnérables" in text]
 
 
 # ── Diagrammes des partenaires : barres (onglet Par pays) et Sankey (onglet Par produit) ──

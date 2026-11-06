@@ -81,6 +81,12 @@ dashboardImport:
   # Nombre d'unités tracées par défaut dans les courbes. Vide = valeur de l'export (5).
   # Défaut : "". Exemple : "8"
   topN: ""
+  # Valeurs par défaut des menus « Produit à détailler », « Produits des courbes » et
+  # « Pays des courbes » : data = calculées après l'import sur les données de
+  # l'environnement (rang 1, topN premières unités), puis second import si elles
+  # diffèrent de l'export ; export = valeurs de l'export (calculées sur la demo).
+  # Défaut : data. Exemple : export
+  menuDefaults: data
   # Image du Job (Python, PyYAML et requests requis) : celle de Superset.
   # Défaut : image de Superset 4.1.1. Exemple : {repository: python, tag: "3.12-slim"}
   image:

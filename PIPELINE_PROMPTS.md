@@ -23,6 +23,10 @@
 > avant la recette (**K-17h 🔌**) — dépendances par partenaire (barres dans l'onglet par pays,
 > Sankey dans l'onglet par produit), libellés explicites des indicateurs, textes d'aide
 > didactiques ; K-17d en dépend.
+> **Révision 6 du 2026-11-04** : ajustements du tableau de bord v2.1 (**K-17i 🔌**) — menus
+> « Produit à détailler » et « Pays des courbes » préremplis par ce qui est tracé, titres des
+> courbes sans « les plus vulnérables », série temporelle complète de la courbe des
+> indicateurs ; K-17d en dépend.
 > Identifiants : `K-xx` (prompts), `PD-xx` / `PS-xx` / `PR-xx` / `PQ-xx` / `C-xx` (ARCH).
 
 ## Mode d'emploi
@@ -84,7 +88,8 @@
 | K-17f 🔌 | Tableau de bord Superset v2 (par pays / par produit, incertitude du rang, valeur ou quantité) et couche de service | 4 | **Opus** | **Oui** | K-17e, catalogue demo existant | trade-analysis |
 | K-17g 🔌 | Charts Helm (pipeline, tableau de bord, parapluie ; Onyxia ou cluster quelconque) | 4 | **Opus** | **Oui** | K-17e, K-17f | trade-analysis |
 | K-17h 🔌 | Tableau de bord v2.1 : dépendances par partenaire (barres par pays, Sankey par produit), libellés explicites des indicateurs, textes d'aide didactiques | 4 | **Opus** | **Oui** | K-17f, K-17g | trade-analysis |
-| K-17d 🔌 | Validation du déploiement sur bases vierges (recette demo complète, idempotence, MLflow, données, tableau de bord v2, installation Helm, bascule, runbooks) | 4 | Sonnet | **Oui** | K-17c, K-17e, K-17f, K-17g, K-17h | trade-analysis |
+| K-17i 🔌 | Tableau de bord v2.2 : menus préremplis par ce qui est tracé, titres des courbes, série complète de la courbe des indicateurs | 4 | **Opus** | **Oui** | K-17h | trade-analysis |
+| K-17d 🔌 | Validation du déploiement sur bases vierges (recette demo complète, idempotence, MLflow, données, tableau de bord v2, installation Helm, bascule, runbooks) | 4 | Sonnet | **Oui** | K-17c, K-17e, K-17f, K-17g, K-17h, K-17i | trade-analysis |
 | K-17b 🔌 | Retrait des données de démonstration et fictives sur le cluster (inventaire, non-contamination, suppression confirmée) | 4 | Sonnet | **Oui** | K-17d, **données réelles complètes** (PQ-20) | trade-analysis |
 | K-18 | Nettoyage final : suppression des scripts, du code fictif et des fichiers de démonstration, documentation | 4 | Sonnet | Non | K-17b | trade-analysis |
 
@@ -101,7 +106,7 @@ flowchart LR
   K12 --> K13 --> K15
   K12 --> K14 --> K15
   K12 --> K16 --> K17
-  K15 --> K17 --> K17c --> K17e --> K17f --> K17g --> K17h --> K17d --> K17b --> K18
+  K15 --> K17 --> K17c --> K17e --> K17f --> K17g --> K17h --> K17i --> K17d --> K17b --> K18
 ```
 
 Justification des choix de modèle : **Opus** pour les prompts qui demandent des arbitrages
@@ -3181,9 +3186,185 @@ CRITÈRES D'ACCEPTATION
 
 ---
 
+## K-17i 🔌 — Tableau de bord « Vulnérabilités » v2.2 : menus préremplis par ce qui est tracé, titres des courbes, série complète des indicateurs
+
+- **Modèle** : **Opus** · **Mode plan** : **Oui** (diagnostic de comportements Superset avant correction, valeurs par défaut des filtres liées aux données, plusieurs fichiers d'export à garder cohérents) · **Phase** : 4 · **Dépend de** : K-17h (tableau de bord v2.1, export versionné, `tools/superset_bundle.py`, copie du chart `trade-dashboard`)
+- **Dépôt** : `trade-analysis` — **session lancée depuis un service VSCode Onyxia** (accès PostgreSQL, S3 et à l'URL Superset du namespace)
+
+````text
+CONVENTIONS DE RÉDACTION DU CODE (à appliquer à tout le code écrit ou modifié)
+- Commentaires internes en FRANÇAIS, à formulation nominale (ex. `# Vérification des
+  arguments`, pas `# Vérifier les arguments`) ; expliquer le « pourquoi » plutôt que le
+  « quoi » quand le code est clair.
+- Docstrings en ANGLAIS, selon la convention Google Style : description concise, puis
+  `Args:` (noms, types et descriptions), `Returns:` (type et description), `Raises:`
+  (exceptions possibles) et `Examples:` (cas d'usage concrets, doctest quand possible).
+- Ne cite dans le code, les commentaires et les docstrings aucun identifiant ni paragraphe
+  d'un document d'architecture ou de spécification : décris explicitement toute
+  l'information utile (règle, motivation, valeurs attendues) à l'endroit où elle sert.
+
+Dépôt `trade-analysis`, branche `qb-vulnerabilities`. Lis `CLAUDE.md` (s'il existe),
+`superset/README.md` (EN ENTIER : parcours, mécanisme du top N, produit détaillé, import
+« assets », pièges — en particulier « Menus préremplis (valeurs fixes) »), tout le dossier
+`superset/vulnerabilites/` (tableau de bord : filtres natifs `NATIVE_FILTER-PAYS-DETAIL`,
+`NATIVE_FILTER-PAYS-EXTRA`, `NATIVE_FILTER-PRODUIT-EXTRA`, leurs `defaultDataMask`,
+`cascadeParentIds` et portées ; datasets virtuels `trade_series_*`, `metric_series_*`,
+`partners_by_reporter` ; colonne calculée `detail_product` de `cell_scores`),
+`tools/superset_bundle.py` (options `--default-year`, `--top-n`), `tools/sync_chart_files.py`,
+`tests/test_superset_bundle.py` (dont `test_committed_menu_defaults_are_drawn_units`),
+`tests/test_chart_files.py`, `docs/dashboards.md`, `helm/trade-dashboard/` (Job d'import :
+paramètres passés à l'outil d'archive), et dans `PIPELINE_ARCHITECTURE.md` : PS-29.4, PS-30
+(en entier, dont PS-30.7). Les prompts K-17f et K-17h de `PIPELINE_PROMPTS.md` décrivent la
+construction du tableau de bord actuel : ce prompt en est le prolongement et en reprend la
+méthode (API Superset, puis export versionné).
+
+RÈGLES : ne JAMAIS afficher ni recopier la valeur d'un secret (identifiants chargés dans
+l'environnement sans affichage, connexions par la fabrique de `kedro_pipeline/io/`) ;
+toute écriture dans un catalogue (republication de `serving`) ou dans Superset (import,
+suppression) est annoncée et CONFIRMÉE par moi ; vérifie avant toute republication
+qu'aucun workflow `trade-pipeline` n'est en cours (`kubectl get wf`), la publication de
+`serving` étant partagée entre les deux cadences. Si DuckLake répond « 403 InvalidAccessKeyId »,
+les jetons S3 du service VSCode ont expiré : demande-moi de les renouveler, ne contourne pas.
+
+CONTEXTE : le tableau de bord v2.1 (K-17h) est en place. Ses utilisateurs demandent trois
+ajustements avant la recette sur bases vierges (K-17d), pour ne lancer qu'une recette :
+(a) UN MENU MONTRE CE QUI EST TRACÉ. À l'ouverture d'un onglet, chaque menu de choix
+    d'unités du panneau de gauche doit contenir ce qu'affiche le graphique qu'il pilote.
+    C'est le cas aujourd'hui entre « Produits des courbes » et les deux courbes de l'onglet
+    « Par pays » : c'est le comportement de RÉFÉRENCE. Ce ne l'est pas pour :
+    - « Produit à détailler » (onglet « Par pays ») : il doit contenir, en « code — libellé »,
+      le produit dont le diagramme « Principaux partenaires du pays pour le produit
+      détaillé » montre les partenaires ;
+    - « Pays des courbes » (onglet « Par produit ») : il doit contenir les pays dont une
+      série est tracée dans les deux courbes de l'onglet.
+(b) TITRES DES COURBES : les courbes ne montrent pas forcément les unités les plus
+    vulnérables (le menu est modifiable) ; les titres ne doivent plus l'affirmer.
+(c) SÉRIE COMPLÈTE DES INDICATEURS : la courbe « Évolution d'un indicateur des produits les
+    plus vulnérables » (onglet « Par pays ») n'affiche par défaut qu'UN point, celui de
+    l'année du filtre « Année », au lieu de la série temporelle complète de l'indicateur
+    pour les produits choisis.
+CONSTAT À EXPLIQUER AVANT TOUTE CORRECTION : l'export versionné porte DÉJÀ des valeurs par
+défaut fixes pour les trois menus (README, « Menus préremplis » ; test
+`test_committed_menu_defaults_are_drawn_units`), et les gabarits des courbes lisent déjà
+l'année par `filter_values('year', remove_filter=True)` et renvoient toutes les années ; les
+datasets `trade_series_by_reporter` et `metric_series_by_reporter` ont la même structure,
+et la courbe des échanges, elle, montre bien la série complète. Les symptômes viennent donc
+d'ailleurs que du principe retenu en K-17h.
+
+DÉCISIONS DÉJÀ PRISES (à appliquer)
+1. MENUS PRÉREMPLIS : même comportement que « Produits des courbes ».
+   - À l'ouverture (valeurs par défaut des filtres pays, produit, année, flux, niveau) :
+     « Produit à détailler » = le produit des barres (rang 1 du pays, de l'année, du flux et
+     du niveau par défaut) ; « Pays des courbes » = les `top_n` pays tracés (5 premiers
+     rangs du produit par défaut) ; « Produits des courbes » inchangé.
+   - Mécanisme par défaut : valeurs fixes, comme en K-17h. La limite documentée est acceptée
+     (après un changement de pays, de produit, d'année ou de flux, les graphiques suivent
+     le menu, qu'il faut vider pour revenir au rang 1 / aux N premiers). Si le diagnostic
+     montre qu'un mécanisme natif de la version installée fait mieux (valeur recalculée
+     quand un filtre parent change, par exemple « première valeur par défaut » avec un tri
+     des options par une métrique de rang), propose-le dans le plan avec la preuve qu'il
+     fonctionne à l'écran ; sinon garde les valeurs fixes.
+   - Les valeurs fixes sont calculées sur la demo : en production, elles ne désigneraient
+     plus ce qui est tracé. Propose dans le plan le moyen le plus simple pour qu'elles
+     soient justes après le déploiement : calcul par l'outil d'archive au moment de l'import
+     (le Job du chart lui passe déjà `--default-year`, il peut lire `serving`), ou étape
+     documentée de K-17d avec la requête du README. Je choisirai.
+2. TITRES (`slice_name`), à l'identique, UUID inchangés (l'import « assets » remplace en
+   place) :
+   - onglet « Par pays » : « Échanges avec le monde des produits les plus vulnérables »
+     → « Échanges avec le monde » ; « Évolution d'un indicateur des produits les plus
+     vulnérables » → « Évolution d'un indicateur de vulnérabilité des produits » ;
+   - onglet « Par produit » : « Échanges avec le monde des pays les plus vulnérables »
+     → « Échanges avec le monde des pays » ; « Évolution d'un indicateur des pays les plus
+     vulnérables » → « Évolution d'un indicateur de vulnérabilité des pays ».
+   Les noms des fichiers d'export suivent le titre : renomme-les (anciens fichiers retirés
+   de `superset/vulnerabilites/charts/` ET de la copie du chart). Fais suivre partout où les
+   titres ou l'expression « les plus vulnérables » apparaissent pour désigner les courbes :
+   blocs Markdown d'aide (qui disent déjà « au départ, les 5 premiers du tableau » : à
+   garder, c'est désormais là que se lit la règle par défaut), descriptions des filtres,
+   commentaires SQL des datasets, `superset/README.md`, `docs/dashboards.md`.
+3. SÉRIE COMPLÈTE : la courbe des indicateurs (les DEUX onglets si le symptôme y est aussi)
+   montre, pour chaque unité choisie, toutes les années où l'indicateur est défini, quelle
+   que soit la valeur du filtre « Année » ; ce filtre ne sert qu'à choisir les unités par
+   défaut, comme pour la courbe des échanges. Aucune interpolation ni valeur fabriquée : le
+   rang et les indicateurs de réseau (concentration mondiale, poids des pays pivots,
+   cloisonnement, point de défaillance unique) n'existent que sur les années couvertes par
+   le réseau BACI (2017–2021 en demo), les indicateurs partenaires sur toutes les années —
+   la courbe peut donc couvrir des périodes différentes selon l'indicateur ; vérifie
+   qu'elle reste lisible (marqueurs, années manquantes non reliées ou reliées : propose).
+   Si la cause est dans les DONNÉES (rangs ou indicateurs présents pour une seule année dans
+   le catalogue demo), dis-le et propose le remède ; ne relance aucune étape du pipeline
+   sans mon accord.
+
+ÉTAPES
+1. Diagnostic (lecture seule) sur le Superset actuel, pour chacun des trois symptômes :
+   - reproduis-le (navigateur, ou API : `json_metadata` du tableau de bord, valeurs des
+     filtres, `POST /api/v1/chart/data` avec l'état par défaut des filtres et
+     `result_type: "query"` pour lire le SQL réellement exécuté) ;
+   - compare le service à l'export versionné (SQL des datasets virtuels, `defaultDataMask`,
+     `cascadeParentIds`, titres) : un écart signale un import « dashboard » au lieu
+     d'« assets » (piège du README) ou un état antérieur au dernier export ;
+   - menus : la valeur par défaut est-elle absente, effacée par la cascade quand elle ne
+     figure pas dans les options que renvoient les filtres parents, ignorée parce que le
+     filtre porte sur une colonne calculée (`detail_product`), ou incohérente entre
+     `filterState` et `extraFormData` ? Pourquoi « Produits des courbes » fonctionne-t-il
+     et pas les deux autres ?
+   - courbe des indicateurs : le filtre `year` reste-t-il dans la requête englobante ?
+     `cell_scores` a-t-il des valeurs non nulles sur plusieurs années pour les 5 produits
+     par défaut (rang, un indicateur partenaire, un indicateur de réseau) ? Le symptôme
+     dépend-il de l'indicateur choisi, de l'onglet ?
+   Présente dans le plan la cause établie de chaque symptôme (avec la preuve) et la
+   correction proposée ; une hypothèse non vérifiée est signalée comme telle.
+2. Corrections (YAML de `superset/vulnerabilites/`, ou API Superset puis export) selon le
+   diagnostic : valeurs par défaut des deux menus recalculées sur la demo avec la requête du
+   README (année et `--top-n` par défaut), titres, gabarits ou paramètres des courbes,
+   textes. Si l'outil d'archive calcule les valeurs par défaut (décision 1, si je la
+   retiens) : option dédiée, test unitaire sur le monde fictif, Job du chart mis à jour.
+3. Validation sur le Superset actuel (import « assets » de l'archive
+   `tools/superset_bundle.py --schema demo_dashboard --assets`, après confirmation) :
+   - à l'ouverture de chaque onglet, chaque menu contient exactement les unités tracées
+     (compare la valeur du filtre à la liste des unités renvoyée par l'API de données du
+     graphique qu'il pilote) ;
+   - après changement de pays (ou de produit) puis menu vidé : rang 1 et 5 premiers du
+     nouveau choix ; ajout d'une unité au menu : elle apparaît ;
+   - courbe des indicateurs : plusieurs années sur les deux onglets, pour le rang, un
+     indicateur partenaire et un indicateur de réseau, à l'import et à l'export, et avec
+     une autre année choisie dans le filtre ; courbe des échanges inchangée ;
+   - quatre nouveaux titres affichés ; latence à froid des courbes (objectif PS-29.4).
+4. Exports et chart : mets à jour `superset/vulnerabilites/` depuis l'export, puis
+   `python tools/sync_chart_files.py` (vérifie qu'il retire les fichiers renommés de la
+   copie) ; tests verts (`uv run pytest`, dont le test qui exécute le SQL versionné des
+   datasets virtuels et `tests/test_chart_files.py`). Ajoute ou étends des tests :
+   gabarits `metric_series_*` rendus avec un filtre `year` renseigné → plusieurs années
+   renvoyées (monde fictif) ; cohérence des valeurs par défaut versionnées étendue à
+   « Pays des courbes » (5 pays, produit de référence = produit par défaut de l'onglet) et
+   à « Produit à détailler » ; titres exacts des quatre courbes.
+5. Documentation : `superset/README.md` (titres, menus préremplis et leur recalcul en
+   production, nouveaux pièges rencontrés lors du diagnostic), `docs/dashboards.md`
+   (lecture des courbes : période couverte selon l'indicateur) ; ARCH : PS-30 (structure
+   v2.2) et ligne d'historique ; décision numérotée seulement si la couche de service
+   change de contrat. Si le recalcul des valeurs par défaut devient une étape de la
+   recette, ajoute-la à l'étape 5 de K-17d dans `PIPELINE_PROMPTS.md`.
+
+CRITÈRES D'ACCEPTATION
+- Tableau de bord importé depuis l'archive `tools/superset_bundle.py --schema
+  demo_dashboard --assets` ; à l'ouverture des deux onglets, « Produit à détailler »,
+  « Produits des courbes » et « Pays des courbes » contiennent exactement ce que tracent
+  les graphiques qu'ils pilotent.
+- Les quatre titres sont ceux de la décision 2 ; plus aucun titre ni texte d'aide
+  n'affirme que les courbes montrent « les plus vulnérables ».
+- La courbe des indicateurs montre la série temporelle complète des unités choisies sur
+  les deux onglets, quelle que soit l'année choisie.
+- Copie du chart synchronisée, tests verts.
+- Rapport : cause établie de chaque symptôme, corrections, valeurs par défaut retenues et
+  moyen de les rendre justes en production, latences mesurées. Pas de commit sans demande.
+````
+
+---
+
 ## K-17d 🔌 — Validation du déploiement sur bases vierges avant la production
 
-- **Modèle** : Sonnet · **Mode plan** : Oui (opérations cluster, suppressions de données de recette, bascule de production) · **Phase** : 4 · **Dépend de** : K-17c, K-17e, K-17f, K-17g, K-17h (package `tradekit`, tableau de bord v2.1, charts Helm ; image publiée, tag `sha-<court>` fourni)
+- **Modèle** : Sonnet · **Mode plan** : Oui (opérations cluster, suppressions de données de recette, bascule de production) · **Phase** : 4 · **Dépend de** : K-17c, K-17e, K-17f, K-17g, K-17h, K-17i (package `tradekit`, tableau de bord v2.2, charts Helm ; image publiée, tag `sha-<court>` fourni)
 - **Dépôt** : `trade-analysis` — **session lancée depuis un terminal avec accès `kubectl`** (nouvelle session, sans l'historique de K-17)
 
 ````text
@@ -3285,8 +3466,13 @@ ACQUIS DE LA RECETTE PRÉCÉDENTE (déjà fait, à ne pas refaire)
    registres de fraîcheur v2 fragmentés sur S3, catalogue `serving` (un snapshot par
    publication, fichiers obsolètes nettoyés), tableau de bord « Vulnérabilités » v2
    cohérent sur les deux onglets (rangs et incertitude de rang, libellés, `in_force`,
-   bascule valeur/quantité, unités les plus vulnérables par défaut et ajout par le menu),
-   latence à froid des graphiques en `cloud`.
+   bascule valeur/quantité, unités par défaut et ajout par le menu), latence à froid des
+   graphiques en `cloud`. Menus préremplis : le journal du Job d'import (`kubectl logs
+   job/<release>-dashboard-import`) donne le nombre de valeurs calculées par menu (1, N, N ;
+   aucun avertissement « sans valeur ») ; ouvert à une URL **sans** `native_filters_key`
+   (fenêtre privée), chaque onglet montre dans « Produit à détailler », « Produits des
+   courbes » et « Pays des courbes » exactement les unités tracées (à recouper par le
+   journal des événements de Superset, `GET /api/v1/log/`).
 6. Forçage : `weekly` avec `force-steps=synthesis` → seuls synthèse et cohérence recalculent.
 7. Bascule de production (après confirmation) : tag immuable `<TAG>` avec
    `imagePullPolicy: IfNotPresent` comme valeurs par défaut (`config/base/argo.yml` et

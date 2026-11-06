@@ -307,6 +307,7 @@ elles se placent sous `pipeline.` et `dashboard.`.
 | `dashboard.superset.ingress.hostname` | vide, **à fournir** sur Onyxia | adresse web de Superset |
 | `dashboard.dashboardImport.schema` | vide = `dashboard` (production) ; `demo_dashboard` en recette | schéma lu par les datasets |
 | `dashboard.dashboardImport.defaultYear` | vide = valeur de l'export (2021) | dernière année classée, défaut des filtres |
+| `dashboard.dashboardImport.menuDefaults` | `data` | `data` : menus « Produit à détailler », « Produits des courbes », « Pays des courbes » calculés sur les données après l'import (second import s'ils diffèrent de l'export) ; `export` : valeurs de l'export (demo) |
 | `dashboard.dashboardImport.supersetUrl` | service du Superset du chart | URL d'un Superset existant |
 | `dashboard.catalog.*` | `serving`, Minio du SSP Cloud | base, alias, point de terminaison S3 du catalogue |
 

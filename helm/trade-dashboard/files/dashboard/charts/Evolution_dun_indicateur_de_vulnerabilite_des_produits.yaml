@@ -1,11 +1,11 @@
-slice_name: Évolution d'un indicateur des pays les plus vulnérables
+slice_name: Évolution d'un indicateur de vulnérabilité des produits
 description: null
 certified_by: null
 certification_details: null
 viz_type: echarts_timeseries_line
 params:
   viz_type: echarts_timeseries_line
-  datasource: 15__table
+  datasource: 13__table
   x_axis: period
   time_grain_sqla: P1Y
   x_axis_time_format: '%Y'
@@ -32,6 +32,6 @@ params:
   annotation_layers: []
 query_context: null
 cache_timeout: null
-uuid: e2cf75f7-f581-41b3-bce7-bd0d0093e301
+uuid: 08f11d93-001e-4377-9488-8352b4c40b08
 version: 1.0.0
-dataset_uuid: 08407e80-7fa3-4de9-ad8a-62a857a390b5
+dataset_uuid: a2039f14-f30b-435d-8129-cf75578fb519

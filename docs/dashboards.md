@@ -69,11 +69,16 @@ le filtre « Produit à détailler » en choisit un autre.
 
 !!! note "Menus préremplis"
     Au chargement, les menus « Produit à détailler », « Produits des courbes » et « Pays des
-    courbes » montrent les valeurs affichées par défaut (France, import, SH6 : le produit
-    classé premier et les cinq premiers produits ; pour le produit par défaut, les cinq
-    premiers pays). Superset ne recalcule pas ces valeurs quand on change de pays, de produit,
-    d'année ou de flux : les graphiques suivent alors le menu. Videz-le pour revenir au
-    produit classé premier et aux cinq premières unités.
+    courbes » montrent ce que tracent les graphiques par défaut (pour le pays, l'année, le
+    flux et le niveau par défaut : le produit classé premier et les cinq premiers produits ;
+    pour le produit par défaut, les cinq premiers pays). Superset ne recalcule pas ces
+    valeurs quand on change de pays, de produit, d'année ou de flux : les graphiques suivent
+    alors le menu. Videz-le pour revenir au produit classé premier et aux cinq premières
+    unités.
+
+    Un lien qui contient `native_filters_key=…` rouvre les filtres tels qu'ils étaient
+    lors d'une visite antérieure, pas les valeurs par défaut. Pour retrouver celles-ci,
+    ouvrez l'adresse du tableau de bord sans ce paramètre.
 
 - Les **10 premiers partenaires** en valeur sont classés du plus important au moins
   important ; leur libellé donne leur rang et leur part dans les échanges du pays, en
@@ -117,10 +122,25 @@ davantage à l'export, où les clients sont plus dispersés (médiane de 19 %).
 
 Sous les diagrammes, deux courbes portent sur les unités du filtre « Produits des courbes »
 (onglet *Par pays*) ou « Pays des courbes » (onglet *Par produit*) ; filtre vide, sur les cinq
-unités les mieux classées l'année choisie :
+unités les mieux classées l'année choisie. Le menu étant modifiable, les courbes ne montrent
+pas forcément les unités les plus vulnérables : leurs titres disent « Échanges avec le
+monde » et « Évolution d'un indicateur de vulnérabilité des produits » (ou « … des pays ») :
 - l'évolution des **échanges avec le monde**, en valeur (€) ou en quantité (100 kg) au
   choix ;
 - l'évolution d'un **indicateur** au choix (filtre « Indicateur »), le rang par défaut.
+
+Les deux courbes montrent toute la série temporelle des unités choisies, quelle que soit
+l'année du filtre « Année », qui ne sert qu'à choisir les unités par défaut. La période
+couverte dépend de l'indicateur :
+- le **rang** et les indicateurs de **réseau** (concentration mondiale, poids des pays
+  pivots, cloisonnement, point de défaillance unique) n'existent que les années couvertes
+  par le réseau mondial BACI (2017–2021 en démonstration) ;
+- les indicateurs **partenaires** (concentration des partenaires, part hors UE, rapport aux
+  flux de sens inverse) et les échanges couvrent toutes les années.
+
+Aucune valeur n'est interpolée : une année manquante dans une série laisse un trou, et un
+point isolé reste visible grâce à son marqueur. Une unité sans aucune valeur pour
+l'indicateur choisi n'apparaît pas dans la légende (par exemple un code NC8 non classé).
 
 L'année doit toujours avoir une valeur, ce qui est le cas par défaut : elle permet
 l'élagage des partitions DuckLake.
