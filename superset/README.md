@@ -41,6 +41,18 @@ Points communs aux deux onglets :
 - **Mise en forme conditionnelle** : une métrique est rouge au-delà de son seuil d'alerte
   (seuils de `parameters_vulnerabilities.yml`, règle « valeur > seuil »). « Nb alertes »
   est jaune de 1 à 2 alertes, rouge à partir de 3.
+- **Couleur de la fourchette du rang** : selon sa largeur rapportée au nombre de lignes
+  classées du groupe (`rank_spread_<niveau>` / `primary_n_<niveau>`), en couleur unie :
+  vert `#66BD63` jusqu'à 5 %, vert clair `#D9EF8B` jusqu'à 10 %, orange `#FDAE61` jusqu'à
+  20 %, rouge `#EFA1AA` au-delà (bornes incluses). La part est rapportée au groupe, et non
+  exprimée en rangs, pour que les seuils gardent leur sens de la demo (au plus 53 produits
+  SH6 par pays) à la production (des milliers) et d'un onglet à l'autre (environ 27 pays).
+  L'infobulle de la cellule donne cette part. « Largeur de la fourchette » n'est pas
+  colorée. Mécanisme : voir les pièges, « Colorer une colonne texte ».
+- **Bloc d'aide** : il précise que les indicateurs ne se comparent pas d'une colonne à
+  l'autre (échelles et unités différentes) et définit chaque colonne en une phrase, sans
+  formule ; dans l'onglet *Par produit*, il signale que les quatre indicateurs de réseau ont
+  la même valeur pour tous les pays d'un produit.
 
 ### Libellés des indicateurs
 
@@ -54,7 +66,7 @@ libellé ; la définition est dans la `description` de la colonne. Le test
 | Colonne | Libellé | Sens |
 |---|---|---|
 | `primary_rank_<niveau>` | Rang (1 = le plus vulnérable) | rang consensus |
-| `rank_iqr_<niveau>` | Fourchette du rang | « q25 – q75 » des rangs des méthodes |
+| `rank_iqr_<niveau>` | Fourchette du rang | « q25 – q75 » des rangs des méthodes, cellule colorée (fragment HTML) |
 | `rank_spread_<niveau>` | Largeur de la fourchette | q75 − q25 |
 | `consensus_score_<niveau>` | Score de vulnérabilité (0 à 1) | 1 = le plus vulnérable |
 | `HHI` | Concentration des partenaires (HHI) | fournisseurs (import), clients (export) |
@@ -311,6 +323,27 @@ qu'après un nouvel export : à faire aussitôt, sinon l'export versionné diver
   query ? ») : le Markdown est un composant de mise en page (`position_json`, type
   `MARKDOWN`), pas un graphique.
 - **Format `PERCENT_1_POINT` invalide** : utiliser un format D3 (`.1%`).
+
+**Colorer une colonne texte (fourchette du rang)**
+- **Mise en forme conditionnelle réservée aux colonnes numériques** : en 4.1.1, le tableau
+  n'applique `conditional_formatting` qu'aux colonnes `isNumeric`. « Fourchette du rang »
+  (« 3 – 4.8 ») est un texte : une règle sur elle est ignorée sans erreur.
+- **Dégradé d'opacité** : la couleur d'une règle native varie dans sa tranche (opacité de
+  5 % au seuil à 100 % à l'extrême, `getColorFormatters` appelé sans `alpha`) ; une valeur
+  juste au-delà d'un seuil paraît presque blanche. C'est le rendu des cellules rouges des
+  indicateurs.
+- **Solution retenue** : la colonne calculée `rank_iqr_<niveau>` renvoie un fragment HTML,
+  un `<span title="… % du classement">` qui contient un `<span>` de fond en
+  `position:absolute` (`top/right/bottom/left: 0`) puis le texte en `position:relative`. Le
+  `<td>` du tableau est en `position: relative` et reçoit le HTML directement : le fond
+  remplit la cellule, en couleur unie. Le rendu HTML (`allow_render_html`, vrai par
+  défaut) est explicite dans les deux tableaux ; l'assainissement de Superset (`xss`,
+  `css: false`) garde les attributs `style` et `title` de `span`.
+- **Effets de bord** : un export CSV ou Excel du tableau contient les balises ; un tri sur
+  la colonne porte sur le texte HTML, où la part du classement (infobulle) vient en premier
+  (ordre non vérifié à l'écran). Les tests `test_rank_range_colour_*` rendent l'expression
+  sur un jeu calculé à la main (bornes 5, 10 et 20 % incluses, ligne à une méthode vide)
+  et sur le monde fictif.
 
 **Gabarits Jinja des datasets virtuels**
 - **Contrôle d'espaces Jinja et commentaires SQL** : `{%- … -%}` supprime les retours à la

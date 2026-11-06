@@ -139,11 +139,22 @@ columns:
   advanced_data_type: null
   groupby: true
   filterable: true
-  expression: CASE WHEN n_methods_by_reporter_level >= 2 THEN format('{:g}', round(rank_q25_by_reporter_level,
-    1)) || ' – ' || format('{:g}', round(rank_q75_by_reporter_level, 1)) END
-  description: 'Rangs donnés à la ligne par les différentes façons de combiner les indicateurs (moitié
-    centrale de ces rangs). Étroite : le classement est robuste ; large : il dépend de la façon de pondérer.
-    Vide si moins de deux façons ont classé la ligne.'
+  expression: >-
+    CASE WHEN n_methods_by_reporter_level >= 2 THEN '<span'
+    || coalesce(' title="' || replace(format('{:.1f}', 100 * rank_spread_by_reporter_level / primary_n_by_reporter_level), '.', ',') || ' % du classement"', '')
+    || '><span style="position:absolute;top:0;right:0;bottom:0;left:0;background-color:'
+    || CASE WHEN rank_spread_by_reporter_level IS NULL OR primary_n_by_reporter_level IS NULL THEN 'transparent'
+    WHEN rank_spread_by_reporter_level <= 0.05 * primary_n_by_reporter_level THEN '#66BD63'
+    WHEN rank_spread_by_reporter_level <= 0.10 * primary_n_by_reporter_level THEN '#D9EF8B'
+    WHEN rank_spread_by_reporter_level <= 0.20 * primary_n_by_reporter_level THEN '#FDAE61'
+    ELSE '#EFA1AA' END
+    || '"></span><span style="position:relative">'
+    || format('{:g}', round(rank_q25_by_reporter_level, 1)) || ' – ' || format('{:g}', round(rank_q75_by_reporter_level, 1))
+    || '</span></span>' END
+  description: 'Rangs donnés à la ligne par les différentes façons de combiner les indicateurs (moitié centrale
+    de ces rangs). Étroite : le classement est robuste ; large : il dépend de la façon de pondérer. Couleur
+    selon la largeur rapportée au nombre de lignes classées : vert jusqu''à 5 %, vert clair jusqu''à 10
+    %, orange jusqu''à 20 %, rouge au-delà. Vide si moins de deux façons ont classé la ligne.'
   python_date_format: null
   extra: null
 - column_name: rank_iqr_by_product
@@ -154,11 +165,22 @@ columns:
   advanced_data_type: null
   groupby: true
   filterable: true
-  expression: CASE WHEN n_methods_by_product >= 2 THEN format('{:g}', round(rank_q25_by_product, 1)) ||
-    ' – ' || format('{:g}', round(rank_q75_by_product, 1)) END
-  description: 'Rangs donnés à la ligne par les différentes façons de combiner les indicateurs (moitié
-    centrale de ces rangs). Étroite : le classement est robuste ; large : il dépend de la façon de pondérer.
-    Vide si moins de deux façons ont classé la ligne.'
+  expression: >-
+    CASE WHEN n_methods_by_product >= 2 THEN '<span'
+    || coalesce(' title="' || replace(format('{:.1f}', 100 * rank_spread_by_product / primary_n_by_product), '.', ',') || ' % du classement"', '')
+    || '><span style="position:absolute;top:0;right:0;bottom:0;left:0;background-color:'
+    || CASE WHEN rank_spread_by_product IS NULL OR primary_n_by_product IS NULL THEN 'transparent'
+    WHEN rank_spread_by_product <= 0.05 * primary_n_by_product THEN '#66BD63'
+    WHEN rank_spread_by_product <= 0.10 * primary_n_by_product THEN '#D9EF8B'
+    WHEN rank_spread_by_product <= 0.20 * primary_n_by_product THEN '#FDAE61'
+    ELSE '#EFA1AA' END
+    || '"></span><span style="position:relative">'
+    || format('{:g}', round(rank_q25_by_product, 1)) || ' – ' || format('{:g}', round(rank_q75_by_product, 1))
+    || '</span></span>' END
+  description: 'Rangs donnés à la ligne par les différentes façons de combiner les indicateurs (moitié centrale
+    de ces rangs). Étroite : le classement est robuste ; large : il dépend de la façon de pondérer. Couleur
+    selon la largeur rapportée au nombre de lignes classées : vert jusqu''à 5 %, vert clair jusqu''à 10
+    %, orange jusqu''à 20 %, rouge au-delà. Vide si moins de deux façons ont classé la ligne.'
   python_date_format: null
   extra: null
 - column_name: rank_iqr_by_reporter
@@ -169,11 +191,22 @@ columns:
   advanced_data_type: null
   groupby: true
   filterable: true
-  expression: CASE WHEN n_methods_by_reporter >= 2 THEN format('{:g}', round(rank_q25_by_reporter, 1))
-    || ' – ' || format('{:g}', round(rank_q75_by_reporter, 1)) END
-  description: 'Rangs donnés à la ligne par les différentes façons de combiner les indicateurs (moitié
-    centrale de ces rangs). Étroite : le classement est robuste ; large : il dépend de la façon de pondérer.
-    Vide si moins de deux façons ont classé la ligne.'
+  expression: >-
+    CASE WHEN n_methods_by_reporter >= 2 THEN '<span'
+    || coalesce(' title="' || replace(format('{:.1f}', 100 * rank_spread_by_reporter / primary_n_by_reporter), '.', ',') || ' % du classement"', '')
+    || '><span style="position:absolute;top:0;right:0;bottom:0;left:0;background-color:'
+    || CASE WHEN rank_spread_by_reporter IS NULL OR primary_n_by_reporter IS NULL THEN 'transparent'
+    WHEN rank_spread_by_reporter <= 0.05 * primary_n_by_reporter THEN '#66BD63'
+    WHEN rank_spread_by_reporter <= 0.10 * primary_n_by_reporter THEN '#D9EF8B'
+    WHEN rank_spread_by_reporter <= 0.20 * primary_n_by_reporter THEN '#FDAE61'
+    ELSE '#EFA1AA' END
+    || '"></span><span style="position:relative">'
+    || format('{:g}', round(rank_q25_by_reporter, 1)) || ' – ' || format('{:g}', round(rank_q75_by_reporter, 1))
+    || '</span></span>' END
+  description: 'Rangs donnés à la ligne par les différentes façons de combiner les indicateurs (moitié centrale
+    de ces rangs). Étroite : le classement est robuste ; large : il dépend de la façon de pondérer. Couleur
+    selon la largeur rapportée au nombre de lignes classées : vert jusqu''à 5 %, vert clair jusqu''à 10
+    %, orange jusqu''à 20 %, rouge au-delà. Vide si moins de deux façons ont classé la ligne.'
   python_date_format: null
   extra: null
 - column_name: SPOF

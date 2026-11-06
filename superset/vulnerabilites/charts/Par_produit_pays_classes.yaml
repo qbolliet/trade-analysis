@@ -30,6 +30,7 @@ params:
   include_search: false
   show_cell_bars: false
   allow_rearrange_columns: true
+  allow_render_html: true
   conditional_formatting:
   - column: HHI
     operator: '>'

@@ -647,3 +647,73 @@ def test_indicator_labels_consistent() -> None:
         shown += [metric["label"] for metric in metrics if isinstance(metric, dict)]
         assert not SIGLES & set(shown), chart.name
     assert not SIGLES & set(menu)
+
+
+# ── Couleur de la fourchette du rang (tableaux des deux onglets) ──
+
+# Tranches de largeur rapportée au nombre de lignes classées, de la plus resserrée à la plus large
+RANGE_BANDS = [(0.05, "#66BD63"), (0.10, "#D9EF8B"), (0.20, "#FDAE61"), (float("inf"), "#EFA1AA")]
+
+
+RANGE_CELL = re.compile(
+    r'^<span title="([0-9]+,[0-9]) % du classement"><span style="position:absolute;top:0;right:0;bottom:0;'
+    r'left:0;background-color:(#[0-9A-F]{6})"></span><span style="position:relative">([^<]+)</span></span>$'
+)
+
+
+def _rank_range_expression(level: str) -> str:
+    cell_scores = yaml.safe_load((SOURCE / "datasets" / "serving" / "cell_scores.yaml").read_text(encoding="utf-8"))
+    return next(c["expression"] for c in cell_scores["columns"] if c["column_name"] == f"rank_iqr_{level}")
+
+
+@pytest.mark.parametrize("level", ["by_reporter_level", "by_product", "by_reporter"])
+def test_rank_range_colour_hand_computed(level) -> None:
+    """Fourchette du rang : couleur selon largeur ÷ lignes classées (bornes incluses), vide sous 2 méthodes."""
+    # (méthodes, largeur, lignes classées, q25, q75) → (part affichée, couleur, bornes affichées)
+    cases = [
+        ((10, 2.5, 50, 1.0, 3.5), ("5,0", "#66BD63", "1 – 3.5")),    # 5 % pile : très resserrée
+        ((10, 2.75, 50, 2.25, 5.0), ("5,5", "#D9EF8B", "2.3 – 5")),  # au-delà de 5 % : resserrée
+        ((3, 2.5, 25, 4.0, 6.5), ("10,0", "#D9EF8B", "4 – 6.5")),    # 10 % pile
+        ((3, 5.0, 25, 1.0, 6.0), ("20,0", "#FDAE61", "1 – 6")),      # 20 % pile : large
+        ((10, 1200.0, 5000, 300.0, 1500.0), ("24,0", "#EFA1AA", "300 – 1500")),  # très large
+        ((10, 0.0, 5000, 1.0, 1.0), ("0,0", "#66BD63", "1 – 1")),
+        ((1, 0.0, 50, 7.0, 7.0), None),                                # une seule méthode : vide
+        ((None, None, None, None, None), None),                        # ligne non classée
+    ]
+    conn = duckdb.connect()
+    conn.execute(
+        f"CREATE TABLE t (n_methods_{level} BIGINT, rank_spread_{level} DOUBLE, primary_n_{level} BIGINT, "
+        f"rank_q25_{level} DOUBLE, rank_q75_{level} DOUBLE, k INTEGER)"
+    )
+    conn.executemany("INSERT INTO t VALUES (?, ?, ?, ?, ?, ?)", [(*values, k) for k, (values, _) in enumerate(cases)])
+    cells = [row[0] for row in conn.execute(f"SELECT {_rank_range_expression(level)} FROM t ORDER BY k").fetchall()]
+    conn.close()
+    for cell, (_, expected) in zip(cells, cases):
+        if expected is None:
+            assert cell is None
+        else:
+            match = RANGE_CELL.match(cell)
+            assert match and match.groups() == expected, cell
+
+
+@pytest.mark.parametrize("level", ["by_reporter_level", "by_product", "by_reporter"])
+def test_rank_range_colour_on_synthetic_world(served, level) -> None:
+    """Sur le monde fictif, chaque fourchette classée est une cellule colorée de la tranche attendue."""
+    conn, _ = served
+    rows = conn.execute(
+        f"SELECT rank_spread_{level} / primary_n_{level} AS share, {_rank_range_expression(level)} AS cell "
+        f"FROM serving.dashboard.cell_scores WHERE n_methods_{level} >= 2"
+    ).df()
+    assert len(rows)
+    for share, cell in zip(rows["share"], rows["cell"]):
+        match = RANGE_CELL.match(cell)
+        assert match, cell
+        assert match.group(2) == next(colour for bound, colour in RANGE_BANDS if share <= bound)
+
+
+def test_rank_range_html_rendered_in_tables() -> None:
+    """Les deux tableaux affichent la fourchette et rendent son HTML (sinon les balises s'afficheraient)."""
+    for name, level in (("Par_pays_produits_classes", "by_reporter_level"), ("Par_produit_pays_classes", "by_product")):
+        params = yaml.safe_load((SOURCE / "charts" / f"{name}.yaml").read_text(encoding="utf-8"))["params"]
+        assert f"rank_iqr_{level}" in params["all_columns"]
+        assert params["allow_render_html"] is True

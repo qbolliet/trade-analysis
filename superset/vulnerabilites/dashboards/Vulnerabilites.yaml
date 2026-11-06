@@ -70,18 +70,27 @@ position:
     children: []
     meta:
       width: 12
-      height: 30
+      height: 66
       code: |-
         **Ce que montre la page.** Pour le pays, l'année et le flux choisis (import ou export) :
         - le **tableau** classe les produits du plus vulnérable (rang 1) au moins vulnérable, au sein du niveau de nomenclature choisi (SH6 par défaut ; SH2 et SH4 n'ont pas de rang) ;
         - le **diagramme des partenaires** montre de qui le pays dépend pour un produit : ses fournisseurs à l'import, ses clients à l'export, du plus important au moins important, puis « Autres pays » pour le reste. Couleur : pays de l'UE ou hors UE ;
-        - les **courbes** suivent dans le temps les échanges et un indicateur des produits choisis (au départ, les 5 premiers du tableau).
+        - les **courbes** suivent dans le temps les échanges et un indicateur de vulnérabilité des produits choisis (au départ, les 5 premiers du tableau).
 
-        **Comment lire.** Pour chaque indicateur, plus la valeur est élevée, plus le produit est vulnérable ; une cellule rouge signale un seuil d'alerte dépassé. La **fourchette du rang** montre si les différentes façons de combiner les indicateurs s'accordent : étroite, le classement est robuste ; large, il dépend de la pondération retenue.
+        **Comment lire.** Pour chaque indicateur, plus la valeur est élevée, plus le produit est vulnérable ; une cellule rouge signale un seuil d'alerte dépassé. Les valeurs des indicateurs ne sont pas comparables d'une colonne à l'autre : elles n'ont ni la même échelle ni la même unité (part, indice de concentration, rapport, position parmi les produits). Pour situer un produit sur l'ensemble des indicateurs, lisez son rang ou son score. La **fourchette du rang** montre si les différentes façons de combiner les indicateurs s'accordent : étroite, le classement est robuste ; large, il dépend de la pondération retenue. Sa couleur rapporte sa largeur au nombre de produits classés : vert jusqu'à 5 %, vert clair jusqu'à 10 %, orange jusqu'à 20 %, rouge au-delà.
 
-        **Comment s'en servir.** Choisissez un pays ; repérez les produits en tête et en rouge ; regardez de qui le pays dépend pour l'un d'eux (par défaut le premier du tableau, sinon le filtre « Produit à détailler ») ; suivez son évolution dans les courbes (filtre « Produits des courbes » ; vide, les 5 premiers produits).
+        **Comment s'en servir.** Choisissez un pays ; repérez les produits en tête et en rouge ; regardez de qui le pays dépend pour l'un d'eux (par défaut le premier du tableau, sinon le filtre « Produit à détailler ») ; suivez son évolution dans les courbes (filtre « Produits des courbes » ; vide, les 5 premiers produits). Ce que mesurent les colonnes, pour un pays et un produit :
+        - **Score de vulnérabilité** : le rang ramené entre 0 et 1 ; 1 pour le produit le plus vulnérable, 0 pour le moins vulnérable.
+        - **Concentration des partenaires** : les échanges du pays reposent-ils sur quelques partenaires (fournisseurs à l'import, clients à l'export) ou sur beaucoup ? Indice tiré des parts de chaque partenaire dans ces échanges, entre 0 et 1 (1 : un seul partenaire).
+        - **Part des échanges hors UE** : part des échanges du pays réalisés avec des pays extérieurs à l'Union, entre 0 et 1.
+        - **Hors UE / flux de sens inverse** : à l'import, achats hors UE rapportés à l'ensemble des exportations du pays ; au-delà de 1, il achète hors UE plus qu'il n'exporte, signe qu'il pourrait difficilement remplacer ces achats par sa production. À l'export, ventes hors UE rapportées aux importations. Rapport sans borne supérieure.
+        - **Concentration mondiale** : le commerce mondial du produit est-il dominé par quelques pays ? Même indice que la concentration des partenaires, calculé sur les parts des pays exportateurs dans le monde (l'offre) à l'import, des pays importateurs (la demande) à l'export ; entre 0 et 1.
+        - **Poids des pays pivots** : quelques pays occupent-ils une place centrale dans le réseau mondial des échanges du produit, si bien qu'un choc chez l'un d'eux se propagerait aux autres ? Mesure l'écart d'importance entre les fournisseurs (à l'import) ou les acheteurs (à l'export) de ce réseau ; sans borne supérieure, le seuil de 2,5 correspond à un premier exportateur qui fournit environ les deux tiers du monde.
+        - **Cloisonnement du réseau** : les partenaires des pays commercent-ils aussi beaucoup entre eux ? Un marché organisé en blocs laisse peu de marge pour changer de partenaire après un choc. Moyenne sur les pays du réseau mondial du produit, entre 0 et 1, identique à l'import et à l'export.
+        - **Point de défaillance unique** : combine la concentration mondiale et le poids des pays pivots, en situant le produit sur chacun d'eux parmi les produits de même nomenclature la même année ; entre 0 et 1, 1 pour le produit le plus exposé.
+        - **Seuils d'alerte dépassés** : nombre des sept indicateurs au-delà de leur seuil d'alerte.
 
-        Définitions des indicateurs et méthode : documentation du projet, page « Tableaux de bord ». Sources : Eurostat Comext (DS-045409), CEPII BACI (réseau mondial).
+        Méthode détaillée : documentation du projet, page « Tableaux de bord ». Sources : Eurostat Comext (DS-045409), CEPII BACI (réseau mondial).
   CHART-PAYS-table:
     type: CHART
     id: CHART-PAYS-table
@@ -192,18 +201,29 @@ position:
     children: []
     meta:
       width: 12
-      height: 30
+      height: 68
       code: |-
         **Ce que montre la page.** Pour le produit, l'année et le flux choisis (import ou export) :
         - le **tableau** classe les pays de l'UE du plus vulnérable (rang 1) au moins vulnérable ;
         - le **diagramme de flux** montre d'où viennent les importations de chaque pays de l'UE (à l'export : où vont ses exportations). Les principaux pays hors UE sont détaillés ; les échanges entre pays de l'UE sont regroupés en un seul bloc, pour faire ressortir la dépendance hors UE. L'épaisseur d'un flux est proportionnelle aux échanges ;
-        - les **courbes** suivent dans le temps les échanges et un indicateur des pays choisis (au départ, les 5 premiers du tableau).
+        - les **courbes** suivent dans le temps les échanges et un indicateur de vulnérabilité des pays choisis (au départ, les 5 premiers du tableau).
 
-        **Comment lire.** Pour chaque indicateur, plus la valeur est élevée, plus le pays est vulnérable ; une cellule rouge signale un seuil d'alerte dépassé. La **fourchette du rang** montre si les différentes façons de combiner les indicateurs s'accordent : étroite, le classement est robuste ; large, il dépend de la pondération retenue.
+        **Comment lire.** Pour chaque indicateur, plus la valeur est élevée, plus le pays est vulnérable ; une cellule rouge signale un seuil d'alerte dépassé. Les valeurs des indicateurs ne sont pas comparables d'une colonne à l'autre : elles n'ont ni la même échelle ni la même unité (part, indice de concentration, rapport, position parmi les produits). Pour situer un pays sur l'ensemble des indicateurs, lisez son rang ou son score. La **fourchette du rang** montre si les différentes façons de combiner les indicateurs s'accordent : étroite, le classement est robuste ; large, il dépend de la pondération retenue. Sa couleur rapporte sa largeur au nombre de pays classés : vert jusqu'à 5 %, vert clair jusqu'à 10 %, orange jusqu'à 20 %, rouge au-delà.
 
-        **Comment s'en servir.** Choisissez un produit ; repérez les pays en tête et en rouge ; identifiez dans le diagramme les fournisseurs hors UE dont ils dépendent ; comparez l'évolution des pays dans les courbes (filtre « Pays des courbes » ; vide, les 5 premiers pays).
+        **Comment s'en servir.** Choisissez un produit ; repérez les pays en tête et en rouge ; identifiez dans le diagramme les fournisseurs hors UE dont ils dépendent ; comparez l'évolution des pays dans les courbes (filtre « Pays des courbes » ; vide, les 5 premiers pays). Ce que mesurent les colonnes, pour un pays et un produit :
+        - **Score de vulnérabilité** : le rang ramené entre 0 et 1 ; 1 pour le pays le plus vulnérable, 0 pour le moins vulnérable.
+        - **Concentration des partenaires** : les échanges du pays reposent-ils sur quelques partenaires (fournisseurs à l'import, clients à l'export) ou sur beaucoup ? Indice tiré des parts de chaque partenaire dans ces échanges, entre 0 et 1 (1 : un seul partenaire).
+        - **Part des échanges hors UE** : part des échanges du pays réalisés avec des pays extérieurs à l'Union, entre 0 et 1.
+        - **Hors UE / flux de sens inverse** : à l'import, achats hors UE rapportés à l'ensemble des exportations du pays ; au-delà de 1, il achète hors UE plus qu'il n'exporte, signe qu'il pourrait difficilement remplacer ces achats par sa production. À l'export, ventes hors UE rapportées aux importations. Rapport sans borne supérieure.
+        - **Concentration mondiale** : le commerce mondial du produit est-il dominé par quelques pays ? Même indice que la concentration des partenaires, calculé sur les parts des pays exportateurs dans le monde (l'offre) à l'import, des pays importateurs (la demande) à l'export ; entre 0 et 1.
+        - **Poids des pays pivots** : quelques pays occupent-ils une place centrale dans le réseau mondial des échanges du produit, si bien qu'un choc chez l'un d'eux se propagerait aux autres ? Mesure l'écart d'importance entre les fournisseurs (à l'import) ou les acheteurs (à l'export) de ce réseau ; sans borne supérieure, le seuil de 2,5 correspond à un premier exportateur qui fournit environ les deux tiers du monde.
+        - **Cloisonnement du réseau** : les partenaires des pays commercent-ils aussi beaucoup entre eux ? Un marché organisé en blocs laisse peu de marge pour changer de partenaire après un choc. Moyenne sur les pays du réseau mondial du produit, entre 0 et 1, identique à l'import et à l'export.
+        - **Point de défaillance unique** : combine la concentration mondiale et le poids des pays pivots, en situant le produit sur chacun d'eux parmi les produits de même nomenclature la même année ; entre 0 et 1, 1 pour le produit le plus exposé.
+        - **Seuils d'alerte dépassés** : nombre des sept indicateurs au-delà de leur seuil d'alerte.
 
-        Définitions des indicateurs et méthode : documentation du projet, page « Tableaux de bord ». Sources : Eurostat Comext (DS-045409), CEPII BACI (réseau mondial).
+        Les quatre indicateurs de réseau (concentration mondiale, poids des pays pivots, cloisonnement, point de défaillance unique) décrivent le commerce mondial du produit : ils ont la même valeur pour tous les pays du tableau et ne les départagent pas.
+
+        Méthode détaillée : documentation du projet, page « Tableaux de bord ». Sources : Eurostat Comext (DS-045409), CEPII BACI (réseau mondial).
   CHART-PRODUIT-table:
     type: CHART
     id: CHART-PRODUIT-table

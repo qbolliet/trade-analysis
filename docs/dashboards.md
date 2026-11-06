@@ -20,12 +20,23 @@ bloc d'aide (ce que montre la page, comment la lire, comment s'en servir).
 
 Une ligne par produit (onglet *Par pays*) ou par pays (onglet *Par produit*), triée par
 rang. Une cellule rouge signale un indicateur au-delà de son seuil d'alerte ; la colonne
-« Seuils d'alerte dépassés » est jaune de 1 à 2 alertes, rouge à partir de 3.
+« Seuils d'alerte dépassés » est jaune de 1 à 2 alertes, rouge à partir de 3. La
+**fourchette du rang** est colorée selon sa largeur rapportée au nombre de lignes classées
+(produits du pays au sein du niveau, ou pays du produit) : vert jusqu'à 5 %, vert clair
+jusqu'à 10 %, orange jusqu'à 20 %, rouge au-delà ; l'infobulle donne cette part.
+
+Les valeurs des indicateurs ne se comparent pas d'une colonne à l'autre : elles n'ont ni la
+même échelle ni la même unité (part, indice de concentration, rapport, position parmi les
+produits). Le rang et le score les résument. Dans l'onglet *Par produit*, les quatre
+indicateurs de réseau (concentration mondiale, poids des pays pivots, cloisonnement, point
+de défaillance unique) décrivent le commerce mondial du produit : ils ont la même valeur
+pour tous les pays du tableau. Le bloc d'aide de chaque onglet reprend une définition
+courte de chaque colonne.
 
 | Colonne | Sigle | Définition (import ; export) | Seuil d'alerte |
 |---|---|---|---|
 | Rang (1 = le plus vulnérable) | — | Rang consensus : rang de Borda des méthodes de synthèse multicritère (méthode `consensus_borda`), au sein du niveau de nomenclature (*Par pays*) ou du produit (*Par produit*). | — |
-| Fourchette du rang | — | Rangs donnés à la ligne par les méthodes de synthèse : quartiles q25 et q75 de ces rangs, affichés « q25 – q75 ». Mesure du désaccord entre méthodes (voir l'encadré). | — |
+| Fourchette du rang | — | Rangs donnés à la ligne par les méthodes de synthèse : quartiles q25 et q75 de ces rangs, affichés « q25 – q75 ». Mesure du désaccord entre méthodes (voir l'encadré). Couleur : largeur ÷ lignes classées, seuils 5, 10 et 20 %. | — |
 | Largeur de la fourchette | — | q75 − q25, en rangs. | — |
 | Score de vulnérabilité (0 à 1) | — | `1 − (rang − 1)/(n − 1)`, `n` lignes classées : 1 = la plus vulnérable. | — |
 | Concentration des partenaires | HHI | Indice de Herfindahl-Hirschman : somme des carrés des parts des partenaires individuels dans les échanges du pays pour le produit ; ses fournisseurs à l'import, ses clients à l'export. 1 = un seul partenaire. | 0,5 |
